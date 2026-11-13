@@ -4,6 +4,8 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { pluginIdOf } from "../src/pluginSupervisor";
+import { vaultPluginId, vaultPluginNamed } from "../src/vaultPlugins";
+import { vaultCodePlugins } from "./pluginCatalog";
 import { appPluginNamed } from "../src/appPlugins";
 import { withinVault } from "./phoneData";
 import { pluginDesired, setPluginBudget, setPluginDesired, supervisorOf } from "./supervisor";
@@ -81,7 +83,11 @@ export function resolvePlugin(vault: string, word: string): { id: string } | { e
     // A plugin that has records but no page any more can still be turned on or off.
     if (supervisorOf(vault).plugins().includes(w)) return { id: w };
   }
+  const code = vaultCodePlugins(vault).filter((c) => vaultPluginNamed(w, c.file, c.name));
+  if (code.length === 1 && !app) return { id: vaultPluginId(code[0]!.file) };
+  if (code.length > 1) return { error: `${code.length} plugins are named ${w}: ${code.map((c) => vaultPluginId(c.file)).join(", ")}. Name one by its path.` };
   const hits = pagesNamed(vault, w.split("/").pop()!);
+  if (code.length === 1) hits.push(vaultPluginId(code[0]!.file));
   if (app) {
     // A part of the app by its name ("notes"), unless a vault page has that name too: then say which is which.
     if (!hits.length) return { id: app.id };

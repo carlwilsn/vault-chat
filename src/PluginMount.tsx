@@ -5,7 +5,7 @@
 //
 // AppPluginMount: a part of the app that is a plugin (src/appPlugins.ts; Stage 2), mounted from its module through the
 // same host, and taken down or brought back by the supervisor's records like any page (usePluginDesired).
-import { Component, useEffect, useRef, type ReactNode } from "react";
+import { Component, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { hostTheme, mountPlugin, type AppPluginSource, type PluginHandle } from "./mountHost";
 import type { AppPluginInfo } from "./appPlugins";
 import { usePluginDesired } from "./pluginSupervisorApp";
@@ -65,12 +65,14 @@ export function PluginMount(props: { html: string; path: string; className?: str
 }
 
 /** A part of the app that is a plugin: mounted while the supervisor says it runs; stopped, it is gone (nothing left). */
-export function AppPluginMount({ plugin, module }: { plugin: AppPluginInfo; module: unknown }) {
+export function AppPluginMount({ plugin, module, code }: { plugin: Pick<AppPluginInfo, "id" | "name">; module?: unknown; code?: string }) {
+  // One source object per module / code: a new one is a fresh mount (a changed vault plugin file), a re-render is not.
+  const source = useMemo<AppPluginSource>(() => (typeof code === "string" ? { name: plugin.name, code } : { name: plugin.name, module }), [plugin.name, module, code]);
   const desired = usePluginDesired(plugin.id);
   if (desired.state === "stopped") return null;
   return (
     <PluginBoundary path={plugin.id} key={plugin.id}>
-      <Mount html={{ name: plugin.name, module }} path={plugin.id} />
+      <Mount html={source} path={plugin.id} />
     </PluginBoundary>
   );
 }

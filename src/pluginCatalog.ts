@@ -7,6 +7,7 @@
 import { LIVE_SERVICES, serviceOfCap } from "./liveServices";
 import { parseLiveMount, parseLiveNeeds, type LiveMount } from "./liveBridge";
 import { APP_PLUGINS } from "./appPlugins";
+import { VAULT_PLUGIN_DIR } from "./vaultPlugins";
 
 export type CatalogService = {
   name: string;
@@ -27,7 +28,9 @@ export type CatalogPlugin = {
   /** Its <title>, else its file name. */
   name: string;
   /** Where its code runs (src/liveBridge.ts parseLiveMount). */
-  mount: LiveMount;
+  mount: LiveMount | "module";
+  /** A code file in .vault-chat/plugins (src/vaultPlugins.ts): its meta description. */
+  description?: string;
   /** The registered services its manifest names (by service name). */
   needs: string[];
   /** Names its manifest gives that no registered service has. */
@@ -119,10 +122,10 @@ export function catalogText(c: Catalog): string {
     const how = [s.supplier === "box" ? "the box" : "the app/phone", s.always ? "every page has it, no grant" : s.grantable ? "Carl allows it once per page" : "declared, opens nothing", s.call].filter(Boolean).join("; ");
     lines.push(`- ${s.name} (${how}): ${s.description}`);
   }
-  lines.push("", `Plugins in this vault (${c.plugins.length}${c.truncated ? ", list cut short" : ""}): .html pages with a vc-capabilities or vc-mount manifest`);
+  lines.push("", `Plugins in this vault (${c.plugins.length}${c.truncated ? ", list cut short" : ""}): .html pages with a vc-capabilities or vc-mount manifest, and code files in ${VAULT_PLUGIN_DIR}/ (live, no app update)`);
   if (!c.plugins.length) lines.push("- none");
   for (const p of c.plugins) {
-    lines.push(`- ${p.id}${p.name !== p.id.split("/").pop() ? ` "${p.name}"` : ""}: ${p.mount}; needs ${p.needs.length ? p.needs.join(", ") : "nothing"}${p.refused.length ? `; unknown: ${p.refused.join(", ")}` : ""}`);
+    lines.push(p.mount === "module" ? `- ${p.id}${p.name !== p.id.split("/").pop() ? ` "${p.name}"` : ""}: code file, mounted in the app${p.description ? `; ${p.description}` : ""}` : `- ${p.id}${p.name !== p.id.split("/").pop() ? ` "${p.name}"` : ""}: ${p.mount}; needs ${p.needs.length ? p.needs.join(", ") : "nothing"}${p.refused.length ? `; unknown: ${p.refused.join(", ")}` : ""}`);
   }
   if (c.app?.length) {
     lines.push("", `Parts of the app that are plugins (${c.app.length}; the Plugins tool turns them off and on by id or name):`);

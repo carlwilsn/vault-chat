@@ -47,8 +47,9 @@ export type PluginApi = {
   /** Report a failure the plugin caught itself: the host takes it down and shows its error card. */
   error(e: unknown): void;
 };
-/** An app plugin's code (src/appPlugins.ts): its module, already loaded with the app. */
-export type AppPluginSource = { name: string; module: unknown };
+/** An app plugin's code (src/appPlugins.ts): its module, already loaded with the app. A vault plugin (src/vaultPlugins.ts)
+ *  is the same, trusted and in the light DOM, but its module is loaded from `code` (the file's text) on each mount. */
+export type AppPluginSource = { name: string; module?: unknown; code?: string };
 /** Load the module's code: the module, the URL it was loaded from (errors name it), and a release of that URL. */
 export type LoadModule = (code: string) => Promise<{ module: any; url: string; dispose(): void }>;
 export type PluginHandle = {
@@ -207,7 +208,7 @@ export function mountPlugin(
         parts = { name: app.name, styles: [], body: "", code: "" };
         root.style.display = "contents";
         shadow.append(root);
-        loaded = { module: app.module, url: "", dispose() {} };
+        loaded = app.code !== undefined ? await load(app.code) : { module: app.module, url: "", dispose() {} };
       } else {
         parts = pluginParts(source as string, win, opts.path);
         root.innerHTML = parts.body;

@@ -3,6 +3,7 @@
 // takes (no symlinks) and stops at CATALOG_LIMITS.
 import { closeSync, openSync, readSync, readdirSync, statSync, type Dirent } from "node:fs";
 import { join } from "node:path";
+import { VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES, isVaultPluginFile, parseVaultPluginMeta, vaultPluginId } from "../src/vaultPlugins";
 import { CATALOG_LIMITS, catalogAppPlugins, catalogEnters, catalogPlugin, catalogReads, catalogServices, type Catalog, type CatalogPlugin } from "../src/pluginCatalog";
 
 function readText(full: string, size: number): string | null {
@@ -61,8 +62,34 @@ export function vaultPlugins(vault: string): { plugins: CatalogPlugin[]; truncat
   return { plugins, truncated };
 }
 
+/** The code files in .vault-chat/plugins (src/vaultPlugins.ts), by file name: name, description from their meta. */
+export function vaultCodePlugins(vault: string): { file: string; name: string; description: string }[] {
+  const dir = join(vault, VAULT_PLUGIN_DIR);
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out: { file: string; name: string; description: string }[] = [];
+  for (const e of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+    if (!e.isFile() || !isVaultPluginFile(e.name)) continue;
+    let size = 0;
+    try {
+      size = statSync(join(dir, e.name)).size;
+    } catch {
+      continue;
+    }
+    if (size > VAULT_PLUGIN_MAX_BYTES) continue;
+    const code = readText(join(dir, e.name), size);
+    if (code !== null) out.push({ file: e.name, ...parseVaultPluginMeta(code, e.name) });
+  }
+  return out;
+}
+
 /** The whole catalog: the services, then the vault's plugins, then the app's own (src/appPlugins.ts). */
 export function pluginCatalog(vault: string): Catalog {
   const { plugins, truncated } = vaultPlugins(vault);
+  plugins.unshift(...vaultCodePlugins(vault).map((c): CatalogPlugin => ({ id: vaultPluginId(c.file), name: c.name, mount: "module", description: c.description || undefined, needs: [], refused: [] })));
   return { services: catalogServices(), plugins, app: catalogAppPlugins(), ...(truncated ? { truncated: true } : {}) };
 }

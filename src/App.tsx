@@ -13,6 +13,7 @@ import { FullscreenChat } from "./FullscreenChat";
 import { NotePopup } from "./NotePopup";
 import { VoiceTextPanel } from "./VoiceTextPanel";
 import { AppPluginMount } from "./PluginMount";
+import { VaultPlugins } from "./VaultPluginHost";
 import { NOTES_PLUGIN } from "./appPlugins";
 import * as notesPlugin from "./plugins/notes";
 import { ChatsPanel } from "./ChatsPanel";
@@ -461,6 +462,8 @@ export default function App() {
       />
       {/* The Notes panel: a plugin (src/plugins/notes), mounted through the plugin host while the supervisor says it runs. */}
       <AppPluginMount plugin={NOTES_PLUGIN} module={notesPlugin} />
+      {/* Plugins that are code files in .vault-chat/plugins: live as they are added, changed or removed. */}
+      <VaultPlugins />
       <VoiceTextPanel />
       <UpdateBanner />
       <ShortcutSheet />
