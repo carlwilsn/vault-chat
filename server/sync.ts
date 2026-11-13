@@ -267,6 +267,13 @@ exit 0
           // pushed master, box starts from it.
           const f = await runGit(vault, ["fetch", "-q", bare, `+refs/heads/${this.HUB}:${this.HUB_REF}`]);
           if (f.code !== 0) {
+            // Only a hub without master yet is "nothing to do"; any other fetch failure (a broken or unreachable
+            // bare repo) is a failing cycle, never a silent ok.
+            if (!/couldn't find remote ref|could not find remote ref/i.test(f.stderr)) {
+              const err = `git fetch ${this.HUB} (exit ${f.code}): ${f.stderr.trim()}`;
+              s.steps.fetch = { ok: false, at: Date.now(), error: err };
+              throw new Error(err);
+            }
             s.steps.push = { ok: true, at: Date.now(), detail: "no commits yet" };
             return;
           }

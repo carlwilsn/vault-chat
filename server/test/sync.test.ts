@@ -264,4 +264,23 @@ describe("box sync loop", () => {
       cleanup(r2);
     }
   });
+  it("an empty vault waits quietly for master, but a broken hub fails the cycle instead of passing as ok", async () => {
+    const r2 = tmp("vcsync-empty-");
+    try {
+      const s1 = new BoxSync(join(r2, "v"), join(r2, "v.git"), 60_000, async () => {}, 0);
+      await s1.ensure(true);
+      await s1.runOnce();
+      expect(s1.status.ok, JSON.stringify(s1.status.steps)).toBe(true);
+      expect(s1.status.steps.push?.detail).toBe("no commits yet");
+      // master names an object the hub does not have: the fetch fails for a reason other than "no master yet".
+      writeFileSync(join(r2, "v.git", "refs", "heads", "master"), "1234567890123456789012345678901234567890\n");
+      await s1.runOnce();
+      expect(s1.status.ok).toBe(false);
+      expect(s1.status.steps.fetch?.ok).toBe(false);
+      expect(s1.status.lastError).toMatch(/git fetch master/);
+      s1.stop();
+    } finally {
+      cleanup(r2);
+    }
+  });
 });
