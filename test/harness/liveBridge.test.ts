@@ -619,11 +619,11 @@ test("the catalog lists every registered service, and reads a page's manifest as
   assert.ok(!services.find((s) => s.name === "persist")!.grantable && services.find((s) => s.name === "persist")!.call === null);
   // A page with services: its needs by service name (voice-lab's tool: spelling read back as voice-lab), unknown ones kept apart.
   assert.deepEqual(catalogPlugin("apps/lab.html", '<title> Voice &amp; <b>lab</b> </title><meta name="vc-capabilities" content="ask, tool:voice-lab.*, voice-lab, theme, fs">'), {
-    id: "apps/lab.html", name: "Voice & lab", mount: "iframe", needs: ["ask", "voice-lab"], refused: ["fs"],
+    id: "apps/lab.html", name: "Voice & lab", mount: "iframe", needs: ["ask", "voice-lab"], refused: ["fs"], pinned: false,
   });
   // An in-process page (change 1.5) needs nothing and is still a plugin; no title: its file name.
   assert.deepEqual(catalogPlugin("./w\\clock.html", '<meta name="vc-mount" content="in-process"><script type="module">export function mount(){}</script>'), {
-    id: "w/clock.html", name: "clock.html", mount: "in-process", needs: [], refused: [],
+    id: "w/clock.html", name: "clock.html", mount: "in-process", needs: [], refused: [], pinned: false,
   });
   assert.equal(catalogPlugin("x.html", '<meta name=vc-mount content=sideways>')!.mount, "iframe");
   assert.equal(catalogPlugin("x.html", '<meta name="vc-capabilities" content="">')!.needs.length, 0);
@@ -687,9 +687,9 @@ test("the box's catalog walks the vault: pages in folders and .vault-chat/visual
     assert.equal(c.truncated, undefined);
     assert.deepEqual(c.services.map((s) => s.name), ["ask", "mic", "persist", "voice-lab", "theme", "state", "log", "converse", "catalog"]);
     assert.deepEqual(c.plugins, [
-      { id: ".vault-chat/visuals/html-lab.html", name: "HTML lab", mount: "iframe", needs: ["ask", "voice-lab"], refused: [] },
-      { id: "Apps/clock.htm", name: "clock.htm", mount: "in-process", needs: [], refused: [] },
-      { id: "a.html", name: "a.html", mount: "iframe", needs: ["catalog", "state"], refused: [] },
+      { id: ".vault-chat/visuals/html-lab.html", name: "HTML lab", mount: "iframe", needs: ["ask", "voice-lab"], refused: [], pinned: false },
+      { id: "Apps/clock.htm", name: "clock.htm", mount: "in-process", needs: [], refused: [], pinned: false },
+      { id: "a.html", name: "a.html", mount: "iframe", needs: ["catalog", "state"], refused: [], pinned: false },
     ]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
