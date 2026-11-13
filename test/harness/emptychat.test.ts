@@ -46,6 +46,6 @@ test("actual desktop ChatPane renders no empty-chat intro and preserves ordinary
 });
 
 test("automatic note discussion intro is factual, not a canned greeting", () => {
-  const source = fs.readFileSync(path.join(root, "src/NotesPanel.tsx"), "utf8");
+  const source = fs.readFileSync(path.join(root, "src/plugins/notes/NotesPanel.tsx"), "utf8");
   assert.doesNotMatch(source, intros);
 });

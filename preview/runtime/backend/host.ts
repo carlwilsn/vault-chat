@@ -11,7 +11,7 @@ import { parseLiveNeeds } from "../../../src/liveBridge";
 import { foldPluginState, logSignal, stateQuery, stateSignal, type PluginState } from "../../../src/pluginRecords";
 import { budgetSignal, desiredSignal, Supervisor } from "../../../src/pluginSupervisor";
 import { converseAfter, converseIntent } from "../../../src/pluginConverse";
-import { catalogPlugin, catalogReads, catalogServices } from "../../../src/pluginCatalog";
+import { catalogAppPlugins, catalogPlugin, catalogReads, catalogServices } from "../../../src/pluginCatalog";
 
 /** [roleplay] A REAL box behind the preview: a scenario whose box is http://realbox.localhost sends every box request
  *  to the dev server's /__realbox proxy (VC_REALBOX, e.g. an ssh tunnel to a throwaway test instance), so the real
@@ -493,6 +493,17 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       await sleep(1500);
       throw `error sending request for url (${u.href}): operation timed out`;
     }
+    if (u.pathname.endsWith("/notes") && laptopVault) {
+      // The box's notes (server/http.ts GET /notes?full=1): the vault's .vault-chat/notes.jsonl, newest line per id.
+      const byId = new Map<string, unknown>();
+      for (const line of (fs.readText(`${laptopVault}/.vault-chat/notes.jsonl`) ?? "").split("\n")) {
+        try {
+          const n = JSON.parse(line);
+          if (n && typeof n.id === "string") byId.set(n.id, n);
+        } catch { /* a blank or partial line */ }
+      }
+      return ok({ notes: [...byId.values()] });
+    }
     if (p === "/api/v2/supervisor") {
       // The supervisor's records (server/supervisor.ts): the fake box's log, folded the box's way.
       const sup = new Supervisor();
@@ -596,7 +607,7 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
         const caps = parseLiveNeeds(fs.readText(`${laptopVault}/${b.token.slice("preview-token|".length)}`) ?? "").caps;
         const allowed = caps.includes("catalog") && b.method === "GET";
         const plugins = fs.listFiles(String(laptopVault)).filter(catalogReads).flatMap((p) => catalogPlugin(p, fs.readText(`${laptopVault}/${p}`) ?? "") ?? []);
-        const body = JSON.stringify(allowed ? { services: catalogServices(), plugins } : { error: "this page was not allowed to do that" });
+        const body = JSON.stringify(allowed ? { services: catalogServices(), plugins, app: catalogAppPlugins() } : { error: "this page was not allowed to do that" });
         const bytes = new TextEncoder().encode(body);
         let bin = "";
         for (const x of bytes) bin += String.fromCharCode(x);

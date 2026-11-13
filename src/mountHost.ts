@@ -20,6 +20,12 @@
 // the plugin is taken down (its cleanup run) and an error card with a Reload button stands in its place. Nothing the
 // plugin throws reaches the app. (A plugin that loops forever still blocks the page: in-process has no hard stop.)
 // Pages without the declaration are iframes exactly as before (HtmlView, InlineHtmlFrame).
+//
+// An app plugin (Stage 2: a part of the app that became a plugin, src/appPlugins.ts) mounts the same way, from its
+// module instead of a page: `mountPlugin(host, {name, module}, opts)`. It is the app's own code, fully trusted and
+// styled by the app, so it mounts in the light DOM (no shadow root: the app's stylesheet reaches it) into a
+// `display: contents` root that adds no box of its own. Its effects, its error card and the supervisor's stop are the
+// page's. A plugin reports a failure it caught itself (React's uncaught render error) with api.error(e).
 
 import { LIVE_THEME_VARS } from "./liveBridge";
 import { Effects } from "./pluginSupervisor";
@@ -38,7 +44,11 @@ export type PluginApi = {
   timer(fn: () => void, ms: number, repeat?: boolean): () => void;
   /** Any other effect: `undo` runs when the plugin stops (newest first). Returns a function that runs it now. */
   effect(undo: () => void): () => void;
+  /** Report a failure the plugin caught itself: the host takes it down and shows its error card. */
+  error(e: unknown): void;
 };
+/** An app plugin's code (src/appPlugins.ts): its module, already loaded with the app. */
+export type AppPluginSource = { name: string; module: unknown };
 /** Load the module's code: the module, the URL it was loaded from (errors name it), and a release of that URL. */
 export type LoadModule = (code: string) => Promise<{ module: any; url: string; dispose(): void }>;
 export type PluginHandle = {
@@ -104,13 +114,15 @@ const HOST_CSS = `:host{display:block;position:relative}[data-el="plugin-root"]{
 /** Mount the page `html` into `host` (in its shadow root). Never throws; a failure is the handle's `error` and a card. */
 export function mountPlugin(
   host: HTMLElement,
-  html: string,
+  source: string | AppPluginSource,
   opts: { path: string; theme: () => PluginTheme; win?: Win; load?: LoadModule; onError?: (message: string) => void },
 ): PluginHandle {
   const win = opts.win ?? (window as unknown as Win);
   const load = opts.load ?? blobLoad;
   const doc = host.ownerDocument;
-  const shadow = host.shadowRoot ?? host.attachShadow({ mode: "open" });
+  const app = typeof source === "string" ? null : source;
+  // A page: its own shadow root. The app's own code: the light DOM, where the app's styles reach it.
+  const shadow: HTMLElement | ShadowRoot = app ? host : host.shadowRoot ?? host.attachShadow({ mode: "open" });
   let gen = 0;
   let error: string | null = null;
   let theme = opts.theme();
@@ -153,6 +165,8 @@ export function mountPlugin(
     clear();
     const card = doc.createElement("div");
     card.setAttribute("data-el", "plugin-error");
+    // An app plugin has no box of its own in the layout (a panel floats over the app): its card floats where it would.
+    if (app) card.setAttribute("style", "position:fixed;top:48px;right:12px;z-index:40;max-width:420px");
     const title = doc.createElement("b");
     title.textContent = `${parts?.name ?? opts.path} stopped`;
     const pre = doc.createElement("pre");
@@ -185,13 +199,22 @@ export function mountPlugin(
     error = null;
     clear();
     try {
-      parts = pluginParts(html, win, opts.path);
       const root = doc.createElement("div");
       root.setAttribute("data-el", "plugin-root");
-      root.innerHTML = parts.body;
-      shadow.append(style(HOST_CSS), ...parts.styles.map(style), root);
-      if (!parts.code.trim()) throw new Error('the page has no <script type="module"> exporting mount(el, api)');
-      const loaded = await load(parts.code);
+      let loaded: Awaited<ReturnType<LoadModule>>;
+      if (app) {
+        // The app's own module: nothing to parse or load, no box of its own around what it renders.
+        parts = { name: app.name, styles: [], body: "", code: "" };
+        root.style.display = "contents";
+        shadow.append(root);
+        loaded = { module: app.module, url: "", dispose() {} };
+      } else {
+        parts = pluginParts(source as string, win, opts.path);
+        root.innerHTML = parts.body;
+        shadow.append(style(HOST_CSS), ...parts.styles.map(style), root);
+        if (!parts.code.trim()) throw new Error('the page has no <script type="module"> exporting mount(el, api)');
+        loaded = await load(parts.code);
+      }
       if (my !== gen) return loaded.dispose();
       const fx = new Effects();
       const r: Run = { effects: fx, url: loaded.url, resizeFns: [], themeFns: [] };
@@ -216,6 +239,7 @@ export function mountPlugin(
         listen: (target, type, fn, o) => (run === r ? fx.listen(target, String(type), guard(fn), o) : () => {}),
         timer: (fn, ms, repeat) => (run === r ? fx.timer(guard(fn), Math.max(0, Number(ms) || 0), !!repeat) : () => {}),
         effect: (undo) => (run === r && typeof undo === "function" ? fx.add("effect", undo) : () => {}),
+        error: (e) => void (run === r && fail(e)),
       };
       if (typeof ResizeObserver !== "undefined") {
         const ro = new ResizeObserver(guard(() => {

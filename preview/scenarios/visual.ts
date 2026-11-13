@@ -52,6 +52,27 @@ function supervise(ask: string, state: "running" | "stopped", reply: string): St
   };
 }
 
+/** "disable notes" / "enable notes": the agent's Plugins tool writes the Notes panel's record (app/notes) on the fake box's log. */
+function superviseNotes(ask: string, state: "running" | "stopped", reply: string): Step {
+  return {
+    run: () => {
+      const conv = "c-notes-plugin";
+      (window as any).__preview.boxPlay({
+        log: (box: any) => {
+          box.startTurn(conv);
+          box.userLine(conv, `u-notes-${state}`, ask);
+          const id = `plug-notes-${state}`;
+          box.tool(conv, id, "Plugins", { action: state === "stopped" ? "disable" : "enable", plugin: "notes" });
+          box.emit(null, { type: "signal", signal: { type: "plugin.desired", plugin: "app/notes", state, at: Date.now(), by: "agent" } });
+          box.toolDone(conv, id, `app/notes: ${state === "stopped" ? "off" : "on"} (by agent). Every view of it follows.`);
+          box.say(conv, reply);
+          box.endTurn(conv);
+        },
+      });
+    },
+  };
+}
+
 /** The counterexample the agent drew: BFS from s, a and b both at level 4, two edges apart through z. */
 export const BFS_SVG = (() => {
   const node = (x: number, y: number, id: string, marked: boolean) =>
@@ -443,6 +464,65 @@ export const visualScenarios: Scenario[] = [
       { sleep: 6000 },
       supervise("enable them again", "running", "Both are on again."),
       { sleep: 4000 },
+    ],
+    surfaces: ["desktop"],
+  },
+  {
+    id: "notes-plugin",
+    title: "Notes plugin — the Notes panel runs through the plugin host; 'disable notes' takes it (and its titlebar button) away, 'enable notes' brings it back as it was",
+    group: "Chat",
+    notes:
+      "Stage 2, first item. The Notes panel (src/plugins/notes) is mounted through the in-process plugin host and follows the supervisor's records for app/notes. Open it from the titlebar: the same panel, notes and filters. Carl asks to disable notes: the agent's Plugins tool writes plugin.desired stopped for app/notes; the panel and its button go. Enable: they come back, and the panel opens as before.",
+    build: (ctx: BuildCtx) => {
+      ctx.write(".vault-chat/notes.jsonl", ((): string[] => {
+        const iso = (t: number) => new Date(t).toISOString();
+        const n = (id: string, ago: number, status: string, draft: string, anchor?: { path: string; at?: string; sel?: string }) =>
+          JSON.stringify({ id, timestamp: iso(ctx.now - ago), last_updated: iso(ctx.now - ago), anchors: anchor ? [{ source_path: anchor.path, source_kind: "markdown", source_anchor: anchor.at ?? null, source_selection: anchor.sel ?? null, primary: true }] : [], turns: [], user_draft: draft, status });
+        return [
+          n("note-eigengap", 26 * 60 * MIN, "open", "When does the eigengap heuristic fail? Office hours said: very different cluster sizes. Find a reference.", { path: "notes/spectral-clustering.md", sel: "When does the eigengap heuristic for choosing $k$ fail?" }),
+          n("note-hw4", 5 * 60 * MIN, "open", "Problem 2: check the sign of the boundary term before integrating by parts.", { path: "Physics/hw4.md", at: "Problem 2" }),
+          n("note-readgroup", 3 * 60 * MIN, "open", "Reply about Thursday's reading group — suggest the Chinchilla follow-ups."),
+          n("note-table", 40 * 60 * MIN, "resolved", "Writeup table should show tokens per seed."),
+        ];
+      })().join("\n") + "\n");
+      ctx.conversations([{
+        id: "c-notes-plugin", title: "Notes on and off", source: "manual", status: "idle", unread: false,
+        createdAt: ctx.now - 5 * MIN, lastActivityAt: ctx.now - MIN,
+        messages: [{ role: "user", content: "what's in my notes?" }, { role: "assistant", content: "Three open notes: the eigengap question, the sign in hw4 problem 2, and the reading group reply." }],
+      }]);
+    },
+    host: (now: number) => ({
+      sync: {
+        box: { box: "https://thinkbox.tail0a1b2.ts.net", vault: "summer-demo" },
+        boxChat: {
+          convs: {
+            "c-notes-plugin": {
+              title: "Notes on and off", source: "manual", status: "idle",
+              meta: { unread: false, createdAt: now - 5 * MIN, lastActivityAt: now - MIN },
+              messages: [{ role: "user", content: "what's in my notes?" }, { role: "assistant", content: "Three open notes: the eigengap question, the sign in hw4 problem 2, and the reading group reply." }],
+            },
+          } as any,
+          steps: [{ status: { "c-notes-plugin": "idle" } }],
+        },
+      },
+    }),
+    activeConversation: "c-notes-plugin",
+    open: [
+      { chat: true },
+      { conversation: "c-notes-plugin" },
+      { sleep: 2500 },
+      { click: "button[title='Notes (Ctrl+N to create)']" },
+      { sleep: 2000 },
+      { click: "[data-note-id='note-hw4'] > div" },
+      { sleep: 2500 },
+      superviseNotes("disable notes", "stopped", "Turned off the Notes panel (app/notes): it is gone from the app until you enable it. Your notes stay in notes.jsonl."),
+      { sleep: 4500 },
+      superviseNotes("enable notes", "running", "The Notes panel is on again."),
+      { sleep: 3000 },
+      { key: "Escape" },
+      { sleep: 1200 },
+      { click: "button[title='Notes (Ctrl+N to create)']" },
+      { sleep: 2500 },
     ],
     surfaces: ["desktop"],
   },

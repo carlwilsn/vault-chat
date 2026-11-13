@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
-import { readTextAt, boxPathOf } from "./boxFiles";
-import { writeAllNotes } from "./notes";
+import { useCallback, useEffect, useState } from "react";
+import { readTextAt, boxPathOf } from "../../boxFiles";
+import { writeAllNotes } from "../../notes";
 import {
   StickyNote,
   CheckCircle2,
@@ -14,27 +14,29 @@ import {
   RefreshCw,
   ExternalLink as ExternalLinkIcon,
 } from "lucide-react";
-import { useStore } from "./store";
-import type { Note, NoteAnchor } from "./notes";
-import { noteIsSummarizable, anchorImages } from "./notes";
+import { useStore } from "../../store";
+import type { Note, NoteAnchor } from "../../notes";
+import { noteIsSummarizable, anchorImages } from "../../notes";
 
 type NoteAnchorLike = Pick<NoteAnchor, "source_path" | "source_anchor">;
-import { cn } from "./lib/utils";
-import { isUnreadableAsText } from "./fileKind";
+import { cn } from "../../lib/utils";
+import { isUnreadableAsText } from "../../fileKind";
 import { MessageSquare } from "lucide-react";
 
 // Slide-in review panel for vault notes. Shows active by default;
 // toggle pill flips to resolved. Click a card → opens the note's
 // anchored source in the viewer. Delete / resolve per-card, clear-
 // resolved as a bulk action.
+//
+// The Notes plugin's view (src/plugins/notes/index.tsx mounts it through the
+// plugin host). Open or closed is the app's (the titlebar's Notes button,
+// store.showNotesPanel); it stays mounted while closed, so its filter, search
+// and expanded card are kept between openings, as before.
 
-export function NotesPanel({
-  open,
-  onClose,
-}: {
-  open: boolean;
-  onClose: () => void;
-}) {
+export function NotesPanel() {
+  const open = useStore((s) => s.showNotesPanel);
+  const setShowNotesPanel = useStore((s) => s.setShowNotesPanel);
+  const onClose = useCallback(() => setShowNotesPanel(false), [setShowNotesPanel]);
   const notes = useStore((s) => s.notes);
   const deleteNote = useStore((s) => s.deleteNote);
   const setNoteStatus = useStore((s) => s.setNoteStatus);
@@ -157,7 +159,7 @@ export function NotesPanel({
 
     const store = useStore.getState();
     // Box mode: the box writes the chat; these lines go to it as they are.
-    const { boxLines } = await import("./boxChat");
+    const { boxLines } = await import("../../boxChat");
     if (
       await boxLines([
         { role: "user", text: preamble, hidden: true },

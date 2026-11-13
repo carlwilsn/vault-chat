@@ -2,8 +2,13 @@
 // iframe would otherwise be (the viewer, inline in a chat). Whatever the plugin throws becomes an error card in its
 // own box (mountHost's boundary); this component's own render is behind a React boundary as well, so the pane or the
 // chat around it always stands.
+//
+// AppPluginMount: a part of the app that is a plugin (src/appPlugins.ts; Stage 2), mounted from its module through the
+// same host, and taken down or brought back by the supervisor's records like any page (usePluginDesired).
 import { Component, useEffect, useRef, type ReactNode } from "react";
-import { hostTheme, mountPlugin, type PluginHandle } from "./mountHost";
+import { hostTheme, mountPlugin, type AppPluginSource, type PluginHandle } from "./mountHost";
+import type { AppPluginInfo } from "./appPlugins";
+import { usePluginDesired } from "./pluginSupervisorApp";
 
 class PluginBoundary extends Component<{ path: string; children: ReactNode }, { failed: string | null }> {
   state = { failed: null as string | null };
@@ -26,7 +31,7 @@ class PluginBoundary extends Component<{ path: string; children: ReactNode }, { 
   }
 }
 
-function Mount({ html, path, className }: { html: string; path: string; className?: string }) {
+function Mount({ html, path, className }: { html: string | AppPluginSource; path: string; className?: string }) {
   const ref = useRef<HTMLSpanElement | null>(null);
   const handle = useRef<PluginHandle | null>(null);
   // A changed page (an edit, the agent's write) is a fresh mount: the old one's cleanup runs first.
@@ -45,6 +50,8 @@ function Mount({ html, path, className }: { html: string; path: string; classNam
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
     return () => mo.disconnect();
   }, []);
+  // An app plugin adds no box of its own (a panel places itself).
+  if (typeof html !== "string") return <span ref={ref} data-el="plugin-mount" data-vc-plugin={path} style={{ display: "contents" }} />;
   // A span (shown as a block): inline in a chat it sits inside the message's paragraph, as the iframe did.
   return <span ref={ref} data-el="plugin-mount" data-vc-plugin={path} className={["block", className].filter(Boolean).join(" ")} />;
 }
@@ -53,6 +60,17 @@ export function PluginMount(props: { html: string; path: string; className?: str
   return (
     <PluginBoundary path={props.path} key={props.path}>
       <Mount {...props} />
+    </PluginBoundary>
+  );
+}
+
+/** A part of the app that is a plugin: mounted while the supervisor says it runs; stopped, it is gone (nothing left). */
+export function AppPluginMount({ plugin, module }: { plugin: AppPluginInfo; module: unknown }) {
+  const desired = usePluginDesired(plugin.id);
+  if (desired.state === "stopped") return null;
+  return (
+    <PluginBoundary path={plugin.id} key={plugin.id}>
+      <Mount html={{ name: plugin.name, module }} path={plugin.id} />
     </PluginBoundary>
   );
 }

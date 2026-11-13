@@ -3,7 +3,7 @@
 // takes (no symlinks) and stops at CATALOG_LIMITS.
 import { closeSync, openSync, readSync, readdirSync, statSync, type Dirent } from "node:fs";
 import { join } from "node:path";
-import { CATALOG_LIMITS, catalogEnters, catalogPlugin, catalogReads, catalogServices, type Catalog, type CatalogPlugin } from "../src/pluginCatalog";
+import { CATALOG_LIMITS, catalogAppPlugins, catalogEnters, catalogPlugin, catalogReads, catalogServices, type Catalog, type CatalogPlugin } from "../src/pluginCatalog";
 
 function readText(full: string, size: number): string | null {
   try {
@@ -61,8 +61,8 @@ export function vaultPlugins(vault: string): { plugins: CatalogPlugin[]; truncat
   return { plugins, truncated };
 }
 
-/** The whole catalog: the services, then the vault's plugins. */
+/** The whole catalog: the services, then the vault's plugins, then the app's own (src/appPlugins.ts). */
 export function pluginCatalog(vault: string): Catalog {
   const { plugins, truncated } = vaultPlugins(vault);
-  return { services: catalogServices(), plugins, ...(truncated ? { truncated: true } : {}) };
+  return { services: catalogServices(), plugins, app: catalogAppPlugins(), ...(truncated ? { truncated: true } : {}) };
 }

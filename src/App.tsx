@@ -12,7 +12,9 @@ import { Titlebar } from "./Titlebar";
 import { FullscreenChat } from "./FullscreenChat";
 import { NotePopup } from "./NotePopup";
 import { VoiceTextPanel } from "./VoiceTextPanel";
-import { NotesPanel } from "./NotesPanel";
+import { AppPluginMount } from "./PluginMount";
+import { NOTES_PLUGIN } from "./appPlugins";
+import * as notesPlugin from "./plugins/notes";
 import { ChatsPanel } from "./ChatsPanel";
 import { UpdateBanner } from "./UpdateBanner";
 import { ShortcutSheet } from "./ShortcutSheet";
@@ -47,8 +49,6 @@ export default function App() {
   const openNoteComposer = useStore((s) => s.openNoteComposer);
   const closeNoteComposer = useStore((s) => s.closeNoteComposer);
   const noteComposer = useStore((s) => s.noteComposer);
-  const showNotesPanel = useStore((s) => s.showNotesPanel);
-  const setShowNotesPanel = useStore((s) => s.setShowNotesPanel);
   const loadNotes = useStore((s) => s.loadNotes);
   const notesLoaded = useStore((s) => s.notesLoaded);
   const showChatsPanel = useStore((s) => s.showChatsPanel);
@@ -459,7 +459,8 @@ export default function App() {
         initialTurns={noteComposer.initialTurns}
         onClose={closeNoteComposer}
       />
-      <NotesPanel open={showNotesPanel} onClose={() => setShowNotesPanel(false)} />
+      {/* The Notes panel: a plugin (src/plugins/notes), mounted through the plugin host while the supervisor says it runs. */}
+      <AppPluginMount plugin={NOTES_PLUGIN} module={notesPlugin} />
       <VoiceTextPanel />
       <UpdateBanner />
       <ShortcutSheet />

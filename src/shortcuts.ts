@@ -75,7 +75,7 @@ export const SHORTCUTS = [
       "src/ChatsPanel.tsx",
       "src/NewProjectForm.tsx",
       "src/VaultPicker.tsx",
-      "src/NotesPanel.tsx",
+      "src/plugins/notes/NotesPanel.tsx",
       "src/NotePopup.tsx",
       "src/Titlebar.tsx",
       "src/FileTree.tsx",

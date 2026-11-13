@@ -4,6 +4,7 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { pluginIdOf } from "../src/pluginSupervisor";
+import { appPluginNamed } from "../src/appPlugins";
 import { withinVault } from "./phoneData";
 import { pluginDesired, setPluginBudget, setPluginDesired, supervisorOf } from "./supervisor";
 
@@ -14,13 +15,13 @@ export const pluginToolSpecs = [
     type: "function" as const,
     name: PLUGIN_TOOL,
     description:
-      "Turn a plugin (a vault .html page) off or on everywhere it shows (the viewer, chats, the phone, its own link), or from a later time (an end date), set its budget, or list what each plugin is. " +
-      "Off: it is taken down in every view and the box gives it nothing; on: it comes back. action: status | disable | enable | budget. plugin: its vault path or its file name (\"html-lab\").",
+      "Turn a plugin (a vault .html page, or a part of the app that is a plugin: the Notes panel, \"notes\") off or on everywhere it shows (the viewer, chats, the phone, its own link, the app's window), or from a later time (an end date), set its budget, or list what each plugin is. " +
+      "Off: it is taken down in every view and the box gives it nothing; on: it comes back. action: status | disable | enable | budget. plugin: its vault path or its file name (\"html-lab\"), or the app part's name (\"notes\").",
     inputSchema: {
       type: "object",
       properties: {
         action: { type: "string", enum: ["status", "disable", "enable", "budget"] },
-        plugin: { type: "string", description: "The page's vault path, or its name (html-lab, html-lab.html)." },
+        plugin: { type: "string", description: "The page's vault path, or its name (html-lab, html-lab.html), or an app part's name (notes)." },
         at: { type: "string", description: "disable/enable from this time (ISO, e.g. 2026-12-01T00:00) instead of now." },
         reason: { type: "string", description: "One line shown where the plugin was (disable)." },
         callsPerMinute: { type: ["number", "null"], description: "budget: at most this many box calls a minute, else it is turned off; null removes the budget." },
@@ -63,10 +64,13 @@ function pagesNamed(vault: string, word: string): string[] {
   return out.sort();
 }
 
-/** The plugin id a word names: an existing vault page by path, else the one page by that name. */
+/** The plugin id a word names: an app plugin by its id (src/appPlugins.ts), an existing vault page by path, else the
+ *  one page or app plugin by that name. */
 export function resolvePlugin(vault: string, word: string): { id: string } | { error: string } {
   const w = pluginIdOf(word.trim());
   if (!w) return { error: "name the plugin: its vault path or its file name" };
+  const app = appPluginNamed(w);
+  if (app && app.id === w.toLowerCase()) return { id: app.id };
   if (/\.html?$/i.test(w)) {
     const full = withinVault(vault, w);
     try {
@@ -78,6 +82,11 @@ export function resolvePlugin(vault: string, word: string): { id: string } | { e
     if (supervisorOf(vault).plugins().includes(w)) return { id: w };
   }
   const hits = pagesNamed(vault, w.split("/").pop()!);
+  if (app) {
+    // A part of the app by its name ("notes"), unless a vault page has that name too: then say which is which.
+    if (!hits.length) return { id: app.id };
+    return { error: `${w} names the app's ${app.name} panel (${app.id}) and ${hits.length === 1 ? "a page" : `${hits.length} pages`}: ${hits.slice(0, 8).join(", ")}. Name one: ${app.id}, or the page by its path.` };
+  }
   if (hits.length === 1) return { id: hits[0]! };
   if (hits.length > 1) return { error: `${hits.length} pages are named ${w}: ${hits.slice(0, 8).join(", ")}. Name one by its path.` };
   return { error: `no page in the vault is named ${w}` };

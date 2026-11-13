@@ -202,4 +202,35 @@ describe("the supervisor", () => {
     tools.pluginTool(A.path, { action: "enable", plugin: "html-lab" });
     expect(desired()).toMatchObject({ state: "running", next: null });
   });
+
+  it("Stage 2: the Notes panel is an app plugin (app/notes): 'disable notes' is a record every app follows; 'enable notes' brings it back", async () => {
+    expect(tools.resolvePlugin(A.path, "notes")).toEqual({ id: "app/notes" });
+    expect(tools.resolvePlugin(A.path, "Notes")).toEqual({ id: "app/notes" });
+    expect(tools.resolvePlugin(A.path, "app/notes")).toEqual({ id: "app/notes" });
+    expect(tools.resolvePlugin(A.path, "notes.html")).toMatchObject({ error: expect.stringContaining("no page") });
+    const off = tools.pluginTool(A.path, { action: "disable", plugin: "notes" });
+    expect(off).toMatchObject({ ok: true });
+    expect(off.text).toContain("app/notes: off (by agent)");
+    expect(sup.pluginDesired(A.path, "app/notes")).toMatchObject({ state: "stopped", by: "agent" });
+    // The app reads it from the box like any plugin's word (src/pluginSupervisorApp.ts loadSupervisor).
+    const recs = JSON.parse((await get("/api/v2/supervisor")).text);
+    expect(recs.records.at(-1).signal).toMatchObject({ type: "plugin.desired", plugin: "app/notes", state: "stopped", by: "agent" });
+    // Only the Notes panel: a page is untouched by its word.
+    expect(desired().state).toBe("running");
+    expect(tools.pluginTool(A.path, { action: "status", plugin: "notes" }).text).toBe("app/notes: off (by agent)");
+    expect(tools.pluginTool(A.path, { action: "enable", plugin: "notes panel" }).text).toContain("app/notes: on");
+    expect(sup.pluginDesired(A.path, "app/notes").state).toBe("running");
+    // Carl's word from the app is the same record.
+    expect((await post("/api/v2/supervisor", { plugin: "app/notes", state: "stopped" })).status).toBe(200);
+    expect(sup.pluginDesired(A.path, "app/notes")).toMatchObject({ state: "stopped", by: "carl" });
+    expect((await post("/api/v2/supervisor", { plugin: "app/notes", state: "running" })).status).toBe(200);
+    // A vault page with the same name: the word is ambiguous, and says which is which.
+    writeFileSync(join(A.path, "pages", "notes.html"), "<p>my notes page</p>");
+    const both = tools.resolvePlugin(A.path, "notes");
+    expect(both).toMatchObject({ error: expect.stringContaining("app/notes") });
+    expect((both as { error: string }).error).toContain("pages/notes.html");
+    expect(tools.resolvePlugin(A.path, "notes.html")).toEqual({ id: "pages/notes.html" });
+    expect(tools.resolvePlugin(A.path, "app/notes")).toEqual({ id: "app/notes" });
+    rmSync(join(A.path, "pages", "notes.html"));
+  });
 });

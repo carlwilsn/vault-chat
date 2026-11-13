@@ -3,6 +3,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, RefreshCw, StickyNote, GitMerge, CloudOff, FileWarning, AlertTriangle, WifiOff } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
+import { NOTES_PLUGIN_ID } from "./appPlugins";
+import { usePluginDesired } from "./pluginSupervisorApp";
 import { runningTaskCount } from "./backgroundTasks";
 import { openChatPopout } from "./sync";
 import { VoiceCockpit, VoiceMicGroup } from "./VoiceCockpit";
@@ -40,6 +42,8 @@ export function Titlebar() {
     showNotesPanel,
     notes,
   } = useStore();
+  // The Notes panel is a plugin (src/plugins/notes): turned off, its button goes with it.
+  const notesOn = usePluginDesired(NOTES_PLUGIN_ID).state === "running";
   const [hiddenOpen, setHiddenOpen] = useState(false);
   const [hiddenLines, setHiddenLines] = useState<string[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -148,7 +152,7 @@ export function Titlebar() {
             >
               <Eye className="h-3.5 w-3.5" />
             </button>
-            <button
+            {notesOn && <button
               onClick={() => setShowNotesPanel(!showNotesPanel)}
               className={`h-7 w-7 flex items-center justify-center rounded relative ${
                 showNotesPanel
@@ -161,7 +165,7 @@ export function Titlebar() {
               {notes.filter((n) => n.status === "open").length > 0 && (
                 <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-primary" />
               )}
-            </button>
+            </button>}
             <VoiceMicGroup />
           </>
         )}

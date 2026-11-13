@@ -79,7 +79,8 @@ export function usePluginDesired(path: string | null | undefined): Desired {
     },
     [id],
   );
-  const snap = useSyncExternalStore(subscribe, () => (id ? key(rec.desired(id)) : "running\u0000\u0000"));
+  const get = () => (id ? key(rec.desired(id)) : "running\u0000\u0000");
+  const snap = useSyncExternalStore(subscribe, get, get);
   void snap;
   return id ? rec.desired(id) : { state: "running", by: null, reason: null, seq: 0, next: null };
 }

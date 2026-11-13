@@ -37,5 +37,7 @@ describe("the agent's Catalog tool", () => {
     expect(out.text).toMatch(/^- \.vault-chat\/visuals\/voice-chat\.html "Voice chat": iframe; needs ask, mic, voice-lab$/m);
     expect(out.text).toMatch(/^- clock\.html: in-process; needs nothing$/m);
     expect(out.text).not.toMatch(/plain\.html/);
+    // Stage 2: the app's own parts that are plugins, so "disable notes" has a name to find.
+    expect(out.text).toMatch(/^- app\/notes "Notes" \(panel\): The Notes panel/m);
   });
 });

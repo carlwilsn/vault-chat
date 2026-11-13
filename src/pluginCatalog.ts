@@ -6,6 +6,7 @@
 // Shared by the app and the box: no node imports.
 import { LIVE_SERVICES, serviceOfCap } from "./liveServices";
 import { parseLiveMount, parseLiveNeeds, type LiveMount } from "./liveBridge";
+import { APP_PLUGINS } from "./appPlugins";
 
 export type CatalogService = {
   name: string;
@@ -33,7 +34,15 @@ export type CatalogPlugin = {
   refused: string[];
 };
 
-export type Catalog = { services: CatalogService[]; plugins: CatalogPlugin[]; truncated?: boolean };
+/** A part of the app that is a plugin (src/appPlugins.ts): turned off and on like a page, by its id. */
+export type CatalogAppPlugin = { id: string; name: string; mount: string; description: string };
+
+export type Catalog = { services: CatalogService[]; plugins: CatalogPlugin[]; app?: CatalogAppPlugin[]; truncated?: boolean };
+
+/** The app's own plugins, in registry order. */
+export function catalogAppPlugins(): CatalogAppPlugin[] {
+  return APP_PLUGINS.map((p) => ({ id: p.id, name: p.name, mount: p.mount, description: p.description }));
+}
 
 export const CATALOG_LIMITS = {
   /** Directory entries the walk looks at, at most (a huge vault gives a partial list, marked truncated). */
@@ -114,6 +123,10 @@ export function catalogText(c: Catalog): string {
   if (!c.plugins.length) lines.push("- none");
   for (const p of c.plugins) {
     lines.push(`- ${p.id}${p.name !== p.id.split("/").pop() ? ` "${p.name}"` : ""}: ${p.mount}; needs ${p.needs.length ? p.needs.join(", ") : "nothing"}${p.refused.length ? `; unknown: ${p.refused.join(", ")}` : ""}`);
+  }
+  if (c.app?.length) {
+    lines.push("", `Parts of the app that are plugins (${c.app.length}; the Plugins tool turns them off and on by id or name):`);
+    for (const p of c.app) lines.push(`- ${p.id} "${p.name}" (${p.mount}): ${p.description}`);
   }
   return lines.join("\n");
 }
