@@ -39,10 +39,9 @@ test("open, working and unseen chats stay visible past the limit, in order", () 
   assert.equal(v.next, "more");
 });
 
-test("closing a place forgets its Show more, so it reopens at the short list", async () => {
+test("a place that is closed forgets its Show more, however it closed, and when the list goes away", async () => {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../../src/ChatsPanel.tsx", import.meta.url), "utf8");
-  const toggle = /data-el="place-toggle"[\s\S]*?onClick=\{\(\) => \{([\s\S]*?)\}\}/.exec(src)?.[1] ?? "";
-  assert.match(toggle, /if \(shown\) chatLevels\.delete\(entry\.id\)/);
-  assert.match(toggle, /setOpened\(!shown\)/);
+  // An effect on `shown`, not only the toggle click: going to another place closes this one too.
+  assert.match(src, /useEffect\(\(\) => \{\s*if \(!shown\) chatLevels\.delete\(entry\.id\);[\s\S]*?\}, \[shown, entry\.id\]\)/);
 });

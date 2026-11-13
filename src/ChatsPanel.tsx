@@ -276,6 +276,12 @@ export function ThreadRow({
   // closing the panel, the other list surface and a restart all keep it.
   const [opened, setOpened] = usePlaceOpen(entry.id);
   const shown = opened ?? active;
+  // A place that closes, by his click or because he went elsewhere, also closes its "Show more":
+  // it opens again at the short list (Carl, 2026-11-12).
+  useEffect(() => {
+    if (!shown) chatLevels.delete(entry.id);
+    return () => void chatLevels.delete(entry.id); // and when the list itself goes away (panel closed)
+  }, [shown, entry.id]);
   // A place's spinner (Main's too) shows only while it is collapsed: open, its own chats show theirs (Carl, 2026-11-10, 2026-11-12).
   const spinning = running && !shown;
   const [, bump] = useState(0);
@@ -352,11 +358,7 @@ export function ThreadRow({
       <button
         data-el="place-toggle"
         // Only shows or hides the chats: never opens the place or switches chat.
-        onClick={() => {
-          // Closing the place also closes its "Show more": opening it again starts at the short list.
-          if (shown) chatLevels.delete(entry.id);
-          setOpened(!shown);
-        }}
+        onClick={() => setOpened(!shown)}
         aria-label={shown ? `Hide ${name}'s chats` : `Show ${name}'s chats`}
         aria-expanded={shown}
         className={cn("flex-1 text-left px-4 flex items-center min-w-0", isMain ? "py-2 gap-2.5" : "py-1.5 gap-2")}
