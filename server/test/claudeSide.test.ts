@@ -111,14 +111,25 @@ describe("a side thread on Claude Code", () => {
 
   it("ProposeEdit writes nothing: the proposal rides on the run's state for the popover to accept or reject", async () => {
     toolCalls.length = 0;
-    const r = await side.start(base({ kind: "inline", text: 'CALL mcp__vault_chat__ProposeEdit {"newText":"# Short title","note":"shorter"}', hostTools: [...READ_ONLY, proposeEditSpec], you: { convId: "the-chat" } }));
+    const r = await side.start(base({ kind: "inline", text: 'CALL mcp__vault_chat__ProposeEdit {"action":"replace","newText":"# Short title","note":"shorter"}', hostTools: [...READ_ONLY, proposeEditSpec], you: { convId: "the-chat" } }));
     const done = await side.wait(r.id);
     expect(done.error).toBeNull();
-    expect(done.proposals).toEqual([{ newText: "# Short title", note: "shorter" }]);
+    expect(done.proposals).toEqual([{ newText: "# Short title", kind: "replace", note: "shorter" }]);
     expect(toolCalls).toEqual([]);
     // A refinement starts with none.
     const again = await side.start(base({ kind: "inline", side: r.id, text: "thanks", hostTools: [...READ_ONLY, proposeEditSpec] }));
     expect((await side.wait(again.id)).proposals).toBeUndefined();
+  }, 180_000);
+
+  it("ProposeEdit against the open file: a duplicating insert is answered with an error, a replace becomes a range", async () => {
+    const text = "a = 1\nb = 2\nc = 3\n";
+    const doc = { text, from: 0, to: 0 };
+    const dup = await side.start(base({ kind: "inline", text: 'CALL mcp__vault_chat__ProposeEdit {"action":"insert","afterLine":0,"newText":"# numbers\\na = 1\\nb = 2\\nc = 3"}', hostTools: [...READ_ONLY, proposeEditSpec], doc }));
+    const d1 = await side.wait(dup.id);
+    expect(d1.proposals).toBeUndefined();
+    const ok = await side.start(base({ kind: "inline", text: 'CALL mcp__vault_chat__ProposeEdit {"action":"replace","startLine":1,"endLine":3,"newText":"# numbers\\na = 1\\nb = 2\\nc = 3"}', hostTools: [...READ_ONLY, proposeEditSpec], doc }));
+    const d2 = await side.wait(ok.id);
+    expect(d2.proposals).toEqual([{ newText: "# numbers\na = 1\nb = 2\nc = 3\n", kind: "replace", from: 0, to: text.length, removed: text }]);
   }, 180_000);
 
   it("a one-shot has its own prompt, no tools and nothing kept", async () => {

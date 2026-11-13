@@ -10,6 +10,7 @@ import {
   InlineEditPrompt,
   type InlineEditRequest,
 } from "./InlineEditPrompt";
+import type { EditProposal } from "./complete";
 
 type MonacoInlineEdit = InlineEditRequest & {
   range: monaco.IRange;
@@ -137,6 +138,7 @@ export function MonacoEditor({
         before,
         after,
         language: ext,
+        doc: { text: full, from: startOffset, to: endOffset },
         anchor,
       });
     };
@@ -174,12 +176,32 @@ export function MonacoEditor({
     });
   };
 
-  const acceptInlineEdit = (result: string) => {
+  const acceptInlineEdit = (result: string, proposal?: EditProposal) => {
     const editor = editorRef.current;
-    if (!editor || !inlineEdit) return;
-    editor.executeEdits("inline-edit", [
-      { range: inlineEdit.range, text: result, forceMoveMarkers: true },
-    ]);
+    const model = editor?.getModel();
+    if (!editor || !model || !inlineEdit) return;
+    let range = inlineEdit.range;
+    if (proposal?.from !== undefined && proposal.to !== undefined) {
+      // The box resolved it to a range of the file as the popover opened it: that range, where the text still is.
+      const cur = model.getValue();
+      let from = proposal.from;
+      let to = proposal.to;
+      const removed = proposal.removed ?? "";
+      if (cur.slice(from, to) !== removed) {
+        const i = removed ? cur.indexOf(removed) : -1;
+        if (i < 0 || cur.indexOf(removed, i + 1) >= 0) {
+          setInlineEdit(null);
+          editor.focus();
+          return;
+        }
+        from = i;
+        to = i + removed.length;
+      }
+      const a = model.getPositionAt(from);
+      const b = model.getPositionAt(to);
+      range = { startLineNumber: a.lineNumber, startColumn: a.column, endLineNumber: b.lineNumber, endColumn: b.column };
+    }
+    editor.executeEdits("inline-edit", [{ range, text: result, forceMoveMarkers: true }]);
     setInlineEdit(null);
     editor.focus();
   };

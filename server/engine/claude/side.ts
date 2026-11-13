@@ -17,7 +17,7 @@ import { randomUUID } from "node:crypto";
 import { query, type Options, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ProcessServices } from "../../mcp/runtime";
 import type { McpRuntime } from "../../mcp/runtime";
-import { PROPOSE_EDIT } from "../proposeEdit";
+import { PROPOSE_EDIT, resolveProposal, type EditDoc } from "../proposeEdit";
 import type { EditProposal, Handlers, ToolAnswer, SideLog, SideRunner, SideStart, SideState, ToolSpec } from "../backend";
 import { TurnRecorder } from "../turnLog";
 import { CLAUDE_BUILTINS_OFF } from "./session";
@@ -38,6 +38,8 @@ type Run = {
   done: boolean;
   error: string | null;
   proposals: EditProposal[];
+  /** The open file as of this request, for ProposeEdit to resolve against. */
+  doc: EditDoc | null;
   busy: boolean;
   endedAt: number;
   waiters: Set<() => void>;
@@ -96,6 +98,7 @@ export class ClaudeSideRuns implements SideRunner {
         done: false,
         error: null,
         proposals: [],
+        doc: null,
         busy: false,
         endedAt: 0,
         waiters: new Set(),
@@ -116,6 +119,7 @@ export class ClaudeSideRuns implements SideRunner {
     }
     run.text = "";
     run.proposals = [];
+    run.doc = o.doc ?? null;
     run.error = null;
     run.done = false;
     run.busy = true;
@@ -274,9 +278,10 @@ export class ClaudeSideRuns implements SideRunner {
 
   /** The agent's ProposeEdit: kept on the run for the popover to show. */
   private async propose(run: Run, args: unknown): Promise<ToolAnswer> {
-    const a = (args ?? {}) as { newText?: unknown; note?: unknown };
-    if (typeof a.newText !== "string") return { ok: false, text: "ProposeEdit needs newText (a string)." };
-    run.proposals.push({ newText: a.newText, ...(typeof a.note === "string" && a.note.trim() ? { note: a.note.trim().slice(0, 300) } : {}) });
+    const r = resolveProposal(run.doc, args);
+    if (!r.ok) return { ok: false, text: `Not proposed: ${r.error}` };
+    // One proposal at a time: a later call replaces the earlier one.
+    run.proposals = [r.proposal];
     this.bump(run);
     return { ok: true, text: "Proposed. Carl sees it as an edit he can accept or reject; the file is unchanged until he accepts. Say briefly what you proposed." };
   }

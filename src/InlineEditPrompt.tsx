@@ -10,7 +10,6 @@ import { cn } from "./lib/utils";
 import type { NoteAnchor } from "./notes";
 import { runInline, stripCodeFence, type InlineTurn } from "./inlineEdit";
 import type { EditProposal } from "./complete";
-import { useChatModels } from "./chatModels";
 import { loadVaultNorthStar } from "./meta";
 import { contextImageFor, flushActivity, recordActivity } from "./activity";
 import { editSummary } from "./activityCore";
@@ -48,6 +47,8 @@ export type PdfContext = {
 export type InlineEditRequest = {
   anchor: InlineEditAnchor;
   selection: string;
+  /** The whole file and the selection's offsets in it (an editor only): what the agent's ProposeEdit resolves against. */
+  doc?: { text: string; from: number; to: number };
   before: string;
   after: string;
   language?: string;
@@ -62,10 +63,12 @@ export type InlineEditRequest = {
   pdfContext?: PdfContext;
 };
 
-const INLINE_MODEL_KEY = "vault-chat.inline-model";
 const POPOVER_WIDTH = 416;
 const MARGIN = 8;
 const MIN_VERTICAL_SPACE = 160;
+
+/** What the proposal puts in (a range of the file is already fixed when the box resolved it; code fences only wrap an unresolved one). */
+const proposalText = (p: EditProposal): string => (p.from === undefined ? stripCodeFence(p.newText) : p.newText);
 
 export function InlineEditPrompt({
   request,
@@ -76,7 +79,7 @@ export function InlineEditPrompt({
   request: InlineEditRequest;
   /** The open file takes an edit here (an editor): the agent may ProposeEdit, and Accept applies it. */
   editable?: boolean;
-  onAccept: (result: string) => void;
+  onAccept: (result: string, proposal?: EditProposal) => void;
   onCancel: () => void;
 }) {
   // The popover belongs to the file and conversation that opened it, not a
@@ -96,16 +99,6 @@ export function InlineEditPrompt({
   const openNoteComposer = useStore((s) => s.openNoteComposer);
   // The edit the agent proposed (ProposeEdit), waiting for Carl to accept or reject it.
   const [proposal, setProposal] = useState<EditProposal | null>(null);
-  // The model for this input: Haiku unless Carl picks another (kept across popovers).
-  const models = useChatModels();
-  const [pickedModel, setPickedModel] = useState(() => {
-    try {
-      return localStorage.getItem(INLINE_MODEL_KEY) ?? "";
-    } catch {
-      return "";
-    }
-  });
-  const modelValue = pickedModel || models.models.find((m) => /haiku/i.test(m.id))?.id || "";
   const northStarRef = useRef<string>("");
   useEffect(() => {
     let cancelled = false;
@@ -386,7 +379,7 @@ export function InlineEditPrompt({
           extraImages: turnImages,
           northStar: northStarRef.current,
           editable,
-          model: pickedModel || undefined,
+          doc: request.doc,
         },
         { onText, signal: ac.signal, vaultPath },
       );
@@ -400,7 +393,7 @@ export function InlineEditPrompt({
           kind: "ask",
           modality: "ctrl-l",
           text: `asked "${currentPrompt}"${request.selection ? ` about "${request.selection.slice(0, 120)}"` : ""}`,
-          detail: `answer: ${out.text}${prop ? `\nproposed edit: ${editSummary(request.selection, prop.newText)}` : ""}`,
+          detail: `answer: ${out.text}${prop ? `\nproposed edit: ${editSummary(prop.removed ?? request.selection, prop.newText)}` : ""}`,
           ...activityWhere(),
         });
       }
@@ -431,7 +424,7 @@ export function InlineEditPrompt({
       kind: "edit",
       modality: "ctrl-k",
       text: `"${lastPrompt ?? ""}"`,
-      detail: editSummary(request.selection, text),
+      detail: editSummary(proposal?.removed ?? request.selection, text),
       outcome,
       ...activityWhere(),
     });
@@ -439,9 +432,9 @@ export function InlineEditPrompt({
 
   const accept = () => {
     if (!proposal || streaming) return;
-    const out = stripCodeFence(proposal.newText);
+    const out = proposalText(proposal);
     recordEdit("accepted", out);
-    onAccept(out);
+    onAccept(out, proposal);
   };
 
   const sendToChat = async () => {
@@ -532,7 +525,7 @@ export function InlineEditPrompt({
 
   const cancel = () => {
     abortRef.current?.abort();
-    if (proposal && !streaming) recordEdit("rejected", stripCodeFence(proposal.newText));
+    if (proposal && !streaming) recordEdit("rejected", proposalText(proposal));
     onCancel();
   };
 
@@ -932,12 +925,14 @@ export function InlineEditPrompt({
               {proposal && (
                 <div className="mt-2 rounded border border-border/60" data-testid="proposed-edit">
                   <div className="border-b border-border/60 px-2 py-0.5 text-[10.5px] text-muted-foreground">
-                    Proposed edit{proposal.note ? ` · ${proposal.note}` : ""} · Enter accepts, Esc rejects
+                    {proposal.kind === "insert" ? "Proposed insert" : proposal.kind === "delete" ? "Proposed delete" : "Proposed edit"}{proposal.note ? ` · ${proposal.note}` : ""} · Enter accepts, Esc rejects
                   </div>
-                  {request.selection && (
-                    <pre className="m-0 max-h-[160px] overflow-auto whitespace-pre-wrap bg-destructive/10 px-2 py-1 text-[12px] text-foreground/70 line-through">{request.selection}</pre>
+                  {(proposal.removed ?? (proposal.from === undefined ? request.selection : "")) && (
+                    <pre data-testid="proposed-removed" className="m-0 max-h-[160px] overflow-auto whitespace-pre-wrap bg-destructive/10 px-2 py-1 text-[12px] text-foreground/70 line-through">{proposal.removed ?? request.selection}</pre>
                   )}
-                  <pre className="m-0 max-h-[240px] overflow-auto whitespace-pre-wrap bg-primary/10 px-2 py-1 text-[12px] text-foreground">{stripCodeFence(proposal.newText)}</pre>
+                  {proposal.newText !== "" && (
+                    <pre data-testid="proposed-added" className="m-0 max-h-[240px] overflow-auto whitespace-pre-wrap bg-primary/10 px-2 py-1 text-[12px] text-foreground">{proposalText(proposal)}</pre>
+                  )}
                 </div>
               )}
             </>
@@ -946,28 +941,7 @@ export function InlineEditPrompt({
       )}
       <div className="flex items-center justify-between border-t border-border/60 px-3 py-1 text-[10.5px] text-muted-foreground shrink-0">
         <div className="flex items-center gap-1">
-          <select
-            value={modelValue}
-            onChange={(e) => {
-              setPickedModel(e.target.value);
-              try {
-                localStorage.setItem(INLINE_MODEL_KEY, e.target.value);
-              } catch {
-                /* the pick stays for this popover */
-              }
-            }}
-            disabled={streaming || models.models.length === 0}
-            title="The model for Ctrl+K / Ctrl+L (Haiku unless you pick another)"
-            className="max-w-[110px] truncate rounded bg-transparent px-1 py-0.5 text-foreground outline-none hover:bg-accent/60 disabled:opacity-60"
-          >
-            {models.models.length === 0 && <option value="">Haiku</option>}
-            {models.models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-              </option>
-            ))}
-          </select>
-          <span className="ml-2 opacity-50">
+          <span className="opacity-50">
             {request.selection
               ? `${request.selection.length} char selection`
               : editable

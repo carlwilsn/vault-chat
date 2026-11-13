@@ -1456,8 +1456,12 @@ export class Engine {
     // "edit" / "ask" are what older clients send, and still work as before.
     const kind = b.kind === "once" ? "once" : b.kind === "inline" ? "inline" : b.kind === "edit" ? "edit" : "ask";
     const editable = b.editable === true;
+    const d = b.doc as { text?: unknown; from?: unknown; to?: unknown } | undefined;
+    const doc = kind === "inline" && editable && d && typeof d.text === "string" && d.text.length <= 2_000_000 && Number.isInteger(d.from) && Number.isInteger(d.to)
+      ? { text: d.text, from: Math.max(0, Math.min(d.from as number, d.text.length)), to: Math.max(0, Math.min(d.to as number, d.text.length)) }
+      : undefined;
     const images: string[] = (Array.isArray(b.images) ? b.images : []).filter((u: unknown) => typeof u === "string" && u.startsWith("data:image/"));
-    let model = kind === "once" && onceModel ? onceModel : kind === "once" && b.fast ? ctxConfig().recapModel : kind === "inline" ? (typeof b.model === "string" && b.model.trim() ? b.model.trim() : INLINE_DEFAULT_MODEL) : this.d.model();
+    let model = kind === "once" && onceModel ? onceModel : kind === "once" && b.fast ? ctxConfig().recapModel : kind === "inline" ? INLINE_DEFAULT_MODEL : this.d.model();
     if (images.length && !capabilitiesOf(model).images) model = this.d.visionModel ?? model;
     const dir = (parent: string) => join(this.d.backend.paths.sessionsDir, "side", parent);
     const side = this.d.backend.side;
@@ -1468,7 +1472,7 @@ export class Engine {
         s = await side.start({ kind, system: String(b.system ?? ""), cwd: this.d.vault, model, tools: [], ephemeral: true, thinking: "off", sessionDir: dir("once"), text, images, log: this.sideLog(null, "once", []) });
       } else if (typeof b.side === "string" && b.side) {
         const inlineTools = kind === "inline" ? await this.inlineHostTools(editable) : null;
-        s = await side.start({ kind, side: b.side, cwd: this.d.vault, model, tools: READ_ONLY_TOOLS, hostLoadout: kind === "inline" ? "voiceAct" : "readOnly", hostTools: inlineTools ?? sideToolSpecs(), sessionDir: "", text, images });
+        s = await side.start({ kind, side: b.side, cwd: this.d.vault, model, tools: READ_ONLY_TOOLS, hostLoadout: kind === "inline" ? "voiceAct" : "readOnly", hostTools: inlineTools ?? sideToolSpecs(), sessionDir: "", text, images, ...(doc ? { doc } : {}) });
       } else {
         conv = typeof b.convId === "string" && b.convId ? await readConv(this.d.vault, b.convId) : null;
         const src = conv?.threadId ? this.d.backend.threadSource(conv.threadId) : null;
@@ -1491,7 +1495,7 @@ export class Engine {
         const context = viewerRoot !== this.d.vault
           ? `<file-context conversation=${JSON.stringify(conv?.id ?? null)}>Viewer/file-context vault root: ${viewerRoot}/. Conversation owner: ${this.d.vault}/. Resolve viewer-relative file references under that viewer root; relative tools still use the thread/project cwd. This is the captured side-request file context, not later viewer state.</file-context>`
           : undefined;
-        s = await side.start({ kind, context, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools, hostTools, hostLoadout, sessionDir: dir(conv?.id ?? "none"), text, images, you: { convId: conv?.id ?? null }, log: this.sideLog(conv?.id ?? null, page ? `page:${page}` : String(b.kind ?? kind).slice(0, 40), tools) });
+        s = await side.start({ kind, context, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools, hostTools, hostLoadout, sessionDir: dir(conv?.id ?? "none"), text, images, ...(doc ? { doc } : {}), you: { convId: conv?.id ?? null }, log: this.sideLog(conv?.id ?? null, page ? `page:${page}` : String(b.kind ?? kind).slice(0, 40), tools) });
       }
       this.log(`side ${kind} ${s.id}${conv ? ` (forked from ${conv.id})` : ""} on ${model}${s.file ? `: ${s.file}` : ""}`);
       if (page) this.recordPageAsk(side, s.id, page, pagePrompt);

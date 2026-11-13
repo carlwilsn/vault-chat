@@ -145,6 +145,8 @@ export type SideStart = {
   /** Host-captured viewer binding, recorded once in the side session. */
   context?: string;
   text: string;
+  /** Ctrl+K / Ctrl+L: the open file and Carl's selection in it (offsets), for ProposeEdit to resolve against. */
+  doc?: { text: string; from: number; to: number };
   /** data: URLs. */
   images?: string[];
   /** The box's turn log (turnLog.ts): one line per request of this side thread, mode "side". Kept for its next requests. */
@@ -155,7 +157,16 @@ export type SideStart = {
 export type SideLog = { vault: string; conv: string | null; via: string; version: string; act?: boolean; allowed?: string[]; write: (line: TurnLine) => void };
 
 /** An edit the agent proposed with ProposeEdit (Ctrl+K / Ctrl+L): the open file's selection (or the cursor) becomes `newText` when Carl accepts. */
-export type EditProposal = { newText: string; note?: string };
+export type EditProposal = {
+  newText: string;
+  note?: string;
+  kind?: "replace" | "insert" | "delete";
+  /** The range of the open file it replaces (offsets in the file as the popover opened it); from === to: an insertion. */
+  from?: number;
+  to?: number;
+  /** The text now in that range (shown struck). */
+  removed?: string;
+};
 
 export type SideState = { id: string; text: string; v: number; done: boolean; error: string | null; file: string | null; proposals?: EditProposal[] };
 

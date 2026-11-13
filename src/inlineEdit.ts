@@ -36,8 +36,8 @@ export type InlineEditParams = {
   northStar?: string;
   /** Whether the open file can take an edit (false for a PDF, image, rendered page): no ProposeEdit then. Default true. */
   editable?: boolean;
-  /** The model Carl picked for this input; unset, the box's default for it (Haiku 5.5). */
-  model?: string;
+  /** The whole open file and the selection in it (offsets), when the editor can take an edit: ProposeEdit lines refer to it. */
+  doc?: { text: string; from: number; to: number };
 };
 
 export type CapturedExtra = {
@@ -73,6 +73,17 @@ function attachedBlock(attached?: Attached): string {
   return `ATTACHED FILES (the user referenced these with @mention; paths are authoritative, do not search for them):\n${blocks.join("\n\n")}`;
 }
 
+const MAX_NUMBERED = 16000;
+
+/** Where the selection (or cursor) is, in lines. */
+function caretWhere(d: { text: string; from: number; to: number }): string {
+  const line = (off: number) => d.text.slice(0, off).split("\n").length;
+  const a = line(d.from);
+  if (d.from === d.to) return `cursor at line ${a}`;
+  const b = line(d.to - (d.text[d.to - 1] === "\n" ? 1 : 0));
+  return b === a ? `selection on line ${a}` : `selection on lines ${a}-${b}`;
+}
+
 function buildContextBody(p: InlineEditParams, instruction: string, attached?: Attached): string {
   const MAX_CTX = 4000;
   const before =
@@ -88,8 +99,19 @@ function buildContextBody(p: InlineEditParams, instruction: string, attached?: A
   } else {
     parts.push("SELECTION: (empty — insert at the cursor)");
   }
-  parts.push(`BEFORE (file content before selection/cursor):\n${before}`);
-  parts.push(`AFTER (file content after selection/cursor):\n${after}`);
+  const doc = p.editable !== false ? p.doc : undefined;
+  if (doc && doc.text.length <= MAX_NUMBERED) {
+    // The whole file with line numbers, so ProposeEdit can say which lines (the numbers are not part of the file).
+    const lines = doc.text.split("\n");
+    if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+    const w = String(lines.length).length;
+    parts.push(`FILE (${lines.length} lines; the "N| " prefixes are line numbers added for you, not part of the file):\n${lines.map((l, i) => `${String(i + 1).padStart(w)}| ${l}`).join("\n")}`);
+    parts.push(`CARET: ${caretWhere(doc)}`);
+  } else {
+    parts.push(`BEFORE (file content before selection/cursor):\n${before}`);
+    parts.push(`AFTER (file content after selection/cursor):\n${after}`);
+    if (doc) parts.push(`CARET: ${caretWhere(doc)} (the file is too long to number: address an edit with oldText, or the selection)`);
+  }
   const files = attachedBlock(attached);
   if (files) parts.push(files);
   return parts.join("\n\n");
@@ -99,10 +121,10 @@ const INLINE_HEADER = `# Ctrl+K / Ctrl+L: Carl is talking to you from the file h
 This is one input: Carl's message, with his selection, the open file and his cursor as context. It is a side request beside his conversation; your reply shows in a small popover over the file and is not added to the chat.
 Decide from what he says:
 - A question: answer in markdown, concisely. Use fenced code blocks for code and $$...$$ for display math (inline $...$ does not render here). Start from the context you are given (the file excerpt, the page text, attached files and images); when it is not enough, look it up with your tools (files in the vault, PDFs with PdfRead, images, the web). Never ask Carl for a screenshot or a copy of anything in his vault: read it yourself.
-- A change to the file: call ProposeEdit(newText). It replaces his SELECTION (or is inserted at his CURSOR when the selection is empty). newText is only the replacement, in the surrounding style, without code fences unless fences belong in the file. Nothing is written until he accepts. Then say in one line what you proposed.
+- A change to the file: call ProposeEdit with the action that fits. replace: existing lines become newText (adding comments, rewording, fixing: give the new version of just those lines, by startLine/endLine or oldText); insert: only NEW lines that are not in the file yet, before/after a line (afterLine/beforeLine) or at the cursor; delete: remove lines. An insert never repeats lines already in the file (the tool refuses it): to add comments to existing code, replace those lines with the commented version, or insert only the comment lines at the right spots. Without a line range or oldText, replace and delete act on his SELECTION and insert goes at his CURSOR. newText is in the surrounding style, without code fences unless fences belong in the file. Nothing is written until he accepts. If the tool answers with an error, fix the call and call it again. Then say in one line what you proposed.
 - Something bigger ("clean this up and move it into a note"): do it with the tools you have (ProposeEdit, CreateNote, and so on), then say what you did in a line.
 When he has captured a region from a PDF (a LOCATION line is present and an image is attached), the image is the primary subject: describe what is visible first, then bring in page text as support. The LOCATION line tells you exactly which page he is on; trust it, and prefer the CURRENT PAGE text over PREV/NEXT. Do not invent theorem numbers or labels that are not visible.
-If he refines in a later message, it refines the same work; propose the whole new replacement again.`;
+If he refines in a later message, it refines the same work; propose the whole new edit again.`;
 
 const READ_ONLY_FILE = "\nThis file cannot be edited from here: ProposeEdit is not available. Answer in words, or use your other tools.";
 
@@ -156,7 +178,7 @@ export function buildInlineRequest(p: InlineParams): SideRequest {
   }
   // The marquee's region first (with the first request), then images captured in the popover.
   const images: CapturedExtra[] = [...(p.imageDataUrl && !p.side ? [{ imageDataUrl: p.imageDataUrl }] : []), ...(p.extraImages ?? [])];
-  return { kind: "inline", editable: p.editable !== false, ...(p.model ? { model: p.model } : {}), ...target(p), ...oneMessage(text, images) };
+  return { kind: "inline", editable: p.editable !== false, ...(p.editable !== false && p.doc ? { doc: p.doc } : {}), ...target(p), ...oneMessage(text, images) };
 }
 
 // Build the first request's content for a PDF marquee ask. Layout:

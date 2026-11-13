@@ -133,7 +133,7 @@ test("Ctrl+K / Ctrl+L: one input, a side thread of the open conversation on the 
   assert.equal(req.body.model, undefined, "no pick: the box's default (Haiku 5.5)");
   assert.equal(req.body.convId, "conv-7");
   assert.ok(req.body.text.startsWith("# Ctrl+K / Ctrl+L: Carl is talking to you"), "one input, no edit/ask toggle");
-  assert.ok(req.body.text.includes("call ProposeEdit(newText)"));
+  assert.ok(req.body.text.includes("call ProposeEdit with the action that fits"));
   assert.ok(req.body.text.includes("INSTRUCTION:\nundo the edit I just made"));
   // The context (the conversation, the activity stream) is the box's: none of it is sent from here.
   assert.ok(!req.body.text.includes("Context from Carl's other surfaces"));
@@ -143,16 +143,18 @@ test("Ctrl+K / Ctrl+L: one input, a side thread of the open conversation on the 
   assert.ok(polls.every((r) => new URL(r.url, "http://test").searchParams.get("convId") === "conv-7"));
 });
 
-test("Ctrl+K / Ctrl+L: an edit the agent proposed (ProposeEdit) comes back with the reply, and a pick of model is sent", async () => {
+test("Ctrl+K / Ctrl+L: an edit the agent proposed (ProposeEdit) comes back with the reply, and no model is sent", async () => {
   boxReqs.length = 0;
   stream = ["Shortened it."];
-  proposals = [{ newText: "# Short title" }];
+  proposals = [{ newText: "# Short title", kind: "replace", from: 0, to: 19, removed: "# A very long title" }];
   try {
-    const out = await runInline({ prompt: "shorten", selection: "# A very long title", before: "", after: "", convId: "conv-7", model: "opus" });
+    const out = await runInline({ prompt: "shorten", selection: "# A very long title", before: "", after: "", convId: "conv-7", doc: { text: "# A very long title\nbody\n", from: 0, to: 19 } });
     assert.equal(out.text, "Shortened it.");
-    assert.deepEqual(out.proposals, [{ newText: "# Short title" }]);
+    assert.deepEqual(out.proposals, [{ newText: "# Short title", kind: "replace", from: 0, to: 19, removed: "# A very long title" }]);
     const req = boxReqs.find((r) => r.method === "POST" && r.url.startsWith("/api/v1/side"))!;
-    assert.equal(req.body.model, "opus");
+    assert.equal(req.body.model, undefined);
+    assert.deepEqual(req.body.doc, { text: "# A very long title\nbody\n", from: 0, to: 19 });
+    assert.ok(req.body.text.includes("FILE (2 lines;") && req.body.text.includes("1| # A very long title") && req.body.text.includes("CARET: selection on line 1"));
     assert.equal(buildInlineRequest({ prompt: "x", selection: "", before: "", after: "", editable: false }).editable, false);
   } finally {
     proposals = undefined;
