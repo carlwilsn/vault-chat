@@ -38,6 +38,7 @@ import { authRefused, SIGN_IN_AGAIN } from "./auth";
 /** Read once: this is checked for every message of every stream. */
 const TRACE = process.env.VC_CLAUDE_TRACE === "1";
 import type { ThreadTokenUsage } from "../context";
+import type { TaskView } from "./workers";
 
 /** A session entry as piSession.appendEntries takes it (it assigns id, parentId and timestamp). */
 export type NewEntry = Omit<PiEntry, "id" | "parentId" | "timestamp">;
@@ -50,7 +51,7 @@ export type Emit =
    * A background worker (SDK task) reported — a quiet line for the chat, written before the reply
    * that follows it. `text` is the line without its clock ("Worker finished: ...").
    */
-  | { kind: "workerNotice"; taskId: string; text: string }
+  | { kind: "workerNotice"; taskId: string; text: string; noticeKind: WorkerNoticeKind }
   /** One pi-format entry for the thread's session file, appended before any later live event. */
   | { kind: "entry"; entry: NewEntry }
   /** The context size of the last model call, and the model's window. */
@@ -124,6 +125,17 @@ const textOf = (content: unknown): string => {
   return content.map((b: any) => (typeof b?.text === "string" ? b.text : "")).join("");
 };
 
+/** What a worker line says, so an interim notice never reads as completion. (A progress line is on demand: JobStatus.) */
+export type WorkerNoticeKind = "interim" | "finished" | "failed" | "interrupted" | "stopped";
+
+/** The kind of a notification: interim (the worker waits on its own background work), or how it ended. */
+export function noticeKind(status: string, summary: string, reason?: unknown): WorkerNoticeKind | null {
+  if (status === "completed") return interimNotice(status, summary) ? "interim" : "finished";
+  if (status === "failed") return "failed";
+  if (status === "stopped") return reason === "worker_restart" ? "interrupted" : "stopped";
+  return null;
+}
+
 /**
  * The quiet line for a background worker's notification, or "" for one that says nothing.
  * `completed` with a summary saying the worker has not delivered yet ("waiting on its own background work")
@@ -134,11 +146,11 @@ export function workerNoticeText(description: string, status: string, summary: s
   const what = first(description) || first(summary);
   const tail = what ? `: ${what}` : "";
   if (status === "completed") {
-    if (interimNotice(status, summary)) return `Worker still working (interim notice)${tail}`;
+    if (interimNotice(status, summary)) return `Worker NOT finished, waiting on its own background work (interim notice)${tail}`;
     return `Worker finished${tail}`;
   }
   if (status === "failed") return `Worker failed${tail}`;
-  if (status === "stopped") return `Worker stopped${reason === "worker_restart" ? " by a restart" : ""}${tail}`;
+  if (status === "stopped") return reason === "worker_restart" ? `Worker interrupted by a restart (check JobList: it may have finished, or resume it)${tail}` : `Worker stopped${tail}`;
   return "";
 }
 
@@ -190,6 +202,8 @@ export class ClaudeTranslator {
    * these (health busy.workers): a restart would kill them mid-work.
    */
   private running = new Set<string>();
+  /** What this process saw of each background task: its latest notice (the evidence workers.ts weighs against the transcript). */
+  private views = new Map<string, NonNullable<TaskView>>();
   /** The host asked for this turn to end (see expectInterrupt). */
   private stopping = false;
   /**
@@ -490,6 +504,16 @@ export class ClaudeTranslator {
     return this.running.size;
   }
 
+  /** What this process saw of a task (null: it never saw it start, so it belongs to an earlier process). */
+  taskView(id: string): TaskView {
+    return this.views.get(id) ?? null;
+  }
+
+  /** Ids of workers (not shell commands) still running or waiting, with what each was asked to do. */
+  openWorkers(): { id: string; title: string }[] {
+    return [...this.running].filter((id) => !this.silent.has(id)).map((id) => ({ id, title: this.tasks.get(id) ?? id }));
+  }
+
   private workerNotice(m: any): Emit[] {
     const taskId = String(m.task_id ?? "");
     const status = String(m.status ?? "");
@@ -497,12 +521,14 @@ export class ClaudeTranslator {
     // Its final report ends it; an interim "not reported yet" keeps it live. Before the
     // ambient check: a task that ended is over whatever its notice is flagged as.
     if (finalNotice(status, summary)) this.running.delete(taskId);
+    const kind = noticeKind(status, summary, m.reason);
+    if (taskId && kind) this.views.set(taskId, { status: kind === "interim" ? "interim" : kind === "finished" ? "completed" : kind === "failed" ? "failed" : "stopped", at: Date.now(), ...(m.reason ? { reason: String(m.reason) } : {}) });
     if (m.ambient || m.skip_transcript || this.silent.has(taskId)) return [];
     const text = workerNoticeText(this.tasks.get(taskId) ?? "", status, summary, m.reason);
     const key = `${taskId}\n${text}`;
     if (!text || this.noticed.has(key)) return [];
     this.noticed.add(key);
-    return [{ kind: "workerNotice", taskId, text }];
+    return [{ kind: "workerNotice", taskId, text, noticeKind: kind ?? "finished" }];
   }
 
   private system(m: any): Emit[] {
@@ -511,6 +537,7 @@ export class ClaudeTranslator {
       if (m.task_id && !m.ambient && !m.skip_transcript) {
         this.tasks.set(String(m.task_id), String(m.description ?? "").trim());
         this.running.add(String(m.task_id));
+        this.views.set(String(m.task_id), { status: "running", at: Date.now() });
         // A shell command or monitor running in the background is not a worker: its end is no news in the chat.
         if (/^(local_bash|monitor|monitor_mcp)/.test(String(m.task_type ?? ""))) this.silent.add(String(m.task_id));
       }

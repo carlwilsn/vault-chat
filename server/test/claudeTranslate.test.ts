@@ -270,7 +270,7 @@ describe("a background worker's notification", () => {
     const notices = emits.filter((e) => e.kind === "workerNotice").map((e: any) => e.text);
     expect(notices).toEqual([
       "Worker finished: Check the rainfall data", // the repeat of the same notice is dropped
-      "Worker still working (interim notice): Build the thing",
+      "Worker NOT finished, waiting on its own background work (interim notice): Build the thing",
       "Worker failed: Build the thing",
       "Worker stopped: Agent \"Old job\" was stopped", // never started here: the summary names it
       "Worker finished: Agent \"Replayed one\" completed", // the replayed <task-notification> user message

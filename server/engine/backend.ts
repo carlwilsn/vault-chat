@@ -282,6 +282,8 @@ export type EngineBackend = {
   /** A parent's running children, as its own JobList reads them. */
   liveChildren(parentThreadId: string): LiveChild[];
   endedChild?(childId: string): { state: string; endedAt: number } | null;
+  /** The conversation's Agent-tool workers as their transcripts and notices say (running / waiting / idle / finished / interrupted ...). */
+  workerReport?(parentThreadId: string, o?: { all?: boolean; now?: number }): import("./claude/workers").WorkerRow[];
 
   /**
    * The engine is out of headroom on Carl's subscription until this moment, so

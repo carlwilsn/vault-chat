@@ -28,6 +28,7 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { readWorkers, recentRows, type WorkerRow } from "./workers";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   ThreadUnknownError,
@@ -434,6 +435,9 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     for (const w of this.workers.values()) if (!w.endedAt) n += 1;
     return n;
   }
+
+  /** Idle flags already given, so each stall is said once. */
+  private flagged = new Set<string>();
 
   /** The last rate limit Claude Code reported, for the host's back-off. */
   rateLimit(): { status: string; resetsAt: number | null; kindOfLimit: string | null } | null {
@@ -1168,9 +1172,41 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     }
   }
 
+  /** Agent-tool workers of a conversation's session, as evidence says they are (workers.ts): live task notices weighed against the transcripts. */
+  workerReport(parentThreadId: string, o: { all?: boolean; now?: number } = {}): WorkerRow[] {
+    const sessionId = this.threads[parentThreadId]?.sessionId;
+    if (!sessionId) return [];
+    const translator = this.live.get(parentThreadId)?.translator;
+    const now = o.now ?? Date.now();
+    return recentRows(readWorkers(this.o.paths.configDir, sessionId, (id) => translator?.taskView(id) ?? null, now), now, o.all);
+  }
+
+  /** A worker quiet for 10 min is said once in its chat (a quiet line; the agent decides: JobStatus, resume, stop). */
+  private flagIdleWorkers(): void {
+    const now = Date.now();
+    for (const [threadId, live] of this.live) {
+      const t = this.threads[threadId];
+      if (!t?.sessionId) continue;
+      const open = live.translator.openWorkers();
+      if (!open.length) continue;
+      const mine = new Set(open.map((w) => w.id));
+      for (const r of readWorkers(this.o.paths.configDir, t.sessionId, (id) => live.translator.taskView(id), now)) {
+        const key = `${t.sessionId}:${r.id}:${r.facts.lastAt}`;
+        if (r.state !== "idle" || !mine.has(r.id) || this.flagged.has(key)) continue;
+        this.flagged.add(key);
+        this.writeUserEntry(t, `Worker idle for ${Math.round((now - r.facts.lastAt) / 60_000)} min, not finished (check JobStatus {id: "${r.id}"}): ${r.title}`.slice(0, 300), { v: 1, clientId: `worker-${randomUUID()}`, via: "wake" }, []);
+      }
+    }
+  }
+
   private reapIdle(): void {
     const idle = this.o.idleMs ?? 10 * 60_000;
     const now = Date.now();
+    try {
+      this.flagIdleWorkers();
+    } catch (e) {
+      this.log(`idle worker check: ${(e as Error).message}`);
+    }
     for (const live of [...this.live.values()]) if (!live.turnId && now - live.lastUsed > idle) this.closeLive(live.id);
   }
 

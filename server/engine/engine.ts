@@ -50,6 +50,7 @@ import { layoutTool, LAYOUT_DESCRIPTION, LAYOUT_SCHEMA } from "../layoutTool";
 import { boardGuard } from "../boardGuard";
 import { openProject, OPEN_PROJECT_DESCRIPTION, OPEN_PROJECT_SCHEMA } from "../projectRoutes";
 import { startJobWith, jobStatus, jobList, jobStop, reapJobs, readJobs, type JobEnv } from "./jobs";
+import { formatWorker, formatWorkers } from "./claude/workers";
 import { devProxies, exposedNote, jobPorts } from "../devProxy";
 import { recordUITool, RECORD_DESCRIPTION, RECORD_SCHEMA } from "../recordUI";
 import { externalRecordUI } from "../mcp/recordUI";
@@ -315,7 +316,7 @@ export const ENGINE_TOOL_SPECS = [
     type: "function",
     name: "JobList",
     readOnly: true,
-    description: "This conversation's background work: its running background workers (id, title, what each is doing now) and its StartJob jobs (all: true for every job in the vault): id, state, age, command.",
+    description: "This conversation's background work: its Agent-tool workers (id, task, state read from their transcripts: running / waiting on tool X / waiting on its own background work / IDLE / finished / interrupted by a restart, last tool, tool-call count, age; an interrupted or idle one shows its one-call SendMessage resume) and its StartJob jobs (all: true for every job in the vault, and finished workers from the last days): id, state, age, command.",
     inputSchema: { type: "object", properties: { all: { type: "boolean" } }, additionalProperties: false },
   },
   {
@@ -328,7 +329,7 @@ export const ENGINE_TOOL_SPECS = [
     type: "function",
     name: "JobStatus",
     readOnly: true,
-    description: "What a background worker is doing now (its latest step, steps done, time), or a StartJob job's state and last output lines.",
+    description: "A progress line for one background worker now, without waiting for it to finish (an Agent worker's id or its first 6+ characters: state, last tool and when, tool calls, files written, its latest words), or a StartJob job's state and last output lines.",
     inputSchema: { type: "object", properties: { id: { type: "string" }, tail: { type: "number" } }, required: ["id"], additionalProperties: false },
   },
   {
@@ -2651,6 +2652,21 @@ export class Engine {
     return `Worker ${id} ("${rec.title ?? rec.task ?? ""}"): ${state === "running" ? "no longer running (its report is on its way)" : state}${rec.endedAt ? `, after ${dur(Number(rec.endedAt) - since)}` : ""}.${rec.summary ? `\nIts report began: ${String(rec.summary).slice(0, 400)}` : ""}`;
   }
 
+  /** The conversation's Agent-tool workers, one line each (JobList): state from their transcripts, not from a notice alone. */
+  private agentWorkers(threadId: string | undefined, all: boolean): string {
+    if (!threadId) return "";
+    const rows = this.d.backend.workerReport?.(threadId, { all }) ?? [];
+    return rows.length ? formatWorkers(rows, Date.now()) : "";
+  }
+
+  /** One Agent-tool worker for JobStatus (its id, or a prefix of it), or null when it is not one. */
+  private agentWorker(threadId: string | undefined, id: string): string | null {
+    const want = id.replace(/^agent-/, "");
+    if (!threadId || want.length < 6) return null;
+    const hit = (this.d.backend.workerReport?.(threadId, { all: true }) ?? []).filter((r) => r.id.startsWith(want));
+    return hit.length === 1 ? formatWorker(hit[0]!, Date.now()) : null;
+  }
+
   /** This conversation's running workers, one line each (JobList), or "" when none. */
   private workerList(convId: string): string {
     const subs = (this.picture(convId)?.meta.subagents ?? []) as Record<string, any>[];
@@ -2999,12 +3015,16 @@ export class Engine {
         }
         case "RecentActivity":
           return text(searchActivity(vault, { query: typeof a.query === "string" ? a.query : "", hours: Number(a.hours) || undefined, limit: Number(a.limit) || undefined }));
-        case "JobStatus":
+        case "JobStatus": {
+          const agent = this.agentWorker(conv.threadId, String(a.id ?? "").trim());
+          if (agent) return text(agent);
           return text(this.workerStatus(convId, String(a.id ?? "").trim()) ?? this.withExposed(String(a.id ?? "").trim(), jobStatus(this.d.jobEnv, a)));
+        }
         case "JobList": {
           const workers = this.workerList(convId);
+          const agents = this.agentWorkers(conv.threadId, a.all === true);
           const jobs = jobList(this.d.jobEnv, convId, a.all === true);
-          return text(workers ? `Background workers:\n${workers}\n\nShell jobs (StartJob):\n${jobs}` : jobs);
+          return text([workers ? `Background workers:\n${workers}` : "", agents ? `Agent workers (Agent tool):\n${agents}` : "", workers || agents ? `Shell jobs (StartJob):\n${jobs}` : jobs].filter(Boolean).join("\n\n"));
         }
         case "JobStop": {
           const id = String(a.id ?? "").trim();
