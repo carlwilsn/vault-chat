@@ -5,7 +5,7 @@
 // conversation: the box's file route; local: the vault on disk).
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { PanelRight } from "lucide-react";
+import { Maximize2, Minimize2, PanelRight } from "lucide-react";
 import { useStore } from "./store";
 import { readChatImage } from "./chatImage";
 import { localPathFromUrl } from "./mdPipeline";
@@ -17,7 +17,7 @@ import { usePluginDesired } from "./pluginSupervisorApp";
 import { isNewestEmbed, newestEmbed, registerEmbed, subscribeEmbeds } from "./inlineEmbeds";
 import { changedRev, useChangedFiles } from "./liveReload";
 import { appPageTheme, PAGE_FRAME_ATTR } from "./pageTheme";
-import { HTML_DEFAULT_H, embedRelativeImages, joinPagePath, relativeImageRefs, inlineHtmlCollapses, inlineHtmlDocument, inlineHtmlHeight } from "./inlineHtml";
+import { embedRelativeImages, joinPagePath, relativeImageRefs, frameHeight, inlineHtmlCollapses, inlineHtmlDocument, inlineHtmlReport, parseFrameHint, parseFrameHintFromHtml, HTML_MAX_H, HTML_MIN_FRAME_H, type FrameHint, type FrameReport } from "./inlineHtml";
 
 let appStyles: Promise<string> | null = null;
 
@@ -55,23 +55,34 @@ export function appStylesText(): Promise<string> {
 
 const themeNow = () => (document.documentElement.dataset.theme === "light" ? "light" : "graphite");
 
-function useFittedHeight(frame: React.RefObject<HTMLIFrameElement | null>): number {
-  const [h, setH] = useState(HTML_DEFAULT_H);
+/** The frame's height (src/inlineHtml.ts frameHeight): the page's request (meta / markdown title), else a 16:10 default
+ *  that a full-height page keeps and a short content-sized page shrinks from; a drag overrides all of it. */
+function useFrameHeight(frame: React.RefObject<HTMLIFrameElement | null>, hint: FrameHint | null, drag: number | null): number {
+  const [report, setReport] = useState<FrameReport | null>(null);
+  const [width, setWidth] = useState(0);
+  const [vh, setVh] = useState(() => window.innerHeight);
   useEffect(() => {
     const onMsg = (e: MessageEvent) => {
       if (!frame.current || e.source !== frame.current.contentWindow) return;
-      const v = inlineHtmlHeight(e.data);
-      if (v !== null) setH(v);
+      const r = inlineHtmlReport(e.data);
+      if (r) setReport(r);
     };
+    const onResize = () => setVh(window.innerHeight);
     window.addEventListener("message", onMsg);
-    return () => window.removeEventListener("message", onMsg);
+    window.addEventListener("resize", onResize);
+    const el = frame.current;
+    const ro = el && typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => setWidth(el.clientWidth)) : null;
+    if (el) { ro?.observe(el); setWidth(el.clientWidth); }
+    return () => { window.removeEventListener("message", onMsg); window.removeEventListener("resize", onResize); ro?.disconnect(); };
   }, [frame]);
-  return h;
+  return drag ?? frameHeight({ width, vh, report, hint });
 }
 
-function Frame({ doc, title, live }: { doc: string; title: string; live?: string }) {
+const focusFrame = (f: HTMLIFrameElement | null) => { f?.focus(); try { f?.contentWindow?.focus(); } catch { /* sandboxed: the page focuses itself on click */ } };
+
+function Frame({ doc, title, live, hint, big, drag }: { doc: string; title: string; live?: string; hint: FrameHint | null; big: boolean; drag: number | null }) {
   const ref = useRef<HTMLIFrameElement | null>(null);
-  const h = useFittedHeight(ref);
+  const h = useFrameHeight(ref, hint, drag);
   return (
     <iframe
       ref={ref}
@@ -82,8 +93,8 @@ function Frame({ doc, title, live }: { doc: string; title: string; live?: string
       data-el="chat-html"
       {...{ [PAGE_FRAME_ATTR]: "" }}
       {...(live ? { "data-vc-live": live } : {})}
-      className="w-full block border-0 bg-background"
-      style={{ height: h }}
+      className={`w-full block border-0 bg-background ${big ? "flex-1 min-h-0" : ""}`}
+      style={big ? undefined : { height: h }}
     />
   );
 }
@@ -109,7 +120,10 @@ function openInViewer(src: string, html: string, vault: string | null): void {
   else st.setCurrentFile(path, html);
 }
 
-function LiveInlineHtml({ src, alt }: { src: string; alt?: string }) {
+function LiveInlineHtml({ src, alt, sizeHint }: { src: string; alt?: string; sizeHint?: string }) {
+  const [big, setBig] = useState(false);
+  const [drag, setDrag] = useState<number | null>(null);
+  const wrapRef = useRef<HTMLSpanElement | null>(null);
   const vaultPath = useStore((s) => s.vaultPath);
   const files = useStore((s) => s.files);
   const convId = useStore((s) => s.activeConversationId);
@@ -205,19 +219,44 @@ function LiveInlineHtml({ src, alt }: { src: string; alt?: string }) {
       </button>
     );
   }
+  const inProcess = live.html != null && parseLiveMount(live.html) === "in-process";
+  const hint = parseFrameHint(sizeHint) ?? parseFrameHintFromHtml(live.html ?? "");
+  const toggleBig = () => {
+    setBig((v) => !v);
+    // The same element stays mounted (only its layout changes), so the page keeps its state; give it the keys.
+    setTimeout(() => focusFrame(wrapRef.current?.querySelector("iframe") ?? null), 0);
+  };
+  const startDrag = (e: React.PointerEvent<HTMLSpanElement>) => {
+    const f = wrapRef.current?.querySelector("iframe");
+    if (!f) return;
+    e.preventDefault();
+    const y0 = e.clientY, h0 = f.getBoundingClientRect().height;
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => setDrag(Math.max(HTML_MIN_FRAME_H, Math.min(HTML_MAX_H, Math.round(h0 + ev.clientY - y0))));
+    const up = () => { el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); el.removeEventListener("pointercancel", up); };
+    el.addEventListener("pointermove", move); el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
+  };
   return (
-    <span className="block my-2 rounded-md border border-border/60 overflow-hidden" data-el="chat-html-wrap">
-      <span className="flex items-center gap-2 px-2 py-1 border-b border-border/60 bg-muted/40 text-[11px] text-muted-foreground">
+    <span ref={wrapRef} className={big ? "fixed inset-3 z-[60] flex flex-col rounded-md border border-border bg-background shadow-2xl overflow-hidden" : "block my-2 rounded-md border border-border/60 overflow-hidden"} data-el="chat-html-wrap" data-big={big ? "" : undefined}>
+      <span className="flex items-center gap-2 px-2 py-1 border-b border-border/60 bg-muted/40 text-[11px] text-muted-foreground shrink-0">
         <span className="truncate flex-1" title={src}>{title}</span>
+        {!inProcess && <span className="hidden sm:inline opacity-70 whitespace-nowrap" data-el="chat-html-hint">Click the page, then use the keyboard</span>}
+        {!inProcess && <button type="button" onClick={toggleBig} className="inline-flex items-center gap-1 hover:text-foreground" data-el="chat-html-larger" title={big ? "Back to the chat" : "Show the page large"}>
+          {big ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />} {big ? "Smaller" : "Larger"}
+        </button>}
         <button type="button" onClick={() => openInViewer(src, live.html ?? "", vaultPath)} className="inline-flex items-center gap-1 hover:text-foreground" data-el="chat-html-viewer" title="Open in the viewer">
           <PanelRight className="h-3 w-3" /> Open in viewer
         </button>
       </span>
-      {live.html != null && parseLiveMount(live.html) === "in-process" ? (
+      {inProcess ? (
         // A page that declares an in-process mount runs in the app itself (src/mountHost.ts), not in a frame.
-        <PluginMount html={live.html} path={pagePath ?? localPathFromUrl(src)} className="block bg-background" />
+        <PluginMount html={live.html ?? ""} path={pagePath ?? localPathFromUrl(src)} className="block bg-background" />
       ) : (
-        <Frame doc={doc} title={title} live={pagePath ?? undefined} />
+        <Frame doc={doc} title={title} live={pagePath ?? undefined} hint={hint} big={big} drag={drag} />
+      )}
+      {!big && !inProcess && (
+        <span className="block h-1.5 cursor-ns-resize bg-muted/40 hover:bg-muted border-t border-border/40 touch-none" data-el="chat-html-resize" title="Drag to resize" onPointerDown={startDrag} onDoubleClick={() => setDrag(null)} />
       )}
     </span>
   );
@@ -225,7 +264,7 @@ function LiveInlineHtml({ src, alt }: { src: string; alt?: string }) {
 
 /** One live copy of a file in the feed: the newest embed is live (follows edits and the theme); older embeds of the same
  *  file are a static row that jumps to the live one. */
-export const InlineHtmlFrame = memo(function InlineHtmlFrame({ src, alt }: { src: string; alt?: string }) {
+export const InlineHtmlFrame = memo(function InlineHtmlFrame({ src, alt, sizeHint }: { src: string; alt?: string; sizeHint?: string }) {
   const vaultPath = useStore((s) => s.vaultPath);
   const file = viewerPath(src, vaultPath);
   const ref = useRef<HTMLSpanElement | null>(null);
@@ -235,7 +274,7 @@ export const InlineHtmlFrame = memo(function InlineHtmlFrame({ src, alt }: { src
   return (
     <span ref={ref} className="block" data-el="chat-html-embed">
       {newest ? (
-        <LiveInlineHtml src={src} alt={alt} />
+        <LiveInlineHtml src={src} alt={alt} sizeHint={sizeHint} />
       ) : (
         <button type="button" onClick={() => newestEmbed(file)?.scrollIntoView({ block: "center", behavior: "smooth" })} className="flex items-center gap-1.5 my-2 px-2 py-1 rounded-md border border-border/60 bg-muted/40 text-[11.5px] text-muted-foreground hover:text-foreground max-w-full" data-el="chat-html-older" title="A newer copy of this page is further down: that one is live">
           <PanelRight className="h-3 w-3 shrink-0" /> <span className="truncate">{alt || name} · older version, go to the latest</span>

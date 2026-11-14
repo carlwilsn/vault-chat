@@ -59,3 +59,37 @@ test("relative image refs (attribute, script string, url()) become data: URIs; a
   // the CSP is unchanged: images only from data:/blob:, no network
   assert.ok(HTML_CSP.includes("img-src data: blob:") && HTML_CSP.includes("connect-src 'none'"));
 });
+
+test("a page can ask for its frame size: meta vc-frame or a markdown title, clamped", async () => {
+  const m = await import("../../src/inlineHtml.ts");
+  assert.deepEqual(m.parseFrameHint("aspect=16/10"), { aspect: 1.6 });
+  assert.deepEqual(m.parseFrameHint("aspect=1.5, height=640px"), { aspect: 1.5, height: 640 });
+  assert.deepEqual(m.parseFrameHint("height=99999"), { height: m.HTML_MAX_H });
+  assert.deepEqual(m.parseFrameHint("height=5"), { height: m.HTML_MIN_FRAME_H });
+  assert.equal(m.parseFrameHint("aspect=100/1"), null);
+  assert.equal(m.parseFrameHint("nonsense"), null);
+  assert.deepEqual(m.parseFrameHintFromHtml('<head><meta charset=utf-8><meta content="height=700" name="vc-frame"></head>'), { height: 700 });
+  assert.deepEqual(m.parseFrameHintFromHtml("<meta name='vc-frame' content='aspect=4/3'>"), { aspect: 4 / 3 });
+  assert.equal(m.parseFrameHintFromHtml('<meta name="viewport" content="height=700">'), null);
+  const doc = m.inlineHtmlDocument('<meta name="vc-frame" content="height=640"><p>x</p>', { css: "" });
+  assert.ok(doc.includes('meta[name=\\"vc-frame\\"]') || doc.includes("meta[name=\"vc-frame\"]"), "the size script forwards the page's request");
+  assert.deepEqual(m.inlineHtmlReport({ type: "vc-inline-html-size", h: 500, fill: true, frame: "height=640" }), { h: 500, fill: true, hint: { height: 640 } });
+  assert.equal(m.inlineHtmlReport({ type: "x", h: 5 }), null);
+});
+
+test("frame height: 16:10 default capped at 85% of the window; a full-height page keeps it; a short content page shrinks", async () => {
+  const { frameHeight: f, defaultFrameHeight: d } = await import("../../src/inlineHtml.ts");
+  assert.equal(d(1024, 1000), 640);
+  assert.equal(d(2000, 1400), 720, "a wide chat caps at 720");
+  assert.equal(d(500, 1000), 480, "a narrow one does not collapse");
+  assert.equal(d(1024, 600), 510, "capped at 85% of a short window");
+  assert.equal(d(390, 800, true), 600, "phone: 75% of the screen");
+  const base = { width: 1024, vh: 1000 };
+  assert.equal(f({ ...base }), 640, "before any report");
+  assert.equal(f({ ...base, report: { h: 320, fill: true, hint: null } }), 640, "a 100vh page reporting the frame's own height is not a strip");
+  assert.equal(f({ ...base, report: { h: 220, fill: false, hint: null } }), 220, "a short content page fits its content");
+  assert.equal(f({ ...base, report: { h: 900, fill: false, hint: null } }), 900);
+  assert.equal(f({ ...base, hint: { height: 700 }, report: { h: 220, fill: false, hint: null } }), 700);
+  assert.equal(f({ ...base, report: { h: 50, fill: true, hint: { aspect: 2 } } }), 512);
+  assert.equal(f({ width: 1600, vh: 700, hint: { aspect: 1 } }), 595, "an aspect is capped at 85% of the window");
+});

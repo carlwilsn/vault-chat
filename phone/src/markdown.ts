@@ -11,7 +11,7 @@ import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown, { type Components } from "react-markdown";
 import { markdownUrlTransform, pluginsFor, prepareMarkdown, splitStreaming, type MdProfile } from "../../src/mdPipeline";
-import { HTML_DEFAULT_H, inlineHtmlHeight, isHtmlSrc } from "../../src/inlineHtml";
+import { frameHeight, inlineHtmlReport, isHtmlSrc, parseFrameHint } from "../../src/inlineHtml";
 
 /** Inline .html pages' last reported heights, by frame URL: a re-rendered bubble starts at the fitted size. */
 const htmlHeights = new Map<string, number>();
@@ -21,10 +21,12 @@ function listenHtmlHeights(): void {
   if (htmlListener || typeof window === "undefined") return;
   htmlListener = true;
   window.addEventListener("message", (e) => {
-    const h = inlineHtmlHeight(e.data);
-    if (h === null || !e.source) return;
+    const r = inlineHtmlReport(e.data);
+    if (r === null || !e.source) return;
     for (const f of Array.from(document.querySelectorAll<HTMLIFrameElement>('iframe[data-el="chat-html"]'))) {
       if (f.contentWindow !== e.source) continue;
+      // The page's own request (meta or the markdown title kept on the frame) wins; a full-height page keeps the tall default.
+      const h = frameHeight({ width: f.clientWidth, vh: window.innerHeight, phone: true, report: r, hint: parseFrameHint(f.getAttribute("data-vc-size")) ?? r.hint });
       f.style.height = h + "px";
       htmlHeights.set(f.getAttribute("src") ?? "", h);
     }
@@ -62,7 +64,7 @@ export function createPhoneMarkdown(opts: PhoneMarkdownOptions) {
       const url = href && isVaultPath(href) ? opts.fileUrl(vaultPath(href), origin) : href;
       return createElement("a", { ...rest, href: url, target: "_blank", rel: "noopener noreferrer" }, children);
     },
-    img: ({ node: _n, src, alt, ...rest }) => {
+    img: ({ node: _n, src, alt, title: sizeHint, ...rest }) => {
       const url = typeof src === "string" && isVaultPath(src) ? opts.fileUrl(vaultPath(src), origin) : src;
       // A vault .html: live and interactive, sandboxed by the box (`inline=1`: CSP, app styles, size reports).
       if (typeof src === "string" && typeof url === "string" && isVaultPath(src) && isHtmlSrc(src)) {
@@ -77,14 +79,14 @@ export function createPhoneMarkdown(opts: PhoneMarkdownOptions) {
         if (streamingNow) return createElement("span", { className: "mhtml", "data-el": "chat-html-wrap" }, bar,
           createElement("span", { className: "mhtml-wait" }, "Shows when the reply finishes"));
         return createElement("span", { className: "mhtml", "data-el": "chat-html-wrap" }, bar,
-          createElement("iframe", { src: page, title: name, sandbox: "allow-scripts", referrerPolicy: "no-referrer", loading: "lazy", "data-el": "chat-html", "data-vc-live": vaultPath(src), style: { height: (htmlHeights.get(page) ?? HTML_DEFAULT_H) + "px" } }));
+          createElement("iframe", { src: page, title: name, sandbox: "allow-scripts", referrerPolicy: "no-referrer", loading: "lazy", "data-el": "chat-html", "data-vc-live": vaultPath(src), ...(sizeHint ? { "data-vc-size": sizeHint } : {}), style: { height: (htmlHeights.get(page) ?? frameHeight({ width: 0, vh: typeof window === "undefined" ? 0 : window.innerHeight, phone: true, hint: parseFrameHint(sizeHint) })) + "px" } }));
       }
       // Native Play is the gesture for both picture and sound; never autoplay.
       if (typeof src === "string" && /\.(webm|mp4|m4v|mov)(?:[?#].*)?$/i.test(src))
         return createElement("span", null,
           createElement("video", { src: url, controls: true, playsInline: true, preload: "metadata", title: alt ?? "", "data-el": "chat-video", className: "mvideo" }),
           createElement("a", { href: url, download: vaultPath(src).split("/").pop(), "data-el": "video-fallback" }, "Download video"));
-      return createElement("img", { ...rest, src: url, alt: alt ?? "", loading: "lazy" });
+      return createElement("img", { ...rest, title: sizeHint, src: url, alt: alt ?? "", loading: "lazy" });
     },
   };
 

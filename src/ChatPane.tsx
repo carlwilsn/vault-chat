@@ -201,7 +201,7 @@ const isVideoSrc = (src: string | undefined) => !!videoMime(src);
 function ChatMedia(props: ComponentPropsWithoutRef<"img">) {
   const { src } = props;
   if (typeof src === "string" && isHtmlSrc(src) && !/^(https?|data|blob):/i.test(src))
-    return <InlineHtmlFrame src={src} alt={props.alt} />;
+    return <InlineHtmlFrame src={src} alt={props.alt} sizeHint={props.title} />;
   return <ChatImage {...props} />;
 }
 

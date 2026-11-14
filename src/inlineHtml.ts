@@ -14,8 +14,8 @@ import { modeOf, pageThemeFor, pageThemeHead, type PageTheme } from "./pageTheme
 export const APP_STYLES_HREF = "/app-styles.css";
 /** The postMessage type an inline HTML frame reports its height with. */
 export const HTML_SIZE_MSG = "vc-inline-html-size";
-/** An inline HTML frame's height before it reports one, and the most it grows to. */
-export const HTML_DEFAULT_H = 320;
+/** An inline HTML frame's height with no size information at all (no width/viewport known), and the most it grows to. */
+export const HTML_DEFAULT_H = 640;
 export const HTML_MAX_H = 1600;
 /** Nothing loads from outside the document: no network, no box, no same-origin. */
 export const HTML_CSP =
@@ -66,12 +66,69 @@ export function inlineHtmlHeight(data: unknown): number | null {
   return Math.max(40, Math.min(HTML_MAX_H, Math.ceil(d.h)));
 }
 
+/** A page's report of itself: its content height, whether it is a full-height layout (100%/100vh: its height IS the
+ *  frame's, so it must not shrink the frame to a strip), and the size it asked for (`<meta name="vc-frame">`). */
+export type FrameReport = { h: number; fill: boolean; hint: FrameHint | null };
+export function inlineHtmlReport(data: unknown): FrameReport | null {
+  const h = inlineHtmlHeight(data);
+  if (h === null) return null;
+  const d = data as { fill?: unknown; frame?: unknown };
+  return { h, fill: d.fill === true, hint: typeof d.frame === "string" ? parseFrameHint(d.frame) : null };
+}
+
+/** A requested frame size: `aspect=16/10` (width/height, as a ratio or a number) and/or `height=640` (px). */
+export type FrameHint = { aspect?: number; height?: number };
+export function parseFrameHint(s: string | null | undefined): FrameHint | null {
+  if (!s) return null;
+  const out: FrameHint = {};
+  const a = /\baspect\s*=\s*(\d+(?:\.\d+)?)\s*(?:[/:x]\s*(\d+(?:\.\d+)?))?/i.exec(s);
+  if (a) {
+    const r = Number(a[1]) / (a[2] === undefined ? 1 : Number(a[2]));
+    if (Number.isFinite(r) && r >= 0.3 && r <= 5) out.aspect = r;
+  }
+  const h = /\bheight\s*=\s*(\d+(?:\.\d+)?)\s*(?:px)?/i.exec(s);
+  if (h) out.height = Math.max(HTML_MIN_FRAME_H, Math.min(HTML_MAX_H, Math.round(Number(h[1]))));
+  return out.aspect !== undefined || out.height !== undefined ? out : null;
+}
+/** The hint a page carries in its own HTML (`<meta name="vc-frame" content="aspect=16/10">`). */
+export function parseFrameHintFromHtml(html: string): FrameHint | null {
+  for (const m of html.matchAll(/<meta\b[^>]*>/gi)) {
+    if (!/\bname\s*=\s*["']?vc-frame\b/i.test(m[0])) continue;
+    const c = /\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(m[0]);
+    return parseFrameHint(c?.[1] ?? c?.[2] ?? c?.[3]);
+  }
+  return null;
+}
+export const HTML_MIN_FRAME_H = 160;
+
+/** The frame's height when nothing is asked: about 16:10 of its width (560-720 px on a desktop chat), at most 85% of the
+ *  window; on the phone about 75% of the screen. */
+export function defaultFrameHeight(width: number, vh: number, phone = false): number {
+  const cap = vh > 0 ? Math.max(240, Math.round(vh * 0.85)) : HTML_MAX_H;
+  const want = phone ? Math.max(360, Math.round(vh * 0.75)) : Math.max(480, Math.min(720, Math.round((width > 0 ? width : 960) * 0.625)));
+  return Math.min(want, cap);
+}
+
+/** The frame's height: what the page asked for; else the default for a full-height layout (or before it reports);
+ *  else the page's own content height. A requested aspect is capped at 85% of the window; a requested height is not. */
+export function frameHeight(o: { width: number; vh: number; phone?: boolean; report?: FrameReport | null; hint?: FrameHint | null }): number {
+  const hint = o.hint ?? o.report?.hint ?? null;
+  const dflt = defaultFrameHeight(o.width, o.vh, o.phone);
+  if (hint?.height !== undefined) return hint.height;
+  if (hint?.aspect !== undefined) {
+    const cap = o.vh > 0 ? Math.max(240, Math.round(o.vh * 0.85)) : HTML_MAX_H;
+    return Math.min(cap, Math.max(HTML_MIN_FRAME_H, Math.min(HTML_MAX_H, Math.round((o.width > 0 ? o.width : 960) / hint.aspect))));
+  }
+  if (!o.report || o.report.fill) return dflt;
+  return o.report.h;
+}
+
 const LINK_RE = /<link\b[^>]*\bhref\s*=\s*["']?(?:\.?\/)?app-styles\.css["']?[^>]*>/gi;
 
 function sizeScript(theme: string | null): string {
   return `<script>(function(){var d=document.documentElement;${
     theme ? `if(!d.hasAttribute("data-theme"))d.setAttribute("data-theme",${JSON.stringify(theme)});` : ""
-  }addEventListener("pointerdown",function(){focus();});var last=0;function h(){var b=document.body;if(!b)return 0;var m=b.getBoundingClientRect().bottom+(parseFloat(getComputedStyle(b).marginBottom)||0);var k=b.querySelectorAll("*");for(var i=0;i<k.length&&i<4000;i++){var r=k[i].getBoundingClientRect();if(r.bottom>m)m=r.bottom;}return Math.ceil(m+window.scrollY);}function send(){var v=h();if(v&&Math.abs(v-last)>1){last=v;parent.postMessage({type:${JSON.stringify(HTML_SIZE_MSG)},h:v},"*");}}addEventListener("load",send);var q=0;function soon(){if(!q){q=1;requestAnimationFrame(function(){q=0;send();});}}addEventListener("DOMContentLoaded",function(){send();if(window.ResizeObserver){var ro=new ResizeObserver(soon);ro.observe(document.body,{box:"border-box"});ro.observe(d);}if(window.MutationObserver)new MutationObserver(soon).observe(document.body,{subtree:true,childList:true,attributes:true,characterData:true});});setTimeout(send,300);})();</script>`;
+  }addEventListener("pointerdown",function(){focus();});var last=0,fill=null,fr="";function h(){var b=document.body;if(!b)return 0;var m=b.getBoundingClientRect().bottom+(parseFloat(getComputedStyle(b).marginBottom)||0);var k=b.querySelectorAll("*");for(var i=0;i<k.length&&i<4000;i++){var r=k[i].getBoundingClientRect();if(r.bottom>m)m=r.bottom;}return Math.ceil(m+window.scrollY);}function send(){var v=h();if(v&&Math.abs(v-last)>1){last=v;if(fill===null){var H=innerHeight;fill=H>0&&(Math.abs(document.body.getBoundingClientRect().height-H)<=1||Math.abs(d.getBoundingClientRect().height-H)<=1);var mm=document.querySelector('meta[name="vc-frame"]');fr=mm&&mm.getAttribute("content")||"";}parent.postMessage({type:${JSON.stringify(HTML_SIZE_MSG)},h:v,fill:fill,frame:fr},"*");}}addEventListener("load",send);var q=0;function soon(){if(!q){q=1;requestAnimationFrame(function(){q=0;send();});}}addEventListener("DOMContentLoaded",function(){send();if(window.ResizeObserver){var ro=new ResizeObserver(soon);ro.observe(document.body,{box:"border-box"});ro.observe(d);}if(window.MutationObserver)new MutationObserver(soon).observe(document.body,{subtree:true,childList:true,attributes:true,characterData:true});});setTimeout(send,300);})();</script>`;
 }
 
 /** The page's HTML, made safe and fitted to the chat. `css`: the app's stylesheet (fonts inlined). */
