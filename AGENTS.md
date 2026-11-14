@@ -54,6 +54,7 @@ phone web app, iPad whiteboard and voice. It is not AgentOS.
   newest word in effect wins, `from` = later, e.g. an end date) and plugin.budget records (`callsPerMinute`: over it the box writes `stopped`, by budget). Stopped: the box
   gives it nothing (no token, gateway 403, its page not served: phone inline, raw, /p/ link) and every view (viewer, chat inline, iframe or in-process, phone, link) takes it
   down and shows "<name> is turned off" + Turn on; running again, it mounts afresh. Write one with the agent's `Plugins` tool (server/supervisorTools.ts) or POST /api/v2/supervisor; GET reads the records.
+  Layout (src/layoutOps.ts): the screen's layout as data and ops (panes and files, split, left panel, chat, window and column sizes), `api.host.layout.get()/apply(ops)` for plugins and the agent's `Layout` tool (server/layoutTool.ts, over Show's signal + ack channel, laptop only); every apply answers with the layout read back from the screen.
   App plugins (src/appPlugins.ts, Stage 2): parts of the app that are plugins, id `app/<name>`, code in src/plugins/<name>/ exporting `mount(el, api)`, mounted through the same host
   from the module (light DOM, the app's styles; `api.error(e)` = its error card) by `AppPluginMount` (src/PluginMount.tsx) and following the same records. First: the Notes panel
   (`app/notes`, src/plugins/notes; "disable notes" also hides its titlebar button). The Plugins tool and the catalog (`app` list) name them.

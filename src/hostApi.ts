@@ -3,12 +3,17 @@
 //   selectors  host.state() (a plain-data snapshot: currentFile, openChatId, theme, conversations, ...), host.subscribe(fn)
 //   actions    host.openFile(path, anchor?), host.notify(text, kind?), host.runCommand(id), plus the narrow
 //              notes/panel/chat actions the Notes plugin needs
+//   layout     host.layout.get() (panes, split, panels, chat, window and column sizes) and host.layout.apply(op | ops)
+//              (close/open the left panel or chat, put a file in a pane, split, focus, full-screen chat): the same ops the
+//              agent's Layout tool runs (src/layoutOps.ts), each answered with the layout read back
 //   events     host.on("file-opened" | "chat-message" | "selection-changed", fn) → off
 // This module imports nothing from the app: the app binds a HostBackend (src/hostBackend.ts) to the store, tests bind a
 // fake. Every subscription a plugin makes through it is an Effect of its run (src/pluginSupervisor.ts): disabling the
 // plugin removes the listeners, and a stopped run's api is inert.
 import type { Effects } from "./pluginSupervisor";
 import type { Note } from "./notes";
+import type { HostLayout, LayoutOp, LayoutResult } from "./layoutOps";
+export type { HostLayout, LayoutOp, LayoutResult } from "./layoutOps";
 
 export const HOST_API_VERSION = 1;
 
@@ -49,6 +54,10 @@ export type HostBackend = {
   saveNoteDraft(id: string, draft: string): Promise<void>;
   /** Put lines in the open chat and reveal it; false when it could not. */
   primeChat(lines: HostChatLine[]): Promise<boolean>;
+  /** The screen's layout now (panes, panels, sizes). */
+  layout(): HostLayout;
+  /** Apply layout ops in order; the answer carries the layout read back afterwards. */
+  applyLayout(ops: LayoutOp[]): Promise<LayoutResult>;
 };
 
 export type HostApi = {
@@ -74,6 +83,7 @@ export type HostApi = {
   };
   panel: { close(): void };
   chat: { prime(lines: HostChatLine[]): Promise<boolean> };
+  layout: { get(): HostLayout; apply(ops: LayoutOp | LayoutOp[]): Promise<LayoutResult> };
 };
 
 /** An inert backend: what a plugin mounted without the app's store sees. */
@@ -95,8 +105,11 @@ export const noHost: HostBackend = {
   reformatNote() {},
   saveNoteDraft: async () => {},
   primeChat: async () => false,
+  layout: () => NO_LAYOUT,
+  applyLayout: async (ops) => ({ ok: false, results: ops.map((o) => ({ op: o.op, ok: false, error: "no screen here" })), layout: NO_LAYOUT }),
 };
 
+const NO_LAYOUT: HostLayout = { split: false, direction: null, panes: [], currentFile: null, activePane: null, leftPanelOpen: false, rightPanelOpen: false, chatFullscreen: false, chatPoppedOut: false, chatSidebarOpen: false, viewport: null, sizes: null };
 const EVENTS: readonly string[] = ["file-opened", "chat-message", "selection-changed"];
 
 /**
@@ -181,5 +194,9 @@ export function createHostApi(b: HostBackend, fx: Effects, alive: () => boolean,
     },
     panel: { close: act(() => b.closeNotesPanel(), undefined) },
     chat: { prime: act((l) => b.primeChat(l), Promise.resolve(false)) },
+    layout: {
+      get: () => b.layout(),
+      apply: (ops) => (alive() ? b.applyLayout(Array.isArray(ops) ? ops : [ops]) : Promise.resolve({ ok: false, results: [], layout: b.layout() })),
+    },
   };
 }

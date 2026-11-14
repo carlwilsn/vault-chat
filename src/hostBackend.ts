@@ -4,6 +4,8 @@ import { readTextAt, boxPathOf } from "./boxFiles";
 import { writeAllNotes } from "./notes";
 import { isUnreadableAsText } from "./fileKind";
 import { hostTheme } from "./mountHost";
+import { applyLayoutOps, readLayout, type LayoutIO } from "./layoutOps";
+import { placeInPane } from "./paneLayout";
 import type { HostBackend, HostState, HostSelection } from "./hostApi";
 
 /** Commands a plugin may run by id (host.runCommand). */
@@ -35,6 +37,21 @@ function state(): HostState {
   cache = { key, value };
   return value;
 }
+
+/** Putting a file in a pane from inside the app: read it (the disk, or the box's copy) and place it. */
+const appLayoutIO: LayoutIO = {
+  async openInPane(path, pane) {
+    const vault = useStore.getState().vaultPath;
+    if (!vault) return { ok: false, error: "no vault is open" };
+    const abs = /^([a-zA-Z]:)?[\\/]/.test(path) ? path : `${vault.replace(/[\\/]+$/, "")}/${path}`;
+    try {
+      placeInPane(pane, abs, isUnreadableAsText(abs) ? "" : await readTextAt(abs));
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: `could not open ${path}: ${(e as Error)?.message ?? String(e)}` };
+    }
+  },
+};
 
 export const appHostBackend: HostBackend = {
   state,
@@ -94,6 +111,8 @@ export const appHostBackend: HostBackend = {
     await writeAllNotes(s.vaultPath, s.notes.map((n) => (n.id === id ? { ...n, user_draft: draft.trim(), turns: [], formatted: null, title: null, last_updated: new Date().toISOString() } : n)));
     await s.loadNotes();
   },
+  layout: () => readLayout(),
+  applyLayout: (ops) => applyLayoutOps(ops, appLayoutIO),
   async primeChat(lines) {
     const store = useStore.getState();
     // Box mode: the box writes the chat; these lines go to it as they are.

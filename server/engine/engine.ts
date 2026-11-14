@@ -46,6 +46,7 @@ import { failMake, inboxLog, listEntries, readEntry, sendEntry, startMake, type 
 import { BOARD_MAKER_PROMPT, boardMakeTask, makerStats } from "./boardTools";
 import { lookBoard } from "../boards";
 import { show, SHOW_DESCRIPTION, SHOW_SCHEMA } from "../show";
+import { layoutTool, LAYOUT_DESCRIPTION, LAYOUT_SCHEMA } from "../layoutTool";
 import { boardGuard } from "../boardGuard";
 import { openProject, OPEN_PROJECT_DESCRIPTION, OPEN_PROJECT_SCHEMA } from "../projectRoutes";
 import { startJobWith, jobStatus, jobList, jobStop, reapJobs, readJobs, type JobEnv } from "./jobs";
@@ -391,6 +392,12 @@ export const ENGINE_TOOL_SPECS = [
     name: "Show",
     description: SHOW_DESCRIPTION,
     inputSchema: SHOW_SCHEMA as unknown as Record<string, unknown>,
+  },
+  {
+    type: "function",
+    name: "Layout",
+    description: LAYOUT_DESCRIPTION,
+    inputSchema: LAYOUT_SCHEMA as unknown as Record<string, unknown>,
   },
   {
     type: "function",
@@ -2909,6 +2916,10 @@ export class Engine {
           }
           delete a.asked;
           const r = await show({ vault, device: interaction.device, emit: (ev) => this.d.broadcast?.(ev), sendBoard: (b) => sendEntry(vault, b, { conversation: convId, emit: (ev) => this.inboxEvent(ev) }), dev: (port) => this.devUrl(port) }, a);
+          return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
+        }
+        case "Layout": {
+          const r = await layoutTool({ vault, emit: (ev) => this.d.broadcast?.(ev) }, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "DeleteConversation": {
