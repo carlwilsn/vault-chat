@@ -382,7 +382,11 @@ exit 0
   private async pushBox(): Promise<void> {
     const s = this.status;
     try {
-      const r = await runGit(this.vault, ["push", "-q", this.bare, `refs/heads/${this.BRANCH}:refs/heads/${BOX_BRANCH}`], {
+      // --no-verify: the push is to a local path, and the LFS bytes already sit in this working copy's own
+      // store (server/lfs.ts serves them from there). A git-lfs installed system-wide or globally runs as the
+      // filter here and drops its pre-push hook into the vault, which then fails every push to the bare repo
+      // ("does not support the Git LFS locking API … missing protocol") once a file over 50 MB is committed.
+      const r = await runGit(this.vault, ["push", "-q", "--no-verify", this.bare,`refs/heads/${this.BRANCH}:refs/heads/${BOX_BRANCH}`], {
         env: { VC_PUSHER: "box" },
       });
       if (r.code !== 0) throw new Error(`git push ${this.BRANCH === BOX_BRANCH ? BOX_BRANCH : `${this.BRANCH} → ${BOX_BRANCH}`} (exit ${r.code}): ${r.stderr.trim()}`);
