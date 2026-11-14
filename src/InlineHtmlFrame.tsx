@@ -17,7 +17,7 @@ import { usePluginDesired } from "./pluginSupervisorApp";
 import { isNewestEmbed, newestEmbed, registerEmbed, subscribeEmbeds } from "./inlineEmbeds";
 import { changedRev, useChangedFiles } from "./liveReload";
 import { appPageTheme, PAGE_FRAME_ATTR } from "./pageTheme";
-import { HTML_DEFAULT_H, inlineHtmlCollapses, inlineHtmlDocument, inlineHtmlHeight } from "./inlineHtml";
+import { HTML_DEFAULT_H, embedRelativeImages, joinPagePath, relativeImageRefs, inlineHtmlCollapses, inlineHtmlDocument, inlineHtmlHeight } from "./inlineHtml";
 
 let appStyles: Promise<string> | null = null;
 
@@ -151,7 +151,20 @@ function LiveInlineHtml({ src, alt }: { src: string; alt?: string }) {
         appStylesText().catch(() => ""),
       ]);
       if (cancelled) return;
-      const html = page ? new TextDecoder().decode(new Uint8Array(page.bytes)) : null;
+      let html = page ? new TextDecoder().decode(new Uint8Array(page.bytes)) : null;
+      if (html) {
+        // Relative images (a photo viewer's files beside the page) become data: URIs: the frame's CSP loads nothing else.
+        const dir = cleaned.replace(/[?#].*$/, "").split("/").slice(0, -1).join("/");
+        const imgs = new Map<string, ArrayLike<number>>();
+        const io = { local: (path: string) => invoke<number[]>("read_binary_file", { path }), box: async () => { const link = await boxLinkFor(vaultPath); return link ? (path: string) => (convId ? fetchBoxFile(link, path, convId) : Promise.resolve(null)) : null; } };
+        await Promise.all(relativeImageRefs(html).map(async (ref) => {
+          const at = joinPagePath(dir, ref);
+          const r = at === null ? null : await readChatImage(at, vaultPath, files, io).catch(() => null);
+          if (r) imgs.set(ref, r.bytes);
+        }));
+        if (cancelled) return;
+        html = embedRelativeImages(html, imgs);
+      }
       // A failed re-read keeps the page that is showing; an identical one changes nothing.
       setState((st) => (st && st.key === key && (html === null || st.html === html) ? st : { key, html, css }));
     })(), wait);

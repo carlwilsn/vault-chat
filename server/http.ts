@@ -19,7 +19,7 @@ import { appCss } from "./appCss";
 import { liveGateway, liveManifest, liveRevoke, liveToken } from "./liveProxy";
 import { pluginCatalog } from "./pluginCatalog";
 import { offDocument, pluginDesired, supervisorRoute } from "./supervisor";
-import { APP_STYLES_HREF, HTML_CSP, inlineHtmlDocument, isHtmlSrc } from "../src/inlineHtml";
+import { APP_STYLES_HREF, HTML_CSP, embedRelativeImages, inlineHtmlDocument, isHtmlSrc, joinPagePath, relativeImageRefs } from "../src/inlineHtml";
 import { createExternalMcpHandler, type ExternalContext } from "./mcp/external";
 import { externalMcpHosts } from "./mcp/hosts";
 import type { BoundTools } from "./mcp/tools";
@@ -1054,7 +1054,16 @@ function serveVaultFile(req: IncomingMessage, res: ServerResponse, vault: string
     // Inline in a chat message (phone; src/inlineHtml.ts): the app's styles, the theme, the size reports, nothing from the network.
     try {
       const theme = url.searchParams.get("theme");
-      const doc = inlineHtmlDocument(readFileSync(full, "utf8"), { css: appCss(), theme: theme === "light" ? "light" : theme === "dark" ? "graphite" : null, live: true });
+      const raw = readFileSync(full, "utf8");
+      // The page's relative images (files beside it, inside the vault) become data: URIs: the CSP loads nothing else.
+      const dir = p.replace(/[?#].*$/, "").split("/").slice(0, -1).join("/");
+      const imgs = new Map<string, Buffer>();
+      for (const ref of relativeImageRefs(raw)) {
+        const at = joinPagePath(dir, ref);
+        const f = at === null ? null : withinVault(vault, at);
+        try { if (f && statSync(f).size <= 20 * 1024 * 1024) imgs.set(ref, readFileSync(f)); } catch { /* missing */ }
+      }
+      const doc = inlineHtmlDocument(embedRelativeImages(raw, imgs), { css: appCss(), theme: theme === "light" ? "light" : theme === "dark" ? "graphite" : null, live: true });
       return send(res, 200, "text/html; charset=utf-8", doc, { "Content-Security-Policy": `sandbox allow-scripts; ${HTML_CSP}`, "X-Content-Type-Options": "nosniff" });
     } catch (e) {
       return json(res, 500, { error: (e as Error).message });

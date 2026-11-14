@@ -43,3 +43,19 @@ test("an inline page collapses to the note only when chat and the viewer showing
   assert.equal(c({ ...split, chatFullscreen: true }, true), false, "chat fullscreen (viewer hidden): page");
   assert.equal(c({ ...split, popoutOpen: true }, true), true, "chat popped out beside the viewer: note");
 });
+
+test("relative image refs (attribute, script string, url()) become data: URIs; absolute, http and missing ones stay", async () => {
+  const { embedRelativeImages, joinPagePath, relativeImageRefs } = await import("../../src/inlineHtml.ts");
+  const html = `<img src="a.png"><script>var p=['b/c.jpg',"http://x/d.png","/e.png"];</script><div style="background:url(f.svg)"></div><img src="gone.png">`;
+  assert.deepEqual(relativeImageRefs(html).sort(), ["a.png", "b/c.jpg", "f.svg", "gone.png"]);
+  const out = embedRelativeImages(html, new Map([["a.png", new Uint8Array([1, 2, 3])], ["b/c.jpg", new Uint8Array([4])], ["f.svg", new Uint8Array([5])]]));
+  assert.ok(out.includes('src="data:image/png;base64,AQID"'));
+  assert.ok(out.includes("'data:image/jpeg;base64,BA=='") && out.includes("url(data:image/svg+xml;base64,BQ==)"));
+  assert.ok(out.includes('"http://x/d.png"') && out.includes('"/e.png"') && out.includes('src="gone.png"'));
+  assert.equal(joinPagePath(".vault-chat/local/pages", "p/1.jpg"), ".vault-chat/local/pages/p/1.jpg");
+  assert.equal(joinPagePath("a/b", "../c.png"), "a/c.png");
+  assert.equal(joinPagePath("a", "../../c.png"), null);
+  assert.equal(joinPagePath("/v/pages", "x.png"), "/v/pages/x.png");
+  // the CSP is unchanged: images only from data:/blob:, no network
+  assert.ok(HTML_CSP.includes("img-src data: blob:") && HTML_CSP.includes("connect-src 'none'"));
+});

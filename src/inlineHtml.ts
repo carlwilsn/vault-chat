@@ -21,6 +21,42 @@ export const HTML_MAX_H = 1600;
 export const HTML_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
 
+const IMG_EXT = "png|jpe?g|gif|webp|svg|avif";
+const IMG_MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", avif: "image/avif" };
+// A quoted string or url() that is a relative image path: `<img src="a.png">`, `url(a.png)`, and `photos=["a.jpg","b.jpg"]` in a script.
+const IMG_REF_RE = new RegExp(`(["'(])((?!(?:[a-z][a-z0-9+.-]*:|//|/|#))[^"'()\\s<>\\\\]+\\.(?:${IMG_EXT}))(?=["')])`, "gi");
+/** The page's relative image files (vault-relative once joined to the page's folder), at most 300. */
+export function relativeImageRefs(html: string): string[] {
+  return [...new Set([...html.matchAll(IMG_REF_RE)].map((m) => m[2]!))].slice(0, 300);
+}
+/** A page's relative image path joined to its folder; null when it climbs out of the vault. */
+export function joinPagePath(pageDir: string, ref: string): string | null {
+  const out: string[] = [];
+  for (const seg of `${pageDir}/${ref.split(/[?#]/)[0]}`.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") { if (!out.length) return null; out.pop(); } else out.push(seg);
+  }
+  return (pageDir.startsWith("/") ? "/" : "") + out.join("/");
+}
+/** Inline the page's relative images as data: URIs (the CSP loads nothing else). `loaded`: ref -> bytes. */
+export function embedRelativeImages(html: string, loaded: ReadonlyMap<string, Uint8Array | ArrayLike<number>>): string {
+  if (!loaded.size) return html;
+  const uri = new Map<string, string>();
+  return html.replace(IMG_REF_RE, (all, q: string, ref: string) => {
+    const bytes = loaded.get(ref);
+    if (!bytes) return all;
+    let u = uri.get(ref);
+    if (!u) {
+      const b = Uint8Array.from(bytes as ArrayLike<number>);
+      let bin = "";
+      for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode(...b.subarray(i, i + 0x8000));
+      u = `data:${IMG_MIME[ref.split(/[?#]/)[0]!.split(".").pop()!.toLowerCase()] ?? "application/octet-stream"};base64,${btoa(bin)}`;
+      uri.set(ref, u);
+    }
+    return q + u;
+  });
+}
+
 export const isHtmlSrc = (src: string | undefined | null): boolean => /\.html?(?:[?#].*)?$/i.test(src ?? "");
 
 /** The chat accepts a height only from a frame it made: `source` is that frame's window. */
@@ -35,7 +71,7 @@ const LINK_RE = /<link\b[^>]*\bhref\s*=\s*["']?(?:\.?\/)?app-styles\.css["']?[^>
 function sizeScript(theme: string | null): string {
   return `<script>(function(){var d=document.documentElement;${
     theme ? `if(!d.hasAttribute("data-theme"))d.setAttribute("data-theme",${JSON.stringify(theme)});` : ""
-  }var last=0;function h(){var b=document.body;if(!b)return 0;var m=b.getBoundingClientRect().bottom+(parseFloat(getComputedStyle(b).marginBottom)||0);var k=b.querySelectorAll("*");for(var i=0;i<k.length&&i<4000;i++){var r=k[i].getBoundingClientRect();if(r.bottom>m)m=r.bottom;}return Math.ceil(m+window.scrollY);}function send(){var v=h();if(v&&Math.abs(v-last)>1){last=v;parent.postMessage({type:${JSON.stringify(HTML_SIZE_MSG)},h:v},"*");}}addEventListener("load",send);var q=0;function soon(){if(!q){q=1;requestAnimationFrame(function(){q=0;send();});}}addEventListener("DOMContentLoaded",function(){send();if(window.ResizeObserver){var ro=new ResizeObserver(soon);ro.observe(document.body,{box:"border-box"});ro.observe(d);}if(window.MutationObserver)new MutationObserver(soon).observe(document.body,{subtree:true,childList:true,attributes:true,characterData:true});});setTimeout(send,300);})();</script>`;
+  }addEventListener("pointerdown",function(){focus();});var last=0;function h(){var b=document.body;if(!b)return 0;var m=b.getBoundingClientRect().bottom+(parseFloat(getComputedStyle(b).marginBottom)||0);var k=b.querySelectorAll("*");for(var i=0;i<k.length&&i<4000;i++){var r=k[i].getBoundingClientRect();if(r.bottom>m)m=r.bottom;}return Math.ceil(m+window.scrollY);}function send(){var v=h();if(v&&Math.abs(v-last)>1){last=v;parent.postMessage({type:${JSON.stringify(HTML_SIZE_MSG)},h:v},"*");}}addEventListener("load",send);var q=0;function soon(){if(!q){q=1;requestAnimationFrame(function(){q=0;send();});}}addEventListener("DOMContentLoaded",function(){send();if(window.ResizeObserver){var ro=new ResizeObserver(soon);ro.observe(document.body,{box:"border-box"});ro.observe(d);}if(window.MutationObserver)new MutationObserver(soon).observe(document.body,{subtree:true,childList:true,attributes:true,characterData:true});});setTimeout(send,300);})();</script>`;
 }
 
 /** The page's HTML, made safe and fitted to the chat. `css`: the app's stylesheet (fonts inlined). */
