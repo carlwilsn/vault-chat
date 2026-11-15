@@ -382,7 +382,11 @@ exit 0
   private async pushBox(): Promise<void> {
     const s = this.status;
     try {
-      const r = await runGit(this.vault, ["push", "-q", this.bare, `refs/heads/${this.BRANCH}:refs/heads/${BOX_BRANCH}`], {
+      // --no-verify: a machine with git-lfs installed system-wide (filter.lfs.process wins over the box's own filter)
+      // gets git-lfs's pre-push hook in the working copy, and that hook fails every push to a local-path bare repo
+      // ("missing protocol"), so one file over 50 MB stopped sync for good. The bytes are already in the store
+      // server/lfs.ts serves; the bare repo's pre-receive guard still runs.
+      const r = await runGit(this.vault, ["push", "-q", "--no-verify", this.bare, `refs/heads/${this.BRANCH}:refs/heads/${BOX_BRANCH}`], {
         env: { VC_PUSHER: "box" },
       });
       if (r.code !== 0) throw new Error(`git push ${this.BRANCH === BOX_BRANCH ? BOX_BRANCH : `${this.BRANCH} → ${BOX_BRANCH}`} (exit ${r.code}): ${r.stderr.trim()}`);
