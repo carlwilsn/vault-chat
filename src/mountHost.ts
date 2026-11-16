@@ -9,6 +9,10 @@
 //   api: size() → {w, h}, onResize(fn), theme {mode, vars}, onTheme(fn), path,
 //        listen(target, type, fn, opts) → off, timer(fn, ms, repeat?) → cancel, effect(undo) → undo now   (change 1.6)
 //        offer({state, actions, events}) → {emit}: what it offers the agent (src/pluginOffers.ts), gone when it stops
+//        plugins: list() / read(plugin, state?) / act(plugin, action, args) / on(plugin, event, fn): the other plugins'
+//                 offers, as the agent reaches them (src/pluginOffers.ts pluginReach)
+//        context: get() / on(fn) / publish({selection?, hover?}): the shared selection, hover, focused plugin and open
+//                 file (src/sharedContext.ts)
 //
 // Everything a run does to the app is a revertible effect (src/pluginSupervisor.ts Effects): its markup, the host's
 // listeners and observer, the module's URL, the plugin's own listeners and timers made through the api, its cleanup.
@@ -31,7 +35,8 @@
 import { LIVE_THEME_VARS } from "./liveBridge";
 import { Effects } from "./pluginSupervisor";
 import { createHostApi, noHost, type HostApi, type HostBackend } from "./hostApi";
-import { declareOffers, type Offers, type OffersHandle } from "./pluginOffers";
+import { declareOffers, pluginReach, type Offers, type OffersHandle, type PluginReach } from "./pluginOffers";
+import { contextApi, type ContextApi } from "./sharedContext";
 
 export type PluginTheme = { mode: "light" | "dark"; vars: Record<string, string> };
 export type PluginApi = {
@@ -54,6 +59,11 @@ export type PluginApi = {
   /** Declare what this plugin offers the agent (src/pluginOffers.ts): readable state, actions with JSON-schema args,
    *  events. Gone when the plugin stops. A bad declaration throws (the plugin's failure, with every reason). */
   offer(offers: Offers): OffersHandle;
+  /** The other live plugins' offers: list them, read their state, run their actions, subscribe to their events (the
+   *  agent's PluginRead / PluginAct rules: a plugin not mounted is a clear error, a throw or a hang an error result). */
+  plugins: PluginReach;
+  /** The shared context: the selection, the hovered item, the plugin Carl is in and the open file (src/sharedContext.ts). */
+  context: ContextApi;
 };
 /** An app plugin's code (src/appPlugins.ts): its module, already loaded with the app. A vault plugin (src/vaultPlugins.ts)
  *  is the same, trusted and in the light DOM, but its module is loaded from `code` (the file's text) on each mount. */
@@ -256,6 +266,8 @@ export function mountPlugin(
           fx.add("offers", d.undo);
           return d.handle;
         },
+        plugins: pluginReach(() => run === r, (off) => fx.add("plugin subscription", off), guard),
+        context: contextApi(opts.path, () => run === r, (off) => fx.add("context subscription", off), guard),
       };
       if (typeof ResizeObserver !== "undefined") {
         const ro = new ResizeObserver(guard(() => {

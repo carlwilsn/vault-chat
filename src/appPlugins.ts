@@ -74,7 +74,18 @@ export const VAULTS_PLUGIN: AppPluginInfo = {
   words: ["vaults", "vault picker", "vault-picker", "vaultpicker", "vault menu", "vault dropdown", "folder picker", "vault switcher"],
 };
 
-export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN];
+export const CONTEXT_PLUGIN_ID = "app/context";
+
+/** The shared context (src/plugins/context): what Carl has selected, hovers, the plugin he is in and the open file, for the agent and other plugins. Off: the agent cannot read it. */
+export const CONTEXT_PLUGIN: AppPluginInfo = {
+  id: CONTEXT_PLUGIN_ID,
+  name: "Context",
+  mount: "panel",
+  description: "The shared context: what Carl has selected (a file's text and lines, a chat message, a note), the item under his pointer, the plugin he is in and the open file, readable and followed by the agent and by other plugins. Off: the agent cannot read it.",
+  words: ["context", "shared context", "context plugin", "selection context", "app context"],
+};
+
+export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN, CONTEXT_PLUGIN];
 
 /** The app plugin a word names (its id, its name or one of its words), or null. */
 export function appPluginNamed(word: string): AppPluginInfo | null {

@@ -15,8 +15,10 @@ import { VoiceTextPanel } from "./VoiceTextPanel";
 import { AppPluginMount } from "./PluginMount";
 import { VaultPlugins } from "./VaultPluginHost";
 import { PinnedApps } from "./PinnedAppsHost";
-import { NOTES_PLUGIN } from "./appPlugins";
+import { CONTEXT_PLUGIN, NOTES_PLUGIN } from "./appPlugins";
 import * as notesPlugin from "./plugins/notes";
+import * as contextPlugin from "./plugins/context";
+import { bindContextSource } from "./contextSource";
 import { ChatsPanel } from "./ChatsPanel";
 import { UpdateBanner } from "./UpdateBanner";
 import { isDriveWindow } from "./windowKind";
@@ -65,6 +67,8 @@ export default function App() {
 
   // The shared context stream: the file open, the PDF page, selections and captures (src/activity.ts).
   useEffect(() => startActivityWatch(), []);
+  // The live shared context plugins and the agent read (src/sharedContext.ts): its publisher runs only while one listens.
+  useEffect(() => bindContextSource(), []);
   // A start opens with an empty viewer; the layout earlier builds saved is cleared (src/paneLayout.ts).
   useEffect(() => clearSavedLayouts(), []);
 
@@ -457,6 +461,8 @@ export default function App() {
       />
       {/* The Notes panel: a plugin (src/plugins/notes), mounted through the plugin host while the supervisor says it runs. */}
       <AppPluginMount plugin={NOTES_PLUGIN} module={notesPlugin} />
+      {/* The shared context (selection, hover, focused plugin, open file) for the agent and other plugins: draws nothing. */}
+      <AppPluginMount plugin={CONTEXT_PLUGIN} module={contextPlugin} />
       {/* Plugins that are code files in .vault-chat/plugins: live as they are added, changed or removed. */}
       <VaultPlugins />
       <PinnedApps />

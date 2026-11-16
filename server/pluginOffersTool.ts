@@ -27,7 +27,7 @@ export const pluginOfferToolSpecs = [
     description:
       "Reach any plugin running in Carl's app (the Notes panel, his vault plugins, in-process pages): each declares what it offers: state you can read, actions you can run (with their args), events it emits. " +
       "No plugin: lists every live plugin with its offers (use it first to learn a plugin's actions and args). plugin (its id, e.g. app/notes, or its name): reads its state (all of it, or the one `state` named) and its recent events, from the screen now. " +
-      "Use it to see a plugin's state or before PluginAct. Only plugins mounted on the laptop app now are reachable; a plugin that is off or not open says so.",
+      "app/context holds what Carl has selected, hovers and is focused in now. Use it to see a plugin's state or before PluginAct. Only plugins mounted on the laptop app now are reachable; a plugin that is off or not open says so.",
     inputSchema: {
       type: "object",
       properties: {

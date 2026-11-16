@@ -16,6 +16,14 @@
 //
 // Nothing a plugin does here can reach the app: a selector or action that throws (or rejects, or never settles) is an
 // error result; the plugin keeps running. This module imports nothing from the app.
+//
+// Plugins reach each other the same way (reports/07 point 6, "plugins compose with each other, not only with the
+// agent"): pluginReach(id) is a plugin's api.plugins: list() every live plugin's offers, read(plugin, state?) and
+// act(plugin, action, args) with the agent's exact routing and error rules (not mounted: a clear error; a throw, a
+// rejection or a hang: an error result; both plugins keep running), and on(plugin, event | "*", fn) to subscribe to
+// another plugin's events. A subscription names the plugin by word, so it holds across the other's remounts, and is
+// undone when the subscriber stops; events are delivered after the emitter's call returns (a microtask), so a
+// subscriber's throw is its own failure, never the emitter's.
 
 export type JsonSchema = Record<string, unknown>;
 export type OfferState = { description?: string; read: () => unknown };
@@ -39,12 +47,20 @@ export type OffersDescription = {
 export type OfferEventRecord = { event: string; at: number; payload?: unknown };
 
 type Entry = { id: string; name: string; offers: Offers; events: OfferEventRecord[]; alive: () => boolean };
+/** What a subscriber is handed: which plugin emitted, the event, when, its payload. */
+export type PluginEvent = { plugin: { id: string; name: string }; event: string; at: number; payload?: unknown };
+type Sub = { word: string; event: string; fn: (e: PluginEvent) => void; alive: () => boolean };
 
 /** One registry per app (globalThis, so a module loaded twice shares it). */
 const REG_KEY = "__vcPluginOffers";
+const SUB_KEY = "__vcPluginOfferSubs";
 function registry(): Map<string, Entry[]> {
   const g = globalThis as Record<string, unknown>;
   return ((g[REG_KEY] as Map<string, Entry[]> | undefined) ??= new Map());
+}
+function subscriptions(): Set<Sub> {
+  const g = globalThis as Record<string, unknown>;
+  return ((g[SUB_KEY] as Set<Sub> | undefined) ??= new Set());
 }
 
 const NAME_RE = /^[A-Za-z][\w.-]{0,63}$/;
@@ -98,8 +114,10 @@ export function declareOffers(id: string, name: string, offers: Offers, alive: (
     emit(event, payload) {
       if (!alive() || !(reg.get(id) ?? []).includes(entry)) return;
       if (!offers.events || !Object.prototype.hasOwnProperty.call(offers.events, event)) return;
-      entry.events.push({ event: String(event), at: Date.now(), ...(payload === undefined ? {} : { payload: plain(payload) }) });
+      const rec: OfferEventRecord = { event: String(event), at: Date.now(), ...(payload === undefined ? {} : { payload: plain(payload) }) };
+      entry.events.push(rec);
       if (entry.events.length > MAX_EVENTS) entry.events.splice(0, entry.events.length - MAX_EVENTS);
+      deliver(entry, rec);
     },
   };
   return { undo, handle };
@@ -115,18 +133,61 @@ function live(): Entry[] {
   return out.sort((a, b) => a.id.localeCompare(b.id));
 }
 
+const EXT = /\.(html?|[jt]sx?|mjs)$/;
+/** How well a word names a plugin (its id, its name, app/<word>, a vault file's name): 0 not at all, else a rank. */
+function nameRank(e: Pick<Entry, "id" | "name">, word: string): number {
+  const w = String(word ?? "").trim().toLowerCase();
+  if (!w) return 0;
+  if (e.id.toLowerCase() === w) return 4;
+  if (e.name.toLowerCase() === w) return 3;
+  if (e.id.toLowerCase() === `app/${w}`) return 2;
+  if ((e.id.split("/").pop() ?? "").toLowerCase().replace(EXT, "") === w.replace(EXT, "")) return 1;
+  return 0;
+}
+
 /** The plugin a word names: its id, its name, or a vault page's file name; case-insensitive. */
 function find(word: string): Entry | null {
-  const w = String(word ?? "").trim().toLowerCase();
-  if (!w) return null;
   const all = live();
-  return (
-    all.find((e) => e.id.toLowerCase() === w) ??
-    all.find((e) => e.name.toLowerCase() === w) ??
-    all.find((e) => e.id.toLowerCase() === `app/${w}`) ??
-    all.find((e) => (e.id.split("/").pop() ?? "").toLowerCase().replace(/\.(html?|[jt]sx?|mjs)$/, "") === w.replace(/\.(html?|[jt]sx?|mjs)$/, "")) ??
-    null
-  );
+  for (const rank of [4, 3, 2, 1]) {
+    const e = all.find((x) => nameRank(x, word) === rank);
+    if (e) return e;
+  }
+  return null;
+}
+
+/** Hand an emitted event to the subscribers that name its plugin, after the emitter's call returns. */
+function deliver(e: Entry, rec: OfferEventRecord): void {
+  const subs = subscriptions();
+  if (!subs.size) return;
+  for (const s of subs) {
+    if (!s.alive()) {
+      subs.delete(s);
+      continue;
+    }
+    if (s.event !== "*" && s.event !== rec.event) continue;
+    // The word must name this plugin as find() would: the best-named live plugin, so two plugins never both answer.
+    if (!nameRank(e, s.word) || find(s.word) !== e) continue;
+    const ev: PluginEvent = { plugin: { id: e.id, name: e.name }, event: rec.event, at: rec.at, ...("payload" in rec ? { payload: rec.payload } : {}) };
+    queueMicrotask(() => {
+      if (!s.alive() || !subs.has(s)) return;
+      try {
+        s.fn(ev);
+      } catch {
+        /* the subscriber's fn is guarded by its own host; nothing reaches the emitter */
+      }
+    });
+  }
+}
+
+/** Subscribe to a plugin's events (one event, or "*" for all), by the word that names it; returns off. */
+export function subscribeOffers(word: string, event: string, fn: (e: PluginEvent) => void, alive: () => boolean = () => true): () => void {
+  if (typeof fn !== "function") throw new Error("on(plugin, event, fn): fn must be a function");
+  const w = String(word ?? "").trim();
+  if (!w) throw new Error("on(plugin, event, fn): name the plugin (its id or name)");
+  const ev = String(event ?? "").trim() || "*";
+  const sub: Sub = { word: w, event: ev, fn, alive };
+  subscriptions().add(sub);
+  return () => void subscriptions().delete(sub);
 }
 
 export function describeOffers(e: Pick<Entry, "id" | "name" | "offers">): OffersDescription {
@@ -279,6 +340,43 @@ export async function actOffers(word: string, action: string, args: Record<strin
   return { ok: true, plugin, result: r.value, state: back };
 }
 
+// ---------------------------------------------------------------- plugin to plugin
+
+/** A plugin's reach into the other plugins (its api.plugins): the agent's PluginRead / PluginAct, from inside the app. */
+export type PluginReach = {
+  /** Every live plugin and what it offers (this one included). */
+  list(): OffersDescription[];
+  /** A plugin's state (every selector, or the one named) and its recent events. Never rejects: an error is the answer. */
+  read(plugin: string, state?: string): Promise<OfferAnswer>;
+  /** Run a plugin's action with its args (checked against its schema); the result and its state read back. Never rejects. */
+  act(plugin: string, action: string, args?: Record<string, unknown>): Promise<OfferAnswer>;
+  /** Subscribe to a plugin's event (or "*": every event it emits). Holds across its remounts; returns off. */
+  on(plugin: string, event: string, fn: (e: PluginEvent) => void): () => void;
+};
+
+const STOPPED: OfferAnswer = { ok: false, error: "this plugin has stopped, so it can no longer reach other plugins" };
+
+/**
+ * The api.plugins of one run. `alive()` false: the run is over (calls answer that it stopped, subscriptions end);
+ * `track(off)` records a subscription as an effect of the run; `guard` wraps the subscriber's fn (its throw is its
+ * own failure). `ms`: how long another plugin's action or selector may take.
+ */
+export function pluginReach(alive: () => boolean, track: (off: () => void) => () => void = (off) => off, guard: <A extends unknown[]>(f: (...a: A) => void) => (...a: A) => void = (f) => f, ms = OFFER_TIMEOUT_MS): PluginReach {
+  return {
+    list: () => (alive() ? listOffers() : []),
+    read: async (plugin, state) => (alive() ? readOffers(String(plugin ?? ""), typeof state === "string" && state ? state : undefined, ms) : STOPPED),
+    act: async (plugin, action, args) => {
+      if (!alive()) return STOPPED;
+      if (args !== undefined && (args === null || typeof args !== "object" || Array.isArray(args))) return { ok: false, error: "args must be an object. Nothing was run." };
+      return actOffers(String(plugin ?? ""), String(action ?? ""), args ?? {}, ms);
+    },
+    on(plugin, event, fn) {
+      if (!alive()) return () => {};
+      return track(subscribeOffers(plugin, event, guard(fn), alive));
+    },
+  };
+}
+
 // ---------------------------------------------------------------- the host's half of the box's signal
 
 export type PluginSignal = { type: "plugin"; id: string; to?: string; op?: unknown; plugin?: unknown; state?: unknown; action?: unknown; args?: unknown };
@@ -310,4 +408,5 @@ export async function answerPluginSignal(sig: PluginSignal): Promise<PluginAck> 
 /** Tests: forget every declaration. */
 export function _resetOffers(): void {
   registry().clear();
+  subscriptions().clear();
 }
