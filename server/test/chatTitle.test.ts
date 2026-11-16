@@ -8,7 +8,7 @@ let rig: Rig;
 const asked: { instructions: string; text: string }[] = [];
 let next = "Loss curve dip at step 800";
 
-async function turn(text: string, convId: string): Promise<void> {
+async function turn(text: string, convId: string): Promise<string> {
   const before = rig.backend.turns.length;
   const r = await rig.engine.message({ text, convId });
   if (!r?.ok) throw new Error(JSON.stringify(r));
@@ -17,6 +17,7 @@ async function turn(text: string, convId: string): Promise<void> {
   rig.backend.ev(t.threadId, { kind: "text", text: `About: ${text}` });
   rig.backend.end(t.threadId);
   await until(async () => (await rig.readConv(convId))?.state !== "running");
+  return t.threadId;
 }
 const title = async (id: string) => String((await rig.readConv(id))?.title ?? "");
 
@@ -69,5 +70,30 @@ describe("Chat titles", () => {
     await turn("hello main", "main");
     await new Promise((r) => setTimeout(r, 200));
     expect(asked.length).toBe(n);
+  });
+
+  it("the agent's RenameConversation: his name, or a fresh summary on his ask; Main refused", async () => {
+    next = "First summary";
+    const tid = await turn("a chat about pendulums", "sep-title3");
+    await until(async () => (await title("sep-title3")) === "First summary");
+    // A name he asked for: written, and kept over later summaries.
+    const out = JSON.stringify(await rig.backend.call(tid, "RenameConversation", { title: "  Pendulum lab  " }));
+    expect(out).toContain('now named \\"Pendulum lab\\"');
+    expect(await title("sep-title3")).toBe("Pendulum lab");
+    expect((await rig.readConv("sep-title3"))?.titleBy).toBe("carl");
+    // No title: a fresh summary now, even over his own name (he asked for it), and by id from another chat.
+    next = "Pendulum period vs length";
+    const other = await turn("another chat", "sep-title4");
+    expect(JSON.stringify(await rig.backend.call(other, "RenameConversation", { id: "sep-title3" }))).toContain("Pendulum period vs length");
+    expect(await title("sep-title3")).toBe("Pendulum period vs length");
+    // Then no automatic refresh replaces it.
+    next = "Should not appear";
+    for (const t of ["b", "c", "d", "e"]) await turn(t, "sep-title3");
+    await new Promise((r) => setTimeout(r, 200));
+    expect(await title("sep-title3")).toBe("Pendulum period vs length");
+    // Main and an unknown chat are refused.
+    const main = JSON.stringify(await rig.backend.call(tid, "RenameConversation", { id: "main", title: "Home" }));
+    expect(main).toContain("Not renamed");
+    expect(JSON.stringify(await rig.backend.call(tid, "RenameConversation", { id: "nope", title: "X" }))).toContain("Not renamed: no chat nope");
   });
 });

@@ -470,6 +470,20 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
+    name: "RenameConversation",
+    description:
+      "Name one of Carl's chats, only when he asks (\"rename this chat\", \"give it a better name\"). id: the chat (from ListConversations); left out, this chat. title: the name he wants; left out, a fresh short summary of what the chat is about is written now. Either way it shows at once on every surface and a later automatic summary never replaces it. Main and a project's thread are named by their place (a project is renamed in the app). Returns the name written, or why not.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "The chat's id; omit for this chat." },
+        title: { type: "string", description: "The new name; omit for a fresh summary." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
     name: "RestoreConversation",
     description: "Bring back a chat Carl deleted, only when he asks for it back. Without id: lists the deleted chats (id, title, when). With id: it is back in his lists as it was.",
     inputSchema: { type: "object", properties: { id: { type: "string" } }, additionalProperties: false },
@@ -1615,6 +1629,19 @@ export class Engine {
     return out;
   }
 
+  /** The agent's rename (RenameConversation): the engine of the vault that holds the chat names it; no title: a fresh summary. */
+  async renameAcrossVaults(id: string, title?: string): Promise<{ ok: true; title: string } | { ok: false; error: string }> {
+    const e = await this.ownerOf(id);
+    if (title && title.trim()) {
+      const r = e.renameConversation(id, title);
+      return r.ok ? { ok: true, title: title.trim().slice(0, 120) } : r;
+    }
+    const p = e.picture(id);
+    if (!p || p.meta.deleted) return { ok: false, error: `no chat ${id}` };
+    const r = await e.autoTitle(id, true);
+    return "title" in r ? { ok: true, title: r.title } : { ok: false, error: r.error };
+  }
+
   async restoreAcrossVaults(id: string): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
     return (await this.ownerOf(id)).restoreConversation(id);
   }
@@ -1859,15 +1886,21 @@ export class Engine {
    * their names; a title Carl gave it by hand (meta.titleBy "carl") is never touched.
    */
   private titling = new Set<string>();
-  private async autoTitle(convId: string): Promise<void> {
-    if (threadKindOf({ id: convId }) === "main" || threadKindOf({ id: convId }) === "project" || this.titling.has(convId)) return;
-    if (TITLE_MODEL === "off" && !this.d.titleWith) return;
+  /**
+   * `force` (Carl asked the agent for a fresh summary name: RenameConversation without a title): made now, whatever
+   * the turn counts, and it replaces a name he gave by hand. Returns the title written, or why none was.
+   */
+  private async autoTitle(convId: string, force = false): Promise<{ title: string } | { error: string }> {
+    if (threadKindOf({ id: convId }) === "main" || threadKindOf({ id: convId }) === "project") return { error: "Main and a project's thread are named by their place" };
+    if (this.titling.has(convId)) return { error: "a title is being written for it right now" };
+    if (TITLE_MODEL === "off" && !this.d.titleWith) return { error: "titles are off on this box" };
     const p = this.picture(convId);
-    if (!p || p.meta.deleted || p.meta.titleBy === "carl") return;
+    if (!p || p.meta.deleted) return { error: `no chat ${convId}` };
+    if (p.meta.titleBy === "carl" && !force) return { error: "Carl named it" };
     const asks = p.items.filter((i) => i.kind === "user" && (i.text ?? "").trim() && !["wake", "nudge", "resume", "job", "handoff"].includes(i.via ?? ""));
-    if (!asks.length || !p.items.some((i) => i.kind === "assistant" && (i.text ?? "").trim())) return;
+    if (!asks.length || !p.items.some((i) => i.kind === "assistant" && (i.text ?? "").trim())) return { error: "it has no exchange to summarize yet" };
     const done = Number((p.meta.autoTitle as { turns?: number } | undefined)?.turns ?? 0);
-    if (done && (done >= TITLE_REFRESH_TURNS || asks.length < TITLE_REFRESH_TURNS)) return;
+    if (!force && done && (done >= TITLE_REFRESH_TURNS || asks.length < TITLE_REFRESH_TURNS)) return { error: "already titled" };
     this.titling.add(convId);
     try {
       const said = p.items
@@ -1885,10 +1918,17 @@ export class Engine {
         .trim();
       // He may have renamed it (or deleted it) while it was being written.
       const now = this.picture(convId);
-      if (!title || !now || now.meta.deleted || now.meta.titleBy === "carl") return;
-      this.emit(convId, { type: "meta", patch: { title, titleBy: "auto", autoTitle: { turns: asks.length, at: Date.now() } } });
+      if (!title) return { error: "the summary came back empty" };
+      if (!now || now.meta.deleted) return { error: "it was deleted meanwhile" };
+      if (now.meta.titleBy === "carl" && now.meta.title !== p.meta.title) return { error: "Carl renamed it meanwhile" };
+      if (now.meta.titleBy === "carl" && !force) return { error: "Carl named it" };
+      // A forced summary keeps a later refresh off (he asked for this one): its turn count is final.
+      this.emit(convId, { type: "meta", patch: { title, titleBy: "auto", autoTitle: { turns: force ? Math.max(asks.length, TITLE_REFRESH_TURNS) : asks.length, at: Date.now() } } });
+      return { title };
     } catch (e) {
-      this.log(`title for ${convId} not made: ${String((e as Error)?.message ?? e).slice(0, 160)}`);
+      const why = String((e as Error)?.message ?? e).slice(0, 160);
+      this.log(`title for ${convId} not made: ${why}`);
+      return { error: `the summary could not be made (${why})` };
     } finally {
       this.titling.delete(convId);
     }
@@ -3009,6 +3049,13 @@ export class Engine {
             ...r.refused.map((x) => `- ${x.id}: not deleted (${x.why})`),
           ];
           return { success: r.deleted.length > 0, contentItems: [{ type: "inputText", text: lines.join("\n") }] };
+        }
+        case "RenameConversation": {
+          const id = typeof a.id === "string" && a.id.trim() ? a.id.trim() : convId;
+          const want = typeof a.title === "string" ? a.title : undefined;
+          const r = await this.renameAcrossVaults(id, want);
+          const which = id === convId ? "This chat" : `Chat ${id}`;
+          return { success: r.ok, contentItems: [{ type: "inputText", text: r.ok ? `${which} is now named "${r.title}" on every surface.` : `Not renamed: ${r.error}.` }] };
         }
         case "RestoreConversation": {
           const want = typeof a.id === "string" ? a.id.trim() : "";
