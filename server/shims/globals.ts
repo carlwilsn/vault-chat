@@ -12,8 +12,13 @@ import { loadConfig } from "../config";
 export class FileLocalStorage {
   private data: Record<string, string> = {};
   constructor(private path: string) {
+    this.reload();
+  }
+  /** Read the file again: a server that just took over from another (server/owner.ts) sees what that one wrote last. */
+  reload(): void {
+    this.data = {};
     try {
-      const parsed = JSON.parse(readFileSync(path, "utf8"));
+      const parsed = JSON.parse(readFileSync(this.path, "utf8"));
       if (parsed && typeof parsed === "object") {
         for (const [k, v] of Object.entries(parsed)) this.data[k] = String(v);
       }

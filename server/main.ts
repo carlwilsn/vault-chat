@@ -15,7 +15,9 @@ import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { registerCommands } from "./commands";
 import { loadKeyStore, hasKey, saveKeys, keyNames, CLAUDE_CODE_KEY } from "./keys";
 import { hostname, userInfo } from "node:os";
-import { setLegacySource, signal, signalLog, convLog, setSharedClock, setFeedVaults } from "./convlog/log";
+import { setLegacySource, signal, signalLog, convLog, setSharedClock, setFeedVaults, prereadConvLog } from "./convlog/log";
+import { endOwnProcesses, promote, takeOwnership } from "./owner";
+import type { FileLocalStorage } from "./shims/globals";
 import { legacySource } from "./convlog/importer";
 
 function fatal(msg: string, code = 2): never {
@@ -38,10 +40,6 @@ async function main(): Promise<void> {
   }
 
   registerCommands();
-  // Every vault's conversations are its event log; an older conversation file is imported when first opened.
-  setLegacySource(legacySource);
-  // Every vault's log takes its seqs from one clock: the clients read one feed over all of them (GlobalFeed).
-  setSharedClock(join(cfg.stateDir, "convlog-clock"));
 
   // Keys: in-process from the box's encrypted store. The server still starts
   // with none (health says so) so the laptop's Settings can send them (POST
@@ -60,6 +58,22 @@ async function main(): Promise<void> {
 
   checkGit();
   setInterval(checkGit, 60_000).unref();
+
+  // ---- taking over ----
+  // Nothing above touches the box's data. A server behind the front (an update starts it beside the one serving,
+  // server/deploy/vault-chat-update.sh) reads every vault's log ahead, then waits for that one to drain and exit
+  // (server/owner.ts). Requests meanwhile wait at the front, so the switch costs only what follows.
+  const { listVaults: vaultsOnBox, vaultPaths: pathsOf } = await import("./sync");
+  if (cfg.backend) {
+    for (const v of vaultsOnBox()) prereadConvLog(v.main ? cfg.vault : pathsOf(v.name).vault);
+    await takeOwnership(cfg.stateDir, cfg.port);
+    // What the last owner wrote last.
+    for (const s of [globalThis.localStorage, globalThis.sessionStorage]) (s as unknown as FileLocalStorage).reload?.();
+  }
+  // Every vault's conversations are its event log; an older conversation file is imported when first opened.
+  setLegacySource(legacySource);
+  // Every vault's log takes its seqs from one clock: the clients read one feed over all of them (GlobalFeed).
+  setSharedClock(join(cfg.stateDir, "convlog-clock"));
 
   // ---- the app, headless ----
   const store = await import("../src/store");
@@ -222,7 +236,7 @@ async function main(): Promise<void> {
     }
   };
 
-  const { startHttpServer } = await import("./http");
+  const { startHttpServer, endLongPolls } = await import("./http");
   const { drainServer, SHUTDOWN_GRACE_MS } = await import("./drain");
   const { recentInput } = await import("./presence");
   const bootedAt = Date.now();
@@ -389,6 +403,8 @@ async function main(): Promise<void> {
     }),
   });
   console.log(`[vault-chat-server] listening on http://${cfg.host}:${cfg.port}`);
+  // Behind the front: every request comes here from now on.
+  if (cfg.backend) promote(cfg.stateDir, cfg.port);
 
   // Preserve accepted ship-result events; no ASKS-specific idle producer.
   const vcVault = vaultRefs().find((v) => v.name === "vault-chat");
@@ -419,15 +435,33 @@ async function main(): Promise<void> {
     // A write in flight (a board save, a message) finishes and gets its answer; long polls are cut (their clients
     // reconnect). Nothing is left half-open: whatever is still running at the grace's end is closed, so its client
     // sees an error and retries.
-    void drainServer(server, SHUTDOWN_GRACE_MS).then((left) => {
+    // Long polls answer first (an empty answer, never a cut connection): their clients simply ask again.
+    endLongPolls();
+    void new Promise((r) => setTimeout(r, 50)).then(() => drainServer(server, SHUTDOWN_GRACE_MS)).then(async (left) => {
       if (left) console.warn(`[vault-chat-server] ${left} request(s) still running after ${SHUTDOWN_GRACE_MS} ms — closed`);
+      // Behind the front the next server takes over the moment this one exits: nothing of this one outlives it.
+      if (cfg.backend) {
+        stopPipeline();
+        await endOwnProcesses();
+      }
       process.exit(0);
     });
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+  // The updater's hand-over (server/deploy/vault-chat-update.sh): this server goes only when no agent turn, voice call
+  // or background worker (Claude Code's subagents and shells, BoardMake) runs here. Running work always finishes on
+  // the server it started on; an update never cuts it. Busy: it stays and keeps serving, and the updater asks again.
+  process.on("SIGUSR2", () => {
+    const busy = { agent: activeRuns().length, voice: activeVoiceSessions(), workers: engine.workers?.() ?? 0 };
+    if (busy.agent || busy.voice || busy.workers) {
+      console.log(`[vault-chat-server] hand-over declined: still running ${JSON.stringify(busy)}`);
+      return;
+    }
+    shutdown("hand-over");
+  });
   // The New voice's pipeline runs as this server's child (server/voicePipeline.ts).
   if (process.env.VC_VOICE_PIPELINE !== "off")
-    void wantPipeline({ stateDir: cfg.stateDir, serverPort: cfg.port, port: cfg.voicePort, log: (s) => console.log(s) }, true).catch(() => {}); // failure is retained in health/UI
+    void wantPipeline({ stateDir: cfg.stateDir, serverPort: cfg.publicPort, port: cfg.voicePort, log: (s) => console.log(s) }, true).catch(() => {}); // failure is retained in health/UI
   process.on("exit", () => stopPipeline());
   process.on("SIGINT", () => shutdown("SIGINT"));
 }

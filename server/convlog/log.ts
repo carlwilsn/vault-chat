@@ -230,8 +230,25 @@ export class ConvLog {
     private legacy: LegacySource | null = null,
     dir?: string,
     private clock: SeqClock = { next: 1 },
+    /** Read only, no lock and no write (prereadConvLog): the writer opened later adopts what this read. */
+    readAhead = false,
   ) {
     this.dir = dir ?? join(vault, ".vault-chat", "events");
+    if (readAhead) {
+      this.signalsFile = join(this.dir, `${SIGNALS}.jsonl`);
+      this.sessionsDir = join(this.dir, "sessions");
+      this.epoch = "";
+      for (const n of readdirSync(this.dir)) {
+        if (!n.endsWith(".jsonl") || n.startsWith("_")) continue;
+        try {
+          const c = this.load(join(this.dir, n));
+          if (c) this.convs.set(c.id, c);
+        } catch {
+          /* the writer loads it itself, and says why if it cannot */
+        }
+      }
+      return;
+    }
     mkdirSync(this.dir, { recursive: true });
     this.releaseWriter = acquireEventDirectory(this.dir, "shared");
     try {
@@ -242,11 +259,20 @@ export class ConvLog {
       this.signalsFile = join(this.dir, `${SIGNALS}.jsonl`);
       this.sessionsDir = join(this.dir, "sessions");
       this.epoch = this.loadEpoch();
+      // What a server read ahead while it waited to take over: each conversation is caught up from where that read
+      // stopped (only what the last owner appended since), or read again whole when its file is not the same file.
+      const warm = ahead.get(this.dir);
+      ahead.delete(this.dir);
+      const adopted = new Map<string, Conv>();
+      if (warm) {
+        for (const c of warm.convs.values()) adopted.set(c.file, c);
+        this.entries = warm.entries;
+      }
       let max = 0;
       for (const n of readdirSync(this.dir)) {
         if (!n.endsWith(".jsonl") || n.startsWith("_")) continue;
         const file = join(this.dir, n);
-        const c = this.load(file);
+        const c = (warm && this.adopt(warm, adopted.get(file))) || this.load(file);
         if (c) {
           this.convs.set(c.id, c);
           max = Math.max(max, c.maxSeq);
@@ -311,6 +337,20 @@ export class ConvLog {
   }
 
   /** A conversation's file → its picture (its checkpoint plus the records after it). */
+  /** A conversation read ahead by `warm`, caught up to its file's end; null when it must be read again whole. */
+  private adopt(warm: ConvLog, c: Conv | undefined): Conv | null {
+    if (!c) return null;
+    const index = warm.pointed.get(c.id);
+    if (index) this.pointed.set(c.id, index);
+    try {
+      this.refresh(c);
+      return c;
+    } catch {
+      this.pointed.delete(c.id);
+      return null;
+    }
+  }
+
   private load(file: string): Conv | null {
     const size = statSync(file).size;
     let ck: any = null;
@@ -745,6 +785,19 @@ export class ConvLog {
 // ---------------------------------------------------------------- one log per vault, one feed for the box
 
 const logs = new Map<string, ConvLog>();
+/** Logs read ahead, by events dir (prereadConvLog). */
+const ahead = new Map<string, ConvLog>();
+
+/**
+ * Read a vault's log ahead, without its writer's lock and without writing anything: a server waiting to take over
+ * (server/owner.ts) does the long part (every conversation's checkpoint and tail) while the old one still serves and
+ * writes. The writer convLog() opens after the takeover adopts it and reads only what was appended in between.
+ */
+export function prereadConvLog(vault: string): void {
+  const dir = join(vault, ".vault-chat", "events");
+  if (logs.has(vault) || ahead.has(dir) || !existsSync(dir)) return;
+  ahead.set(dir, new ConvLog(vault, null, dir, { next: 1 }, true));
+}
 let legacyFor: ((vault: string) => LegacySource | null) | null = null;
 let shared: SeqClock | null = null;
 let sharedFloorFile: string | null = null;
@@ -788,6 +841,7 @@ export function convLog(vault: string): ConvLog {
 export function _resetConvLogs(): void {
   for (const l of logs.values()) l.close();
   logs.clear();
+  ahead.clear();
   feed = null;
   if (sharedFloorFile) setSharedClock(sharedFloorFile);
 }

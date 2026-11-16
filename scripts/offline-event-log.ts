@@ -225,12 +225,14 @@ export async function assertHostStopped() {
   if (process.platform !== "linux" || (await readFile("/proc/1/comm", "utf8")).trim() !== "systemd") throw new Error("host-process-namespace-required");
   const nspid = (await readFile("/proc/self/status", "utf8")).match(/^NSpid:\s+(.+)$/m)?.[1].trim().split(/\s+/);
   if (!nspid || nspid.length !== 1) throw new Error("host-process-namespace-required");
-  for (const unit of ["vault-chat-server.service", "vault-chat-update.service", "vault-chat-update.timer"]) {
+  // The server: the one unit from before the front, or either slot behind it (server/deploy/vault-chat-server@.service).
+  for (const unit of ["vault-chat-server.service", "vault-chat-server@8851.service", "vault-chat-server@8852.service", "vault-chat-update.service", "vault-chat-update.timer"]) {
     let fields: Record<string, string>;
     try {
       fields = Object.fromEntries(execFileSync("systemctl", ["--user", "show", unit, "--property=LoadState,ActiveState,SubState,ControlGroup"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 5000 }).trim().split("\n").map(line => { const i = line.indexOf("="); return [line.slice(0, i), line.slice(i + 1)]; }));
     } catch { throw new Error("host-service-check-unavailable"); }
-    if (fields.LoadState !== "loaded" || fields.ActiveState !== "inactive" || fields.SubState !== "dead") throw new Error("server-and-updater-must-be-stopped");
+    const absent = fields.LoadState === "not-found" && unit.startsWith("vault-chat-server");
+    if ((fields.LoadState !== "loaded" && !absent) || fields.ActiveState !== "inactive" || fields.SubState !== "dead") throw new Error("server-and-updater-must-be-stopped");
     if (fields.ControlGroup) {
       const cg = resolve("/sys/fs/cgroup", "." + fields.ControlGroup);
       if (!inside(cg, "/sys/fs/cgroup")) throw new Error("invalid-service-cgroup");

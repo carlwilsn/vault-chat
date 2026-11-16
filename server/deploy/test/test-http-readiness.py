@@ -93,6 +93,13 @@ class Fixture:
                                 data["releaseReadiness"] = {"status": "pending" if mode == "fallback-pending" else "failed"}
                         else:
                             data["releaseReadiness"] = {"status": "failed", "binaryFallback": False}
+                    if mode == "front":
+                        if (owner.state / "active-backend").read_text() == "8851":
+                            doc = owner.busy[min(owner.polls, len(owner.busy) - 1)]
+                            data.update(version="1.0.0", rev="b" * 40, busy=doc)
+                            owner.polls += 1
+                            if doc.get("runs") or doc.get("workers"):
+                                owner.busy_at.append(time.monotonic())
                     if mode == "busy" and (owner.state / "current").readlink() == Path("versions/1.0.0"):
                         data.update(version="1.0.0", rev="b" * 40, busy=owner.busy[min(owner.polls, len(owner.busy) - 1)])
                         owner.polls += 1
@@ -429,15 +436,167 @@ class Readiness(unittest.TestCase):
         self.assertIn("server busy (1 runs, 0 background workers, 0 surfaces in use) — waiting for it to go idle", out)
         self.assertNotIn("updating anyway", out)
 
-    def test_busy_wait_deadline_updates_despite_live_workers(self):
-        # Workers that never finish get the same maximum wait as a run, then it updates anyway.
-        start = time.monotonic()
-        out, polls = self.busy_update("stuck", [{"runs": 0, "workers": 3, "inputs": 0}], max_s="1")
-        self.assertGreaterEqual(polls, 2)
-        self.assertIn("server busy (0 runs, 3 background workers, 0 surfaces in use) — waiting for it to go idle", out)
-        self.assertIn("still busy (0 runs, 3 background workers, 0 surfaces in use) after 1s — updating anyway", out)
-        self.assertLess(time.monotonic() - start, 8)
+    def test_busy_wait_never_cuts_live_workers(self):
+        # Workers that do not finish are waited for past the maximum wait: an update never cuts running work.
+        with Fixture("busy") as fixture:
+            state = self.root / "stuck"
+            old = state / "versions/1.0.0"
+            old.mkdir(parents=True)
+            (old / "server-version.json").write_text(json.dumps({"version": "1.0.0", "rev": "b" * 40}))
+            (state / "current").symlink_to("versions/1.0.0")
+            fixture.state, fixture.busy = state, [{"runs": 0, "workers": 3, "inputs": 0}]
+            env = dict(self.env, VC_UPDATE_API=fixture.url + "/release", VC_SERVER_URL=fixture.url,
+                       VC_SERVER_STATE=str(state), VC_SERVER_UNIT="owned-fixture.service",
+                       VC_UPDATE_BUSY_POLL_S="0.02", VC_UPDATE_BUSY_MAX_S="1",
+                       VC_UPDATE_BIN_DIR=str(self.root / "installed-bin"), VC_UPDATE_UNITS_DIR=str(self.root / "installed-units"))
+            p = subprocess.Popen(["bash", str(SCRIPT)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            time.sleep(2.5)
+            self.assertIsNone(p.poll())
+            os.killpg(p.pid, signal.SIGTERM)
+            out = p.communicate(timeout=5)[0].decode()
+            self.assertGreaterEqual(fixture.polls, 5)
+            self.assertIn("server busy (0 runs, 3 background workers, 0 surfaces in use) — waiting for it to go idle", out)
+            self.assertNotIn("updating anyway", out)
+            self.assertEqual((state / "current").readlink(), Path("versions/1.0.0"))
+            self.assertFalse(self.calls.exists() and any("restart" in c for c in self.calls.read_text().splitlines()))
 
+    def test_busy_wait_holds_while_health_does_not_answer(self):
+        # A running server that does not answer its health (a busy event loop) is waited for, never skipped
+        # (2026-11-15 22:41: "server not answering /api/v1/health — not waiting for it" killed live workers).
+        with Fixture("busy") as fixture:
+            state = self.root / "silent"
+            old = state / "versions/1.0.0"
+            old.mkdir(parents=True)
+            (old / "server-version.json").write_text(json.dumps({"version": "1.0.0", "rev": "b" * 40}))
+            (state / "current").symlink_to("versions/1.0.0")
+            fixture.state = state
+            fixture.busy = [{"runs": 0, "workers": 0, "inputs": 0}]
+            fixture.mode = "500"   # not answering, for now
+            env = dict(self.env, VC_UPDATE_API=fixture.url + "/release", VC_SERVER_URL=fixture.url,
+                       VC_SERVER_STATE=str(state), VC_SERVER_UNIT="owned-fixture.service",
+                       VC_UPDATE_HEALTH_WAIT_S="3", VC_UPDATE_HEALTH_POLL_S="0.03",
+                       VC_UPDATE_BUSY_POLL_S="0.02", VC_UPDATE_BUSY_MAX_S="1",
+                       VC_UPDATE_BIN_DIR=str(self.root / "installed-bin"), VC_UPDATE_UNITS_DIR=str(self.root / "installed-units"))
+            p = subprocess.Popen(["bash", str(SCRIPT)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            time.sleep(1.5)
+            self.assertIsNone(p.poll())
+            self.assertEqual((state / "current").readlink(), Path("versions/1.0.0"))
+            self.assertFalse(self.calls.exists() and any("restart" in c for c in self.calls.read_text().splitlines()))
+            fixture.mode = "busy"  # it answers again: idle
+            out = p.communicate(timeout=10)[0].decode()
+            self.assertEqual(p.returncode, 0, out)
+            self.assertIn("server not answering /api/v1/health — waiting (an update never cuts running work)", out)
+            self.assertEqual((state / "current").readlink(), Path("versions/1.0.1"))
+
+
+class Front(unittest.TestCase):
+    """The hand-over behind the front, on the real updater entry: a stateful fake systemctl plays the two slots
+    (start = the new one reads ahead and stands by; SIGUSR2 = the old one hands over, or declines while busy)."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="vc-front-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.state = self.root / "state"
+        old = self.state / "versions/1.0.0"
+        old.mkdir(parents=True)
+        (old / "server-version.json").write_text(json.dumps({"version": "1.0.0", "rev": "b" * 40}))
+        (self.state / "current").symlink_to("versions/1.0.0")
+        (self.state / "active-backend").write_text("8851")
+        self.units = self.root / "units"
+        self.units.mkdir()
+        (self.units / "vault-chat-front.service").write_text("# installed\n")
+        self.active = self.root / "active-units"
+        self.active.mkdir()
+        for u in ("vault-chat-front.service", "vault-chat-server@8851.service"):
+            (self.active / u).write_text("")
+        self.calls = self.root / "calls.jsonl"
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        fake = self.bin / "systemctl"
+        fake.write_text("#!" + os.sys.executable + "\n" + '''
+import json, os, sys, time
+from pathlib import Path
+a = [x for x in sys.argv[1:] if x not in ("--user", "--quiet", "--no-block")]
+act, st = Path(os.environ["T_ACTIVE"]), Path(os.environ["T_STATE"])
+with open(os.environ["T_CALLS"], "a") as f: f.write(json.dumps([time.monotonic()] + a) + "\\n")
+if a[0] == "is-active": sys.exit(0 if (act / a[1]).exists() else 3)
+if a[0] == "start":
+    port = a[1].split("@")[1].split(".")[0]
+    if os.environ.get("T_NO_STANDBY"): sys.exit(0)
+    (act / a[1]).write_text("")
+    others = [u for u in os.listdir(act) if u.startswith("vault-chat-server@") and u != a[1]]
+    (st / ("standby" if others else "active-backend")).write_text(port)
+if a[0] == "stop": (act / a[1]).unlink(missing_ok=True)
+if a[0] == "kill":
+    unit = a[-1]
+    decline = Path(os.environ["T_DECLINE"])
+    n = int(decline.read_text()) if decline.exists() else 0
+    if n > 0: decline.write_text(str(n - 1)); sys.exit(0)
+    (act / unit).unlink(missing_ok=True)
+    sb = st / "standby"
+    if sb.exists(): (st / "active-backend").write_text(sb.read_text()); sb.unlink()
+''')
+        fake.chmod(0o755)
+        self.env = {"PATH": str(self.bin) + os.pathsep + os.environ["PATH"], "HOME": str(self.root),
+                    "T_ACTIVE": str(self.active), "T_STATE": str(self.state), "T_CALLS": str(self.calls),
+                    "T_DECLINE": str(self.root / "decline")}
+
+    def run_update(self, fixture, **extra):
+        fixture.state = self.state
+        env = dict(self.env, VC_UPDATE_API=fixture.url + "/release", VC_SERVER_URL=fixture.url,
+                   VC_SERVER_STATE=str(self.state), VC_UPDATE_HEALTH_WAIT_S="3", VC_UPDATE_HEALTH_POLL_S="0.03",
+                   VC_UPDATE_BUSY_POLL_S="0.02", VC_UPDATE_BUSY_MAX_S="30", VC_UPDATE_STANDBY_WAIT_S="1", VC_UPDATE_HANDOVER_WAIT_S="1",
+                   VC_UPDATE_BIN_DIR=str(self.root / "installed-bin"), VC_UPDATE_UNITS_DIR=str(self.units), **extra)
+        result = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, timeout=12)
+        calls = [json.loads(l) for l in self.calls.read_text().splitlines()] if self.calls.exists() else []
+        return result, calls
+
+    def front_fixture(self, busy):
+        f = Fixture("front")
+        f.busy = busy
+        f.busy_at = []
+        return f
+
+    def test_hand_over_only_when_no_work_runs(self):
+        busy = [{"runs": 0, "workers": 2, "inputs": 0}, {"runs": 1, "workers": 1, "inputs": 0}, {"runs": 0, "workers": 0, "inputs": 0}]
+        with self.front_fixture(busy) as fixture:
+            result, calls = self.run_update(fixture)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            kills = [c for c in calls if c[1] == "kill"]
+            self.assertEqual(len(kills), 1)
+            self.assertEqual(kills[0][-1], "vault-chat-server@8851.service")
+            # Asked only after the last poll that saw work running on the old server.
+            self.assertGreater(kills[0][0], max(fixture.busy_at))
+            # Never stopped or restarted: the old server ends itself, after its work.
+            self.assertFalse([c for c in calls if c[1] in ("stop", "restart")])
+            starts = [c for c in calls if c[1] == "start"]
+            self.assertEqual([c[-1] for c in starts], ["vault-chat-server@8852.service"])
+            self.assertLess(starts[0][0], kills[0][0])
+            self.assertEqual((self.state / "active-backend").read_text(), "8852")
+            self.assertEqual((self.state / "current").readlink(), Path("versions/1.0.1"))
+            self.assertIn(b"actual box readiness", result.stdout)
+
+    def test_declined_hand_over_is_asked_again(self):
+        # Work started between the idle health and the ask: the old server declines and keeps serving.
+        (self.root / "decline").write_text("1")
+        with self.front_fixture([{"runs": 0, "workers": 0, "inputs": 0}]) as fixture:
+            result, calls = self.run_update(fixture)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(len([c for c in calls if c[1] == "kill"]), 2)
+            self.assertIn(b"declined the hand-over", result.stdout)
+            self.assertEqual((self.state / "active-backend").read_text(), "8852")
+
+    def test_new_server_that_never_stands_by_never_takes_traffic(self):
+        with self.front_fixture([{"runs": 0, "workers": 0, "inputs": 0}]) as fixture:
+            result, calls = self.run_update(fixture, T_NO_STANDBY="1")
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertFalse([c for c in calls if c[1] == "kill"])
+            self.assertIn(["stop", "vault-chat-server@8852.service"], [c[1:] for c in calls])
+            self.assertEqual((self.state / "active-backend").read_text(), "8851")
+            self.assertTrue((self.active / "vault-chat-server@8851.service").exists())
+            self.assertEqual((self.state / "current").readlink(), Path("versions/1.0.0"))
+            self.assertTrue((self.state / "failed/1.0.1").exists())
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

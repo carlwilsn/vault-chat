@@ -6,17 +6,25 @@
 #      (or one that already failed its health check here);
 #   2. download vault-chat-server.mjs (+ its .sha256), server-version.json and the
 #      phone assets tarball (+ .sha256) into versions/<ver>/, refusing any bad sha;
-#   3. wait until /api/v1/health reports busy.runs == 0, busy.workers == 0 and
-#      busy.inputs == 0 — agent runs, live voice sessions, background workers still at
-#      work (a restart kills them) and any surface Carl used in the last 10 minutes (board
-#      saves, typed messages, voice, the phone) all count (at most 2 h, then go anyway: the
-#      server drains writes in flight on SIGTERM and the board keeps unsaved work on the iPad);
-#   4. swap the `current` symlink to versions/<ver> and restart the server unit;
+#   3. wait until /api/v1/health reports busy.runs == 0 and busy.workers == 0 — agent runs,
+#      live voice sessions and background workers (Claude Code's subagents and shells,
+#      BoardMake) always finish on the server they started on: an update never cuts them,
+#      however long they take, and a server that does not answer is waited for, not
+#      skipped. Also busy.inputs == 0 (a surface Carl used in the last 10 minutes), for
+#      at most 2 h;
+#   4. swap the `current` symlink to versions/<ver> and hand over (behind the front,
+#      vault-chat-front.service on 8848): the new version starts in the other slot
+#      (vault-chat-server@8851/8852), reads ahead and stands by; the old one is asked to
+#      hand over (SIGUSR2), which it declines while any work runs; when it has exited the
+#      new one takes over and the front sends it every request. Requests wait at the front
+#      in between, so no client sees the box go down. A new version that never reaches
+#      standby is stopped and the old one never noticed. (Before the front is installed:
+#      restart the one server unit, as before);
 #   5. /api/v1/health must report <ver> within 90 s — otherwise swap the symlink back,
 #      restart, mark <ver> failed (so it is not retried every 10 min) and
 #      log the failure without alerts or source mutation;
 #   6. keep the two most recent old versions, delete older ones;
-#   7. refresh itself: the release's own copy of this script and the units
+#   7. refresh itself: the release's own copy of this script, the front and the units
 #      (vault-chat-deploy.tar.gz, from server/deploy/) replace the installed ones when
 #      they differ — each written beside its target and renamed over it, the script only
 #      if `bash -n` passes, then `daemon-reload` (and the timer restarted when it changed).
@@ -39,11 +47,19 @@ REPO="${VC_UPDATE_REPO:-carlwilsn/vault-chat}"
 API="${VC_UPDATE_API:-https://api.github.com/repos/$REPO/releases/latest}"
 STATE="${VC_SERVER_STATE:-$HOME/.local/state/vault-chat-server}"
 SERVER_URL="${VC_SERVER_URL:-http://127.0.0.1:${VC_PORT:-8848}}"
+# The one server unit from before the front: moved behind the front once (ensure_front), then gone.
 UNIT="${VC_SERVER_UNIT:-vault-chat-server.service}"
+FRONT_UNIT="${VC_FRONT_UNIT:-vault-chat-front.service}"
+SLOT_A=8851
+SLOT_B=8852
 BUSY_MAX_S="${VC_UPDATE_BUSY_MAX_S:-7200}"
 BUSY_POLL_S="${VC_UPDATE_BUSY_POLL_S:-30}"
 HEALTH_WAIT_S="${VC_UPDATE_HEALTH_WAIT_S:-90}"
 HEALTH_POLL_S="${VC_UPDATE_HEALTH_POLL_S:-3}"
+# How long a new server may take to read ahead and stand by beside the serving one.
+STANDBY_WAIT_S="${VC_UPDATE_STANDBY_WAIT_S:-300}"
+# How long the old server may take to drain and exit once it accepted the hand-over (it declines at once when busy).
+HANDOVER_WAIT_S="${VC_UPDATE_HANDOVER_WAIT_S:-30}"
 KEEP_OLD="${VC_UPDATE_KEEP_OLD:-2}"
 # Test hook only: on a filesystem without symlinks (Windows Git Bash without developer
 # mode) `current` becomes a plain file holding the target. Never set on the box.
@@ -59,7 +75,7 @@ META=server-version.json
 # Where install.sh put the updater and the units (overridable for the tests only).
 BIN_DIR="${VC_UPDATE_BIN_DIR:-$STATE/bin}"
 UNITS_DIR="${VC_UPDATE_UNITS_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}"
-DEPLOY_FILES="vault-chat-update.sh vault-chat-server.service vault-chat-update.service vault-chat-update.timer"
+DEPLOY_FILES="vault-chat-update.sh vault-chat-front.mjs vault-chat-front.service vault-chat-server@.service vault-chat-update.service vault-chat-update.timer"
 
 log() { echo "vault-chat-update: $*"; }
 die() { echo "vault-chat-update: $*" >&2; exit 1; }
@@ -106,7 +122,96 @@ current_version() {
   [ -n "$t" ] && [ -f "$t/$META" ] && json_field version < "$t/$META" || true
 }
 
-health() { curl -fsS --max-time 5 "$SERVER_URL/api/v1/health" 2>/dev/null; }
+health() { curl -fsS --max-time 30 "$SERVER_URL/api/v1/health" 2>/dev/null; }
+
+# ── the front and its two slots ─────────────────────────────────────────────
+# Safe under `set -u` with the config unset (the helpers are also sourced alone): no front then.
+front_on() { [ -n "${FRONT_UNIT:-}" ] && [ -f "${UNITS_DIR:-}/$FRONT_UNIT" ] && systemctl --user is-active --quiet "$FRONT_UNIT" 2>/dev/null; }
+active_slot() { local p; p="$(cat "$STATE/active-backend" 2>/dev/null || true)"; case "$p" in "$SLOT_A"|"$SLOT_B") echo "$p" ;; *) echo "$SLOT_A" ;; esac; }
+other_slot() { if [ "$1" = "$SLOT_A" ]; then echo "$SLOT_B"; else echo "$SLOT_A"; fi; }
+slot_unit() { echo "vault-chat-server@$1.service"; }
+unit_up() { systemctl --user is-active --quiet "$1" 2>/dev/null; }
+# The unit of the server serving now.
+serving_unit() { if front_on; then slot_unit "$(active_slot)"; else echo "$UNIT"; fi; }
+
+# wait_idle: return only when no agent turn, voice call or background worker runs on the serving server
+# (and no surface was used in the last 10 minutes, waited for at most BUSY_MAX_S). Running work is never cut:
+# no deadline for it, and a server that does not answer is waited for — unless it is not running at all.
+wait_idle() {
+  local deadline said=0 h runs workers inputs
+  deadline=$(( $(date +%s) + BUSY_MAX_S ))
+  while :; do
+    if h="$(health)"; then
+      runs="$(printf '%s' "$h" | json_field busy.runs)"
+      # A server that predates the field does not report it: that is 0.
+      workers="$(printf '%s' "$h" | json_field busy.workers)"
+      inputs="$(printf '%s' "$h" | json_field busy.inputs)"
+      if [ "${runs:-0}" = 0 ] && [ "${workers:-0}" = 0 ]; then
+        [ "${inputs:-0}" = 0 ] && return 0
+        [ "$(date +%s)" -ge "$deadline" ] && { log "surfaces used recently, but nothing runs: going ahead (nothing is cut)"; return 0; }
+      fi
+      [ "$said" = 0 ] && { log "server busy (${runs:-0} runs, ${workers:-0} background workers, ${inputs:-0} surfaces in use) — waiting for it to go idle"; said=1; }
+    else
+      unit_up "$(serving_unit)" || return 0
+      [ "$said" = 0 ] && { log "server not answering /api/v1/health — waiting (an update never cuts running work)"; said=1; }
+    fi
+    sleep "$BUSY_POLL_S"
+  done
+}
+
+# handover <from> <to>: start slot <to> (on `current`), let it read ahead and stand by, then ask <from> to hand
+# over once it is idle (it declines while work runs: ask again). 0 when <to> serves; 1 when <to> never reached
+# standby (it is stopped again; <from> served throughout).
+handover() {
+  local from="$1" to="$2" i
+  # A stand-by that died earlier leaves its note: never mistake it for this one.
+  rm -f "${STATE:?}/standby"
+  systemctl --user reset-failed "$(slot_unit "$to")" 2>/dev/null || true
+  systemctl --user start --no-block "$(slot_unit "$to")" || return 1
+  for i in $(seq $(( STANDBY_WAIT_S * 10 ))); do
+    [ "$(cat "$STATE/standby" 2>/dev/null)" = "$to" ] && break
+    [ "$(cat "$STATE/active-backend" 2>/dev/null)" = "$to" ] && return 0
+    sleep 0.1
+  done
+  if [ "$(cat "$STATE/standby" 2>/dev/null)" != "$to" ]; then
+    log "the new server (slot $to) never stood by — stopping it; slot $from keeps serving"
+    systemctl --user stop "$(slot_unit "$to")" || true
+    return 1
+  fi
+  while unit_up "$(slot_unit "$from")"; do
+    wait_idle
+    if ! unit_up "$(slot_unit "$to")"; then
+      log "the new server (slot $to) went away while standing by; slot $from keeps serving"
+      return 1
+    fi
+    systemctl --user kill --kill-whom=main --signal=SIGUSR2 "$(slot_unit "$from")" 2>/dev/null || true
+    for i in $(seq $(( HANDOVER_WAIT_S * 10 ))); do unit_up "$(slot_unit "$from")" || break; sleep 0.1; done
+    unit_up "$(slot_unit "$from")" && log "slot $from declined the hand-over (work started): waiting again"
+  done
+  for i in $(seq $(( HEALTH_WAIT_S * 10 ))); do
+    [ "$(cat "$STATE/active-backend" 2>/dev/null)" = "$to" ] && return 0
+    sleep 0.1
+  done
+  return 0  # wait_for_version decides
+}
+
+# ensure_front: once, move the one server unit behind the front (when this release installed it): wait until
+# nothing runs, stop the old unit, start the front, which starts the active slot. Requests wait at the front
+# from the moment it listens.
+ensure_front() {
+  [ -f "$UNITS_DIR/$FRONT_UNIT" ] || return 0
+  front_on && return 0
+  log "moving the server behind the front ($FRONT_UNIT)"
+  wait_idle
+  [ -s "$STATE/active-backend" ] || printf '%s' "$SLOT_A" > "$STATE/active-backend"
+  if [ -f "$UNITS_DIR/$UNIT" ]; then
+    systemctl --user disable "$UNIT" 2>/dev/null || true
+    systemctl --user stop "$UNIT" || true
+    rm -f "${UNITS_DIR:?}/${UNIT:?}"
+    systemctl --user daemon-reload || true
+  fi
+  systemctl --user enable --now "$FRONT_UNIT" || { log "could not start $FRONT_UNIT"; return 1; }
+}
 
 sha_ok() {  # sha_ok <file> <file.sha256>
   local want got
@@ -217,7 +322,9 @@ fallback_failed_release() {
     oldver="$(strip_v "$(json_field version < "$prev/$META")")"
     oldrev="$(json_field rev < "$prev/$META")"
     point_current "$prev"
-    if wait_for_version "$oldver" "$HEALTH_WAIT_S" "$oldrev" legacy-fallback restart; then
+    local again=restart
+    if front_on; then again=""; handover "$(active_slot)" "$(other_slot "$(active_slot)")" || true; fi
+    if wait_for_version "$oldver" "$HEALTH_WAIT_S" "$oldrev" legacy-fallback "$again"; then
       outcome="restored healthy retained v$oldver"
     else
       outcome="retained v$oldver failed readiness"
@@ -239,12 +346,14 @@ refresh_self() {
     case "$f" in
       *.sh) dst="$BIN_DIR/$f"; mode=0755
             bash -n "$src/$f" 2>/dev/null || { log "not refreshing $f: it does not parse"; continue; } ;;
+      *.mjs) dst="$BIN_DIR/$f"; mode=0644
+            node --check "$src/$f" 2>/dev/null || { log "not refreshing $f: it does not parse"; continue; } ;;
       *)    dst="$UNITS_DIR/$f"; mode=0644 ;;
     esac
     if [ -f "$dst" ] && cmp -s "$src/$f" "$dst"; then continue; fi
     if mkdir -p "$(dirname "$dst")" && install -m "$mode" "$src/$f" "$dst.new.$$" && mv -f "$dst.new.$$" "$dst"; then
       changed="$changed $f"
-      case "$f" in *.sh) ;; *) units=1 ;; esac
+      case "$f" in *.sh|*.mjs) ;; *) units=1 ;; esac
     else
       rm -f "$dst.new.$$"
       log "could not refresh $dst"
@@ -256,6 +365,8 @@ refresh_self() {
     systemctl --user daemon-reload || log "daemon-reload returned non-zero"
     case "$changed" in *vault-chat-update.timer*) systemctl --user restart vault-chat-update.timer || log "timer restart returned non-zero" ;; esac
   fi
+  # The front changed (rare): its restart is a moment of refused connections, never a server restart.
+  case "$changed" in *vault-chat-front.*) if front_on; then systemctl --user restart "$FRONT_UNIT" || log "front restart returned non-zero"; fi ;; esac
   return 0
 }
 
@@ -295,6 +406,7 @@ if [ "$ver" = "$cur" ]; then
   fi
   log "up to date ($ver) with actual box readiness; physical laptop verification is separate"
   refresh_self "$(read_current)/deploy"
+  ensure_front || true
   exit 0
 fi
 
@@ -382,29 +494,7 @@ if [ -f "versions/$ver/claude-cli/claude" ]; then
 fi
 
 # ── 3. wait for the server to be idle ───────────────────────────────────────
-if [ -n "$cur" ]; then
-  deadline=$(( $(date +%s) + BUSY_MAX_S ))
-  said=0
-  while :; do
-    if ! h="$(health)"; then
-      log "server not answering /api/v1/health — not waiting for it"
-      break
-    fi
-    runs="$(printf '%s' "$h" | json_field busy.runs)"
-    # Background workers still at work (a restart kills them mid-work): wait too. A server
-    # that predates the field does not report it: that is 0.
-    workers="$(printf '%s' "$h" | json_field busy.workers)"
-    # Carl's input on any surface in the last 10 minutes (board, typed, voice, phone): wait too.
-    inputs="$(printf '%s' "$h" | json_field busy.inputs)"
-    [ "${runs:-0}" = 0 ] && [ "${workers:-0}" = 0 ] && [ "${inputs:-0}" = 0 ] && break
-    if [ "$(date +%s)" -ge "$deadline" ]; then
-      log "still busy (${runs:-0} runs, ${workers:-0} background workers, ${inputs:-0} surfaces in use) after ${BUSY_MAX_S}s — updating anyway"
-      break
-    fi
-    [ "$said" = 0 ] && { log "server busy (${runs:-0} runs, ${workers:-0} background workers, ${inputs:-0} surfaces in use) — waiting for it to go idle"; said=1; }
-    sleep "$BUSY_POLL_S"
-  done
-fi
+if [ -n "$cur" ]; then wait_idle; fi
 
 # ── 4. swap and restart ─────────────────────────────────────────────────────
 prev="$(read_current)"
@@ -413,15 +503,29 @@ point_current "versions/$ver"
 
 # ── 5. prove it, or roll back ───────────────────────────────────────────────
 status=0
-wait_for_version "$ver" "$HEALTH_WAIT_S" "$expected_rev" "" restart || status=$?
+if front_on; then
+  from="$(active_slot)"
+  if ! handover "$from" "$(other_slot "$from")"; then
+    # It never stood by: the old version served throughout and still does.
+    point_current "$prev"
+    record_failure
+    log "$ver failed to start beside $cur; $cur kept serving"
+    exit 1
+  fi
+  wait_for_version "$ver" "$HEALTH_WAIT_S" "$expected_rev" || status=$?
+else
+  wait_for_version "$ver" "$HEALTH_WAIT_S" "$expected_rev" "" restart || status=$?
+fi
 if [ "$status" = 0 ]; then
   log "now running $ver with actual box readiness; physical laptop verification is separate"
   refresh_self "versions/$ver/deploy"
+  ensure_front || true
 elif [ "$status" = 2 ]; then
   # An unsupported/starting voice adapter is UNKNOWN, not proof of failure. Offline laptop is likewise
   # never a reason to undo source. Keep the installed version and show the pending server/card state.
   log "$ver matches source/version but actual readiness remains pending; not confirmed and not reverted"
   refresh_self "versions/$ver/deploy"
+  ensure_front || true
 else
   fallback_failed_release
   exit 1

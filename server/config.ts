@@ -41,7 +41,14 @@ function secretDir(): string {
 
 export type ServerConfig = {
   host: string;
+  /** The port this process listens on: its private backend port behind the front, else the public one. */
   port: number;
+  /** The port clients use (VC_PORT, 8848 on the box): the front's (server/deploy/vault-chat-front.mjs), or this
+   *  process's own when it runs alone. */
+  publicPort: number;
+  /** Set when this server runs behind the front (VC_BACKEND_PORT): it takes over the box's data (server/owner.ts) and
+   *  tells the front when it serves. */
+  backend: boolean;
   voicePort: number;
   /** The box working copy (`~/vaults/<vault>` on branch `box`). */
   vault: string;
@@ -67,11 +74,18 @@ export function loadConfig(): ServerConfig {
   const vault = resolve(env("VC_VAULT") ?? join(HOME, "vaults", "school2"));
   const vaultName = env("VC_VAULT_NAME") ?? vault.replace(/[\\/]+$/, "").split(/[\\/]/).pop()!;
   const stateDir = resolve(env("VC_STATE_DIR") ?? join(HOME, ".local", "state", "vault-chat-server"));
-  const port = Number(env("VC_PORT") ?? 8848);
-  const voice = voicePort(port, process.env.VC_VOICE_PORT, process.env.VC_VOICE_PIPELINE_PORT);
+  const publicPort = Number(env("VC_PORT") ?? 8848);
+  const backendPort = env("VC_BACKEND_PORT");
+  const port = backendPort === undefined ? publicPort : Number(backendPort);
+  // The voice port belongs to the public instance (8857 beside 8848), whichever server owns it now.
+  const voice = voicePort(publicPort, process.env.VC_VOICE_PORT, process.env.VC_VOICE_PIPELINE_PORT);
+  if (backendPort !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535 || port === publicPort || port === voice || port === 8848 || port === 8857))
+    throw new Error(`VC_BACKEND_PORT ${backendPort} must be a free private port, not the public (${publicPort}) or voice (${voice}) one`);
   cached = {
     host: env("VC_HOST") ?? "127.0.0.1",
     port,
+    publicPort,
+    backend: backendPort !== undefined,
     voicePort: voice,
     vault,
     vaultName,

@@ -2746,7 +2746,7 @@ export class Engine {
   private devs() {
     let own: number[] = [];
     try {
-      own = [loadConfig().port];
+      own = [...new Set([loadConfig().port, loadConfig().publicPort])];
     } catch {
       /* no config (tests) */
     }

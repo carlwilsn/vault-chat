@@ -7,7 +7,7 @@ async function cases(...names: string[]) {
   const script = fileURLToPath(new URL("../deploy/test/test-http-readiness.py", import.meta.url));
   // Deliberate allowlist: no provider credentials, vault configuration or live-service env.
   const result = await new Promise<{ error: Error | null; stdout: string; stderr: string }>(resolve => {
-    execFile("python3", [script, ...names.map(name => `Readiness.${name}`)], { env: { PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}` }, timeout: 20_000, maxBuffer: 64 * 1024 },
+    execFile("python3", [script, ...names.map(name => name.includes(".") ? name : `Readiness.${name}`)], { env: { PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}` }, timeout: 20_000, maxBuffer: 64 * 1024 },
       (error, stdout, stderr) => resolve({ error, stdout, stderr }));
   });
   expect(result.error, result.stderr).toBeNull();
@@ -31,5 +31,12 @@ it.each([
   // The wait before the restart (busy.runs, busy.workers, busy.inputs), on the real entry.
   "test_busy_wait_holds_for_background_workers",
   "test_busy_wait_reads_a_server_without_the_workers_field_as_zero",
-  "test_busy_wait_deadline_updates_despite_live_workers",
+  // Running work is never cut: no deadline for it, and a server that does not answer is waited for.
+  "test_busy_wait_never_cuts_live_workers",
+  "test_busy_wait_holds_while_health_does_not_answer",
+  // Behind the front: the hand-over waits for the old server's work, is asked again when declined, and a new
+  // server that never stands by never takes traffic.
+  "Front.test_hand_over_only_when_no_work_runs",
+  "Front.test_declined_hand_over_is_asked_again",
+  "Front.test_new_server_that_never_stands_by_never_takes_traffic",
 ])("bounded owned HTTP updater: %s", async name => { await cases(name); });

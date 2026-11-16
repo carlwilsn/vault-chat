@@ -79,7 +79,7 @@ writeFileSync(`${tarball}.sha256`, `${assetsSha}  vault-chat-server-assets.tar.g
 
 // The updater and its units, as install.sh installs them: the updater refreshes itself from these.
 const deployDir = "server/deploy";
-const deployFiles = ["vault-chat-update.sh", "vault-chat-server.service", "vault-chat-update.service", "vault-chat-update.timer"];
+const deployFiles = ["vault-chat-update.sh", "vault-chat-front.mjs", "vault-chat-front.service", "vault-chat-server@.service", "vault-chat-update.service", "vault-chat-update.timer"];
 for (const f of deployFiles) if (!existsSync(join(deployDir, f))) fail(`${deployDir}/${f} is missing`);
 const deployTar = join(out, "vault-chat-deploy.tar.gz");
 try {

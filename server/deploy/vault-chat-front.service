@@ -1,0 +1,22 @@
+# vault-chat-front — the box's one stable listener (127.0.0.1:8848, behind `tailscale serve`).
+# It passes every request to the server that owns the box now (<state>/active-backend) and holds
+# requests while an update hands over from one server to the next, so a client never sees the box
+# go down (vault-chat-front.mjs). It does not restart on an update. Installed and refreshed by
+# vault-chat-update.sh; at start it starts the active server (vault-chat-server@<port>.service).
+[Unit]
+Description=vault-chat front (stable listener on 8848; passes to the server that owns the box)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env node %h/.local/state/vault-chat-server/bin/vault-chat-front.mjs
+# For VC_PORT (and VC_HOST) only.
+EnvironmentFile=-%h/.config/vault-chat-server.env
+Environment=PATH=/run/wrappers/bin:/etc/profiles/per-user/%u/bin:/run/current-system/sw/bin
+ExecStartPost=/bin/sh -c 'p=$$(cat %h/.local/state/vault-chat-server/active-backend 2>/dev/null); systemctl --user start --no-block "vault-chat-server@$${p:-8851}.service"'
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=default.target

@@ -967,6 +967,16 @@ async function poll(res: ServerResponse, url: URL, vault: string): Promise<void>
   }
 }
 
+/** Shutting down: every long poll answers now with what it has (server/main.ts), so its client asks again at once
+ *  (behind the front: of the server taking over) instead of having its request cut. */
+let endPolls: () => void = () => {};
+const pollsEnded = new Promise<void>((resolve) => (endPolls = resolve));
+let pollsOver = false;
+export function endLongPolls(): void {
+  pollsOver = true;
+  endPolls();
+}
+
 async function pollLog(res: ServerResponse, url: URL, vault: string): Promise<void> {
   const log = globalFeed(vault);
   const raw = url.searchParams.get("after") ?? "";
@@ -981,8 +991,8 @@ async function pollLog(res: ServerResponse, url: URL, vault: string): Promise<vo
   res.on("close", () => (closed = true));
   for (;;) {
     const got = log.after(after);
-    if (got.reset || got.events.length || Date.now() >= deadline || closed) return json(res, 200, { ...got, epoch: log.epoch });
-    await log.wait(Math.min(1000, deadline - Date.now()));
+    if (got.reset || got.events.length || Date.now() >= deadline || closed || pollsOver) return json(res, 200, { ...got, epoch: log.epoch });
+    await Promise.race([log.wait(Math.min(1000, deadline - Date.now())), pollsEnded]);
   }
 }
 

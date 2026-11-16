@@ -6,13 +6,14 @@
 #                                           now (downloads the latest release and
 #                                           starts the server)
 #
-# Installs into ~/.config/systemd/user: vault-chat-server.service,
-# vault-chat-update.service, vault-chat-update.timer; the updater script into
+# Installs into ~/.config/systemd/user: vault-chat-front.service (the stable listener on
+# 8848), vault-chat-server@.service (the server, in slot 8851 or 8852 behind it),
+# vault-chat-update.service, vault-chat-update.timer; the updater and the front into
 # ~/.local/state/vault-chat-server/bin/. Creates ~/.config/vault-chat-server.env from
 # the example only if it does not exist. Never reads, writes or copies secrets, and
 # never overwrites an existing env file. Re-running it is safe.
 #
-# Needed once: from then on the updater keeps itself and the three units current from
+# Needed once: from then on the updater keeps itself, the front and the units current from
 # each release (vault-chat-deploy.tar.gz, step 7 of vault-chat-update.sh).
 set -euo pipefail
 
@@ -33,7 +34,8 @@ ENVF="${XDG_CONFIG_HOME:-$HOME/.config}/vault-chat-server.env"
 mkdir -p "$UNITS" "$STATE/bin" "$STATE/versions" "$STATE/failed"
 
 install -m 0755 "$HERE/vault-chat-update.sh" "$STATE/bin/vault-chat-update.sh"
-for u in vault-chat-server.service vault-chat-update.service vault-chat-update.timer; do
+install -m 0644 "$HERE/vault-chat-front.mjs" "$STATE/bin/vault-chat-front.mjs"
+for u in vault-chat-front.service vault-chat-server@.service vault-chat-update.service vault-chat-update.timer; do
   install -m 0644 "$HERE/$u" "$UNITS/$u"
 done
 echo "installed units into $UNITS and the updater into $STATE/bin"
@@ -50,7 +52,7 @@ MASTER="$(sed -n 's/^VC_MASTER=//p' "$ENVF" | tail -1)"
 if [ -n "$MASTER" ]; then mkdir -p "$MASTER/vaults" "$MASTER/projects" "$MASTER/.hub/vaults" "$MASTER/.hub/projects"; fi
 
 systemctl --user daemon-reload
-systemctl --user enable vault-chat-server.service vault-chat-update.timer
+systemctl --user enable vault-chat-front.service vault-chat-update.timer
 
 if command -v loginctl >/dev/null 2>&1 && \
    [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || echo no)" != yes ]; then
@@ -59,10 +61,10 @@ if command -v loginctl >/dev/null 2>&1 && \
 fi
 
 if [ "$START" = 1 ]; then
-  systemctl --user start vault-chat-update.timer
+  systemctl --user start vault-chat-front.service vault-chat-update.timer
   echo "running one update pass (journalctl --user -u vault-chat-update -f to watch)"
   systemctl --user start vault-chat-update.service
-  systemctl --user --no-pager status vault-chat-server.service || true
+  systemctl --user --no-pager status vault-chat-front.service || true
 else
   echo "enabled, not started. To go live: bash $0 --start"
   echo "(or: systemctl --user start vault-chat-update.timer vault-chat-update.service)"
