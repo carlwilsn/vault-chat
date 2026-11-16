@@ -12,6 +12,7 @@
 // harmless part of it — no scripts, frames, forms, event handlers or
 // javascript: URLs (the HTML is the user's and the model's; neither may run
 // code in the app). KaTeX runs after it, so its own markup is never touched.
+import { remarkWidgetMeta } from "./noteWidgets";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import remarkBreaks from "remark-breaks";
@@ -437,6 +438,8 @@ export function markdownPlugins(profile: MdProfile, rehypeHighlight?: Plugin): {
   // struck out everything between two of them.
   const remarkPlugins: Plugin[] = [[remarkGfm, { singleTilde: false }], remarkMath, remarkWikiLinks];
   if (breaks) remarkPlugins.push(remarkBreaks);
+  // ```widget path``` in a note: the path joins the block's body (src/noteWidgets.ts; the viewer mounts it live).
+  if (profile === "note") remarkPlugins.push(remarkWidgetMeta);
   const rehypePlugins: Plugin[] = [rehypeRaw, rehypeSafeHtml, rehypeLayout];
   if (profile === "note") rehypePlugins.push(rehypeSlug);
   rehypePlugins.push(rehypeKatexFromCache, [rehypeKatex, KATEX_OPTIONS], rehypeKatexToCache);

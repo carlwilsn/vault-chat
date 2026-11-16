@@ -26,6 +26,7 @@ import { applyDiskContent, pendingBoxText, registerDirty, setDiskChanged, useLiv
 import { Markdown } from "./Markdown";
 import { flipNthTaskCheckbox, localPathFromUrl } from "./mdPipeline";
 import { hit } from "./shortcuts";
+import { NotePre, NoteSourceContext, useNoteSource } from "./NoteWidget";
 
 // Monaco (with its languages) is most of the bundle and only edits non-markdown
 // files, so it loads on first use (main.tsx prefetches it once startup settles)
@@ -414,7 +415,7 @@ export function MarkdownView({ paneId }: Props) {
     [],
   );
   const markdownComponents = useMemo(
-    () => ({ a: SafeAnchor, img: VaultImage, input: renderInput }),
+    () => ({ a: SafeAnchor, img: VaultImage, input: renderInput, pre: NotePre }),
     [renderInput],
   );
 
@@ -520,6 +521,8 @@ export function MarkdownView({ paneId }: Props) {
 
   // ScrollTo (voice) on a rendered markdown file: its heading, id or a phrase; the tool hears the outcome.
   const pendingScrollAnchor = useStore((s) => s.pendingScrollAnchor);
+  // The note its widgets read and follow (src/NoteWidget.tsx): one per file, its text kept current.
+  const noteSource = useNoteSource(file && fileKind(file).kind === "markdown" ? file : null, content);
   useEffect(() => {
     const req = pendingScrollAnchor;
     if (!req || !file || req.path !== file || fileKind(file).kind !== "markdown") return;
@@ -692,8 +695,10 @@ export function MarkdownView({ paneId }: Props) {
           data-look-scroll
           className="flex-1 overflow-auto py-10 px-8"
         >
-          <div className="prose-md mx-auto">
-            <Markdown source={content} profile="note" components={markdownComponents} />
+          <div className="prose-md mx-auto" data-note-widgets>
+            <NoteSourceContext.Provider value={noteSource}>
+              <Markdown source={content} profile="note" components={markdownComponents} />
+            </NoteSourceContext.Provider>
           </div>
         </div>
       ) : kind === "notebook" ? (

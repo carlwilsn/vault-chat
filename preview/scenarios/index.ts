@@ -11,6 +11,7 @@ import { steerScenarios } from "./steer";
 import { compactScenarios } from "./compact";
 import { retryScenarios } from "./retry";
 import { markdownScenarios } from "./markdown";
+import { noteWidgetScenarios } from "./noteWidgets";
 import { visualScenarios } from "./visual";
 import { liveEditScenarios } from "./liveEdit";
 import { backgroundScenarios } from "./background";
@@ -853,6 +854,7 @@ export const scenarios: Scenario[] = [
   ...compactScenarios,
   ...retryScenarios,
   ...markdownScenarios,
+  ...noteWidgetScenarios,
   ...visualScenarios,
   ...liveEditScenarios,
   ...backgroundScenarios,

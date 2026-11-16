@@ -78,8 +78,9 @@ export function appendPluginLog(vault: string, plugin: string, body: string): Wr
 
 // ---------------------------------------------------------------- the app's own plugins
 
-/** An app plugin's id ("app/<name>", src/appPlugins.ts): the only state Carl's devices write without a page's token. */
-const APP_PLUGIN_RE = /^app\/[a-z][a-z0-9-]{0,40}$/;
+/** An app plugin's id ("app/<name>", src/appPlugins.ts) or a note widget's ("widget:<note>#<widget>", src/noteWidgets.ts):
+ *  the only state Carl's devices write without a page's token. */
+const APP_PLUGIN_RE = /^(?:app\/[a-z][a-z0-9-]{0,40}|widget:[^\u0000-\u001f]{1,400})$/;
 
 /**
  * GET /api/v2/plugin/app-state → every app plugin's state ({states: {id: {seq, state}}}); ?plugin=app/<name> → that
@@ -94,7 +95,7 @@ export function appPluginStateRoute(vault: string, method: string, query: URLSea
     return { status: 200, body: { states: Object.fromEntries([...all].filter(([id]) => APP_PLUGIN_RE.test(id))) } };
   }
   const plugin = method === "GET" ? String(query.get("plugin") ?? "") : String(body?.plugin ?? "");
-  if (!APP_PLUGIN_RE.test(plugin)) return { status: 400, body: { error: "name an app plugin: app/<name>" } };
+  if (!APP_PLUGIN_RE.test(plugin)) return { status: 400, body: { error: "name an app plugin (app/<name>) or a note widget (widget:<note>#<widget>)" } };
   if (method === "GET") return { status: 200, body: readPluginState(vault, plugin, log) };
   if (method !== "POST") return { status: 405, body: { error: "GET or POST" } };
   const w = write(vault, stateSignal(plugin, JSON.stringify({ key: body?.key, value: body?.value ?? null })), log);

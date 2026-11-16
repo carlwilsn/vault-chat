@@ -12,7 +12,8 @@ import { useStore } from "./store";
 import { foldPluginState, type PluginState } from "./pluginRecords";
 
 const CACHE = "vc.appstate:";
-const isApp = (id: unknown): id is string => typeof id === "string" && id.startsWith("app/");
+// A note widget's state (src/noteWidgets.ts, `widget:<note>#<widget>`) is kept the same way: Carl's devices write it.
+const isApp = (id: unknown): id is string => typeof id === "string" && (id.startsWith("app/") || id.startsWith("widget:"));
 
 let vault: string | null | undefined;
 let states = new Map<string, PluginState>();

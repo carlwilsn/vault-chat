@@ -14,7 +14,7 @@ import type { AppPluginInfo } from "./appPlugins";
 import { appHostBackend } from "./hostBackend";
 import { usePluginDesired } from "./pluginSupervisorApp";
 
-class PluginBoundary extends Component<{ path: string; children: ReactNode; onFailed?: (why: string) => void }, { failed: string | null }> {
+export class PluginBoundary extends Component<{ path: string; children: ReactNode; onFailed?: (why: string) => void }, { failed: string | null }> {
   state = { failed: null as string | null };
   static getDerivedStateFromError(err: unknown) {
     return { failed: String((err as Error)?.message ?? err) };

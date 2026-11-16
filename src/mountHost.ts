@@ -31,6 +31,10 @@
 // styled by the app, so it mounts in the light DOM (no shadow root: the app's stylesheet reaches it) into a
 // `display: contents` root that adds no box of its own. Its effects, its error card and the supervisor's stop are the
 // page's. A plugin reports a failure it caught itself (React's uncaught render error) with api.error(e).
+//
+// A note widget (src/noteWidgets.ts) is a module too, but someone else's code in the middle of a note: `shadow: true`
+// mounts a module in its own shadow root and box, as a page, and `extend` adds to its api (api.note, api.block,
+// api.state), with the run's alive / effect / guard so what it adds is undone and guarded like the rest.
 
 import { LIVE_THEME_VARS } from "./liveBridge";
 import { Effects } from "./pluginSupervisor";
@@ -80,6 +84,11 @@ export type PluginHandle = {
   unmount(): void;
   /** What the current run still has in effect on the app (labels; empty once it is unmounted). */
   readonly effects: readonly string[];
+};
+export type PluginExtendCtx = {
+  alive: () => boolean;
+  effect: (label: string, undo: () => void) => void;
+  guard: <A extends unknown[]>(f: (...a: A) => void) => (...a: A) => void;
 };
 type Win = Pick<Window, "addEventListener" | "removeEventListener"> & { DOMParser: typeof DOMParser };
 
@@ -134,14 +143,27 @@ const HOST_CSS = `:host{display:block;position:relative}[data-el="plugin-root"]{
 export function mountPlugin(
   host: HTMLElement,
   source: string | AppPluginSource,
-  opts: { path: string; theme: () => PluginTheme; win?: Win; load?: LoadModule; onError?: (message: string) => void; host?: HostBackend },
+  opts: {
+    path: string;
+    theme: () => PluginTheme;
+    win?: Win;
+    load?: LoadModule;
+    onError?: (message: string) => void;
+    host?: HostBackend;
+    /** A module in its own shadow root and box (a note widget), not the app's light DOM. */
+    shadow?: boolean;
+    /** More api for this host's plugins (merged over the host's own). */
+    extend?: (ctx: PluginExtendCtx) => Record<string, unknown>;
+  },
 ): PluginHandle {
   const win = opts.win ?? (window as unknown as Win);
   const load = opts.load ?? blobLoad;
   const doc = host.ownerDocument;
   const app = typeof source === "string" ? null : source;
-  // A page: its own shadow root. The app's own code: the light DOM, where the app's styles reach it.
-  const shadow: HTMLElement | ShadowRoot = app ? host : host.shadowRoot ?? host.attachShadow({ mode: "open" });
+  // A page (or a module asked to be isolated): its own shadow root. The app's own code: the light DOM, where the app's
+  // styles reach it.
+  const light = !!app && !opts.shadow;
+  const shadow: HTMLElement | ShadowRoot = light ? host : host.shadowRoot ?? host.attachShadow({ mode: "open" });
   let gen = 0;
   let error: string | null = null;
   let theme = opts.theme();
@@ -185,7 +207,7 @@ export function mountPlugin(
     const card = doc.createElement("div");
     card.setAttribute("data-el", "plugin-error");
     // An app plugin has no box of its own in the layout (a panel floats over the app): its card floats where it would.
-    if (app) card.setAttribute("style", "position:fixed;top:48px;right:12px;z-index:40;max-width:420px");
+    if (light) card.setAttribute("style", "position:fixed;top:48px;right:12px;z-index:40;max-width:420px");
     const title = doc.createElement("b");
     title.textContent = `${parts?.name ?? opts.path} stopped`;
     const pre = doc.createElement("pre");
@@ -224,8 +246,10 @@ export function mountPlugin(
       if (app) {
         // The app's own module: nothing to parse or load, no box of its own around what it renders.
         parts = { name: app.name, styles: [], body: "", code: "" };
-        root.style.display = "contents";
-        shadow.append(root);
+        if (light) {
+          root.style.display = "contents";
+          shadow.append(root);
+        } else shadow.append(style(HOST_CSS), root);
         loaded = app.code !== undefined ? await load(app.code) : { module: app.module, url: "", dispose() {} };
       } else {
         parts = pluginParts(source as string, win, opts.path);
@@ -269,6 +293,10 @@ export function mountPlugin(
         plugins: pluginReach(() => run === r, (off) => fx.add("plugin subscription", off), guard),
         context: contextApi(opts.path, () => run === r, (off) => fx.add("context subscription", off), guard),
       };
+      if (opts.extend) {
+        const more = opts.extend({ alive: () => run === r, effect: (label, undo) => void fx.add(label, undo), guard });
+        for (const [k, v] of Object.entries(more ?? {})) if (!(k in api)) (api as Record<string, unknown>)[k] = v;
+      }
       if (typeof ResizeObserver !== "undefined") {
         const ro = new ResizeObserver(guard(() => {
           for (const fn of r.resizeFns) fn(size());

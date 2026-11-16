@@ -141,6 +141,22 @@ describe("an app plugin's state (app/chat-rows' kept choices: GET/POST /api/v2/p
   });
 });
 
+describe("a note widget's state (src/noteWidgets.ts: widget:<note>#<widget> on the same device route)", () => {
+  it("is plugin.state records under the instance's id, listed beside app plugins, kept over a restart", async () => {
+    const ps = await import("../pluginState");
+    const q = (s = "") => new URLSearchParams(s);
+    const id = "Physics 135/week 3.md#widgets/counter.js";
+    const set = ps.appPluginStateRoute(vault, "POST", q(), { plugin: `widget:${id}`, key: "count", value: 3 });
+    expect(set.status).toBe(200);
+    expect(set.body).toMatchObject({ ok: true, state: { count: 3 } });
+    const all = ps.appPluginStateRoute(vault, "GET", q(), null).body as { states: Record<string, { state: unknown }> };
+    expect(all.states[`widget:${id}`]!.state).toEqual({ count: 3 });
+    for (const bad of ["widget:", "widget:a\nb", "Widget:x"]) expect(ps.appPluginStateRoute(vault, "POST", q(), { plugin: bad, key: "k", value: 1 }).status).toBe(400);
+    log._resetConvLogs();
+    expect(ps.appPluginStateRoute(vault, "GET", q(`plugin=${encodeURIComponent(`widget:${id}`)}`), null).body).toMatchObject({ state: { count: 3 } });
+  });
+});
+
 describe("a page's log service", () => {
   it("appends the page's records to the one log, tagged with the page", async () => {
     const t = page("logger.html", "log");
