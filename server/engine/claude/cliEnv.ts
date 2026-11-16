@@ -36,5 +36,8 @@ export function claudeCliEnv(i: CliEnvInput): NodeJS.ProcessEnv {
     // A deployment pointing the CLI at another endpoint names it and its key together.
     ...(i.processEnv.ANTHROPIC_BASE_URL ? { ANTHROPIC_BASE_URL: i.processEnv.ANTHROPIC_BASE_URL } : {}),
     ...(i.processEnv.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: i.processEnv.ANTHROPIC_API_KEY } : {}),
+    // How often the runtime retries a failed request itself before the turn fails (and the engine's own retry,
+    // engine.ts retryLater, takes over): a deployment's (or a test's) setting, the runtime's default otherwise.
+    ...(i.processEnv.CLAUDE_CODE_MAX_RETRIES ? { CLAUDE_CODE_MAX_RETRIES: i.processEnv.CLAUDE_CODE_MAX_RETRIES } : {}),
   };
 }

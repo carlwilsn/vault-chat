@@ -17,7 +17,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmp } from "./helpers";
-import { ClaudeTranslator, type Emit } from "../engine/claude/translate";
+import { ClaudeTranslator, transientFailure, type Emit } from "../engine/claude/translate";
 import { appendEntries, newSessionFile, readEntries } from "../convlog/piSession";
 import { emptyPicture, foldInto, type Picture } from "../../src/convlog/reduce";
 import type { StoredRecord } from "../../src/convlog/protocol";
@@ -457,5 +457,42 @@ describe("Carl's usage limit", () => {
     const t = new ClaudeTranslator();
     expect(t.step({ type: "rate_limit_event", rate_limit_info: { status: "rejected", overageStatus: "allowed", resetsAt: 1_794_195_000 } })[0]).toMatchObject({ status: "allowed_warning" });
     expect(t.step({ type: "result", subtype: "success", is_error: false, result: "ok" }).find((e) => e.kind === "done")).not.toHaveProperty("limited");
+  });
+});
+
+describe("a failure on something passing", () => {
+  const done = (msgs: any[]) => replay(msgs).emits.find((e) => e.kind === "done") as any;
+  const failedWith = (error: string, text: string) => [
+    { type: "assistant", parent_tool_use_id: null, error, message: { model: "<synthetic>", role: "assistant", content: [{ type: "text", text }] } },
+    { type: "result", subtype: "success", is_error: true, result: text },
+  ];
+
+  it("an overloaded or erroring API is tried again later by the host; a bad request, a refused sign-in or the limit never", () => {
+    expect(done(failedWith("overloaded", "API Error: 529 Overloaded"))).toMatchObject({ status: "failed", transient: true });
+    expect(done(failedWith("server_error", "API Error: 500 Internal server error"))).toMatchObject({ transient: true });
+    expect(done(failedWith("invalid_request", "API Error: 400 opus is not a valid model ID"))).not.toHaveProperty("transient");
+    expect(done(failedWith("model_not_found", "model not found"))).not.toHaveProperty("transient");
+    expect(done(failedWith("rate_limit", "You've hit your 5-hour limit · resets 1:30am (America/Chicago)"))).not.toHaveProperty("transient");
+    expect(done(failedWith("authentication_failed", "Failed to authenticate. API Error: 401 OAuth access token is invalid."))).not.toHaveProperty("transient");
+    // A completed or stopped turn is never one.
+    expect(done([{ type: "result", subtype: "success", is_error: false, result: "ok" }])).not.toHaveProperty("transient");
+  });
+
+  it("reads the runtime's own retries and its words when no kind is named", () => {
+    expect(transientFailure(null, 503, "the request failed")).toBe(true);
+    expect(transientFailure(null, 0, "API Error: Connection error.")).toBe(true);
+    expect(transientFailure(null, 0, "fetch failed")).toBe(true);
+    expect(transientFailure("unknown", 0, "socket hang up")).toBe(true);
+    expect(transientFailure(null, 0, "error_during_execution")).toBe(false);
+    // A request the API turned down stays turned down, whatever its words.
+    expect(transientFailure(null, 0, 'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"Connection error."}}')).toBe(false);
+    expect(transientFailure(null, 0, "API Error: 408 request timed out")).toBe(true);
+    expect(transientFailure(null, 0, "Prompt is too long", "prompt_too_long")).toBe(false);
+    expect(transientFailure("invalid_request", 500, "500 but a bad request")).toBe(false);
+    // The kind is forgotten at the turn's end: the next turn's failure is read on its own.
+    const t = new ClaudeTranslator();
+    for (const m of failedWith("overloaded", "API Error: 529 Overloaded")) t.step(m);
+    const next = t.step({ type: "result", subtype: "error_during_execution", is_error: true, result: "error_during_execution" }).find((e) => e.kind === "done") as any;
+    expect(next).not.toHaveProperty("transient");
   });
 });

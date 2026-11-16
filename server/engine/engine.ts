@@ -186,7 +186,7 @@ type Live = {
 
 };
 
-type TurnOpts = { completion?: import("./backend").NativeCompletion; /** Send now replays the existing feed directly into Pi before its replacement prompt can settle. */ replay?: Expected[]; /** Existing host-owned job/wake identity, never a push arm. */ pushWorkId?: string; images?: string[]; context?: string; hostContext?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; device?: "laptop" | "phone" | "board" | null; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean; /** The backend already started this turn by itself (a queued message it took, a background task that finished): open the turn around it instead of sending a prompt. */ adopt?: boolean; /** The retry of work held for the usage limit (its hold's count): failing on the limit again waits for the next reset, longer. */ limitTries?: number; /** Carl's message held (shown waiting) while the conversation was being summarized: not run if he took it back meanwhile. */ held?: boolean };
+type TurnOpts = { completion?: import("./backend").NativeCompletion; /** Send now replays the existing feed directly into Pi before its replacement prompt can settle. */ replay?: Expected[]; /** Existing host-owned job/wake identity, never a push arm. */ pushWorkId?: string; images?: string[]; context?: string; hostContext?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; device?: "laptop" | "phone" | "board" | null; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean; /** The backend already started this turn by itself (a queued message it took, a background task that finished): open the turn around it instead of sending a prompt. */ adopt?: boolean; /** The retry of work held for the usage limit (its hold's count): failing on the limit again waits for the next reset, longer. */ limitTries?: number; /** Carl's message held (shown waiting) while the conversation was being summarized: not run if he took it back meanwhile. */ held?: boolean; /** The host's own retry of a turn that failed on something passing (its wake's count, retryLater). */ retryTries?: number };
 
 const RESUME_TEXT =
   "The box restarted (or the engine stopped) while your last turn was running, so any command it was running was killed and may not have finished. Re-check reality (files, processes, logs), then continue from where you were.";
@@ -204,6 +204,21 @@ const LIMIT_MARGIN_MS = 60_000;
 /** No reset named: wait this long, doubling on each failed retry, up to the cap. */
 const LIMIT_BACKOFF_MS = 5 * 60_000;
 const LIMIT_BACKOFF_CAP_MS = 60 * 60_000;
+/**
+ * A reply that failed on something passing — the API overloaded or erroring,
+ * the connection dropped — after Claude Code's own retries ran out is tried
+ * again by the host, later, by itself (a durable wake, so a restart or a
+ * hand-over of the server keeps it): Carl asked that a failed reply pick up
+ * where it left off without him. A few times, further apart each time; then
+ * the failed line and its Try again are his. Never a usage limit (held for
+ * its reset), a refused sign-in or a bad request.
+ */
+const AUTO_RETRIES = 3;
+const RETRY_BASE_MS = 60_000;
+const RETRY_CAP_MS = 15 * 60_000;
+const AUTO_RETRY_TEXT =
+  "Your last reply failed before it finished (the API was overloaded or erroring, or the connection dropped), and the host is trying again by itself. Continue from where you were; re-check anything a command may have left half done.";
+const AUTO_RETRY_SHOWN = "Trying again by itself: the last reply failed before it finished";
 const ARCHIVED = "This is an archived mission thread (the old missions system): readable, never run. Start a new chat.";
 const INTERRUPTED_TEXT = "⚠️ Interrupted by a restart — the command it was running was killed and may not have finished.";
 
@@ -1995,6 +2010,12 @@ export class Engine {
         await this.notice(convId, "Stopped: not picked up when the limit resets.", "info");
         return true;
       }
+      // Stop on a failed reply waiting to be tried again: it is not.
+      if (gone.some((w) => w.retry) && !this.live.get(convId)) {
+        this.emit(convId, { type: "meta", patch: { state: "idle", nextWakeAt: null } });
+        await this.notice(convId, "Stopped: it will not try again by itself.", "info");
+        return true;
+      }
     }
     const l = this.live.get(convId);
     if (!l) {
@@ -2483,7 +2504,7 @@ export class Engine {
       case "turnCompleted":
         // Going down: pi was killed with the server; the turn stays open in the log for the next boot.
         if (shuttingDown) return;
-        void this.finishTurn(l, e.status, e.error ?? l.feed.lastError, !!e.limited);
+        void this.finishTurn(l, e.status, e.error ?? l.feed.lastError, !!e.limited, !!e.transient);
         return;
       case "signInRefused":
         // The API is refusing this box's sign-in, and the runtime retries that
@@ -2594,7 +2615,29 @@ export class Engine {
     return wake;
   }
 
-  private async finishTurn(l: Live, status: string, error: any, limited = false): Promise<void> {
+  /**
+   * A turn that failed on something passing (claude/translate.ts transientFailure):
+   * one retry wake for the conversation, durable in wakes.json like any wake, a
+   * minute on, then five, then fifteen. Its time, or null when it is not tried
+   * again: work held for the usage limit is taken up by the limit's own turn, and
+   * after AUTO_RETRIES the failed line and its Try again are Carl's.
+   */
+  private retryLater(l: Live): number | null {
+    const vault = this.d.vault;
+    if (readWakes(vault).some((w) => w.conv === l.convId && !!w.limit)) return null;
+    const prev = removeWakes(vault, (w) => w.conv === l.convId && !!w.retry);
+    const tries = (l.turnOpts.retryTries ?? Math.max(0, ...prev.map((w) => w.retry!.tries))) + 1;
+    if (tries > AUTO_RETRIES) {
+      this.log(`turn on ${l.convId} failed again after ${AUTO_RETRIES} retries of its own: left for Carl`);
+      return null;
+    }
+    const at = Date.now() + Math.min(RETRY_BASE_MS * 5 ** (tries - 1), RETRY_CAP_MS);
+    addWake(vault, { conv: l.convId, at, reason: AUTO_RETRY_SHOWN, ...(l.byCarl || prev.some((w) => w.byCarl) ? { byCarl: true } : {}), retry: { tries } });
+    this.log(`turn on ${l.convId} failed on something passing: trying again at ${new Date(at).toISOString()} (try ${tries})`);
+    return at;
+  }
+
+  private async finishTurn(l: Live, status: string, error: any, limited = false, transient = false): Promise<void> {
     if (l.finished) return;
     l.finished = true;
     // A turn that ended on its own terms means the session is not in the loop
@@ -2609,9 +2652,15 @@ export class Engine {
     }
     // Refused for the usage limit: held for the reset, not a failure (Stop is Carl's: nothing held).
     const held = status === "failed" && limited && !l.stopped && !l.cut;
-    if (held) this.holdForLimit(l);
-    // Answered: whatever was held for the limit is in this turn's history and taken up.
-    else if (status === "completed" && (l.kind === "user" || l.turnOpts.limitTries !== undefined)) removeWakes(vault, (w) => w.conv === l.convId && !!w.limit);
+    // Failed on something passing: tried again later by itself (retryLater), not left for Carl to press Try again.
+    const retryAt = !held && status === "failed" && transient && !l.stopped && !l.cut && !l.refused && !l.sendNow ? this.retryLater(l) : null;
+    if (held) {
+      this.holdForLimit(l);
+      // The limit's one turn after the reset takes up the failed reply too: no retry of its own fights it.
+      removeWakes(vault, (w) => w.conv === l.convId && !!w.retry);
+    }
+    // Answered: whatever was held for the limit, or waits to be tried again, is in this turn's history and taken up.
+    else if (status === "completed" && (l.kind === "user" || l.turnOpts.limitTries !== undefined || l.turnOpts.retryTries !== undefined)) removeWakes(vault, (w) => w.conv === l.convId && (!!w.limit || !!w.retry));
     const conv0 = await readConv(vault, l.convId);
     const wakeAt = nextWakeFor(vault, l.convId);
     // The final state, decided once.
@@ -2627,9 +2676,10 @@ export class Engine {
     // (A failure pi's own message carries is shown from that message: not said twice.)
     else if (status === "failed" && errStr !== l.feed.lastError) await this.notice(l.convId, `⚠️ The turn failed: ${errStr}`, "error");
     else if (status === "interrupted" && !l.sendNow) await this.notice(l.convId, "Stopped.", "info");
+    if (retryAt) await this.notice(l.convId, `↻ It will try again by itself in ${Math.max(1, Math.round((retryAt - Date.now()) / 60_000))} min.`, "info");
     const conv = await readConv(vault, l.convId);
     this.log(`turn ${l.kind} on ${l.convId} ${status}${l.cut ? " (cut)" : ""} → ${state}`);
-    const outcome = l.cut ? "cut" : l.stopped ? "stopped" : held ? "held" : status === "completed" ? "ok" : status;
+    const outcome = l.cut ? "cut" : l.stopped ? "stopped" : held ? "held" : retryAt ? "retrying" : status === "completed" ? "ok" : status;
     this.turnLine(l.rec, { status, outcome, state, error: errStr || null });
     this.offerTurnPush(l, outcome, state, errStr, conv?.title ?? conv0?.title ?? "");
     this.d.onTurnEnded?.(l.convId);
@@ -3331,7 +3381,8 @@ export class Engine {
       const l = this.live.get(w.conv);
       if (l?.ask) continue; // waiting on Carl: the wake waits too
       // Held for the limit, and a turn is running (Carl wrote after the reset): that turn has it all.
-      if (w.limit && l && !l.finished) continue;
+      // A retry, the same: a turn running now is taking it up (or failing, and its own end says what then).
+      if ((w.limit || w.retry) && l && !l.finished) continue;
       this.firing.add(w.id);
       removeWakes(this.d.vault, (x) => x.id === w.id);
       void this.fireWake(w).finally(() => this.firing.delete(w.id));
@@ -3345,6 +3396,10 @@ export class Engine {
     this.log(`wake ${w.id} → ${w.conv}: ${w.reason}`);
     if (w.limit) {
       await this.run(w.conv, LIMIT_TEXT, "resume", { byCarl: !!w.byCarl, shown: LIMIT_SHOWN, ownTurn: true, limitTries: w.limit.tries }).catch((e) => this.log(`limit retry failed: ${e}`));
+      return;
+    }
+    if (w.retry) {
+      await this.run(w.conv, AUTO_RETRY_TEXT, "resume", { byCarl: !!w.byCarl, shown: AUTO_RETRY_SHOWN, ownTurn: true, retryTries: w.retry.tries }).catch((e) => this.log(`retry failed: ${e}`));
       return;
     }
     await this.run(w.conv, `Wake: ${w.reason}`, "wake", { byCarl: !!w.byCarl, pushWorkId: w.id, ownTurn: true, completion: { kind: "wake", id: w.id } }).catch((e) => this.log(`wake failed: ${e}`));

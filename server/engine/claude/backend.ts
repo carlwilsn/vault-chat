@@ -1160,7 +1160,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
         live.turnId = null;
         // A /compact is a turn with no model message (no turn id): its end is compact()'s.
         if (!turnId) this.compactWaits.get(threadId)?.end();
-        this.ev({ kind: "turnCompleted", threadId, turnId, status: e.status, error: e.error, ...(e.limited ? { limited: true } : {}) });
+        this.ev({ kind: "turnCompleted", threadId, turnId, status: e.status, error: e.error, ...(e.limited ? { limited: true } : {}), ...(e.transient ? { transient: true } : {}) });
         return;
       }
     }

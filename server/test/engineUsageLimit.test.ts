@@ -80,6 +80,10 @@ class FakeBackend extends EventEmitter {
   refuse(threadId: string) {
     this.ev(threadId, { kind: "turnCompleted", turnId: null, status: "failed", error: WORDS, limited: true });
   }
+  /** The turn failed on something passing (the API overloaded) after the runtime's own retries. */
+  overloaded(threadId: string) {
+    this.ev(threadId, { kind: "turnCompleted", turnId: null, status: "failed", error: "API Error: 529 Overloaded", transient: true });
+  }
   complete(threadId: string) {
     this.ev(threadId, { kind: "turnCompleted", turnId: null, status: "completed", error: null });
   }
@@ -295,5 +299,118 @@ describe("Carl's usage limit", () => {
     expect(backend.turns.length).toBe(before + 1);
     c = await readConv(vault, convId);
     expect(c.messages.some((m: any) => /failed/.test(m.content ?? ""))).toBe(false);
+  });
+});
+
+describe("a reply that failed on something passing (the API overloaded)", () => {
+  const retries = (convId: string) => readWakes(vault).filter((w) => w.conv === convId && w.retry);
+  const dueRetry = (convId: string) =>
+    writeFileSync(wakesPath(vault), JSON.stringify(readWakes(vault).map((w) => (w.conv === convId && w.retry ? { ...w, at: Date.now() - 1 } : w))));
+  async function failed(convId: string, text: string): Promise<number> {
+    const before = backend.turns.length;
+    await engine.message({ text, convId });
+    await until(() => backend.turns.length === before + 1);
+    backend.overloaded(backend.turns[before].threadId);
+    await until(async () => (await readConv(vault, convId))?.state === "sleeping");
+    return before;
+  }
+
+  it("is tried again by itself, further apart each time, and three times at most", async () => {
+    backend.limit = null;
+    const convId = `sep-${Math.random().toString(36).slice(2, 10)}`;
+    const t0 = Date.now();
+    await failed(convId, "Summarize it.");
+    let [w] = retries(convId);
+    expect(w.retry.tries).toBe(1);
+    expect(w.at - t0).toBeGreaterThanOrEqual(60_000 - 1000);
+    expect(w.at - t0).toBeLessThan(62_000);
+    const gaps = [5 * 60_000, 15 * 60_000];
+    for (let k = 0; k < 3; k++) {
+      const before = backend.turns.length;
+      dueRetry(convId);
+      await until(() => backend.turns.length === before + 1, 8_000);
+      expect(backend.turns[before].texts.join("\n")).toMatch(/host is trying again by itself/);
+      const t1 = Date.now();
+      backend.overloaded(backend.turns[before].threadId);
+      if (k < 2) {
+        await until(() => retries(convId).length === 1 && retries(convId)[0].retry.tries === k + 2);
+        [w] = retries(convId);
+        expect(w.at - t1).toBeGreaterThanOrEqual(gaps[k]! - 1000);
+        expect(w.at - t1).toBeLessThan(gaps[k]! + 2000);
+      }
+    }
+    // The third retry failed too: nothing more is tried; the failure (and its Try again) is Carl's.
+    await until(async () => (await readConv(vault, convId))?.state === "idle");
+    expect(retries(convId)).toHaveLength(0);
+    const n = backend.turns.length;
+    await sleep(2500);
+    expect(backend.turns.length).toBe(n);
+  });
+
+  it("never fights the usage limit's hold: held work is not retried, and the hold's turn takes it up", async () => {
+    const convId = `sep-${Math.random().toString(36).slice(2, 10)}`;
+    backend.limit = { resetsAt: Date.now() + 3600_000, kind: "five_hour" };
+    await refused(engine, backend, convId, "Hold this.");
+    expect(holds(convId)).toHaveLength(1);
+    // A failure on something passing while the hold stands: no retry of its own (the hold's turn has it).
+    backend.limit = null;
+    const before = backend.turns.length;
+    await engine.message({ text: "And this.", convId });
+    await until(() => backend.turns.length === before + 1);
+    backend.overloaded(backend.turns[before].threadId);
+    await until(async () => !(await readConv(vault, convId))?.running);
+    await sleep(300);
+    expect(retries(convId)).toHaveLength(0);
+    expect(holds(convId)).toHaveLength(1);
+    // And a failed reply waiting to be retried goes when the limit holds the conversation: one turn at the reset.
+    const conv2 = `sep-${Math.random().toString(36).slice(2, 10)}`;
+    await failed(conv2, "First.");
+    expect(retries(conv2)).toHaveLength(1);
+    backend.limit = { resetsAt: Date.now() + 3600_000, kind: "five_hour" };
+    await refused(engine, backend, conv2, "Second.");
+    expect(retries(conv2)).toHaveLength(0);
+    expect(holds(conv2)).toHaveLength(1);
+    // While the limit stands a due retry waits, like every wake.
+    const conv3 = `sep-${Math.random().toString(36).slice(2, 10)}`;
+    backend.limit = null;
+    await failed(conv3, "Third.");
+    backend.limit = { resetsAt: Date.now() + 3600_000, kind: "five_hour" };
+    const n = backend.turns.length;
+    dueRetry(conv3);
+    await sleep(2500);
+    expect(backend.turns.length).toBe(n);
+    expect(retries(conv3)).toHaveLength(1);
+    backend.limit = null;
+    await until(() => backend.turns.length === n + 1, 8_000);
+    backend.complete(backend.turns[n].threadId);
+    await until(async () => (await readConv(vault, conv3))?.state === "idle");
+    expect(retries(conv3)).toHaveLength(0);
+  });
+
+  it("Stop cancels it; a message from Carl that is answered takes it up", async () => {
+    backend.limit = null;
+    const convId = `sep-${Math.random().toString(36).slice(2, 10)}`;
+    await failed(convId, "Go on.");
+    await engine.kill({ convId });
+    expect(retries(convId)).toHaveLength(0);
+    let c = await readConv(vault, convId);
+    expect(c.state).toBe("idle");
+    expect(c.messages.some((m: any) => /will not try again by itself/.test(m.content ?? ""))).toBe(true);
+
+    await failed(convId, "Again.");
+    expect(retries(convId)).toHaveLength(1);
+    const before = backend.turns.length;
+    await engine.message({ text: "Still there?", convId });
+    await until(() => backend.turns.length === before + 1);
+    dueRetry(convId); // due while his turn runs: it waits, and his turn takes it up
+    await sleep(2500);
+    expect(backend.turns.length).toBe(before + 1);
+    backend.complete(backend.turns[before].threadId);
+    await until(async () => (await readConv(vault, convId))?.state === "idle");
+    expect(retries(convId)).toHaveLength(0);
+    await sleep(2500);
+    expect(backend.turns.length).toBe(before + 1);
+    c = await readConv(vault, convId);
+    expect(c.messages.some((m: any) => /try again by itself in 1 min/.test(m.content ?? ""))).toBe(true);
   });
 });

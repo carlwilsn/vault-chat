@@ -66,7 +66,7 @@ export type Emit =
    * half-way through an answer). A tool's output that happens to say "401"
    * therefore cannot sign Carl out.
    */
-  | { kind: "done"; status: "completed" | "interrupted" | "failed"; error: string | null; refused?: boolean; limited?: boolean }
+  | { kind: "done"; status: "completed" | "interrupted" | "failed"; error: string | null; refused?: boolean; limited?: boolean; transient?: boolean }
   /** Claude Code's own rate limit: the host backs wakes and schedules off until `resetsAt`. */
   | { kind: "rateLimit"; status: string; resetsAt: number | null; kindOfLimit: string | null }
   /** The API refused the sign-in (claude/auth.ts). The host stops the turn: the
@@ -219,6 +219,15 @@ export class ClaudeTranslator {
    * "rejected". The failure is then a wait, not an error (engine.ts holds it).
    */
   private limited = false;
+  /**
+   * Why the runtime's last request failed, in its own words: the synthetic
+   * assistant message's `error` (SDKAssistantMessageError: "overloaded",
+   * "server_error", "invalid_request" ...) and the HTTP status of the last
+   * request it retried by itself (api_retry's error_status). transientFailure
+   * reads them when the turn ends.
+   */
+  private errorKind: string | null = null;
+  private retryStatus = 0;
   /** Claude Code said it is summarizing the session (status "compacting"; it repeats that every 30 s). */
   private compacting = false;
 
@@ -380,6 +389,7 @@ export class ClaudeTranslator {
     if (m?.error) {
       const text = String(m.message?.content?.find?.((b: any) => b?.type === "text")?.text ?? m.error);
       if (m.error === "rate_limit") this.limited = true;
+      this.errorKind = String(m.error);
       if (o) {
         o.errorMessage = text;
         o.stopReason = "error";
@@ -615,6 +625,7 @@ export class ClaudeTranslator {
     // (stringifying the object put "[object Object]" in front of Carl).
     const why = typeof m.error === "string" ? m.error : String(m.error?.message ?? m.error?.type ?? m.message ?? "the request failed");
     const status = Number(m.error_status ?? 0);
+    if (status) this.retryStatus = status;
     if (status === 401 || status === 403 || authRefused(why) || authRefused(m.error)) {
       return [{ kind: "authRefused", error: `${status || ""} ${why}`.trim().slice(0, 300) }];
     }
@@ -640,6 +651,10 @@ export class ClaudeTranslator {
     this.stopping = false;
     const limited = this.limited;
     this.limited = false;
+    const errorKind = this.errorKind;
+    const retryStatus = this.retryStatus;
+    this.errorKind = null;
+    this.retryStatus = 0;
     const reported = terminal === "cancelled" || terminal === "interrupted" || subtype === "interrupted" ? "interrupted" : m.is_error || subtype.startsWith("error") ? "failed" : "completed";
     // Claude Code reports a turn the host aborted as a failure of its own; the
     // host knows better, because the host asked. Without this the chat shows a
@@ -663,9 +678,31 @@ export class ClaudeTranslator {
       out.push({ kind: "entry", entry: { type: "message", message } }, { kind: "live", ev: { type: "message_end", message } });
     }
     out.push(...this.held.splice(0));
-    out.push({ kind: "done", status, error, ...(refused ? { refused: true } : {}), ...(limited && status === "failed" ? { limited: true } : {}) });
+    const transient = status === "failed" && !limited && !refused && transientFailure(errorKind, retryStatus, error, terminal);
+    out.push({ kind: "done", status, error, ...(refused ? { refused: true } : {}), ...(limited && status === "failed" ? { limited: true } : {}), ...(transient ? { transient: true } : {}) });
     return out;
   }
+}
+
+/** Failures that fail again the same way however often they are tried: the host never retries these by itself. */
+const LASTING = new Set(["authentication_failed", "oauth_org_not_allowed", "account_on_hold", "verification_required", "billing_error", "rate_limit", "invalid_request", "model_not_found", "max_output_tokens", "cloud_credential_error"]);
+const TRANSIENT_TEXT = /overloaded|server error|internal error|\b(500|502|503|504|529)\b|connection (error|reset|closed|refused)|ECONNRESET|ETIMEDOUT|socket hang up|fetch failed|timed? ?out|network/i;
+
+/**
+ * A turn that failed on something passing — the API overloaded or erroring
+ * (5xx/529), the connection dropped — after Claude Code's own retries ran out.
+ * The host tries such a turn again later by itself (engine.ts retryLater).
+ * Never a usage limit (that is held for its reset), a refused sign-in, a bad
+ * request or an unknown model: those fail again however often they are tried.
+ */
+export function transientFailure(errorKind: string | null, retryStatus: number, error: string | null, terminal = ""): boolean {
+  if (errorKind && LASTING.has(errorKind)) return false;
+  if (errorKind === "overloaded" || errorKind === "server_error") return true;
+  if (retryStatus >= 500 || retryStatus === 408) return !/prompt is too long|too long/i.test(error ?? "");
+  if (terminal === "prompt_too_long" || terminal === "image_error") return false;
+  // A request the API turned down (4xx, whatever its message says) is turned down again.
+  if (/\b4(0[0-79]|[1-9]\d)\b/.test(error ?? "")) return false;
+  return TRANSIENT_TEXT.test(error ?? "");
 }
 
 /**
