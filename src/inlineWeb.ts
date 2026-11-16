@@ -92,3 +92,25 @@ export function pickToRest(live: ReadonlyMap<string, { lastSeen: number; visible
   if (extra <= 0) return [];
   return [...live.entries()].filter(([, v]) => !v.visible).sort((a, b) => a[1].lastSeen - b[1].lastSeen).slice(0, extra).map(([k]) => k);
 }
+
+type HastLike = { type?: string; tagName?: string; value?: string; properties?: Record<string, unknown>; children?: HastLike[] };
+/** The children of a paragraph (a hast node) that are a web page on a line of its own: an image whose src is a page
+ *  (isWebPageSrc) with only a line break or the paragraph's edge before and after it. Indexes into `node.children`.
+ *  An image inside a sentence (a badge, an icon) stays an image. */
+export function soloWebImages(node: HastLike | null | undefined): number[] {
+  const kids = node?.children ?? [];
+  const isBreak = (k: HastLike | undefined, side: "before" | "after") => {
+    if (!k) return true;
+    if (k.type === "element" && k.tagName === "br") return true;
+    if (k.type === "text") return side === "before" ? /\n[ \t]*$/.test(k.value ?? "") || /^\s*$/.test(k.value ?? "") && kids.indexOf(k) === 0 : /^[ \t]*\n/.test(k.value ?? "") || /^\s*$/.test(k.value ?? "") && kids.indexOf(k) === kids.length - 1;
+    return false;
+  };
+  const out: number[] = [];
+  kids.forEach((k, i) => {
+    if (k.type !== "element" || k.tagName !== "img") return;
+    const src = k.properties?.src;
+    if (typeof src !== "string" || !isWebPageSrc(src)) return;
+    if (isBreak(kids[i - 1], "before") && isBreak(kids[i + 1], "after")) out.push(i);
+  });
+  return out;
+}

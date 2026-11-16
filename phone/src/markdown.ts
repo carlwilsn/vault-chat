@@ -12,6 +12,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown, { type Components } from "react-markdown";
 import { markdownUrlTransform, pluginsFor, prepareMarkdown, splitStreaming, type MdProfile } from "../../src/mdPipeline";
 import { frameHeight, inlineHtmlReport, isHtmlSrc, parseFrameHint } from "../../src/inlineHtml";
+import { displayHost, soloWebImages } from "../../src/inlineWeb";
 
 /** Inline .html pages' last reported heights, by frame URL: a re-rendered bubble starts at the fitted size. */
 const htmlHeights = new Map<string, number>();
@@ -63,6 +64,22 @@ export function createPhoneMarkdown(opts: PhoneMarkdownOptions) {
       if (href && href.startsWith("#")) return createElement("a", { ...rest, href }, children);
       const url = href && isVaultPath(href) ? opts.fileUrl(vaultPath(href), origin) : href;
       return createElement("a", { ...rest, href: url, target: "_blank", rel: "noopener noreferrer" }, children);
+    },
+    // A public web page on a line of its own (`![label](https://…)`, src/inlineWeb.ts): the phone has no safe native
+    // browser view to lay in the chat, so it is a plain link that opens the page in the browser.
+    p: ({ node, children, ...rest }) => {
+      const solo = soloWebImages(node as Parameters<typeof soloWebImages>[0]);
+      const kids = Array.isArray(children) ? children : [children];
+      const hast = ((node as { children?: unknown[] } | undefined)?.children ?? []) as { properties?: Record<string, unknown> }[];
+      if (!solo.length || kids.length !== hast.length) return createElement("p", rest, children);
+      const out = kids.map((k, i) => {
+        if (!solo.includes(i)) return k;
+        const pr = hast[i]?.properties ?? {};
+        const href = String(pr.src);
+        const label = (typeof pr.alt === "string" && pr.alt.trim()) || displayHost(href);
+        return createElement("a", { key: `w${i}`, href, target: "_blank", rel: "noopener noreferrer", "data-el": "chat-web-link" }, label);
+      });
+      return createElement("p", rest, ...out);
     },
     img: ({ node: _n, src, alt, title: sizeHint, ...rest }) => {
       const url = typeof src === "string" && isVaultPath(src) ? opts.fileUrl(vaultPath(src), origin) : src;

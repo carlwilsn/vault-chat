@@ -5,6 +5,8 @@ import { clipboardImageDataUrls, readChatImage } from "./chatImage";
 import { InlineHtmlFrame } from "./InlineHtmlFrame";
 import { VideoPlayer } from "./VideoPlayer";
 import { isHtmlSrc } from "./inlineHtml";
+import { InlineWebPage } from "./InlineWebPage";
+import { soloWebImages } from "./inlineWeb";
 import { localPathFromUrl } from "./mdPipeline";
 import { planDone, planCards, currentPlan, type PlanCard } from "./planPlace";
 import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare, Mic, Paperclip, Scan, AtSign, AlertCircle, Info, Loader2, FileText } from "lucide-react";
@@ -205,7 +207,30 @@ function ChatMedia(props: ComponentPropsWithoutRef<"img">) {
   return <ChatImage {...props} />;
 }
 
-const chatComponents = { img: ChatMedia } as const;
+/** A paragraph holding a public web page on a line of its own (`![label](https://…)`, src/inlineWeb.ts): the page shows
+ *  live there (InlineWebPage); the rest of the paragraph stays text around it. */
+function ChatParagraph({ node, children, ...rest }: ComponentPropsWithoutRef<"p"> & { node?: unknown }) {
+  const solo = soloWebImages(node as Parameters<typeof soloWebImages>[0]);
+  const kids = Array.isArray(children) ? children : [children];
+  const hast = ((node as { children?: unknown[] } | undefined)?.children ?? []) as { properties?: Record<string, unknown> }[];
+  if (!solo.length || kids.length !== hast.length) return <p {...rest}>{children}</p>;
+  const out: React.ReactNode[] = [];
+  let run: React.ReactNode[] = [];
+  const flush = () => {
+    if (run.some((k) => !(typeof k === "string" && !k.trim()))) out.push(<p key={`p${out.length}`} {...rest}>{run}</p>);
+    run = [];
+  };
+  kids.forEach((k, i) => {
+    if (!solo.includes(i)) { run.push(k); return; }
+    flush();
+    const pr = hast[i]?.properties ?? {};
+    out.push(<InlineWebPage key={`w${i}`} src={String(pr.src)} alt={typeof pr.alt === "string" ? pr.alt : undefined} sizeHint={typeof pr.title === "string" ? pr.title : undefined} />);
+  });
+  flush();
+  return <>{out}</>;
+}
+
+const chatComponents = { img: ChatMedia, p: ChatParagraph } as const;
 
 // Persist a chat-pane capture's PNG bytes to disk so the agent can
 // reference it from tools like `Write` (e.g. building a markdown file
