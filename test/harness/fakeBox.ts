@@ -31,6 +31,8 @@ export class FakeBox {
   files = new Map<string, Buffer>();
   /** The box's vault for attachments (POST /api/v2/attachment, the real server/attachments.ts). */
   attachVault = fs.mkdtempSync(path.join(os.tmpdir(), "vc-fakebox-attach-"));
+  /** The box's notes (GET /notes, POST /notes, POST /notes/write: the app's notes in box mode). */
+  notes: any[] = [];
   /** Answer /poll this many ms late (the tailnet). */
   pollDelay = 0;
   private pollGate: Promise<void> | null = null;
@@ -269,6 +271,16 @@ export class FakeBox {
           if (route === "GET /api/v1/vault/file") {
             const f = this.files.get(u.searchParams.get("path") ?? "");
             return f ? send(200, { path: u.searchParams.get("path"), size: f.length, base64: f.toString("base64") }) : send(404, { error: "no" });
+          }
+          if (route === "GET /notes") return send(200, { notes: this.notes });
+          if (route === "POST /notes") {
+            const b = raw ? JSON.parse(raw) : {};
+            this.notes.push(b.note);
+            return send(200, { ok: true });
+          }
+          if (route === "POST /notes/write") {
+            this.notes = (raw ? JSON.parse(raw) : {}).notes ?? [];
+            return send(200, { ok: true });
           }
           const ack = /^\/api\/v1\/show\/([^/]+)\/ack$/.exec(u.pathname);
           if (ack && req.method === "POST") return send(200, { ok: true, waiting: ackShow(decodeURIComponent(ack[1]!), raw ? JSON.parse(raw) : {}) });

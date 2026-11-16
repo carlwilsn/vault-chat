@@ -8,6 +8,7 @@
 //
 //   api: size() → {w, h}, onResize(fn), theme {mode, vars}, onTheme(fn), path,
 //        listen(target, type, fn, opts) → off, timer(fn, ms, repeat?) → cancel, effect(undo) → undo now   (change 1.6)
+//        offer({state, actions, events}) → {emit}: what it offers the agent (src/pluginOffers.ts), gone when it stops
 //
 // Everything a run does to the app is a revertible effect (src/pluginSupervisor.ts Effects): its markup, the host's
 // listeners and observer, the module's URL, the plugin's own listeners and timers made through the api, its cleanup.
@@ -30,6 +31,7 @@
 import { LIVE_THEME_VARS } from "./liveBridge";
 import { Effects } from "./pluginSupervisor";
 import { createHostApi, noHost, type HostApi, type HostBackend } from "./hostApi";
+import { declareOffers, type Offers, type OffersHandle } from "./pluginOffers";
 
 export type PluginTheme = { mode: "light" | "dark"; vars: Record<string, string> };
 export type PluginApi = {
@@ -49,6 +51,9 @@ export type PluginApi = {
   host: HostApi;
   /** Report a failure the plugin caught itself: the host takes it down and shows its error card. */
   error(e: unknown): void;
+  /** Declare what this plugin offers the agent (src/pluginOffers.ts): readable state, actions with JSON-schema args,
+   *  events. Gone when the plugin stops. A bad declaration throws (the plugin's failure, with every reason). */
+  offer(offers: Offers): OffersHandle;
 };
 /** An app plugin's code (src/appPlugins.ts): its module, already loaded with the app. A vault plugin (src/vaultPlugins.ts)
  *  is the same, trusted and in the light DOM, but its module is loaded from `code` (the file's text) on each mount. */
@@ -245,6 +250,12 @@ export function mountPlugin(
         effect: (undo) => (run === r && typeof undo === "function" ? fx.add("effect", undo) : () => {}),
         host: createHostApi(opts.host ?? noHost, fx, () => run === r, guard),
         error: (e) => void (run === r && fail(e)),
+        offer: (offers) => {
+          if (run !== r) return { emit() {} };
+          const d = declareOffers(opts.path, parts?.name ?? opts.path, offers, () => run === r);
+          fx.add("offers", d.undo);
+          return d.handle;
+        },
       };
       if (typeof ResizeObserver !== "undefined") {
         const ro = new ResizeObserver(guard(() => {

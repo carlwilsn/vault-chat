@@ -47,8 +47,10 @@ export type HostBackend = {
   notify(text: string, kind: "info" | "error"): () => void;
   runCommand(id: string): boolean;
   closeNotesPanel(): void;
-  setNoteStatus(id: string, status: "open" | "resolved"): void;
-  deleteNote(id: string): void;
+  /** Add a note (written to the notes file); its id, or why not. */
+  addNote(text: string, sourcePath?: string): Promise<{ ok: boolean; id?: string; error?: string }>;
+  setNoteStatus(id: string, status: "open" | "resolved"): Promise<void> | void;
+  deleteNote(id: string): Promise<void> | void;
   clearResolvedNotes(): void;
   reformatNote(id: string): void;
   saveNoteDraft(id: string, draft: string): Promise<void>;
@@ -75,8 +77,9 @@ export type HostApi = {
   notify(text: string, kind?: "info" | "error"): void;
   runCommand(id: string): boolean;
   notes: {
-    setStatus(id: string, status: "open" | "resolved"): void;
-    remove(id: string): void;
+    add(text: string, sourcePath?: string): Promise<{ ok: boolean; id?: string; error?: string }>;
+    setStatus(id: string, status: "open" | "resolved"): Promise<void>;
+    remove(id: string): Promise<void>;
     clearResolved(): void;
     reformat(id: string): void;
     saveDraft(id: string, draft: string): Promise<void>;
@@ -99,6 +102,7 @@ export const noHost: HostBackend = {
   notify: () => () => {},
   runCommand: () => false,
   closeNotesPanel() {},
+  addNote: async () => ({ ok: false, error: "no notes here" }),
   setNoteStatus() {},
   deleteNote() {},
   clearResolvedNotes() {},
@@ -186,8 +190,9 @@ export function createHostApi(b: HostBackend, fx: Effects, alive: () => boolean,
     },
     runCommand: act((id) => b.runCommand(String(id)), false),
     notes: {
-      setStatus: act((id, s) => b.setNoteStatus(id, s), undefined),
-      remove: act((id) => b.deleteNote(id), undefined),
+      add: act(async (text: string, sourcePath?: string) => b.addNote(String(text), sourcePath), Promise.resolve({ ok: false, error: "the plugin has stopped" })),
+      setStatus: act(async (id: string, s: "open" | "resolved") => void (await b.setNoteStatus(id, s)), Promise.resolve()),
+      remove: act(async (id: string) => void (await b.deleteNote(id)), Promise.resolve()),
       clearResolved: act(() => b.clearResolvedNotes(), undefined),
       reformat: act((id) => b.reformatNote(id), undefined),
       saveDraft: act((id, d) => b.saveNoteDraft(id, d), Promise.resolve()),

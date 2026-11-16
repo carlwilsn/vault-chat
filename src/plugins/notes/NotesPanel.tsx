@@ -19,6 +19,7 @@ import { noteIsSummarizable, anchorImages } from "../../notes";
 type NoteAnchorLike = Pick<NoteAnchor, "source_path" | "source_anchor">;
 import { cn } from "../../lib/utils";
 import { MessageSquare } from "lucide-react";
+import { createNotesView, type NotesView } from "./view";
 
 // Slide-in review panel for vault notes. Shows active by default;
 // toggle pill flips to resolved. Click a card → opens the note's
@@ -30,7 +31,7 @@ import { MessageSquare } from "lucide-react";
 // store.showNotesPanel); it stays mounted while closed, so its filter, search
 // and expanded card are kept between openings, as before.
 
-export function NotesPanel({ host }: { host: HostApi }) {
+export function NotesPanel({ host, view: given }: { host: HostApi; view?: NotesView }) {
   // Only the plugin host API (api.host): this plugin does not import the store.
   const { notesPanelOpen: open, notes } = useSyncExternalStore(host.subscribe, host.state, host.state);
   const onClose = useCallback(() => host.panel.close(), [host]);
@@ -40,8 +41,13 @@ export function NotesPanel({ host }: { host: HostApi }) {
   const reformatNote = host.notes.reformat;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showRawId, setShowRawId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<"active" | "resolved">("active");
-  const [query, setQuery] = useState("");
+  // Its filter and search live in the plugin's view state (src/plugins/notes/view.ts), which the agent reads and sets
+  // through the plugin's offers; the panel shows them.
+  const [own] = useState(() => given ?? createNotesView());
+  const view = given ?? own;
+  const { filter, query } = useSyncExternalStore(view.subscribe, view.get, view.get);
+  const setFilter = useCallback((f: "active" | "resolved") => view.set({ filter: f }), [view]);
+  const setQuery = useCallback((q: string) => view.set({ query: q }), [view]);
 
   useEffect(() => {
     if (!open) return;

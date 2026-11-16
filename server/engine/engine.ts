@@ -47,6 +47,7 @@ import { BOARD_MAKER_PROMPT, boardMakeTask, makerStats } from "./boardTools";
 import { lookBoard } from "../boards";
 import { show, SHOW_DESCRIPTION, SHOW_SCHEMA } from "../show";
 import { layoutTool, LAYOUT_DESCRIPTION, LAYOUT_SCHEMA } from "../layoutTool";
+import { pluginOfferTool, pluginOfferToolSpecs } from "../pluginOffersTool";
 import { boardGuard } from "../boardGuard";
 import { openProject, OPEN_PROJECT_DESCRIPTION, OPEN_PROJECT_SCHEMA } from "../projectRoutes";
 import { startJobWith, jobStatus, jobList, jobStop, reapJobs, readJobs, type JobEnv } from "./jobs";
@@ -513,7 +514,7 @@ export const ENGINE_TOOL_SPECS = [
     name: "Catalog",
     readOnly: true,
     description:
-      "What vault-chat's pages can be built from: every registered service a page can name in its <meta name=\"vc-capabilities\"> manifest (what each does, who supplies it, its vc.<fn>), and the plugins in this vault (.html pages with a vc-capabilities or vc-mount manifest: path, name, where it runs, the services it needs). Use it for \"what services exist?\" or \"what plugins do I have?\". Read-only.",
+      "What vault-chat's pages can be built from: every registered service a page can name in its <meta name=\"vc-capabilities\"> manifest (what each does, who supplies it, its vc.<fn>), and the plugins in this vault (.html pages with a vc-capabilities or vc-mount manifest: path, name, where it runs, the services it needs). Use it for \"what services exist?\" or \"what plugins do I have?\". Read-only. To read or drive a running plugin's own state and actions, use PluginRead / PluginAct.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -536,7 +537,7 @@ export const ENGINE_TOOL_SPECS = [
 
 /** Every vault-chat tool the agent has (Carl's own vault tools are added per thread). */
 export function agentToolSpecs(): ToolSpec[] {
-  return [...ENGINE_TOOL_SPECS, pdfPagesSpec, ...noteToolSpecs, ...contextToolSpecs, ...pluginToolSpecs] as ToolSpec[];
+  return [...ENGINE_TOOL_SPECS, pdfPagesSpec, ...noteToolSpecs, ...contextToolSpecs, ...pluginToolSpecs, ...pluginOfferToolSpecs] as ToolSpec[];
 }
 /** The model Ctrl+K / Ctrl+L runs on unless Carl picks another: small interactions want speed. */
 export const INLINE_DEFAULT_MODEL = "claude-haiku-5-5";
@@ -2940,6 +2941,11 @@ export class Engine {
         }
         case "Layout": {
           const r = await layoutTool({ vault, emit: (ev) => this.d.broadcast?.(ev) }, a);
+          return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
+        }
+        case "PluginRead":
+        case "PluginAct": {
+          const r = await pluginOfferTool({ vault, emit: (ev) => this.d.broadcast?.(ev) }, name, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "DeleteConversation": {

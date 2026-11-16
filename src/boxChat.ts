@@ -598,6 +598,18 @@ class BoxChatSession {
           .catch((err) => console.warn("[box-chat] layout failed:", err));
         return;
       }
+      case "plugin": {
+        // The agent's PluginRead / PluginAct (server/pluginOffersTool.ts): answered from the offers of the plugins
+        // mounted here (src/pluginOffers.ts), acked on Show's channel.
+        const id = typeof e.id === "string" ? e.id : "";
+        if (e.to !== "laptop" || !id) return;
+        const link = this.link;
+        void import("./pluginOffers")
+          .then((m) => m.answerPluginSignal(e as unknown as import("./pluginOffers").PluginSignal))
+          .then((ack) => httpPost(link, `/api/v1/show/${encodeURIComponent(id)}/ack`, ack))
+          .catch((err) => console.warn("[box-chat] plugin call failed:", err));
+        return;
+      }
       case "follow": {
         // Carl asked to work in another thread (the agent's OpenProject, server/projectRoutes.ts): this screen follows.
         if (typeof e.convId !== "string" || !e.convId) return;

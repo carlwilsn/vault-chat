@@ -1,7 +1,7 @@
 // The app's HostBackend (src/hostApi.ts) bound to the store: the one place a plugin's host calls reach it.
 import { useStore } from "./store";
 import { readTextAt, boxPathOf } from "./boxFiles";
-import { writeAllNotes } from "./notes";
+import { buildNote, writeAllNotes } from "./notes";
 import { isUnreadableAsText } from "./fileKind";
 import { hostTheme } from "./mountHost";
 import { applyLayoutOps, readLayout, type LayoutIO } from "./layoutOps";
@@ -101,8 +101,16 @@ export const appHostBackend: HostBackend = {
     return true;
   },
   closeNotesPanel: () => useStore.getState().setShowNotesPanel(false),
-  setNoteStatus: (id, st) => void useStore.getState().setNoteStatus(id, st),
-  deleteNote: (id) => void useStore.getState().deleteNote(id),
+  async addNote(text, sourcePath) {
+    const s = useStore.getState();
+    if (!s.vaultPath) return { ok: false, error: "no vault is open" };
+    if (!text.trim()) return { ok: false, error: "a note needs text" };
+    const note = buildNote({ anchors: sourcePath ? [{ source_path: sourcePath, source_kind: "code", source_anchor: null, primary: true }] : [], userDraft: text.trim() });
+    await s.addNote(note);
+    return useStore.getState().notes.some((n) => n.id === note.id) ? { ok: true, id: note.id } : { ok: false, error: "the note was not saved" };
+  },
+  setNoteStatus: (id, st) => useStore.getState().setNoteStatus(id, st),
+  deleteNote: (id) => useStore.getState().deleteNote(id),
   clearResolvedNotes: () => void useStore.getState().clearResolvedNotes(),
   reformatNote: (id) => void useStore.getState().reformatNote(id),
   async saveNoteDraft(id, draft) {
