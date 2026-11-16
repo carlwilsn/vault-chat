@@ -35,6 +35,7 @@ import { useStore, type ChatAttachment, type ChatMessage, type FileUpload, type 
 import { readBoxConfig, boxSyncNow } from "./vaultSync";
 import { boxFileChanged } from "./liveReload";
 import { foldSupervisorRecords } from "./pluginSupervisorApp";
+import { foldAppPluginRecords, loadAppPluginStates } from "./appPluginState";
 import type { Conversation } from "./conversations";
 import type { LogRecord, PollAnswer } from "./convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, type Picture, type RowState } from "./convlog/reduce";
@@ -472,6 +473,8 @@ class BoxChatSession {
     // Carl's settings as the box has them (src/settings.ts); the feed carries every change after this.
     const link = this.link;
     void import("./settings").then((m) => m.loadBoxSettings(link)).catch(() => {});
+    // The app plugins' own state (src/appPluginState.ts: app/chat-rows' choices); the feed carries every change after.
+    void loadAppPluginStates(link);
     this.epoch = String(r.epoch ?? "");
     this.rows = new Map((Array.isArray(r.rows) ? r.rows : []).map((x: RowState) => [x.id, x]));
     this.deletedIds = new Set((Array.isArray(r.deleted) ? r.deleted : []).filter((x: unknown): x is string => typeof x === "string"));
@@ -547,6 +550,8 @@ class BoxChatSession {
     const byConv = new Map<string, LogRecord[]>();
     // The plugins' desired-state records (src/pluginSupervisorApp.ts): every view of a plugin follows them.
     foldSupervisorRecords(records);
+    // The app plugins' plugin.state records (src/appPluginState.ts): the same choices in every window.
+    foldAppPluginRecords(records);
     for (const r of records) {
       if (r.conv === null) {
         this.signal(r.type === "signal" ? r.signal : {}, r.seq);

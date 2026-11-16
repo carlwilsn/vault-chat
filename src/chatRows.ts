@@ -160,6 +160,24 @@ export function chooseRowRenderer(kind: string, id: string | null): void {
   changed();
 }
 
+/** The kept choices (app/chat-rows' state, src/plugins/chat-rows/index.ts): the renderers turned off and the one chosen
+ *  per kind, replacing what was here. An id not registered (yet: a vault plugin not mounted) is kept for when it is. */
+export function setRowPrefs(disabled: Iterable<string>, chosen: Record<string, string>): void {
+  const r = reg();
+  const d = new Set(disabled);
+  const c = new Map(Object.entries(chosen).filter(([, id]) => typeof id === "string" && id));
+  const same = d.size === r.disabled.size && [...d].every((x) => r.disabled.has(x)) && c.size === r.chosen.size && [...c].every(([k, v]) => r.chosen.get(k) === v);
+  if (same) return;
+  r.disabled = d;
+  r.chosen = c;
+  changed();
+}
+
+/** A registered renderer by id (the agent's actions check what they name), or null. */
+export function rowRenderer(id: string): RowRenderer | null {
+  return findRenderer(id);
+}
+
 /** Every kind with its renderers, as plain data (the agent's renderers state). */
 export function describeRows(): { kind: string; active: string; renderers: { id: string; by: string; builtin: boolean; enabled: boolean; failures?: Failure }[] }[] {
   const r = reg();

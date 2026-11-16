@@ -20,6 +20,7 @@ import { appCss } from "./appCss";
 import { liveGateway, liveManifest, liveRevoke, liveToken } from "./liveProxy";
 import { pluginCatalog } from "./pluginCatalog";
 import { offDocument, pluginDesired, supervisorRoute } from "./supervisor";
+import { appPluginStateRoute } from "./pluginState";
 import { APP_STYLES_HREF, HTML_CSP, embedRelativeImages, inlineHtmlDocument, isHtmlSrc, joinPagePath, relativeImageRefs } from "../src/inlineHtml";
 import { createExternalMcpHandler, type ExternalContext } from "./mcp/external";
 import { externalMcpHosts } from "./mcp/hosts";
@@ -734,6 +735,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // The catalog (src/pluginCatalog.ts): the registered services and this vault's plugins. A page reaches it through
   // the gateway with `catalog` granted; this is the app's and a loopback caller's way in.
   if (path === "/api/v2/plugin/catalog" && method === "GET") return json(res, 200, pluginCatalog(open.path));
+  // An app plugin's own state (server/pluginState.ts): plugin.state records the app's windows follow (app/chat-rows' choices).
+  if (path === "/api/v2/plugin/app-state" && (method === "GET" || method === "POST")) {
+    const out = appPluginStateRoute(vault, method, url.searchParams, method === "POST" ? await jsonBody(req) : null);
+    return json(res, out.status, out.body);
+  }
   // Carl's settings (server/settings.ts): every setting, or one set (from the app's Settings, the composer, the phone).
   if (path === "/api/v2/settings" && (method === "GET" || method === "POST")) {
     const out = settingsRoute(method, method === "POST" ? await jsonBody(req) : null, "carl");

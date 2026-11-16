@@ -504,6 +504,14 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       }
       return ok({ notes: [...byId.values()] });
     }
+    if (p === "/api/v2/plugin/app-state") {
+      // The app plugins' own state (server/pluginState.ts appPluginStateRoute): the fake box's log, folded the box's way.
+      const states = new Map<string, PluginState>();
+      for (const r of box.recs) if (r.conv === null) foldPluginState(states, r as any);
+      const app = Object.fromEntries([...states].filter(([id]) => id.startsWith("app/")));
+      const one = u.searchParams.get("plugin");
+      return ok(one ? (app[one] ?? { seq: 0, state: {} }) : { states: app });
+    }
     if (p === "/api/v2/supervisor") {
       // The supervisor's records (server/supervisor.ts): the fake box's log, folded the box's way.
       const sup = new Supervisor();
@@ -581,6 +589,15 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       if (!inBoxFolder(at) || typeof b.text !== "string") return { status: 403, body: JSON.stringify({ error: `${at} is not in a project's folder` }) };
       boxDisk.set(at, b.text);
       return { status: 200, body: JSON.stringify({ ok: true, path: at, size: b.text.length }) };
+    }
+    if (path === "/api/v2/plugin/app-state") {
+      // An app plugin's state set (server/pluginState.ts): a plugin.state record in the fake box's log, on /poll.
+      const plugin = String(b?.plugin ?? "");
+      if (!/^app\/[a-z][a-z0-9-]{0,40}$/.test(plugin)) return { status: 400, body: JSON.stringify({ error: "name an app plugin: app/<name>" }) };
+      const sig = stateSignal(plugin, JSON.stringify({ key: b?.key, value: b?.value ?? null }));
+      if ("error" in sig) return { status: sig.status, body: JSON.stringify({ error: sig.error }) };
+      const rec = box.emit(null, { type: "signal", signal: sig } as any);
+      return { status: 200, body: JSON.stringify({ ok: true, seq: rec.seq }) };
     }
     if (path === "/api/v2/supervisor") {
       // Carl's word on a plugin (server/supervisor.ts): a record in the fake box's log, on /poll like the box's.

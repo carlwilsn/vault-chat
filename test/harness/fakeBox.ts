@@ -18,6 +18,7 @@ import { ackShow, feedOpened } from "../../server/show.ts";
 import { recordHostBuild } from "../../server/hostBuild.ts";
 import { saveAttachment } from "../../server/attachments.ts";
 import { settingsRoute } from "../../server/settings.ts";
+import { appPluginStateRoute } from "../../server/pluginState.ts";
 
 export class FakeBox {
   url = "";
@@ -279,6 +280,11 @@ export class FakeBox {
           // Carl's settings: the box's real route over this feed (server/settings.ts).
           if (u.pathname === "/api/v2/settings") {
             const out = settingsRoute(req.method!, raw ? JSON.parse(raw) : null, "carl", this.log);
+            return send(out.status, out.body);
+          }
+          // An app plugin's own state: the box's real route over this feed (server/pluginState.ts).
+          if (u.pathname === "/api/v2/plugin/app-state") {
+            const out = appPluginStateRoute("", req.method!, u.searchParams, raw ? JSON.parse(raw) : null, this.log);
             return send(out.status, out.body);
           }
           if (route === "GET /notes") return send(200, { notes: this.notes });

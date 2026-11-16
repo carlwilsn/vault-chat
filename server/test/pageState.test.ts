@@ -117,6 +117,30 @@ describe("a page's state service", () => {
   });
 });
 
+describe("an app plugin's state (app/chat-rows' kept choices: GET/POST /api/v2/plugin/app-state)", () => {
+  it("is plugin.state records Carl's devices write; every app plugin's or one; survives a restart; pages and bad ids refused", async () => {
+    const ps = await import("../pluginState");
+    const q = (s = "") => new URLSearchParams(s);
+    expect(ps.appPluginStateRoute(vault, "GET", q(), null)).toEqual({ status: 200, body: { states: {} } });
+    const set = ps.appPluginStateRoute(vault, "POST", q(), { plugin: "app/chat-rows", key: "off:builtin:notice", value: true });
+    expect(set.status).toBe(200);
+    const seq = (set.body as { seq: number }).seq;
+    expect(set.body).toMatchObject({ ok: true, seq, state: { "off:builtin:notice": true } });
+    ps.appPluginStateRoute(vault, "POST", q(), { plugin: "app/chat-rows", key: "use:tool-call", value: "my.js#tool-call" });
+    const two = ps.appPluginStateRoute(vault, "POST", q(), { plugin: "app/chat-rows", key: "use:tool-call", value: null });
+    expect((two.body as { state: unknown }).state).toEqual({ "off:builtin:notice": true });
+    // A page's state is not an app plugin's: the device route names only app/<name>.
+    await call(page("p.html", "state"), "POST", "/api/v2/plugin/state", { key: "x", value: 1 });
+    const all = ps.appPluginStateRoute(vault, "GET", q(), null).body as { states: Record<string, unknown> };
+    expect(Object.keys(all.states)).toEqual(["app/chat-rows"]);
+    for (const bad of ["p.html", "app/", "App/x", "app/../x", ""]) expect(ps.appPluginStateRoute(vault, "POST", q(), { plugin: bad, key: "k", value: 1 }).status).toBe(400);
+    expect(ps.appPluginStateRoute(vault, "POST", q(), { plugin: "app/chat-rows", value: 1 }).status).toBe(400);
+    expect(ps.appPluginStateRoute(vault, "GET", q("plugin=p.html"), null).status).toBe(400);
+    log._resetConvLogs(); // a restart
+    expect(ps.appPluginStateRoute(vault, "GET", q("plugin=app/chat-rows"), null).body).toEqual({ seq: (two.body as { seq: number }).seq, state: { "off:builtin:notice": true } });
+  });
+});
+
 describe("a page's log service", () => {
   it("appends the page's records to the one log, tagged with the page", async () => {
     const t = page("logger.html", "log");

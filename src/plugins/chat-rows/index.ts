@@ -3,8 +3,66 @@
 // registry, src/chatRows.ts) and declares what it offers through api.offer: which renderer draws each kind of row and
 // the rows on screen as state; enable / disable / use a renderer, scroll to a row, open or close tool rows as actions;
 // a `changed` event when the renderers change. Turned off, the agent cannot reach it and the rows still draw.
+//
+// The choices (a renderer off, the one chosen for a kind) are this plugin's state: plugin.state records on the box
+// (src/appPluginState.ts), keys "off:<renderer id>" = true and "use:<kind>" = <renderer id>. So they survive a restart and
+// are the same in every window; the registry follows them (followRowPrefs, from the app's start, so the first paint
+// already has them), also while the plugin itself is off.
 import type { PluginApi } from "../../mountHost";
-import { CHAT_REVEAL_EVENT, chooseRowRenderer, describeRows, setRowEnabled, subscribeRows, visibleRows } from "../../chatRows";
+import { CHAT_REVEAL_EVENT, describeRows, rowRenderer, setRowPrefs, subscribeRows, visibleRows } from "../../chatRows";
+import { appPluginState, setAppPluginState, subscribeAppPluginState } from "../../appPluginState";
+import { CHAT_ROWS_PLUGIN_ID } from "../../appPlugins";
+import { useStore } from "../../store";
+
+const OFF = "off:";
+const USE = "use:";
+
+/** The kept choices, from the plugin's state. */
+export function rowPrefs(state: Record<string, unknown> = appPluginState(CHAT_ROWS_PLUGIN_ID)): { disabled: string[]; chosen: Record<string, string> } {
+  const disabled: string[] = [];
+  const chosen: Record<string, string> = {};
+  for (const [k, v] of Object.entries(state)) {
+    if (k.startsWith(OFF) && v === true) disabled.push(k.slice(OFF.length));
+    else if (k.startsWith(USE) && typeof v === "string" && v) chosen[k.slice(USE.length)] = v;
+  }
+  return { disabled, chosen };
+}
+
+let following: (() => void) | null = null;
+/** The registry follows the kept choices from now on (once; returns off). */
+export function followRowPrefs(): () => void {
+  if (following) return following;
+  const apply = () => {
+    const p = rowPrefs();
+    setRowPrefs(p.disabled, p.chosen);
+  };
+  apply();
+  const offState = subscribeAppPluginState((id) => id === CHAT_ROWS_PLUGIN_ID && apply());
+  let vault = useStore.getState().vaultPath;
+  const offStore = useStore.subscribe((st) => {
+    if (st.vaultPath === vault) return;
+    vault = st.vaultPath;
+    apply();
+  });
+  following = () => {
+    offState();
+    offStore();
+    following = null;
+  };
+  return following;
+}
+followRowPrefs();
+
+/** Keep one choice: a record on the box (here at once). What the box said, for the agent. */
+async function keep(writes: [string, unknown][]): Promise<{ kept: boolean; why?: string }> {
+  let why: string | null = null;
+  for (const [k, v] of writes) why = (await setAppPluginState(CHAT_ROWS_PLUGIN_ID, k, v)) ?? why;
+  return why ? { kept: false, why } : { kept: true };
+}
+
+function named(id: string): void {
+  if (!rowRenderer(id)) throw new Error(`no chat row renderer "${id}" (see the renderers state)`);
+}
 
 /** The chat's scroller: the element the rows sit in (null: no chat pane on screen). */
 function rowsRoot(doc: Document): HTMLElement | null {
@@ -34,6 +92,10 @@ export function chatRowsOffers(doc: Document = document) {
           "Each kind of row (user, assistant, notice, working, divider, job, voice, voice-ask, plan, tool-call, tool-call:<Tool>, inline-html) with the renderer drawing it (active: builtin:<kind>, a plugin's <plugin id>#<kind>, or fallback = the plain text row) and every renderer registered for it (by, enabled, failures).",
         read: () => describeRows(),
       },
+      kept: {
+        description: "The choices kept on the box (the same in every window, after a restart): disabled = renderer ids turned off, chosen = {kind: renderer id}.",
+        read: () => rowPrefs(),
+      },
       rows: {
         description: "The rows drawn now (the newest 60): {index, kind, renderer, mid?, text (one line), tools?}; total = messages in the chat, shownFrom = the first index drawn (older ones join on scroll).",
         read: () => visibleRows(60),
@@ -41,27 +103,36 @@ export function chatRowsOffers(doc: Document = document) {
     },
     actions: {
       disable: {
-        description: "Turn a renderer off by its id (see renderers): its kind is drawn by the next in line (a plugin's off: the built-in; the built-in off: the plain fallback row). Until the app restarts.",
+        description: "Turn a renderer off by its id (see renderers): its kind is drawn by the next in line (a plugin's off: the built-in; the built-in off: the plain fallback row). Kept: every window, and after a restart.",
         args: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
-        run: (a: Record<string, unknown>) => {
-          setRowEnabled(String(a.id), false);
-          return { disabled: String(a.id) };
+        run: async (a: Record<string, unknown>) => {
+          const id = String(a.id);
+          named(id);
+          return { disabled: id, ...(await keep([[OFF + id, true]])) };
         },
       },
       enable: {
-        description: "Turn a renderer back on by its id.",
+        description: "Turn a renderer back on by its id (kept, like disable).",
         args: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
-        run: (a: Record<string, unknown>) => {
-          setRowEnabled(String(a.id), true);
-          return { enabled: String(a.id) };
+        run: async (a: Record<string, unknown>) => {
+          const id = String(a.id);
+          if (!rowPrefs().disabled.includes(id)) named(id);
+          return { enabled: id, ...(await keep([[OFF + id, null]])) };
         },
       },
       use: {
-        description: "Choose which registered renderer draws a kind (id from renderers, e.g. builtin:tool-call to override a plugin's); id omitted: back to the default order (newest plugin renderer, else the built-in).",
+        description: "Choose which registered renderer draws a kind (id from renderers, e.g. builtin:tool-call to override a plugin's; it is turned on too); id omitted: back to the default order (newest plugin renderer, else the built-in). Kept, like disable.",
         args: { type: "object", properties: { kind: { type: "string" }, id: { type: "string" } }, required: ["kind"], additionalProperties: false },
-        run: (a: Record<string, unknown>) => {
-          chooseRowRenderer(String(a.kind), typeof a.id === "string" && a.id ? a.id : null);
-          return { kind: String(a.kind), using: typeof a.id === "string" && a.id ? a.id : "default" };
+        run: async (a: Record<string, unknown>) => {
+          const kind = String(a.kind);
+          const id = typeof a.id === "string" && a.id ? a.id : null;
+          if (id) {
+            const x = rowRenderer(id);
+            if (!x || x.kind !== kind) throw new Error(`no renderer "${id}" for kind "${kind}" (see the renderers state)`);
+          }
+          const writes: [string, unknown][] = [[USE + kind, id]];
+          if (id && rowPrefs().disabled.includes(id)) writes.push([OFF + id, null]);
+          return { kind, using: id ?? "default", ...(await keep(writes)) };
         },
       },
       scrollTo: {
@@ -93,7 +164,7 @@ export function chatRowsOffers(doc: Document = document) {
       },
     },
     events: {
-      changed: { description: "The renderers changed (registered, removed, enabled, disabled or chosen): the active renderer of each kind after it." },
+      changed: { description: "The renderers changed (registered, removed, enabled, disabled or chosen, here or in another window): the active renderer of each kind after it." },
     },
   };
 }
