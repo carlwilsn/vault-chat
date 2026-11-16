@@ -15,7 +15,7 @@ import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { registerCommands } from "./commands";
 import { loadKeyStore, hasKey, saveKeys, keyNames, CLAUDE_CODE_KEY } from "./keys";
 import { hostname, userInfo } from "node:os";
-import { setLegacySource, signal, convLog, setSharedClock, setFeedVaults } from "./convlog/log";
+import { setLegacySource, signal, signalLog, convLog, setSharedClock, setFeedVaults } from "./convlog/log";
 import { legacySource } from "./convlog/importer";
 
 function fatal(msg: string, code = 2): never {
@@ -77,6 +77,7 @@ async function main(): Promise<void> {
   // Every agent turn runs in pi (server/engine). The old in-process loop
   // stays in the bundle for legacy mission threads until Phase 3 removes it.
   const { notificationAppend } = await import("./commands/phone");
+  const { readSetting, setSetting } = await import("./settings");
   const { startEngine, engineModel, engineEffort, engineShuttingDown } = await import("./engine");
   const { startBoxSync, syncStatus, syncSummary, triggerSync, syncNow, listVaults, addVault, vaultPaths } = await import("./sync");
   // An agent's edits reach the laptop's open file in seconds: commit + publish, then /poll "vault_changed".
@@ -88,6 +89,19 @@ async function main(): Promise<void> {
   // The clients' feed: every vault's conversations, whatever vault is open; Main is the main vault's.
   setFeedVaults(cfg.vault, () => vaultRefs().map((v) => v.path));
   for (const v of vaultRefs()) convLog(v.path);
+  // Carl's settings are records in the main vault's log (server/settings.ts); what the box kept in its localStorage
+  // file moves there once, backed up first (outside the vault).
+  {
+    const { configureSettings, migrateSettings } = await import("./settings");
+    const { isClaudeModel } = await import("./engine/claude/models");
+    configureSettings({ log: () => signalLog(cfg.vault), check: { model: (m) => (isClaudeModel(String(m)) ? null : `"${String(m).slice(0, 80)}" is not a model this engine runs`) } });
+    try {
+      const m = migrateSettings({ storage: localStorage, backupDir: process.env.VC_SETTINGS_BACKUP_DIR || join(cfg.stateDir, "backups"), source: cfg.localStoragePath });
+      if (m.backup) console.log(`[vault-chat-server] settings moved to records: ${m.moved.join(", ") || "none"}${m.dropped.length ? `; dropped ${m.dropped.join(", ")}` : ""} (backup ${m.backup})`);
+    } catch (e) {
+      console.error(`[vault-chat-server] settings migration failed (the old file is untouched where it failed): ${(e as Error).message}`);
+    }
+  }
   const liveEdits = new LiveEdits({
     flush: (name) => syncNow(name === cfg.vaultName ? undefined : name),
     // A signal in that vault's log.
@@ -359,7 +373,7 @@ async function main(): Promise<void> {
       vault: v.path,
       engine: async () => engineOf(v),
       elKey: () => useStore.getState().serviceKeys.elevenlabs || null,
-      voiceId: () => localStorage.getItem("vault_chat_elevenlabs_voice") || "nPczCjzI2devNBz1zQrb",
+      voiceId: () => String(readSetting("voice") ?? "nPczCjzI2devNBz1zQrb"),
       pipelineState,
       pipelineReady: async () => {
         const p = pipelineState();
@@ -368,7 +382,7 @@ async function main(): Promise<void> {
         return health.owned && health.state === "ready";
       },
       botUrl: `http://127.0.0.1:${cfg.voicePort}`,
-      setVoiceId: (id) => localStorage.setItem("vault_chat_elevenlabs_voice", id),
+      setVoiceId: (id) => void setSetting("voice", id, "carl"),
       selfUrl: `http://127.0.0.1:${cfg.port}`,
       logDir: join(cfg.stateDir, "logs"),
       stateDir: cfg.stateDir,

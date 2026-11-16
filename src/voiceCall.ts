@@ -88,9 +88,7 @@ export async function startVoiceCall(): Promise<void> {
   ship.installPageHide();
   useStore.getState().setVoiceConnecting(true);
   useStore.setState({ voiceNotice: null });
-  // The voice he picked here before the box kept it: the box's from now on (once is enough; harmless again).
-  const picked = localStorage.getItem("vault_chat_elevenlabs_voice");
-  if (picked) void boxPost(link, "/api/v1/brain/voice", { voiceId: picked }).catch(() => null);
+  // The voice is a setting on the box (src/settingsRecords.ts): the call speaks with it; nothing to send from here.
   const post: BrainPost = async (path, body) => {
     const r = await boxPost(link, path, body);
     if (!r.ok) throw new Error(r.error ?? "the box did not answer");

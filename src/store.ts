@@ -554,7 +554,10 @@ type State = {
   clearApiKey: (p: ProviderId) => void;
   setServiceKey: (name: keyof ServiceKeys, k: string) => void;
   clearServiceKey: (name: keyof ServiceKeys) => void;
+  /** Carl's pick: shown now, and the theme setting's record on the box (src/settings.ts) every app follows. */
   setTheme: (t: Theme) => void;
+  /** The theme setting changed (a record, from anywhere): shown here and in this app's other windows. */
+  applyTheme: (t: Theme) => void;
   applyThemeFromEvent: (t: Theme) => void;
   setBoxToken: (token: string) => void;
   setSkills: (s: Skill[]) => void;
@@ -1121,6 +1124,10 @@ export const useStore = create<State>((set) => ({
     }
   },
   setTheme: (t) => {
+    useStore.getState().applyTheme(t);
+    void import("./settings").then((m) => m.saveSetting("theme", t)).catch(() => {});
+  },
+  applyTheme: (t) => {
     localStorage.setItem(THEME_STORAGE, t);
     set({ theme: t });
     emit("theme:changed", t).catch(() => {});
@@ -1153,16 +1160,17 @@ export const useStore = create<State>((set) => ({
     set((s) => (s.popoutOpen ? s : { rightCollapsed: !s.rightCollapsed })),
   setPopoutOpen: (b) => set({ popoutOpen: b }),
   toggleChatFullscreen: () => set((s) => ({ chatFullscreen: !s.chatFullscreen })),
-  toggleChatSidebar: () =>
-    set((s) => {
-      const next = !s.chatSidebarOpen;
-      try {
-        localStorage.setItem(CHAT_SIDEBAR_STORAGE, next ? "1" : "0");
-      } catch {
-        /* localStorage unavailable — the toggle still works this session */
-      }
-      return { chatSidebarOpen: next };
-    }),
+  toggleChatSidebar: () => {
+    // A setting (src/settings.ts): open or closed here now, and the record every app follows.
+    const next = !useStore.getState().chatSidebarOpen;
+    try {
+      localStorage.setItem(CHAT_SIDEBAR_STORAGE, next ? "1" : "0");
+    } catch {
+      /* localStorage unavailable — the toggle still works this session */
+    }
+    set({ chatSidebarOpen: next });
+    void import("./settings").then((m) => m.saveSetting("chatSidebar", next)).catch(() => {});
+  },
   toggleVoiceMode: () => set((s) => ({ voiceMode: !s.voiceMode })),
   toggleFollowAlong: () => set((s) => ({ followAlong: !s.followAlong })),
   setVoiceListening: (b) => set({ voiceListening: b }),

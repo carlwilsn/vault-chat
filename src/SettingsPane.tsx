@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Check, X, Plus, ChevronDown, Play, Square } from "lucide-react";
 import { useStore } from "./store";
+import { saveSetting, useSetting } from "./settings";
 import { Button, Input, MenuSelect } from "./ui";
 import { listUserKeys, setUserKey, deleteUserKey } from "./keychain";
 import {
@@ -416,18 +417,21 @@ const DEFAULT_VOICE = "nPczCjzI2devNBz1zQrb";
 
 const TEST_LINE = "Hi Carl. This is how I'll sound when we talk in vault-chat.";
 
-/** The voice a call speaks with is the box's (every device follows it): a pick goes there. */
+/** The voice a call speaks with is a setting (src/settings.ts): a pick is its record, which every device follows. */
 async function voiceToBox(voiceId: string): Promise<void> {
-  const { boxLinkFor, boxPost } = await import("./boxChat");
-  const link = await boxLinkFor(useStore.getState().vaultPath).catch(() => null);
-  if (link) await boxPost(link, "/api/v1/brain/voice", { voiceId }).catch(() => null);
+  await saveSetting("voice", voiceId).catch(() => null);
 }
 
 function VoiceSection() {
   const key = useStore((s) => s.serviceKeys.elevenlabs);
+  const shared = useSetting("voice");
   const [voiceId, setVoiceId] = useState(
     localStorage.getItem(VOICE_STORAGE) ?? DEFAULT_VOICE,
   );
+  // The voice setting changed elsewhere (the agent, another device): the picker shows it.
+  useEffect(() => {
+    if (typeof shared === "string" && shared) setVoiceId(shared);
+  }, [shared]);
   // The voices on the ElevenLabs account (its default voices plus any added
   // from the library or cloned), straight from the API.
   const [voices, setVoices] = useState<ElVoice[] | null>(null);

@@ -463,6 +463,9 @@ class BoxChatSession {
     const r = await httpGet(this.link, "/api/v2/conversations", 20_000);
     if (!this.live()) return;
     this.setReach(true);
+    // Carl's settings as the box has them (src/settings.ts); the feed carries every change after this.
+    const link = this.link;
+    void import("./settings").then((m) => m.loadBoxSettings(link)).catch(() => {});
     this.epoch = String(r.epoch ?? "");
     this.rows = new Map((Array.isArray(r.rows) ? r.rows : []).map((x: RowState) => [x.id, x]));
     this.deletedIds = new Set((Array.isArray(r.deleted) ? r.deleted : []).filter((x: unknown): x is string => typeof x === "string"));
@@ -540,7 +543,7 @@ class BoxChatSession {
     foldSupervisorRecords(records);
     for (const r of records) {
       if (r.conv === null) {
-        this.signal(r.type === "signal" ? r.signal : {});
+        this.signal(r.type === "signal" ? r.signal : {}, r.seq);
         continue;
       }
       logRecord(r);
@@ -567,8 +570,12 @@ class BoxChatSession {
     if (touched.size) this.project(touched);
   }
 
-  private signal(e: Record<string, unknown>): void {
+  private signal(e: Record<string, unknown>, seq?: number): void {
     switch (e.type) {
+      case "setting":
+        // One of Carl's settings changed (the agent's Settings tool, the phone, another window): shown here now.
+        void import("./settings").then((m) => m.settingSignal(e, seq)).catch(() => {});
+        return;
       case "file_changed":
         // The agent on the box just wrote this file: a pane showing it shows the box's bytes now.
         if (typeof e.path === "string") boxFileChanged({ vault: this.vault, rel: e.path, fetch: (rel) => fetchBoxFile(this.link, rel) });

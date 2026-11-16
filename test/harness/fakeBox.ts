@@ -16,6 +16,7 @@ import type { EventBody, LogRecord, PendingInput, PiEntry } from "../../src/conv
 import { fold, pendingOf, shown } from "../../src/convlog/reduce.ts";
 import { ackShow, feedOpened } from "../../server/show.ts";
 import { saveAttachment } from "../../server/attachments.ts";
+import { settingsRoute } from "../../server/settings.ts";
 
 export class FakeBox {
   url = "";
@@ -271,6 +272,11 @@ export class FakeBox {
           if (route === "GET /api/v1/vault/file") {
             const f = this.files.get(u.searchParams.get("path") ?? "");
             return f ? send(200, { path: u.searchParams.get("path"), size: f.length, base64: f.toString("base64") }) : send(404, { error: "no" });
+          }
+          // Carl's settings: the box's real route over this feed (server/settings.ts).
+          if (u.pathname === "/api/v2/settings") {
+            const out = settingsRoute(req.method!, raw ? JSON.parse(raw) : null, "carl", this.log);
+            return send(out.status, out.body);
           }
           if (route === "GET /notes") return send(200, { notes: this.notes });
           if (route === "POST /notes") {

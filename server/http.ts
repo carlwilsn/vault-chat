@@ -11,6 +11,7 @@ import { dirname, join, sep } from "node:path";
 import { inProjectFolder } from "./projectFolders";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { legacyPushEnabled, setLegacyPushEnabled } from "./pushPreferences";
+import { settingsRoute } from "./settings";
 import { trackWrites } from "./drain";
 import { inputSurface, noteInput } from "./presence";
 import { authorize, isDirectLoopback, phoneToken, tailnetIdentity } from "./auth";
@@ -723,6 +724,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // The catalog (src/pluginCatalog.ts): the registered services and this vault's plugins. A page reaches it through
   // the gateway with `catalog` granted; this is the app's and a loopback caller's way in.
   if (path === "/api/v2/plugin/catalog" && method === "GET") return json(res, 200, pluginCatalog(open.path));
+  // Carl's settings (server/settings.ts): every setting, or one set (from the app's Settings, the composer, the phone).
+  if (path === "/api/v2/settings" && (method === "GET" || method === "POST")) {
+    const out = settingsRoute(method, method === "POST" ? await jsonBody(req) : null, "carl");
+    return json(res, out.status, out.body);
+  }
   // The supervisor (server/supervisor.ts): the plugins' desired-state records, and Carl's word on one.
   if (path === "/api/v2/supervisor" && (method === "GET" || method === "POST")) {
     const out = await supervisorRoute(vault, method, url.searchParams, method === "POST" ? await jsonBody(req) : null);

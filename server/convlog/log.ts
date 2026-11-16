@@ -795,9 +795,10 @@ export function _resetConvLogs(): void {
 /** Main's id (src/threads.ts MAIN_ID): one conversation for the whole box, the main vault's. */
 const MAIN = "main";
 
-/** Signals about conversations: every surface hears them whatever vault it has open. Every other signal (a file or
- *  the vault changed, the inbox, a Show) is about one vault's files and reaches only the surfaces on that vault. */
-const CONVERSATION_SIGNALS = new Set(["follow", "project", "notif"]);
+/** Signals about conversations, and Carl's settings (src/settingsRecords.ts): every surface hears them whatever vault it
+ *  has open. Every other signal (a file or the vault changed, the inbox, a Show) is about one vault's files and reaches
+ *  only the surfaces on that vault. */
+const CONVERSATION_SIGNALS = new Set(["follow", "project", "notif", "setting"]);
 
 /**
  * The box's conversations, whatever vault is open (Carl, 2026-10-29: "conversations never change when the workspace

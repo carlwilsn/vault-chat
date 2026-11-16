@@ -61,6 +61,7 @@ import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
 import { proposeEditSpec } from "./proposeEdit";
 import { PLUGIN_TOOL, pluginTool, pluginToolSpecs } from "../supervisorTools";
+import { SETTINGS_TOOL, settingsTool, settingsToolSpecs } from "../settingsTool";
 import { capabilitiesOf, capabilityNote } from "./capabilities";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { projectFolderOf, reviveFolder } from "../projectFolders";
@@ -545,7 +546,7 @@ export const ENGINE_TOOL_SPECS = [
 
 /** Every vault-chat tool the agent has (Carl's own vault tools are added per thread). */
 export function agentToolSpecs(): ToolSpec[] {
-  return [...ENGINE_TOOL_SPECS, pdfPagesSpec, ...noteToolSpecs, ...contextToolSpecs, ...pluginToolSpecs, ...pluginOfferToolSpecs] as ToolSpec[];
+  return [...ENGINE_TOOL_SPECS, pdfPagesSpec, ...noteToolSpecs, ...contextToolSpecs, ...pluginToolSpecs, ...pluginOfferToolSpecs, ...settingsToolSpecs] as ToolSpec[];
 }
 /** The model Ctrl+K / Ctrl+L runs on unless Carl picks another: small interactions want speed. */
 export const INLINE_DEFAULT_MODEL = "claude-haiku-5-5";
@@ -2818,6 +2819,11 @@ export class Engine {
       // A plugin turned off or on (server/supervisorTools.ts): a record in the log every view follows.
       if (name === PLUGIN_TOOL) {
         const r = pluginTool(vault, a);
+        return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
+      }
+      // Carl's settings (server/settingsTool.ts): a setting record every open app and the phone follow.
+      if (name === SETTINGS_TOOL) {
+        const r = settingsTool(a);
         return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
       }
       switch (name) {

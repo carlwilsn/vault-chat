@@ -35,6 +35,7 @@ import { agentKeyEnv, claudeCodeToken } from "../keys";
 import { sweepJobEnvFiles } from "./jobs";
 import { PushGate, pushGate } from "../pushGate";
 import { legacyPushEnabled } from "../pushPreferences";
+import { readSetting, setSetting } from "../settings";
 
 /** A vault on this box: its working copy and bare repo. The main one keeps the paths it always had. */
 export type VaultRef = { name: string; path: string; bare: string; main: boolean };
@@ -88,39 +89,19 @@ export type EngineHandle = {
  */
 const CLAUDE_DEFAULT_MODEL = "opus";
 
-/** One of the box's remembered choices (the last model, the last effort). */
-function stored(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-/** Remember one, best effort: a choice that cannot be written still applies to the chat that made it. */
-function setStored(key: string, value: string | null): void {
-  try {
-    if (value === null) localStorage.removeItem(key);
-    else localStorage.setItem(key, value);
-  } catch {
-    /* the chat's own field is the record that matters */
-  }
-}
-
 /**
- * The effort a chat runs at when Carl has not set one for it: his last choice,
- * or the deployment's. None at all means the model decides for itself, which is
- * what every chat did before the control existed.
+ * The effort a chat runs at: Carl's setting (a record, server/settings.ts), or the deployment's. None at all means
+ * the model decides for itself, which is what every chat did before the control existed.
  */
 export function engineEffort(): Effort | undefined {
-  const e = stored("vault_chat_engine_effort") ?? process.env.VC_ENGINE_EFFORT ?? null;
+  const e = readSetting("effort") ?? process.env.VC_ENGINE_EFFORT ?? null;
   return isEffort(e) ? e : undefined;
 }
 
 export function engineModel(): string {
-  const ls = stored("vault_chat_engine_model");
-  // Carl's choice (set from the laptop) over the deployment's default.
-  const chosen = ls || process.env.VC_ENGINE_MODEL || null;
+  // Carl's choice (the model setting) over the deployment's default.
+  const set = readSetting("model");
+  const chosen = (typeof set === "string" && set) || process.env.VC_ENGINE_MODEL || null;
   // Claude Code runs Claude's own models and nothing else. A model id left over
   // from the OpenRouter days — the old default was openai/gpt-6.1-sol — is not
   // one it can run, and handing it one fails EVERY turn with "issue with the
@@ -428,8 +409,8 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       jobEnv,
       model: () => engineModel(),
       effort: () => engineEffort(),
-      rememberModel: (m) => void setStored("vault_chat_engine_model", m),
-      rememberEffort: (e) => void setStored("vault_chat_engine_effort", e),
+      rememberModel: (m) => void setSetting("model", m, "carl"),
+      rememberEffort: (e) => void setSetting("effort", e, "carl"),
       broadcast: (ev) => signal(v.path, ev),
       // A chat lives in the log of the vault that holds it: the agent's Delete/Restore reach that vault's engine.
       engineAt: async (path) => {
@@ -492,11 +473,8 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     setModel: (id: string) => {
       const m = String(id ?? "").trim();
       if (!validModel(m)) return { ok: false as const, error: `"${m.slice(0, 80)}" is not a model id` };
-      try {
-        localStorage.setItem("vault_chat_engine_model", m);
-      } catch (e) {
-        return { ok: false as const, error: (e as Error).message };
-      }
+      const r = setSetting("model", m, "carl");
+      if (!r.ok) return { ok: false as const, error: r.error };
       // Every thread's next turn runs on it (backend.startTurn).
       configureContext({ agentModel: m });
       console.log(`[engine:claude] model ${m} (Carl's choice)`);

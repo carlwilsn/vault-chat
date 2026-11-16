@@ -1308,6 +1308,8 @@ export function boot(): void {
           listChanged = true;
         }
         else if (s.type === "show" && s.to === "phone" && s.id) void showOnPhone(s);
+        // One of Carl's settings changed (the agent's Settings tool, the laptop): the drawer's switch shows it now.
+        else if (s.type === "setting" && s.key === "pushAutomatic") showPushPreference(s.value === true);
         // A plugin turned off or on (change 1.6, src/pluginSupervisor.ts): its copies here load again; the box serves a
         // stopped plugin's page as the one "turned off" line, and the page itself once it runs again.
         else if (s.type === "plugin.desired" && typeof s.plugin === "string") reloadPluginFrames(s.plugin, rec.seq);

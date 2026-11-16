@@ -152,7 +152,7 @@ names; such a thread is unknown to pi, so its next turn starts a fresh session w
 | Var | Default | Meaning |
 |---|---|---|
 | `VC_ENGINE` | on | `0` = no engine (old loop) |
-| `VC_ENGINE_MODEL` | `localStorage.vault_chat_engine_model` or `openai/gpt-6.1-sol` | the agent's model |
+| `VC_ENGINE_MODEL` | the `model` setting (a record, server/settings.ts), else `opus` | the agent's model |
 | `VC_VISION_MODEL` | `openai/gpt-6.1-sol` | a turn with images on a model that can't see uses this |
 | `VC_WEBSEARCH_MODEL` | `google/gemini-2.5-flash-lite` | WebSearch (OpenRouter web plugin) |
 | `VC_PI_DIR` | unset | npm prefix holding pi 1.1.0 (else installed into `$VC_STATE_DIR/pi/1.1.0`) |

@@ -62,3 +62,7 @@ phone web app, iPad whiteboard and voice. It is not AgentOS.
   Offers (src/pluginOffers.ts): a mounted plugin declares what it offers the agent with `api.offer({state: {name: {description, read}}, actions: {name: {description, args: <JSON schema>, run}}, events: {name: {description}}})` → `{emit}`
   (an effect of its run: gone when it stops). The agent reaches every such plugin through two generic tools, PluginRead (list live plugins' offers; read one's state + recent events) and PluginAct
   (run an action; result + state read back), server/pluginOffersTool.ts, routed to the laptop on Show's signal + ack channel (`{type:"plugin"}`, src/boxChat.ts). No tool per plugin. A throwing action is an error result; the plugin keeps running. First: Notes (notes, panel; add/edit/resolve/reopen/delete/open/close/view).
+  Settings (src/settingsRecords.ts, server/settings.ts, src/settings.ts): Carl's settings (theme, model, effort, voice, pushAutomatic, chatSidebar) are `setting` records in the main vault's log
+  (`{type:"setting", key, value, by}`, a fold, newest wins; null = default), carried on every feed. The engine's model/effort, the call voice and the push switch read the fold; the app reads
+  GET/POST /api/v2/settings and follows the signals (localStorage keeps only a first-paint copy); the phone's push switch follows them. The agent's `Settings` tool (server/settingsTool.ts)
+  lists or sets one; unknown keys refused. The box's old localStorage entries move once at boot (backed up to <stateDir>/backups first). Never secrets: keys stay in the key store.
