@@ -4,7 +4,8 @@
 // detector (src/userActivity.ts) never mistakes them for him.
 //
 // Steps (one action each):
-//   {click: "css"} | {click: {text: "Save"}}      pointer + mouse events and a click at the element's centre; focuses it
+//   {click: "css"} | {click: {text: "Save"}} | {click: {role: "button", name?: "Save"}}
+//                                                  pointer + mouse events and a click at the element's centre; focuses it
 //   {hover: ...same}                               pointerover/enter/move
 //   {type: "hello", into?: "css" | {text}}        text into the focused (or given) field, as typing would insert it
 //   {press: "Control+K"}                           keydown/keyup (Enter, Escape, Tab, Backspace, Arrow*, F1-F12, a, ...)
@@ -12,7 +13,7 @@
 //   {waitFor: "css" | {text}, timeout?: ms}        until it is on screen (default 5 s, at most 30 s); fails otherwise
 //   {scroll: 600, in?: "css"}                      scroll the given (or the focused element's nearest) scroller
 //   {shot: "name"}                                 a picture of the window (the caller's `shot`)
-export type Target = string | { text: string };
+export type Target = string | { text: string } | { role: string; name?: string };
 export type Step =
   | { click: Target }
   | { hover: Target }
@@ -30,7 +31,7 @@ export const STEP_ACTIONS = ["click", "hover", "type", "press", "wait", "waitFor
 export const MAX_STEPS = 40;
 export const MAX_SHOTS = 4;
 
-const describe = (t: Target) => (typeof t === "string" ? t : `text "${t.text}"`);
+const describe = (t: Target) => (typeof t === "string" ? t : "role" in t ? `role ${t.role}${t.name ? ` "${t.name}"` : ""}` : `text "${t.text}"`);
 export function stepAction(s: Step): string {
   return STEP_ACTIONS.find((a) => a in (s as object)) ?? "?";
 }
@@ -40,21 +41,27 @@ export function checkSteps(raw: unknown): Step[] | string {
   if (!Array.isArray(raw) || !raw.length) return "steps must be a non-empty list";
   if (raw.length > MAX_STEPS) return `at most ${MAX_STEPS} steps`;
   let shots = 0;
-  const target = (v: unknown) => (typeof v === "string" && v.trim()) || (v && typeof v === "object" && typeof (v as { text?: unknown }).text === "string" && (v as { text: string }).text.trim());
+  const target = (v: unknown) => {
+    if (typeof v === "string") return !!v.trim();
+    if (!v || typeof v !== "object") return false;
+    const o = v as { text?: unknown; role?: unknown; name?: unknown };
+    if (typeof o.role === "string") return !!o.role.trim() && (o.name === undefined || typeof o.name === "string");
+    return typeof o.text === "string" && !!o.text.trim();
+  };
   for (const [i, s] of raw.entries()) {
     if (!s || typeof s !== "object") return `step ${i + 1} is not an object`;
     const acts = STEP_ACTIONS.filter((a) => a in s);
     if (acts.length !== 1) return `step ${i + 1} needs exactly one of: ${STEP_ACTIONS.join(", ")}`;
     const o = s as Record<string, unknown>;
     const a = acts[0]!;
-    if ((a === "click" || a === "hover" || a === "waitFor") && !target(o[a])) return `step ${i + 1}: ${a} needs a CSS selector or {text}`;
+    if ((a === "click" || a === "hover" || a === "waitFor") && !target(o[a])) return `step ${i + 1}: ${a} needs a CSS selector, {text} or {role, name?}`;
     if (a === "type" && (typeof o.type !== "string" || o.type.length > 2000)) return `step ${i + 1}: type needs text (at most 2000 characters)`;
-    if (a === "type" && o.into !== undefined && !target(o.into)) return `step ${i + 1}: into needs a CSS selector or {text}`;
+    if (a === "type" && o.into !== undefined && !target(o.into)) return `step ${i + 1}: into needs a CSS selector, {text} or {role, name?}`;
     if (a === "press" && (typeof o.press !== "string" || !parseKey(o.press))) return `step ${i + 1}: press needs a key like "Enter" or "Control+K"`;
     if (a === "wait" && !(typeof o.wait === "number" && o.wait >= 0 && o.wait <= 10_000)) return `step ${i + 1}: wait is 0-10000 ms`;
     if (a === "waitFor" && o.timeout !== undefined && !(typeof o.timeout === "number" && o.timeout > 0 && o.timeout <= 30_000)) return `step ${i + 1}: timeout is at most 30000 ms`;
     if (a === "scroll" && !(typeof o.scroll === "number" && Number.isFinite(o.scroll))) return `step ${i + 1}: scroll needs a number of pixels`;
-    if (a === "scroll" && o.in !== undefined && !target(o.in)) return `step ${i + 1}: in needs a CSS selector or {text}`;
+    if (a === "scroll" && o.in !== undefined && !target(o.in)) return `step ${i + 1}: in needs a CSS selector, {text} or {role, name?}`;
     if (a === "shot" && ++shots > MAX_SHOTS) return `at most ${MAX_SHOTS} shots`;
   }
   return raw as Step[];
@@ -119,9 +126,68 @@ function visible(el: Element): boolean {
 
 const CLICKABLE = "button, a, [role=button], [role=menuitem], [role=tab], [role=option], [role=treeitem], label, summary, input, textarea, select, [title], [aria-label], [tabindex]";
 
-/** The element a target names, on screen: a CSS selector's first visible match, or the smallest visible element whose
- *  text (or aria-label / title) contains the text, clickable things first. */
+const IMPLICIT_ROLES: [string, string][] = [
+  ["button", "button, input[type=button], input[type=submit], input[type=reset], summary"],
+  ["link", "a[href]"],
+  ["checkbox", "input[type=checkbox]"],
+  ["radio", "input[type=radio]"],
+  ["slider", "input[type=range]"],
+  ["combobox", "select"],
+  ["textbox", "textarea, input:not([type]), input[type=text], input[type=search], input[type=email], input[type=url], input[type=password], [contenteditable=true], [contenteditable='']"],
+  ["heading", "h1, h2, h3, h4, h5, h6"],
+  ["list", "ul, ol"],
+  ["listitem", "li"],
+  ["dialog", "dialog"],
+  ["img", "img[alt]"],
+  ["navigation", "nav"],
+  ["main", "main"],
+];
+
+/** An element's ARIA role: its role attribute's first word, else the implicit role of its tag ("" when none). */
+export function roleOf(el: Element): string {
+  const explicit = el.getAttribute("role")?.trim().split(/\s+/)[0];
+  if (explicit) return explicit.toLowerCase();
+  for (const [role, sel] of IMPLICIT_ROLES) if (el.matches(sel)) return role;
+  return "";
+}
+
+/** An element's accessible name, roughly as a screen reader would say it: aria-label, the text of aria-labelledby, an
+ *  input's label / placeholder, its text, its title or alt. */
+export function nameOf(el: Element): string {
+  const doc = el.ownerDocument;
+  const aria = el.getAttribute("aria-label")?.trim();
+  if (aria) return aria;
+  const by = el.getAttribute("aria-labelledby");
+  if (by) {
+    const t = by.split(/\s+/).map((id) => doc.getElementById(id)?.textContent?.trim() ?? "").filter(Boolean).join(" ");
+    if (t) return t;
+  }
+  const id = el.getAttribute("id");
+  if (id && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) {
+    const lab = [...doc.querySelectorAll("label")].find((l) => l.getAttribute("for") === id);
+    if (lab?.textContent?.trim()) return lab.textContent.trim();
+  }
+  const text = ((el as HTMLElement).innerText ?? el.textContent ?? "").replace(/\s+/g, " ").trim();
+  return text || el.getAttribute("placeholder")?.trim() || el.getAttribute("title")?.trim() || el.getAttribute("alt")?.trim() || "";
+}
+
+/** Every element with the role whose name contains `name` (all of that role without a name), in document order. */
+export function byRole(doc: Document, role: string, name?: string): Element[] {
+  const want = role.trim().toLowerCase();
+  const n = name?.trim().toLowerCase();
+  return [...doc.body.querySelectorAll("*")].filter((el) => roleOf(el) === want && (!n || nameOf(el).toLowerCase().includes(n)));
+}
+
+/** The element a target names, on screen: a CSS selector's first visible match; for {role, name?} the visible element
+ *  of that role whose accessible name contains the name (an exact name first, then the shortest); or the smallest
+ *  visible element whose text (or aria-label / title) contains the text, clickable things first. */
 export function find(doc: Document, t: Target): Element | null {
+  if (typeof t === "object" && "role" in t) {
+    const hits = byRole(doc, t.role, t.name).filter(visible);
+    const n = t.name?.trim().toLowerCase();
+    if (n) hits.sort((a, b) => Number(nameOf(b).toLowerCase() === n) - Number(nameOf(a).toLowerCase() === n) || nameOf(a).length - nameOf(b).length);
+    return hits[0] ?? null;
+  }
   if (typeof t === "string") {
     let all: Element[];
     try {

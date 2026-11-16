@@ -50,3 +50,8 @@ export function _resetUserActivity(): void {
   last = -Infinity;
   listeners.clear();
 }
+
+/** Tests: how many run-time listeners are attached now (0 between runs). */
+export function _inputListenerCount(): number {
+  return listeners.size;
+}

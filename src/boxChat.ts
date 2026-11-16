@@ -660,6 +660,18 @@ class BoxChatSession {
           .catch((err) => console.warn("[box-chat] drive failed:", err));
         return;
       }
+      case "act": {
+        // The agent's Act (server/actTool.ts): steps in THIS window (Carl's real app), never while he is using it,
+        // stopped when he starts; acked with each step's outcome and a picture of the window after.
+        const id = typeof e.id === "string" ? e.id : "";
+        if (e.to !== "laptop" || !id) return;
+        const link = this.link;
+        void import("./actOnLaptop")
+          .then((m) => m.actOnLaptop(e as unknown as import("./actOnLaptop").ActSignal))
+          .then((ack) => httpPost(link, `/api/v1/show/${encodeURIComponent(id)}/ack`, ack as unknown as Record<string, unknown>))
+          .catch((err) => console.warn("[box-chat] act failed:", err));
+        return;
+      }
       case "build": {
         // The agent's LaptopBuild (server/hostBuild.ts): which build this app runs, acked on Show's channel.
         const id = typeof e.id === "string" ? e.id : "";
