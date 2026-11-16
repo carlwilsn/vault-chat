@@ -15,9 +15,10 @@ const root = join(import.meta.dirname, "..", "..");
 const all = SHORTCUTS as readonly Shortcut[];
 
 // Not key bindings: clientEvents.ts names every keyboard event as a chord for
-// the activity log (it reacts to any key, binds none); src/lib is vendored UI;
-// the registry itself.
-const NOT_HANDLERS = new Set(["src/clientEvents.ts", "src/shortcuts.ts"]);
+// the activity log (it reacts to any key, binds none); driveSteps.ts synthesizes
+// key presses for the laptop driver (it sends keys, binds none); src/lib is
+// vendored UI; the registry itself.
+const NOT_HANDLERS = new Set(["src/clientEvents.ts", "src/driveSteps.ts", "src/shortcuts.ts"]);
 
 function sources(dir: string): string[] {
   const out: string[] = [];
