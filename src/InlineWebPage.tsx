@@ -38,7 +38,9 @@ const newId = () => `w${Date.now().toString(36)}${(seq++).toString(36)}${Math.ra
 
 function clipsOf(el: HTMLElement): Box[] {
   const out: Box[] = [];
-  for (let p = el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
+  for (let node: HTMLElement = el, p = el.parentElement; p && p !== document.documentElement; node = p, p = p.parentElement) {
+    // Past a fixed-position box (Full window), the ancestors' overflow no longer clips it.
+    if (getComputedStyle(node).position === "fixed") break;
     const s = getComputedStyle(p);
     if (s.display === "contents") continue;
     if (/(auto|scroll|hidden|clip)/.test(s.overflow + s.overflowX + s.overflowY)) {

@@ -15,6 +15,7 @@ import DEFAULT_ASSISTANT_MD from "../../../src-tauri/defaults/assistant.md?raw";
 import { gitCommands } from "./memgit";
 import { miscCommands } from "./misc";
 import { hostCommands, windowCommand } from "./host";
+import { webEmbedCommands } from "./webEmbed";
 import { report } from "../overlay";
 
 type Fn = (a: Record<string, any>) => unknown;
@@ -25,6 +26,7 @@ const table: Record<string, Fn> = {
   ...gitCommands,
   ...miscCommands,
   ...hostCommands,
+  ...webEmbedCommands,
   default_system_prompt: () => DEFAULT_SYSTEM_MD,
   default_voice_prompt: () => DEFAULT_VOICE_MD,
   default_supervisor_prompt: () => DEFAULT_SUPERVISOR_MD,

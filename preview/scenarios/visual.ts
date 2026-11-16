@@ -178,6 +178,26 @@ export const visualScenarios: Scenario[] = [
     surfaces: ["desktop"],
   },
   {
+    id: "inline-web",
+    title: "Inline web page — a public page the agent found, live in the reply (a native browser view on the laptop)",
+    group: "Chat",
+    notes:
+      "The agent puts ![title](https://…) on its own line: the chat draws a placeholder with a title bar (Back, Forward, Reload, Full window, Browser, Close) and asks the desktop shell for a native browser view over it (src-tauri/src/web_embed.rs), moved as the chat scrolls and hidden when something covers it. In the preview the native view is a dashed stand-in box at the exact bounds the chat sends, showing a local page (no network). A badge inside a sentence stays an image.",
+    build: (ctx: BuildCtx) => {
+      ctx.conversations([{
+        id: "c-inline-web", title: "End-user programming", source: "manual", status: "idle", unread: false,
+        createdAt: ctx.now - 5 * MIN, lastActivityAt: ctx.now - MIN,
+        messages: [
+          { role: "user", content: "find me Geoffrey Litt's post on LLMs and end-user programming" },
+          { role: "assistant", content: "Here it is, live — scroll it, click through, or open it full window:\n\n![Geoffrey Litt — Malleable software in the age of LLMs](https://www.geoffreylitt.com/2023/03/25/llm-end-user-programming.html)\n\nThe core argument is in the second half." + "\n\nMore notes below so the chat scrolls.".repeat(1) + "\n\n" + Array.from({ length: 12 }, (_, i) => `${i + 1}. A point worth reading closely.`).join("\n") },
+        ],
+      }]);
+    },
+    activeConversation: "c-inline-web",
+    open: [{ chat: true }, { conversation: "c-inline-web" }, { sleep: 1200 }],
+    surfaces: ["desktop"],
+  },
+  {
     id: "page-theme",
     title: "Page theme — a vault .html follows the app's theme live (--vc-* variables); the newest embed of a file is the live one",
     group: "Chat",
