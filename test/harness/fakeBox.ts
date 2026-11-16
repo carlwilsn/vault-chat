@@ -15,6 +15,7 @@ import { appendEntries, newSessionFile, vcNote } from "../../server/convlog/piSe
 import type { EventBody, LogRecord, PendingInput, PiEntry } from "../../src/convlog/protocol.ts";
 import { fold, pendingOf, shown } from "../../src/convlog/reduce.ts";
 import { ackShow, feedOpened } from "../../server/show.ts";
+import { recordHostBuild } from "../../server/hostBuild.ts";
 import { saveAttachment } from "../../server/attachments.ts";
 import { settingsRoute } from "../../server/settings.ts";
 
@@ -28,6 +29,8 @@ export class FakeBox {
   down = false;
   /** The vault Show (server/show.ts) counts this feed's clients for (the laptop test's vault). */
   showVault = this.dir;
+  /** The box's state dir for host build reports (POST /api/v1/host/build, the real server/hostBuild.ts); unset: 404. */
+  hostBuildState: string | null = null;
   /** The box's own copies of vault files (GET /api/v1/vault/file, vault-relative path → bytes); others 404. */
   files = new Map<string, Buffer>();
   /** The box's vault for attachments (POST /api/v2/attachment, the real server/attachments.ts). */
@@ -287,6 +290,10 @@ export class FakeBox {
           if (route === "POST /notes/write") {
             this.notes = (raw ? JSON.parse(raw) : {}).notes ?? [];
             return send(200, { ok: true });
+          }
+          if (route === "POST /api/v1/host/build" && this.hostBuildState) {
+            const r = recordHostBuild(this.hostBuildState, raw ? JSON.parse(raw) : {});
+            return send(r.status, r.body);
           }
           const ack = /^\/api\/v1\/show\/([^/]+)\/ack$/.exec(u.pathname);
           if (ack && req.method === "POST") return send(200, { ok: true, waiting: ackShow(decodeURIComponent(ack[1]!), raw ? JSON.parse(raw) : {}) });

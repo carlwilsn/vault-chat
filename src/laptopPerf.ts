@@ -10,6 +10,22 @@ declare const __APP_REVISION__: string;
 declare const __APP_VERSION__: string;
 let installed = false;
 
+/** This launch's launch-interactive measurement (the same sample the probe ships), for the build report (src/hostBuild.ts). */
+let launch: { ms: number; method: string } | null = null;
+const launchWaiters: ((l: { ms: number; method: string }) => void)[] = [];
+function noteLaunch(ms: number, method: string): void {
+  launch = { ms, method };
+  while (launchWaiters.length) launchWaiters.shift()!(launch);
+}
+/** Resolves with this launch's launch-to-interactive time once measured, or null after `maxMs`. */
+export function launchTiming(maxMs = 0): Promise<{ ms: number; method: string } | null> {
+  if (launch || maxMs <= 0) return Promise.resolve(launch);
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(launch), maxMs);
+    launchWaiters.push((l) => (clearTimeout(t), resolve(l)));
+  });
+}
+
 export function perfTarget(target: EventTarget | null): "composer-key" | "ctrl-k-key" | null {
   if (!(target instanceof Element)) return null;
   const kind = target.closest("[data-perf-target]")?.getAttribute("data-perf-target");
@@ -177,8 +193,13 @@ export function installLaptopPerf({ popout = false }: { popout?: boolean } = {})
           // Existing Rust Instant begins at run() entry. Includes command dispatch/IPC until native read.
           const timing = await invoke<{ uptime_ms: number }>("boot_timing");
           add("launch-interactive", "native-entry-ready-ipc-upper-bound", timing.uptime_ms, "native-entry");
+          noteLaunch(timing.uptime_ms, "native-entry-ready-ipc-upper-bound");
         } catch { /* Never relabel renderer age as native launch. */ }
-      } else add("launch-interactive", "navigation-ready-estimate", performance.now(), "navigation");
+      } else {
+        const ms = performance.now();
+        add("launch-interactive", "navigation-ready-estimate", ms, "navigation");
+        noteLaunch(ms, "navigation-ready-estimate");
+      }
     }));
   }
   document.addEventListener("visibilitychange", () => { if (!document.hidden) maybeLaunch(); });

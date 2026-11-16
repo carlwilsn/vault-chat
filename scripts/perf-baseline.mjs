@@ -188,6 +188,8 @@ export function main(argv, out = console.log) {
   return flagged ? 1 : 0;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Run as a script only: bundled into the server (server/timingTool.ts imports the functions), import.meta.url is the
+// bundle's own, so the file name is checked too.
+if (process.argv[1] && /perf-baseline\.mjs$/.test(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try { process.exitCode = main(process.argv.slice(2)); } catch (e) { console.error(e.message); process.exitCode = 2; }
 }

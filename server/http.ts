@@ -46,6 +46,7 @@ import { addAsset, assetFile, copyAssets, createBoard, deleteBoard, getBoard, ge
 import { addToBoard, getEntry, listEntries, markAdded, markRead, partFile, sendEntry, type InboxCtx } from "./inbox";
 import { boxLogs } from "./boxLogs";
 import { ackShow, feedOpened } from "./show";
+import { hostBuildHistory, lastHostBuild, recordHostBuild } from "./hostBuild";
 import { noteAttention, pushGate } from "./pushGate";
 import { boardLogPost, boxDiag } from "./diag";
 import { noteUserLine } from "./signal";
@@ -487,6 +488,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     }
   }
 
+
+  // Which build a host app runs (server/hostBuild.ts): the laptop reports at each launch; a report may wake a waiting chat.
+  if (path === "/api/v1/host/build") {
+    if (method === "GET") return json(res, 200, { last: lastHostBuild(cfg.stateDir, "laptop"), history: hostBuildHistory(cfg.stateDir) });
+    if (method === "POST") {
+      const result = recordHostBuild(cfg.stateDir, await jsonBody(req, 16 * 1024), { nativeTransport: !!laptopTransportIdentity(req) });
+      return json(res, result.status, result.body);
+    }
+  }
 
   if ((path === "/api/v1/release-health/challenge" && method === "GET") || (path === "/api/v1/release-health/laptop" && method === "POST")) {
     const identity = laptopTransportIdentity(req);

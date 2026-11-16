@@ -19,6 +19,7 @@ import { NOTES_PLUGIN } from "./appPlugins";
 import * as notesPlugin from "./plugins/notes";
 import { ChatsPanel } from "./ChatsPanel";
 import { UpdateBanner } from "./UpdateBanner";
+import { isDriveWindow } from "./windowKind";
 import { ShortcutSheet } from "./ShortcutSheet";
 import { hit } from "./shortcuts";
 import { fileKind } from "./fileKind";
@@ -460,7 +461,7 @@ export default function App() {
       <VaultPlugins />
       <PinnedApps />
       <VoiceTextPanel />
-      <UpdateBanner />
+      {!isDriveWindow && <UpdateBanner />}
       <ShortcutSheet />
       {/* The chat list's overlay: a plugin (src/plugins/chats), with a built-in fallback (src/ChatsPanel.tsx). */}
       <ChatsPanel />

@@ -40,6 +40,7 @@ import type { LogRecord, PollAnswer } from "./convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, type Picture, type RowState } from "./convlog/reduce";
 import { RETRY_TEXT, makeChatView, type ChatView } from "./convlog/view";
 import { MAIN_ID, threadKindOf } from "./threads";
+import { isDriveWindow } from "./windowKind";
 import { probeLaptopReleaseHealth } from "./laptopReleaseHealth";
 
 export const BOX_UNREACHABLE = "Box unreachable";
@@ -141,6 +142,11 @@ export async function ensureLocalServer(vault: string | null): Promise<Link | nu
   localServers.delete(vault);
   if (local) localLinks.set(vault, local);
   return local;
+}
+
+/** The server this app runs itself for `vault` (no box), if it started one. */
+export function localServerLink(vault: string | null): Link | null {
+  return vault ? localLinks.get(vault) ?? null : null;
 }
 
 /**
@@ -414,7 +420,7 @@ class BoxChatSession {
         if (this.cursor === null || this.reconcile) await this.resync();
         if (!this.live()) return;
         const pollLink = this.link;
-        const r = (await httpGet(pollLink, `/poll?after=${this.cursor}${this.epoch ? `&epoch=${encodeURIComponent(this.epoch)}` : ""}&client=laptop`, POLL_TIMEOUT_MS)) as PollAnswer & { epoch?: string };
+        const r = (await httpGet(pollLink, `/poll?after=${this.cursor}${this.epoch ? `&epoch=${encodeURIComponent(this.epoch)}` : ""}&client=${isDriveWindow ? "drive" : "laptop"}`, POLL_TIMEOUT_MS)) as PollAnswer & { epoch?: string };
         if (!this.live()) return;
         if (pollLink !== this.link) continue; // old workspace file signals must not reach the new viewer
         if (this.down !== false) vlog("box.feed", { state: "connected", cursor: this.cursor, epoch: this.epoch, ...(this.down ? { downMs: Date.now() - this.down } : {}) });
@@ -571,6 +577,9 @@ class BoxChatSession {
   }
 
   private signal(e: Record<string, unknown>, seq?: number): void {
+    // The agent's Drive window (a sandboxed copy of the app) answers nothing: Carl's main window does. It only follows
+    // his settings, so it looks like his window.
+    if (isDriveWindow && e.type !== "setting") return;
     switch (e.type) {
       case "setting":
         // One of Carl's settings changed (the agent's Settings tool, the phone, another window): shown here now.
@@ -626,6 +635,30 @@ class BoxChatSession {
           .then((m) => m.captureOnLaptop(e as unknown as import("./captureOnLaptop").CaptureSignal))
           .then((ack) => httpPost(link, `/api/v1/show/${encodeURIComponent(id)}/ack`, ack))
           .catch((err) => console.warn("[box-chat] capture failed:", err));
+        return;
+      }
+      case "drive":
+      case "timing": {
+        // The agent's Drive / Timing (server/driveTool.ts, server/timingTool.ts): run in the hidden Drive copy of the app,
+        // never while Carl is using it; acked with what happened.
+        const id = typeof e.id === "string" ? e.id : "";
+        if (e.to !== "laptop" || !id) return;
+        const link = this.link;
+        void import("./driveOnLaptop")
+          .then((m) => m.driveOnLaptop(e as unknown as import("./driveOnLaptop").DriveSignal))
+          .then((ack) => httpPost(link, `/api/v1/show/${encodeURIComponent(id)}/ack`, ack as unknown as Record<string, unknown>))
+          .catch((err) => console.warn("[box-chat] drive failed:", err));
+        return;
+      }
+      case "build": {
+        // The agent's LaptopBuild (server/hostBuild.ts): which build this app runs, acked on Show's channel.
+        const id = typeof e.id === "string" ? e.id : "";
+        if (e.to !== "laptop" || !id) return;
+        const link = this.link;
+        void import("./hostBuild")
+          .then((m) => m.buildOnLaptop(e as unknown as import("./hostBuild").BuildSignal, { link }))
+          .then((ack) => httpPost(link, `/api/v1/show/${encodeURIComponent(id)}/ack`, ack as unknown as Record<string, unknown>))
+          .catch((err) => console.warn("[box-chat] build failed:", err));
         return;
       }
       case "follow": {

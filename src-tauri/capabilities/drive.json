@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "drive",
+  "description": "The agent's Drive window (src/driveRunner.ts): a hidden, read-only copy of the app. It may listen for the main window's requests and answer it, and read its own window and app metadata; nothing else (no updater, process, dialogs, opener, autostart, window changes). Its app commands are limited to reads in the frontend (src/driveGuard.ts).",
+  "windows": ["vc-drive"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:event:allow-emit-to",
+    "core:app:default",
+    "core:path:default",
+    "core:window:default",
+    "core:webview:default"
+  ]
+}

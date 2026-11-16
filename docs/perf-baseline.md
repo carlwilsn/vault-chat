@@ -41,6 +41,10 @@ Runs of the URLs are interleaved (A, B, A, B, ...) in fresh pages so drift hits 
 
 Limits: this is Chromium, a fake backend and a synthetic conversation, not WebView2 on Carl's laptop and not his history. It shows a regression in render cost between two trees; it does not give the laptop's absolute number (that is section 1). Sample counts can be one or two above keys x runs when the app emits an extra input event.
 
+## 3. On the real laptop: the agent's `Timing` tool
+
+`Timing` (server/timingTool.ts) measures the same five speeds inside the installed app on the laptop, in its hidden Drive copy (src/driveTiming.ts: synthetic key events, two animation frames, the `double-raf-estimate` quantity; not while Carl is using the laptop), adds the launch-to-interactive the app reported at its last start (server/hostBuild.ts) and Carl's own recorded samples on the current build (section 1's records), and with `baseline` + a margin runs section 1's `compare` on them. Synthetic numbers include render cost, not OS input delay; a throttled (hidden) window is said as such.
+
 ## Tests
 
 `server/test/perfBaseline.test.ts` (runs in `npm run test:server`): statistics, filters, merge, compare flags and exit codes over records written by the box's own `recordLaptopPerf`, and the typing tool's URL guard. The browser run itself is not in the test suite.

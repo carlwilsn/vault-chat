@@ -10,3 +10,14 @@ export const isPopout = (() => {
     return false;
   }
 })();
+
+// The agent's Drive window (`index.html?view=drive`, opened hidden by src/driveHost.ts): a sandboxed copy of the app the
+// agent's scripted steps run in, so Carl's own window is never touched. src/driveGuard.ts makes it read-only.
+export const isDriveWindow = (() => {
+  try {
+    const search = (globalThis as { location?: { search?: string } }).location?.search;
+    return typeof search === "string" && new URLSearchParams(search).get("view") === "drive";
+  } catch {
+    return false;
+  }
+})();

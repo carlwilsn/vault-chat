@@ -49,6 +49,10 @@ import { show, SHOW_DESCRIPTION, SHOW_SCHEMA } from "../show";
 import { layoutTool, LAYOUT_DESCRIPTION, LAYOUT_SCHEMA } from "../layoutTool";
 import { pluginOfferTool, pluginOfferToolSpecs } from "../pluginOffersTool";
 import { screenTool, SCREEN_DESCRIPTION, SCREEN_SCHEMA } from "../screenTool";
+import { laptopBuildTool, LAPTOP_BUILD_DESCRIPTION, LAPTOP_BUILD_SCHEMA } from "../hostBuild";
+import { driveTool, DRIVE_DESCRIPTION, DRIVE_SCHEMA } from "../driveTool";
+import { timingTool, TIMING_DESCRIPTION, TIMING_SCHEMA } from "../timingTool";
+import { SERVER_REV as BOX_SERVER_REV } from "../config";
 import { boardGuard } from "../boardGuard";
 import { openProject, OPEN_PROJECT_DESCRIPTION, OPEN_PROJECT_SCHEMA } from "../projectRoutes";
 import { startJobWith, jobStatus, jobList, jobStop, reapJobs, readJobs, type JobEnv } from "./jobs";
@@ -409,6 +413,24 @@ export const ENGINE_TOOL_SPECS = [
     description: SCREEN_DESCRIPTION,
     inputSchema: SCREEN_SCHEMA as unknown as Record<string, unknown>,
     readOnly: true,
+  },
+  {
+    type: "function",
+    name: "LaptopBuild",
+    description: LAPTOP_BUILD_DESCRIPTION,
+    inputSchema: LAPTOP_BUILD_SCHEMA as unknown as Record<string, unknown>,
+  },
+  {
+    type: "function",
+    name: "Drive",
+    description: DRIVE_DESCRIPTION,
+    inputSchema: DRIVE_SCHEMA as unknown as Record<string, unknown>,
+  },
+  {
+    type: "function",
+    name: "Timing",
+    description: TIMING_DESCRIPTION,
+    inputSchema: TIMING_SCHEMA as unknown as Record<string, unknown>,
   },
   {
     type: "function",
@@ -2965,6 +2987,18 @@ export class Engine {
         case "Screen": {
           const r = await screenTool({ vault, emit: (ev) => this.d.broadcast?.(ev) }, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }, ...r.images.map((im) => ({ type: "inputImage", data: im.data, mimeType: im.mimeType }))] };
+        }
+        case "Drive": {
+          const r = await driveTool({ vault, emit: (ev) => this.d.broadcast?.(ev) }, a);
+          return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }, ...r.images.map((im) => ({ type: "inputImage", data: im.data, mimeType: im.mimeType }))] };
+        }
+        case "Timing": {
+          const r = await timingTool({ vault, stateDir: loadConfig().stateDir, emit: (ev) => this.d.broadcast?.(ev) }, a);
+          return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
+        }
+        case "LaptopBuild": {
+          const r = await laptopBuildTool({ vault, stateDir: loadConfig().stateDir, conv: convId, byCarl: !!this.live.get(convId)?.byCarl, emit: (ev) => this.d.broadcast?.(ev), server: { version: SERVER_VERSION, rev: BOX_SERVER_REV } }, a);
+          return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "DeleteConversation": {
           const ids = Array.isArray(a.ids) ? a.ids.map(String) : typeof a.ids === "string" ? [a.ids] : [];
