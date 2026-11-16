@@ -98,6 +98,8 @@ export function createMcpHttpHandler(options: McpHttpOptions) {
   };
   return Object.assign(handle, {
     /** Revocation is host-owned, including process exit; session id is never authority. */
+    /** Re-read the catalog of every session of this scope, telling each client that changed. True when any did. */
+    refresh: async (scopeId: string) => (await Promise.all([...sessions.values()].filter((s) => s.scopeId === scopeId).map((s) => s.server.refreshTools().catch(() => false)))).some(Boolean),
     revoke: async (scopeId: string) => { await Promise.all([...sessions].filter(([, s]) => s.scopeId === scopeId).map(([id]) => drop(id))); },
     close: async () => { clearInterval(timer); await Promise.all([...sessions.keys()].map(drop)); },
   });

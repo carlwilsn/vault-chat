@@ -22,15 +22,31 @@ export type BoundTools = {
   resources?: { uri: string; name: string; mimeType: string }[];
   readResource?: (uri: string) => Promise<string>;
   call: (name: string, args: Record<string, unknown>, context: McpCallContext) => Promise<ToolAnswer>;
+  /**
+   * The catalog as it is NOW, for a binding whose tools can change while its
+   * client stays connected (a vault tool written in .vault-chat/tools, a host
+   * catalog that changed): read at every tools/list and after every call. When
+   * it differs from what was listed, the client is told (tools/list_changed) on
+   * the call's own response stream, so a running session never keeps a stale
+   * schema and a tool the agent just made is callable in the same turn. Same
+   * validation as `specs`; a catalog that fails it keeps the last good one.
+   */
+  current?: () => Promise<readonly ToolSpec[]>;
 };
 
 /** Use the SDK's low-level Server because our authoritative definitions already
  * are JSON Schema. Rewriting them as Zod would create a second definition. The
  * SDK owns negotiation, protocol validation, cancellation and transport framing. */
-export function createToolServer(binding: BoundTools, version: string): Server {
-  const validator = new AjvJsonSchemaValidator();
-  const tools = new Map<string, { spec: Tool; validate: ReturnType<typeof validator.getValidator<Record<string, unknown>>> }>();
-  for (const source of binding.specs) {
+/** How long a call's result waits for the client to read a changed catalog (a client that never does is not held). */
+const RELIST_WAIT_MS = 3_000;
+
+declare const ajv: AjvJsonSchemaValidator;
+type Compiled = Map<string, { spec: Tool; validate: ReturnType<typeof ajv.getValidator<Record<string, unknown>>> }>;
+
+/** Compile specs into the listed tools and their validators; throws on a name or schema that fails closed. */
+function compile(specs: readonly ToolSpec[], validator: AjvJsonSchemaValidator): Compiled {
+  const tools: Compiled = new Map();
+  for (const source of specs) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(source.name) || tools.has(source.name)) throw new Error(`Invalid or duplicate MCP tool: ${source.name}`);
     if (source.inputSchema.type !== "object") throw new Error(`MCP tool ${source.name} must have an object input schema`);
     const inputSchema = structuredClone(source.inputSchema) as Tool["inputSchema"];
@@ -44,11 +60,63 @@ export function createToolServer(binding: BoundTools, version: string): Server {
       validate: validator.getValidator<Record<string, unknown>>(inputSchema),
     });
   }
+  return tools;
+}
+
+/** Use the SDK's low-level Server because our authoritative definitions already
+ * are JSON Schema. Rewriting them as Zod would create a second definition. The
+ * SDK owns negotiation, protocol validation, cancellation and transport framing. */
+export type ToolServer = Server & {
+  /**
+   * Read the catalog again outside any call (a turn starting, a tool of the
+   * runtime's own that may have written a vault tool); when it changed, tell the
+   * client on its standalone stream and wait (briefly) until it has listed
+   * again. True when it changed.
+   */
+  refreshTools: () => Promise<boolean>;
+};
+
+export function createToolServer(binding: BoundTools, version: string): ToolServer {
+  const validator = new AjvJsonSchemaValidator();
+  let tools = compile(binding.specs, validator);
+  let listed = JSON.stringify([...tools.values()].map((t) => t.spec));
+  /** Re-read the catalog; true when it changed since it was last read. Never throws. */
+  const refresh = async (): Promise<boolean> => {
+    if (!binding.current) return false;
+    try {
+      const next = compile(await binding.current(), validator);
+      const key = JSON.stringify([...next.values()].map((t) => t.spec));
+      if (key === listed) return false;
+      tools = next;
+      listed = key;
+      return true;
+    } catch (error) {
+      console.error(`[mcp] tool catalog kept as it was: ${error instanceof Error ? error.message : error}`);
+      return false;
+    }
+  };
   const server = new Server({ name: "vault-chat", version }, {
-    capabilities: { tools: {}, ...(binding.readResource ? { resources: {} } : {}) },
+    capabilities: { tools: binding.current ? { listChanged: true } : {}, ...(binding.readResource ? { resources: {} } : {}) },
     instructions: "Carl's vault-chat tools. Tools act only within the authority bound by the host to this connection/request.",
   });
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...tools.values()].map((t) => structuredClone(t.spec)) }));
+  // Calls waiting for the client to have read the changed catalog (below).
+  let relisted: (() => void)[] = [];
+  /** Tell the client its list changed (on a call's own stream, or the session's) and wait until it lists again. */
+  const announce = async (send: () => Promise<void>): Promise<void> => {
+    const listedAgain = new Promise<void>((done) => {
+      relisted.push(done);
+      setTimeout(done, RELIST_WAIT_MS).unref?.();
+    });
+    await send().then(() => listedAgain, () => {});
+  };
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    await refresh();
+    const waiting = relisted;
+    relisted = [];
+    // Released just after this answer is on its way, not before it is sent.
+    if (waiting.length) setTimeout(() => waiting.forEach((done) => done()), 100).unref?.();
+    return { tools: [...tools.values()].map((t) => structuredClone(t.spec)) };
+  });
   if (binding.readResource) {
     server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: binding.resources ?? [] }));
     server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
@@ -59,6 +127,8 @@ export function createToolServer(binding: BoundTools, version: string): Server {
   }
   server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<CallToolResult> => {
     const name = request.params.name;
+    // A tool made since the client last listed: read the catalog again before refusing it.
+    let changed = !tools.has(name) && (await refresh());
     const tool = tools.get(name);
     if (!tool) throw new McpError(ErrorCode.InvalidParams, `Tool not available in this scope: ${name}`);
     const checked = tool.validate(request.params.arguments ?? {});
@@ -86,6 +156,13 @@ export function createToolServer(binding: BoundTools, version: string): Server {
       const answer = await binding.call(name, checked.data, { signal: extra.signal, requestId: extra.requestId, progress });
       finished = true;
       await sends;
+      // The call may have changed the catalog (it wrote a vault tool): say so on
+      // this request's own stream, which is open now, and hold its result until
+      // the client has listed again, so the model's very next step has the tool.
+      if (((await refresh()) || changed) && !extra.signal.aborted) {
+        changed = false;
+        await announce(() => extra.sendNotification({ method: "notifications/tools/list_changed" }));
+      }
       return {
         content: [
           { type: "text", text: answer.text },
@@ -100,5 +177,11 @@ export function createToolServer(binding: BoundTools, version: string): Server {
       return { isError: true, content: [{ type: "text", text: `${name} failed: ${error instanceof Error ? error.message : "unknown failure"}` }] };
     }
   });
-  return server;
+  return Object.assign(server, {
+    refreshTools: async () => {
+      if (!(await refresh())) return false;
+      await announce(() => server.sendToolListChanged());
+      return true;
+    },
+  });
 }

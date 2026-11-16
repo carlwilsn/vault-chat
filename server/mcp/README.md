@@ -14,6 +14,16 @@ existing vault-tool loader. `mcp/subagent.ts` supplies the one parent-only
 subagent schema/orchestration; `pi/subagents.ts` retains process management,
 limits, results, cost and reports. There is no replacement agent loop.
 
+A conversation's binding is live (`BoundTools.current`): the catalog is read
+again at each `tools/list`, after each call, at each turn start and after
+Claude Code's own Bash/Write/Edit (a PostToolUse hook). When it changed, the
+server (which advertises `tools.listChanged`) sends
+`notifications/tools/list_changed` and holds that call's result, or the turn,
+until the client has listed again (at most 3 s), so a vault tool the agent
+writes in `.vault-chat/tools` is callable at its very next step and a running
+session never keeps a stale schema. A catalog that fails validation keeps the
+last good one; a vault tool whose name the API would refuse is left out.
+
 `tools.ts` validates both the catalog and each call with the same schemas, and
 adapts `ToolAnswer` text, images and embedded binary resources to standard MCP
 content. `PdfPages` attaches the actual requested PDF slice as an embedded

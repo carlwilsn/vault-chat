@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup, patient } from "./helpers";
 import { readEntries } from "../convlog/piSession";
@@ -311,6 +311,90 @@ describe("a conversation on Claude Code", () => {
     // It really ran: the engine answered it, so the row carries its result.
     expect(String(tools[0].result ?? "")).not.toBe("");
     expect(p.items.filter((i: any) => i.kind === "assistant").length).toBeGreaterThan(0);
+  }, 180_000);
+
+  it("a tool the agent makes mid-turn joins the running session's tools, and it calls it in the same turn", async () => {
+    const convId = "cc-conv-mktool";
+    // The session is up and bound before the tool exists: what is tested is a
+    // LIVE session's catalog, not one read at its start.
+    await engine.message({ text: "hello first", convId });
+    await answered(convId, "hello first");
+    const offeredAt: string[][] = [];
+    const prevUnsafe = process.env.VC_PI_UNSAFE;
+    process.env.VC_PI_UNSAFE = "1"; // the test box has no command sandbox; the tool runs as the box would run it
+    api.respond = (body) => {
+      const offered: string[] = (body.tools ?? []).map((t: any) => t.name);
+      offeredAt.push(offered);
+      // The newest tool result anywhere in the request (Claude Code may add its own message after it).
+      const results = (body.messages ?? []).flatMap((m: any) => (Array.isArray(m.content) ? m.content : []).filter((b: any) => b?.type === "tool_result"));
+      const last = results[results.length - 1];
+      const result = !last ? null : typeof last.content === "string" ? last.content : (last.content ?? []).map((c: any) => c?.text ?? "").join("\n");
+      if (result === null) {
+        // The agent writes the tool (as it would with its file tools), then goes on with a vault-chat call.
+        const dir = join(vault, ".vault-chat", "tools", "Echoer");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "TOOL.md"), "---\nname: Echoer\ndescription: Say a word back\ninput_schema:\n  word:\n    type: string\n    description: the word\n    required: true\n---\n");
+        writeFileSync(join(dir, "run.mjs"), "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>console.log('echoed '+JSON.parse(s).word));\n");
+        return { call: { name: "JobList", args: {} } };
+      }
+      if (offered.includes("mcp__vault_chat__Echoer") && !/echoed/.test(result)) return { call: { name: "Echoer", args: { word: "hi" } } };
+      return { text: `last result: ${result.slice(0, 80)}` };
+    };
+    try {
+      await engine.message({ text: "make yourself a tool", convId });
+      await answered(convId, "make yourself a tool");
+    } finally {
+      api.respond = null;
+      api.reply = null; // a text step stays the fake's reply until cleared
+      if (prevUnsafe === undefined) delete process.env.VC_PI_UNSAFE;
+      else process.env.VC_PI_UNSAFE = prevUnsafe;
+      rmSync(join(vault, ".vault-chat", "tools"), { recursive: true, force: true });
+    }
+    // Not there when the turn began; there for the turn's next step, and called.
+    expect(offeredAt[0]).not.toContain("mcp__vault_chat__Echoer");
+    expect(offeredAt.slice(1).some((o) => o.includes("mcp__vault_chat__Echoer"))).toBe(true);
+    const tools = engine.picture(convId).items.filter((i: any) => i.kind === "tool");
+    const echo = tools.find((t: any) => t.name === "Echoer");
+    expect(echo?.status).toBe("done");
+    expect(String(echo?.result ?? "")).toContain("echoed hi");
+  }, 180_000);
+
+  it("a tool written with the runtime's own Bash, or between messages, is there for the very next step", async () => {
+    const convId = "cc-conv-mktool-bash";
+    await engine.message({ text: "hello bash", convId });
+    await answered(convId, "hello bash");
+    const toolDir = (name: string) => join(vault, ".vault-chat", "tools", name);
+    const toolMd = (name: string) => `---\nname: ${name}\ndescription: A tool made for the test\ninput_schema: {}\n---\n`;
+    const offeredAt: string[][] = [];
+    api.respond = (body) => {
+      const offered: string[] = (body.tools ?? []).map((t: any) => t.name);
+      offeredAt.push(offered);
+      if (offeredAt.length > 1) return { text: "done" };
+      // Written by Claude Code's own Bash, not a vault-chat tool: no MCP call follows it.
+      const dir = toolDir("ByBash");
+      const cmd = `mkdir -p '${dir}' && printf '${toolMd("ByBash").replace(/\n/g, "\\n")}' > '${dir}/TOOL.md' && echo 'echo ok' > '${dir}/run.sh'`;
+      return { call: { name: "Bash", args: { command: cmd, description: "write a tool" } } };
+    };
+    try {
+      await engine.message({ text: "write one with bash", convId });
+      await answered(convId, "write one with bash");
+      expect(existsSync(join(toolDir("ByBash"), "TOOL.md"))).toBe(true);
+      expect(offeredAt[0]).not.toContain("mcp__vault_chat__ByBash");
+      expect(offeredAt[1]).toContain("mcp__vault_chat__ByBash");
+
+      // Made while no turn runs (by hand, another chat, an update): the next message has it from its first step.
+      mkdirSync(toolDir("Between"), { recursive: true });
+      writeFileSync(join(toolDir("Between"), "TOOL.md"), toolMd("Between"));
+      writeFileSync(join(toolDir("Between"), "run.sh"), "echo ok\n");
+      offeredAt.length = 0;
+      await engine.message({ text: "next message", convId });
+      await answered(convId, "next message");
+      expect(offeredAt[0]).toContain("mcp__vault_chat__Between");
+    } finally {
+      api.respond = null;
+      api.reply = null; // a text step stays the fake's reply until cleared
+      rmSync(join(vault, ".vault-chat", "tools"), { recursive: true, force: true });
+    }
   }, 180_000);
 
   it("a queued message is pending in the chat until its own turn takes it", async () => {

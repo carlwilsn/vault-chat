@@ -60,6 +60,12 @@ export type SessionOptions = {
    * input and a refusal really does stop the call.
    */
   onToolUse?: (tool: string, input: Record<string, unknown>) => Promise<string | null>;
+  /**
+   * One of the runtime's own tools that can write (Bash, Write, Edit) has run:
+   * awaited before the session goes on, so the host can bring what it may have
+   * changed (a vault tool the agent wrote) into the session first.
+   */
+  onWrote?: () => Promise<void>;
   settingSources?: Options["settingSources"];
   /**
    * Claude Code summarised the session: what the host wants put back into it.
@@ -131,7 +137,7 @@ export class ClaudeSession {
       settings: JSON.stringify({ autoMemoryEnabled: false }),
       // Two hooks, both for context the session would otherwise miss: what a
       // summary dropped, and memory that changed after the session read it.
-      ...(this.o.onCompacted || this.o.onPrompt || this.o.onToolUse ? { hooks: this.hooks() } : {}),
+      ...(this.o.onCompacted || this.o.onPrompt || this.o.onToolUse || this.o.onWrote ? { hooks: this.hooks() } : {}),
     };
     const q = (this.q = query({ prompt: this.input(), options }));
     this.pump = this.read(q);
@@ -185,6 +191,19 @@ export class ClaudeSession {
               }
               if (!why) return {};
               return { hookSpecificOutput: { hookEventName: "PreToolUse" as const, permissionDecision: "deny" as const, permissionDecisionReason: why } };
+            },
+          ],
+        },
+      ];
+    }
+    if (this.o.onWrote) {
+      out.PostToolUse = [
+        {
+          matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit",
+          hooks: [
+            async () => {
+              await this.o.onWrote!().catch(() => undefined);
+              return {};
             },
           ],
         },

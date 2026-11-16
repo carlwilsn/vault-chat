@@ -223,6 +223,8 @@ type Live = {
   pending: Map<string, Pushed>;
   /** Withdraws this session's MCP tools when it ends. */
   revoke: (() => Promise<void>) | null;
+  /** Reads its MCP tools' catalog again, telling the session when it changed. */
+  refreshTools: (() => Promise<boolean>) | null;
   /** What the memory file looked like when this session last carried it. */
   memory: MemoryMark;
   /** The thinking level this session was last set to (the voice turns it off). */
@@ -580,6 +582,10 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
       live.thinking = o.thinking;
       await live.session.setThinking(o.thinking);
     }
+    // Each turn starts on the tool catalog as it is now (a tool made between
+    // messages, a catalog that changed): the session is told and has listed
+    // again before the message reaches it, so no step runs on a stale schema.
+    await live.refreshTools?.().catch(() => false);
     const turnId = o.turnId ?? randomUUID();
     live.turnId = turnId;
     const images = imageUrls(o.images);
@@ -813,9 +819,10 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
    * bearer it issues is handed to Claude Code only in the session's HTTP
    * headers, so it is never in argv, the environment or a file.
    */
-  private async bindTools(threadId: string, t: ThreadState, w?: { workers: true; boardMake?: NotifyScope["boardMake"] }): Promise<{ servers: Record<string, unknown>; allowed: string[]; revoke: () => Promise<void> } | null> {
+  private async bindTools(threadId: string, t: ThreadState, w?: { workers: true; boardMake?: NotifyScope["boardMake"] }): Promise<{ servers: Record<string, unknown>; allowed: string[]; revoke: () => Promise<void>; refresh: () => Promise<boolean> } | null> {
     if (!this.o.mcp || !this.h) return null;
-    const specs = (await this.h.toolCatalog("conversation")).filter((s) => !w || !NOT_FOR_WORKERS.has(s.name));
+    const catalog = async () => (await this.h!.toolCatalog("conversation")).filter((s) => !w || !NOT_FOR_WORKERS.has(s.name));
+    const specs = await catalog();
     // A worker acts for the conversation that started it; a board maker for its own inbox entry.
     const notify = (): NotifyScope | null => {
       const base = this.h?.notifyScope?.(threadId) ?? null;
@@ -833,6 +840,10 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     const scope = await this.o.mcp.bind(
       {
         specs: all,
+        // Read again at each tools/list and after each call: the session lives
+        // across turns, and a tool the agent makes (.vault-chat/tools) or a
+        // catalog that changed reaches it at once, never a stale schema.
+        current: async () => [...(await catalog()), ...files.specs],
         call: (name, args, context) =>
           files.specs.some((f) => f.name === name)
             ? files.call(name, args, context)
@@ -870,6 +881,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
       // what a tool may do, and the list cannot go stale against the catalog.
       allowed: [MCP_SERVER, ...Object.keys(extra)].map((n) => `mcp__${n}`),
       revoke: scope.revoke,
+      refresh: scope.refresh,
     };
   }
 
@@ -942,6 +954,12 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
           }
         : {}),
       ...(this.h?.afterCompact ? { onCompacted: () => this.h!.afterCompact!(threadId) } : {}),
+      // A tool the agent wrote with the runtime's own tools (a .vault-chat/tools
+      // folder) joins its tools before its next step, as one written through a
+      // vault-chat tool does (mcp/tools.ts).
+      onWrote: async () => {
+        await this.live.get(threadId)?.refreshTools?.();
+      },
       onPrompt: async () => {
         const live = this.live.get(threadId);
         if (!live) return "";
@@ -954,7 +972,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
       onClosed: (error) => this.onClosed(threadId, error),
       log: (s) => this.log(s),
     });
-    const live: Live = { id: threadId, session, translator, turnId: null, lastUsed: Date.now(), pending: new Map(), revoke: tools?.revoke ?? null, memory };
+    const live: Live = { id: threadId, session, translator, turnId: null, lastUsed: Date.now(), pending: new Map(), revoke: tools?.revoke ?? null, refreshTools: tools?.refresh ?? null, memory };
     this.live.set(threadId, live);
     session.start();
     // What the runtime calls its models, asked once per box: the picker shows

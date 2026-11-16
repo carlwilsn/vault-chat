@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { ProgressNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
+import { ProgressNotificationSchema, ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createToolServer, type BoundTools } from "../mcp/tools";
 import { createMcpHttpHandler } from "../mcp/http";
 import type { ToolSpec } from "../engine/backend";
@@ -168,6 +168,50 @@ describe("vault-chat's single catalog over MCP", () => {
         expect(wire.findIndex((m) => m.params?.message === `${name}: second`)).toBeLessThan(result);
       }
     } finally { await client.close(); await server.close(); }
+  });
+
+  it("a live catalog: a tool added by a call is announced before that call's result, listed, and callable; a bad catalog keeps the last good one", async () => {
+    let catalog: ToolSpec[] = [boardSpec];
+    const added = { ...structuredClone(boardSpec), name: "MadeNow", description: "made by a call" };
+    const calls: string[] = [];
+    const server = createToolServer({
+      specs: catalog,
+      current: async () => catalog,
+      call: async (name) => {
+        calls.push(name);
+        if (name === "BoardLook") catalog = [boardSpec, added];
+        return { ok: true, text: name };
+      },
+    }, "test");
+    const client = new Client({ name: "live-catalog", version: "test" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(a); await client.connect(b);
+    const order: string[] = [];
+    client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+      order.push("changed");
+      order.push(`listed ${(await client.listTools()).tools.map((t) => t.name).join(",")}`);
+    });
+    try {
+      expect(client.getServerCapabilities()?.tools?.listChanged).toBe(true);
+      await client.callTool({ name: "BoardLook", arguments: {} });
+      order.push("result");
+      expect(order).toEqual(["changed", "listed BoardLook,MadeNow", "result"]);
+      await client.callTool({ name: "MadeNow", arguments: {} });
+      expect(calls).toEqual(["BoardLook", "MadeNow"]);
+      // A tool made outside any call: callable even before the client lists again.
+      catalog = [boardSpec, added, { ...structuredClone(boardSpec), name: "Later" }];
+      await client.callTool({ name: "Later", arguments: {} });
+      expect(calls.at(-1)).toBe("Later");
+      // A broken catalog is not served: the last good one stays.
+      catalog = [boardSpec, boardSpec];
+      expect(await server.refreshTools()).toBe(false);
+      expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["BoardLook", "MadeNow", "Later"]);
+    } finally { await client.close(); await server.close(); }
+  });
+
+  it("a fixed binding does not advertise list changes", async () => {
+    const c = await connected({ specs: [boardSpec], call: async () => ({ ok: true, text: "ok" }) });
+    try { expect(c.client.getServerCapabilities()?.tools?.listChanged).toBeUndefined(); } finally { await c.close(); }
   });
 
   it("fails closed on duplicate names, internal names and malformed schemas", () => {

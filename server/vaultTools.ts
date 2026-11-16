@@ -94,7 +94,9 @@ export async function vaultToolSpecsFor(vault: string, taken: Iterable<string> =
   try {
     const { loadVaultToolSchemas } = await import("../src/meta");
     return (await loadVaultToolSchemas(vault))
-      .filter((t) => !skip.has(t.name))
+      // A name the model's API would refuse, or a second tool of one name, would
+      // break every session's tool list: such a folder is left out, not fatal.
+      .filter((t) => /^[A-Za-z0-9_-]{1,48}$/.test(t.name) && !skip.has(t.name) && (skip.add(t.name), true))
       .map((t) => ({ type: "function" as const, name: t.name, description: `${t.description} (Carl's own tool for this vault, .vault-chat/tools/.)`, inputSchema: t.parameters as Record<string, unknown> }));
   } catch {
     return [];

@@ -71,7 +71,7 @@ export class McpRuntime {
     });
   }
 
-  async bind(binding: Omit<HttpBinding, "scopeId">, services: ProcessServices): Promise<{ bootstrap: ProcessBootstrap; revoke: () => Promise<void> }> {
+  async bind(binding: Omit<HttpBinding, "scopeId">, services: ProcessServices): Promise<{ bootstrap: ProcessBootstrap; revoke: () => Promise<void>; refresh: () => Promise<boolean> }> {
     await this.start();
     const authorization = `Bearer ${randomBytes(32).toString("base64url")}`;
     const scopeId = randomUUID();
@@ -79,6 +79,8 @@ export class McpRuntime {
     return {
       bootstrap: { url: `${this.origin}/mcp`, authorization },
       revoke: async () => { this.scopes.delete(authorization); await this.handler?.revoke(scopeId); },
+      /** The binding's catalog read again; its connected client told when it changed (mcp/tools.ts refreshTools). */
+      refresh: async () => (await this.handler?.refresh(scopeId)) ?? false,
     };
   }
 
