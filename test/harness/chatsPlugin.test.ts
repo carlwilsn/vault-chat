@@ -200,9 +200,9 @@ test("unmounted (the supervisor's stop), it offers nothing", async () => {
 
 // ---------------------------------------------------------------- the app's mount: supervisor and fallback
 
-const rec = _appReconciler();
 let seq = 9100;
 const desire = (state: "running" | "stopped") => {
+  const rec = _appReconciler();
   rec.sup.fold({ seq: ++seq, at: seq, type: "signal", signal: { type: "plugin.desired", plugin: "app/chats", state, at: seq, by: "agent" } } as any);
   rec.changed();
 };
@@ -210,8 +210,16 @@ const desire = (state: "running" | "stopped") => {
 test("AppPluginMount with a fallback: running, the plugin; turned off, the built-in list with Turn on; on again, the plugin", async () => {
   seed();
   const sidebar = () => renderToStaticMarkup(createElement(AppPluginMount, { plugin: CHATS_PLUGIN, module: chats.sidebar, fallback: () => createElement("i", { "data-el": "fb" }) }));
-  assert.equal(sidebar(), '<span data-el="plugin-mount" data-vc-plugin="app/chats" style="display:contents"></span>');
   const { ChatsSidebar } = await import("../../src/ChatsPanel.tsx");
+  // Its records not known yet: the plugin is not mounted (never a flash of the wrong state), but the chat pane is not
+  // empty either: the plain fallback list stands in, with no off / stopped banner.
+  assert.equal(sidebar(), '<i data-el="fb"></i>');
+  const pending = renderToStaticMarkup(createElement(ChatsSidebar));
+  assert.match(pending, /data-el="chats-fallback"/);
+  assert.match(pending, /data-chat="m0"|data-el="fallback-place"/);
+  assert.ok(!/data-el="plugin-off"|data-el="chats-fallback-error"/.test(pending), "no banner while unknown");
+  _appReconciler(true);
+  assert.equal(sidebar(), '<span data-el="plugin-mount" data-vc-plugin="app/chats" style="display:contents"></span>');
   desire("stopped");
   assert.equal(sidebar(), '<i data-el="fb"></i>');
   const off = renderToStaticMarkup(createElement(ChatsSidebar));
