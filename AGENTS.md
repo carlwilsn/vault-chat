@@ -42,6 +42,11 @@ phone web app, iPad whiteboard and voice. It is not AgentOS.
   widgets, explainers, mockups. For the app's look, link `<link rel="stylesheet" href="/app-styles.css">` and use
   the app's own classes (only classes src/ uses exist; anything else inline `style`); for exact fidelity, the real
   components in the preview harness (preview/, `npm run preview`, `?scenario=`) shot with RecordUI.
+- Inline web pages (src/inlineWeb.ts, src/InlineWebPage.tsx, src-tauri/src/web_embed.rs): `![title](https://…)` on its own line (not an image/video/PDF address)
+  shows that public page live in the chat on the Windows/macOS app: a native browser view (wry, made outside Tauri's webview manager: no Tauri IPC, no app
+  protocols, its own InPrivate data folder) laid over a placeholder and kept on its visible part as the chat scrolls; hidden when an app menu/dialog covers it.
+  Back/Forward/Reload, Full window, Browser, Close. Public http(s) hosts only (no loopback/LAN/tailnet/*.ts.net); popups load in place; downloads refused.
+  Phone, browsers, Linux, refused addresses or any failure: the title is a plain link.
 - Live pages (src/liveBridge.ts): a vault .html that declares `<meta name="vc-capabilities" content="ask, mic">` gets `window.vc` after Carl's one-time Allow
   (per path + content hash): `vc.ask(prompt,{system})` streams an ephemeral read-only AI reply (`for await`, `.text()`), `vc.fetch(path, init)` reaches only what the
   granted capabilities cover (box-checked token), `vc.mic()`/`vc.play()`, `vc.theme`/`vc.size`; no `<form>` (sandboxed), buttons + keydown. The services a page may name
