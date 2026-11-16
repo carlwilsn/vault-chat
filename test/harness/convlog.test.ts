@@ -241,8 +241,9 @@ test("tool calls with streamed arguments, run in parallel: one item each, args p
     ["c2", "read", { path: "b.md" }, "B", "done"],
   ]);
   assert.ok(lives(log.recs, "toolcall_delta").length >= 2, "the arguments streamed");
-  // "Reading both." was written beside the tool calls: progress commentary, shown under Thought, never as the reply.
-  assert.deepEqual(view(log.recs), ["user:Read both papers.", "thinking:Reading both.", "tools:Read=A,Read=B", "assistant:A is better."]);
+  // "Reading both." was written beside the tool calls: shown as what the agent said (the commentary translator; the
+  // log keeps it marked, so the chat can fold it under Thought instead: chatTranslators.test.ts).
+  assert.deepEqual(view(log.recs), ["user:Read both papers.", "assistant:Reading both.", "tools:Read=A,Read=B", "assistant:A is better."]);
   // While c2 runs: its partial output shows; when it ends, the partial is gone.
   const at = log.recs.findIndex((r) => r.type === "live" && r.ev.type === "tool_execution_update");
   assert.equal(fold(log.recs.slice(0, at + 1), C).items.find((x) => x.id === "c2")!.partial, "partial b");
@@ -253,12 +254,16 @@ test("tool calls with streamed arguments, run in parallel: one item each, args p
   const run = log.recs.findIndex((r) => r.type === "live" && r.ev.type === "tool_execution_start" && r.ev.toolCallId === "c2");
   const v = makeChatView()(fold(log.recs.slice(0, run + 1), C));
   assert.deepEqual(v.live.tools.map((t) => t.id), ["c1", "c2"]);
-  assert.deepEqual(v.messages.map((m) => m.content || `thinking:${m.thinking}`), ["Read both papers.", "thinking:Reading both."]);
-  // The moment the message reaches for a tool, what it wrote so far leaves the reply (before pi writes it).
+  assert.deepEqual(v.messages.map((m) => m.content || `thinking:${m.thinking}`), ["Read both papers.", "Reading both."]);
+  // The moment the message reaches for a tool, what it wrote so far is marked as commentary (before pi writes it).
   const tc = log.recs.findIndex((r) => r.type === "live" && r.ev.type === "message_update" && r.ev.assistantMessageEvent?.type === "toolcall_start");
   const atTool = makeChatView()(fold(log.recs.slice(0, tc + 1), C));
   assert.equal(atTool.live.text, "");
-  assert.equal(shown(fold(log.recs.slice(0, tc + 1), C)).find((x) => x.text === "Reading both.")?.kind, "thinking");
+  const atPic = fold(log.recs.slice(0, tc + 1), C);
+  const marked = shown(atPic).find((x) => x.text === "Reading both.");
+  assert.equal(marked?.kind, "thinking", "the item itself is what it always was");
+  assert.ok(atPic.commentary?.includes(marked!.id), "marked beside the items");
+  assert.ok(fold(log.recs, C).commentary?.includes(marked!.id), "pi's entry keeps the mark");
 });
 
 test("a steer and a queued message: pending, then Carl's message where pi delivers it, under the client's id", () => {
@@ -266,7 +271,7 @@ test("a steer and a queued message: pending, then Carl's message where pi delive
   seqSteerQueue(log);
   const p = fold(log.recs, C);
   assert.deepEqual(pendingOf(p), []);
-  assert.deepEqual(view(log.recs), ["user:Go through the chapters.", "thinking:Chapter one.", "tools:Bash=ch1 ch2", "user:Shorter.", "assistant:Short then.", "user:Then summarize.", "assistant:Summary."]);
+  assert.deepEqual(view(log.recs), ["user:Go through the chapters.", "assistant:Chapter one.", "tools:Bash=ch1 ch2", "user:Shorter.", "assistant:Short then.", "user:Then summarize.", "assistant:Summary."]);
   assert.deepEqual(p.items.filter((x) => x.kind === "user").map((x) => [x.id, x.via]), [["t1-u", "chat"], ["s1", "steer"], ["q1", "queue"]]);
   // Before pi delivered them: both pending, neither in the transcript.
   const firstSteer = log.recs.findIndex((r) => r.type === "entry" && r.clientId === "s1");
@@ -538,15 +543,16 @@ test("native delivered queue ownership is the original input device, not a viewe
   log.sim.close();
 });
 
-test("a finished background worker's notice is a quiet clock line, never Carl's words", () => {
+test("a finished background worker's notice is a quiet line in Carl's words, never his own message", () => {
   const rec = (seq: number, text: string, via: string, role = "user"): any => ({
     seq, conv: C, at: 1000 + seq, type: "entry", file: "f", clientId: `c${seq}`, shown: text, via,
     entry: { type: "message", id: `e${seq}`, timestamp: "t", message: { role, content: [{ type: "text", text }], timestamp: 1000 + seq } },
   });
   const ms = messagesOf(fold([rec(1, "Worker finished: Check the rainfall data", "wake"), rec(2, "Worker still working (interim notice): Build it", "wake"), rec(3, "Worker failed: Build it", "wake")], C));
-  assert.deepEqual(ms.map((m) => [m.system, m.role, m.content]), [
-    [true, "user", "⏰ Worker finished: Check the rainfall data"],
-    [true, "user", "⏰ Worker still working (interim notice): Build it"],
-    [true, "user", "⏰ Worker failed: Build it"],
+  assert.deepEqual(ms.map((m) => [m.system, m.role, m.content, !!m.failed]), [
+    [true, "user", "Worker finished · Check the rainfall data", false],
+    // A line the translator does not know: as it was said.
+    [true, "user", "⏰ Worker still working (interim notice): Build it", false],
+    [true, "user", "Worker failed · Build it", true],
   ]);
 });

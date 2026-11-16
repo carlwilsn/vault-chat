@@ -9,6 +9,7 @@ import type { PendingInput, Todo } from "./protocol";
 import { isOpen, pendingOf, planOf, shown, type Item, type Picture } from "./reduce";
 import { ASK_TOOLS } from "../review";
 import { hostToolName } from "../mcpNames";
+import { hasTranslators, registerBuiltinTranslator, translate, translatorChain, translatorsVersion } from "./translators";
 
 export const DIVIDER_TEXT = "Earlier conversation summarized";
 
@@ -85,8 +86,6 @@ export function argsOf(it: Item): any {
 const TOOL_NAMES: Record<string, string> = { bash: "Bash", read: "Read", write: "Write", edit: "Edit", grep: "Grep", find: "Glob", ls: "LS" };
 export const toolName = (n: string | undefined): string => TOOL_NAMES[hostToolName(n)] ?? (hostToolName(n) || "tool");
 
-const ENGINE_VIA = new Set(["wake", "nudge", "resume", "job", "delegate"]);
-
 export type JobEnd = { id: string; name: string; status: string; failed: boolean; output: string; task?: boolean };
 
 /** A background worker's report turn (server/engine/engine.ts reportWhenDone): "Delegated work <how>: "<title>"".
@@ -116,51 +115,100 @@ export function jobEndOf(text: string): JobEnd | null {
   return { id, name, status, failed, output };
 }
 
-/** One non-tool item → its message(s). `retry`: the turn that ended on this failure is the last thing here (Try again). */
-function messagesOfItem(it: Item, retry = false): ViewMessage[] {
-  switch (it.kind) {
-    case "user":
-      if (it.via === "job") {
-        const job = jobEndOf(it.text ?? "");
-        if (job) return [{ role: "user", system: true, content: `Job ${job.status} · ${job.name}`, mid: it.id, job }];
-      }
-      if (it.via === "delegate") {
-        const job = taskEndOf(it.text ?? "");
-        if (job) return [{ role: "user", system: true, content: `Background task ${job.status} · ${job.name}`, mid: it.id, job }];
-      }
-      // Try again on a failed turn: a quiet line, not Carl's words (the agent gets RETRY_TEXT).
-      if (it.via === "retry") return [{ role: "user", system: true, content: "↻ Trying again", mid: it.id }];
-      // Work another chat (or Carl's laptop) handed to this one: a quiet line, so
-      // it never reads as something Carl typed here.
-      if (it.via === "handoff") return [{ role: "user", system: true, content: `↗ ${it.text ?? ""}`.trim(), mid: it.id }];
-      if (ENGINE_VIA.has(it.via ?? "")) return [{ role: "user", system: true, content: `${it.via === "wake" || it.via === "job" || it.via === "delegate" ? "⏰" : "↻"} ${it.text ?? ""}`.trim(), mid: it.id }];
-      return [
-        {
-          role: "user",
-          content: it.text ?? "",
-          mid: it.id,
-          direct: true,
-          ...(it.via === "answer" ? { decision: true } : {}),
-          ...(it.via === "voice" ? { voice: true } : {}),
-          ...(it.images?.length ? { attachments: it.images.map((i) => ({ imageDataUrl: i.dataUrl ?? "", capturedFilePath: i.path })) } : {}),
-        },
-      ];
-    case "assistant":
-      return [{ role: "assistant", content: it.text ?? "", mid: it.id, ...(it.via === "voice" ? { voice: true } : {}) }];
-    case "thinking":
-      return (it.text ?? "").trim() ? [{ role: "assistant", content: "", thinking: it.text, mid: it.id }] : [];
-    case "compaction":
-      if (isOpen(it)) return [{ role: "assistant", system: true, content: "Summarizing the earlier conversation…", mid: it.id, working: { since: it.at } }];
-      return it.rollover
-        ? [{ role: "assistant", system: true, content: DIVIDER_TEXT, mid: it.id, rollover: { recap: it.text ?? "", at: it.at } }]
-        : [{ role: "assistant", system: true, content: DIVIDER_TEXT, mid: it.id, compaction: { summary: it.text ?? "", at: it.at, ...(it.tokensBefore ? { before: it.tokensBefore } : {}), ...(it.tokensAfter ? { after: it.tokensAfter } : {}) } }];
-    case "notice":
-      // A failed request pi may still retry (reduce.ts blocksOf): not shown; the quiet "Retrying…" line says it.
-      if (it.level === "error" && isOpen(it)) return [];
-      return [{ role: "assistant", system: true, content: it.text ?? "", mid: it.id, ...(it.level === "error" ? { failed: true } : {}), ...(retry ? { retry: true } : {}) }];
-    case "tool":
-      return [];
+/** A user line the engine wrote (a wake, a nudge, a job's or a task's end not parsed): a quiet line, never Carl's words. */
+const engineLine = (it: Item): ViewMessage[] => [{ role: "user", system: true, content: `${it.via === "wake" || it.via === "job" || it.via === "delegate" ? "⏰" : "↻"} ${it.text ?? ""}`.trim(), mid: it.id }];
+
+/** A background worker's line (server/engine/claude/translate.ts workerNoticeText, backend.ts's idle check: words for
+ *  the agent) in Carl's words: what happened to which worker. */
+export function workerLine(text: string): { content: string; failed?: boolean } | null {
+  const t = text.trim();
+  const name = (x: string) => x.replace(/\s+/g, " ").trim().slice(0, 160);
+  const say = (what: string, x: string) => (name(x) ? `${what} · ${name(x)}` : what);
+  let m: RegExpExecArray | null;
+  if ((m = /^Worker finished(?:: ([\s\S]*))?$/.exec(t))) return { content: say("Worker finished", m[1] ?? "") };
+  if ((m = /^Worker NOT finished, waiting on its own background work \(interim notice\)(?:: ([\s\S]*))?$/.exec(t))) return { content: say("Worker reported, still waiting on its own work", m[1] ?? "") };
+  if ((m = /^Worker failed(?:: ([\s\S]*))?$/.exec(t))) return { content: say("Worker failed", m[1] ?? ""), failed: true };
+  if ((m = /^Worker interrupted by a restart(?: \([^)]*\))?(?:: ([\s\S]*))?$/.exec(t))) return { content: say("Worker interrupted by a restart", m[1] ?? "") };
+  if ((m = /^Worker stopped: Background agent "([^"]*)" didn't finish before the previous session ended/.exec(t))) return { content: say("Worker interrupted by a restart", m[1]!) };
+  if ((m = /^Worker stopped(?:: ([\s\S]*))?$/.exec(t))) return { content: say("Worker stopped", m[1] ?? "") };
+  if ((m = /^Worker idle for (\d+) min, not finished \(check JobStatus[^)]*\)(?:: ([\s\S]*))?$/.exec(t))) return { content: say(`Worker quiet for ${m[1]} min, not finished`, m[2] ?? "") };
+  return null;
+}
+
+const ENGINE_TYPES = ["user:wake", "user:nudge", "user:resume"];
+const ENGINE_VIAS = new Set(["wake", "nudge", "resume", "job", "delegate"]);
+
+// The app's own translators (./translators.ts): what the chat always showed for each event, except text beside a tool
+// call (shown as the reply now, as Claude Code shows it; the old "under Thought" is an alternative to choose) and a
+// worker's line (in Carl's words, a repeat said once).
+registerBuiltinTranslator("user", ({ item: it }) => [
+  {
+    role: "user",
+    content: it.text ?? "",
+    mid: it.id,
+    direct: true,
+    ...(it.via === "answer" ? { decision: true } : {}),
+    ...(it.via === "voice" ? { voice: true } : {}),
+    ...(it.images?.length ? { attachments: it.images.map((i) => ({ imageDataUrl: i.dataUrl ?? "", capturedFilePath: i.path })) } : {}),
+  },
+]);
+registerBuiltinTranslator("user:job", ({ item: it }) => {
+  const job = jobEndOf(it.text ?? "");
+  return job ? [{ role: "user", system: true, content: `Job ${job.status} · ${job.name}`, mid: it.id, job }] : engineLine(it);
+});
+registerBuiltinTranslator("user:delegate", ({ item: it }) => {
+  const job = taskEndOf(it.text ?? "");
+  return job ? [{ role: "user", system: true, content: `Background task ${job.status} · ${job.name}`, mid: it.id, job }] : engineLine(it);
+});
+// Try again on a failed turn: a quiet line, not Carl's words (the agent gets RETRY_TEXT).
+registerBuiltinTranslator("user:retry", ({ item: it }) => [{ role: "user", system: true, content: "↻ Trying again", mid: it.id }]);
+// Work another chat (or Carl's laptop) handed to this one: a quiet line, so it never reads as something Carl typed here.
+registerBuiltinTranslator("user:handoff", ({ item: it }) => [{ role: "user", system: true, content: `↗ ${it.text ?? ""}`.trim(), mid: it.id }]);
+for (const t of ENGINE_TYPES) registerBuiltinTranslator(t, ({ item: it }) => engineLine(it));
+registerBuiltinTranslator("worker", ({ item: it, repeat }) => {
+  if (repeat) return [];
+  const w = workerLine(it.text ?? "");
+  return w ? [{ role: "user", system: true, content: w.content, mid: it.id, ...(w.failed ? { failed: true } : {}) }] : engineLine(it);
+});
+registerBuiltinTranslator("assistant", ({ item: it }) => [{ role: "assistant", content: it.text ?? "", mid: it.id, ...(it.via === "voice" ? { voice: true } : {}) }]);
+registerBuiltinTranslator("thinking", ({ item: it }) => ((it.text ?? "").trim() ? [{ role: "assistant", content: "", thinking: it.text, mid: it.id }] : []));
+registerBuiltinTranslator("commentary", ({ item: it }) => ((it.text ?? "").trim() ? [{ role: "assistant", content: it.text ?? "", mid: it.id }] : []), {
+  description: "Text the agent writes beside a tool call, shown as what it said (as Claude Code shows it).",
+});
+registerBuiltinTranslator("commentary", ({ item: it }) => ((it.text ?? "").trim() ? [{ role: "assistant", content: "", thinking: it.text, mid: it.id }] : []), {
+  alt: "thought",
+  description: "Text the agent writes beside a tool call, folded under Thought with its reasoning (the chat's earlier rule; choose it with useTranslator).",
+});
+registerBuiltinTranslator("compaction", ({ item: it }) => {
+  if (isOpen(it)) return [{ role: "assistant", system: true, content: "Summarizing the earlier conversation…", mid: it.id, working: { since: it.at } }];
+  return it.rollover
+    ? [{ role: "assistant", system: true, content: DIVIDER_TEXT, mid: it.id, rollover: { recap: it.text ?? "", at: it.at } }]
+    : [{ role: "assistant", system: true, content: DIVIDER_TEXT, mid: it.id, compaction: { summary: it.text ?? "", at: it.at, ...(it.tokensBefore ? { before: it.tokensBefore } : {}), ...(it.tokensAfter ? { after: it.tokensAfter } : {}) } }];
+});
+registerBuiltinTranslator("notice", ({ item: it, retry }) => {
+  // A failed request pi may still retry (reduce.ts blocksOf): not shown; the quiet "Retrying…" line says it.
+  if (it.level === "error" && isOpen(it)) return [];
+  return [{ role: "assistant", system: true, content: it.text ?? "", mid: it.id, ...(it.level === "error" ? { failed: true } : {}), ...(retry ? { retry: true } : {}) }];
+});
+
+/** A non-tool item's event type: a worker's line, a user line by how it came in (when that has translators), text
+ *  beside a tool call, else the item's kind. */
+export function eventTypeOf(it: Item, commentaryIds?: ReadonlySet<string>): string {
+  if (it.kind === "user") {
+    if (it.via === "wake" && /^Worker /.test(it.text ?? "")) return "worker";
+    const own = it.via ? `user:${it.via}` : "";
+    return own && hasTranslators(own) && translatorChain(own).length ? own : "user";
   }
+  if (it.kind === "thinking" && commentaryIds?.has(it.id)) return "commentary";
+  return it.kind;
+}
+
+/** One non-tool item → its message(s), by its type's translators. `retry`: the turn that ended on this failure is the
+ *  last thing here (Try again). `repeat`: a worker line already said since the last reply. */
+function messagesOfItem(it: Item, retry = false, repeat = false, commentaryIds?: ReadonlySet<string>): ViewMessage[] {
+  if (it.kind === "tool") return [];
+  const type = eventTypeOf(it, commentaryIds);
+  return translate({ type, item: it, ...(retry ? { retry: true } : {}), ...(repeat ? { repeat: true } : {}) }) as ViewMessage[];
 }
 
 /** The name of voice's background Ask row (server/voice.ts runAsk). */
@@ -218,7 +266,13 @@ type Cached = { deps: Item[]; extra: string; msgs: ViewMessage[] };
 /** A projector that hands back the same message objects for items that did not change (React's memo keeps their rows). */
 export function makeChatView(): (p: Picture, opts?: { split?: boolean }) => ChatView {
   let cache = new Map<string, Cached>();
+  let version = translatorsVersion();
   return (p, opts = {}) => {
+    // Another translator now (a plugin's on or off, a choice): every item is translated again.
+    if (version !== translatorsVersion()) {
+      version = translatorsVersion();
+      cache = new Map();
+    }
     const split = opts.split !== false;
     const items = shown(p).filter((x) => !(x.kind === "assistant" && !(x.text ?? "").trim() && x.status !== "streaming"));
     const cut = split && p.meta.running ? liveStart(items) : items.length;
@@ -226,6 +280,8 @@ export function makeChatView(): (p: Picture, opts?: { split?: boolean }) => Chat
     const spawnsOf = (id: string) => subs.filter((s) => s.toolCallId === id).map((s) => s.threadId);
     const next = new Map<string, Cached>();
     const messages: ViewMessage[] = [];
+    const said = new Set<string>();
+    const commentary = new Set(p.commentary ?? []);
     const use = (key: string, deps: Item[], extra: string, make: () => ViewMessage[]) => {
       const hit = cache.get(key);
       if (hit && hit.extra === extra && hit.deps.length === deps.length && hit.deps.every((d, i) => d === deps[i])) {
@@ -277,13 +333,24 @@ export function makeChatView(): (p: Picture, opts?: { split?: boolean }) => Chat
       }
       // A turn that ended on a failed request, and nothing since: its line offers Try again.
       const retry = isTurnFailure(it) && i === items.length - 1 && !p.meta.running;
-      use(it.id, [it], retry ? "retry" : "", () => messagesOfItem(it, retry));
+      // A worker's line said again since the last reply (the box repeats some after a restart).
+      let repeat = false;
+      if (it.kind === "user" && it.via === "wake" && /^Worker /.test(it.text ?? "")) {
+        const key = (it.text ?? "").trim();
+        repeat = said.has(key);
+        said.add(key);
+      } else if (it.kind === "assistant" || (it.kind === "user" && !ENGINE_VIAS.has(it.via ?? ""))) said.clear();
+      const marked = commentary.has(it.id);
+      use(it.id, [it], `${retry ? "retry" : ""}${repeat ? "repeat" : ""}${marked ? "commentary" : ""}`, () => messagesOfItem(it, retry, repeat, commentary));
       i++;
     }
     cache = next;
     const tail = items.slice(cut);
-    const text = tail.filter((x) => x.kind === "assistant").map((x) => x.text ?? "").filter((s) => s.trim()).join("\n\n");
-    const reasoning = tail.filter((x) => x.kind === "thinking").map((x) => x.text ?? "").filter((s) => s.trim()).join("\n\n");
+    // Text beside a tool call streams with the reply, unless the chat folds it under Thought (the alternative chosen).
+    const asThought = translatorChain("commentary")[0]?.id === "app:commentary:thought";
+    const isText = (x: Item) => x.kind === "assistant" || (x.kind === "thinking" && commentary.has(x.id) && !asThought);
+    const text = tail.filter(isText).map((x) => x.text ?? "").filter((s) => s.trim()).join("\n\n");
+    const reasoning = tail.filter((x) => x.kind === "thinking" && !isText(x)).map((x) => x.text ?? "").filter((s) => s.trim()).join("\n\n");
     const tools: ViewTool[] = tail
       .filter((x) => x.kind === "tool" && x.name !== VOICE_ASK)
       .map((x) => ({

@@ -68,6 +68,11 @@ export type Picture = {
   written: number[];
   /** The context size of the last reply. */
   usage: { context: number } | null;
+  /** The ids of the thinking items that are text the agent wrote beside a tool call (./commentary.ts), not a thinking
+   *  block: how they show is the chat's translator's choice (./translators.ts "commentary"). Beside the items, never in
+   *  them, so the items stay what they were: marked from this release on (a checkpoint from before has none; its
+   *  commentary keeps showing as it did). */
+  commentary?: string[];
 };
 
 const NEW_CHAT = "New chat";
@@ -150,6 +155,19 @@ function blocksOf(m: PiMessage, at: number, status: ItemStatus, running = false)
   return out;
 }
 
+/** Note these items as text beside a tool call (Picture.commentary). */
+function markCommentary(d: Draft, ids: string[]): void {
+  const have = d.commentary ?? [];
+  const add = ids.filter((id) => !have.includes(id));
+  if (add.length) d.commentary = [...have, ...add];
+}
+
+/** A message that calls a tool: its text blocks are commentary (the ids blocksOf gave them). */
+function markMessageCommentary(d: Draft, m: PiMessage): void {
+  if (!isCommentary(m) || !Array.isArray(m.content)) return;
+  markCommentary(d, m.content.flatMap((b: PiBlock, ci) => (b.type === "text" && typeof b.text === "string" && b.text.trim() ? [blockId(m.timestamp, ci)] : [])));
+}
+
 /** The usage limit's line, with the reset as the SDK words it ("1:30am (America/Chicago)"). */
 function limitText(l: { resets?: string | null }): string {
   return `Usage limit reached. I'll pick this up ${l.resets ? `at ${l.resets}` : "when it resets"}.`;
@@ -223,6 +241,7 @@ function onEntry(d: Draft, r: Extract<LogRecord, { type: "entry" }>): void {
       // A reply after a failed request: pi's retry worked; the failure is not this turn's.
       if (m.stopReason !== "error") dropFailLines(d);
       place(d, blocksOf(m, r.at, "done", !!d.meta.running));
+      markMessageCommentary(d, m);
       const u = m.usage;
       if (u) {
         const ctx = Number(u.input ?? 0) + Number(u.cacheRead ?? 0) + Number(u.cacheWrite ?? 0);
@@ -320,6 +339,7 @@ function onLive(d: Draft, r: Extract<LogRecord, { type: "live" }>): void {
           return upsert({ id, kind: "thinking", status: "done", text: String(ae.content ?? ""), at: r.at });
         case "toolcall_start": {
           // The message calls a tool: what it wrote so far was commentary, not the reply.
+          markCommentary(d, d.inflight.filter((x) => x.kind === "assistant").map((x) => x.id));
           d.inflight = d.inflight.map((x) => (x.kind === "assistant" ? { ...x, kind: "thinking" as const } : x));
           const tid = String(ae.id ?? ae.toolCall?.id ?? id);
           return upsert({ id: tid, kind: "tool", status: "streaming", name: hostToolName(ae.toolName) || "tool", argsText: "", at: r.at });
@@ -345,6 +365,7 @@ function onLive(d: Draft, r: Extract<LogRecord, { type: "live" }>): void {
       const keep = d.inflight.filter((x) => x.kind === "compaction" || x.kind === "notice");
       if (m.stopReason !== "error") dropFailLines(d);
       d.inflight = [...keep, ...blocksOf(m, r.at, "done", !!d.meta.running)];
+      markMessageCommentary(d, m);
       return;
     }
     case "tool_execution_start": {

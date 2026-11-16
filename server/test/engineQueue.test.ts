@@ -231,14 +231,13 @@ describe("steer and queue", () => {
     const msgs = ((await readConv(vault, r.convId))?.messages ?? []).filter((m: any) => !m.system);
     expect(msgs.map((m: any) => [m.role, m.content, (m.toolCalls ?? []).map((t: any) => t.id)])).toEqual([
       ["user", "Go through the three chapters.", []],
-      // Text beside a tool call is progress commentary (src/convlog/commentary.ts): under Thought, not the reply.
-      ["assistant", "", []],
+      // Text beside a tool call is shown as what the agent said (src/convlog/translators.ts "commentary").
+      ["assistant", "Reading chapter one", []],
       ["assistant", "", ["c1", "c2"]],
       ["user", "still working?", []],
-      ["assistant", "", []],
+      ["assistant", "Yes — on chapter three now.", []],
       ["assistant", "", ["c3"]],
     ]);
-    expect([msgs[1].thinking, msgs[4].thinking]).toEqual(["Reading chapter one", "Yes — on chapter three now."]);
     expect(msgs[2].toolCalls.map((t: any) => [t.name, t.result])).toEqual([["Read", "text"], ["subagent", "spawned"]]);
     // The worker owns its task row, independent of the tool-call transcript.
     // Do not guess ownership from c2 just because it was the newest open call.

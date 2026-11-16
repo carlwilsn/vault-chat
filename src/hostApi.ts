@@ -67,7 +67,15 @@ export type HostBackend = {
   capture?(target: CaptureTarget): Promise<Capture>;
   /** Draw one kind of chat row with a plugin's renderer (src/chatRows.ts); the undo. Absent: no chat here. */
   registerChatRow?(kind: string, render: ChatRowRender, by: string, opts?: ChatRowOptions): () => void;
+  /** Translate one type of the chat's events with a plugin's translator (src/convlog/translators.ts); the undo. */
+  registerChatTranslator?(type: string, fn: ChatTranslator, by: string): () => void;
 };
+/** A chat translator: the messages an event of its type shows ([] none), or null to hand it to the next in line (next()
+ *  gives that answer). event.item is the log's item: {id, kind, status, at, text?, via?, name?, args?, result?, level?, ...}. */
+export type ChatTranslator = (
+  event: { type: string; item: Readonly<Record<string, unknown>>; retry?: boolean; repeat?: boolean },
+  next: () => unknown[],
+) => unknown[] | null | undefined | void;
 /** A chat row renderer: draw `row` ({kind, index?, message?, tool?, todos?, src?, alt?}) into `el`; return a cleanup. */
 /** when(row): the rows of its kind this renderer draws (false: the next in line draws that row; e.g. only some notices). */
 export type ChatRowOptions = { when?: (row: Parameters<ChatRowRender>[1]) => boolean };
@@ -103,6 +111,10 @@ export type HostApi = {
      *  renderer for that row. Throws on a bad kind. opts.when(row): draw only the rows it answers true for (the others
      *  keep the next renderer in line: hide only some notices, restyle only some tool calls). */
     row(kind: string, render: ChatRowRender, opts?: ChatRowOptions): () => void;
+    /** Translate one type of the chat's events ("user", "user:<via>", "worker", "assistant", "thinking", "commentary",
+     *  "compaction", "notice") into the messages it shows, live, until the plugin stops (or the returned off): add a type
+     *  the app has no translator for, or override its own. Return null to hand an event on. Throws on a bad type. */
+    translate(type: string, fn: ChatTranslator): () => void;
   };
   layout: { get(): HostLayout; apply(ops: LayoutOp | LayoutOp[]): Promise<LayoutResult> };
   /** A PNG of the app's own window ("window", default) or its "viewer" / "chat" column; rejects with why it can't. */
@@ -224,6 +236,11 @@ export function createHostApi(b: HostBackend, fx: Effects, alive: () => boolean,
         if (!alive()) return () => {};
         if (!b.registerChatRow) throw new Error("no chat here to draw rows in");
         return fx.add(`chat row ${String(kind)}`, b.registerChatRow(String(kind), render, id, opts));
+      },
+      translate(type, fn) {
+        if (!alive()) return () => {};
+        if (!b.registerChatTranslator) throw new Error("no chat here to translate for");
+        return fx.add(`chat translator ${String(type)}`, b.registerChatTranslator(String(type), fn, id));
       },
     },
     layout: {

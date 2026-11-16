@@ -10,6 +10,8 @@
 // are the same in every window; the registry follows them (followRowPrefs, from the app's start, so the first paint
 // already has them), also while the plugin itself is off.
 import type { PluginApi } from "../../mountHost";
+import "../../convlog/view"; // the app's own translators register with it
+import { describeTranslators, setTranslatorPrefs, subscribeTranslators, translatorById } from "../../convlog/translators";
 import { CHAT_REVEAL_EVENT, TAIL_KINDS, describeRowOptions, rowChain, describeRows, rowOptionProblem, rowRenderer, setRowOptionValues, setRowPrefs, subscribeRows, visibleRows } from "../../chatRows";
 import { appPluginState, setAppPluginState, subscribeAppPluginState } from "../../appPluginState";
 import { CHAT_ROWS_PLUGIN_ID } from "../../appPlugins";
@@ -18,6 +20,19 @@ import { useStore } from "../../store";
 const OFF = "off:";
 const USE = "use:";
 const OPT = "opt:";
+const TOFF = "toff:";
+const TUSE = "tuse:";
+
+/** The kept translator choices (src/convlog/translators.ts): ids turned off, the one chosen per event type. */
+export function translatorPrefs(state: Record<string, unknown> = appPluginState(CHAT_ROWS_PLUGIN_ID)): { disabled: string[]; chosen: Record<string, string> } {
+  const disabled: string[] = [];
+  const chosen: Record<string, string> = {};
+  for (const [k, v] of Object.entries(state)) {
+    if (k.startsWith(TOFF) && v === true) disabled.push(k.slice(TOFF.length));
+    else if (k.startsWith(TUSE) && typeof v === "string" && v) chosen[k.slice(TUSE.length)] = v;
+  }
+  return { disabled, chosen };
+}
 
 /** The kept option values, from the plugin's state: {kind: {option: value}}. */
 export function rowOptionValues(state: Record<string, unknown> = appPluginState(CHAT_ROWS_PLUGIN_ID)): Record<string, Record<string, unknown>> {
@@ -52,6 +67,8 @@ export function followRowPrefs(): () => void {
     const p = rowPrefs(state);
     setRowPrefs(p.disabled, p.chosen);
     setRowOptionValues(rowOptionValues(state));
+    const t = translatorPrefs(state);
+    setTranslatorPrefs(t.disabled, t.chosen);
   };
   apply();
   const offState = subscribeAppPluginState((id) => id === CHAT_ROWS_PLUGIN_ID && apply());
@@ -145,6 +162,11 @@ export function chatRowsOffers(doc: Document = document) {
           "The live tail now (what streams under the rows while the agent works): busy, the streaming reply (chars and its last line), the streaming reasoning (chars), the turn's tool calls so far ({name, running, about}) and which renderer draws each tail kind.",
         read: () => liveTail(),
       },
+      translators: {
+        description:
+          "What turns each event in the chat's log into rows (the step before the renderers): per event type (user, user:<via> such as user:job / user:wake, worker = a background worker's line, assistant, thinking, commentary = text beside a tool call, compaction, notice) the translator now active (builtin:<type>, an app alternative app:<type>:<name> such as app:commentary:thought, a plugin's <plugin id>#<type>) and every one registered (enabled, failures). A vault plugin adds one with api.host.chat.translate(type, (event, next) => messages | null).",
+        read: () => describeTranslators(),
+      },
       rows: {
         description: "The rows drawn now (the newest 60): {index, kind, renderer, mid?, text (one line), tools?}; total = messages in the chat, shownFrom = the first index drawn (older ones join on scroll).",
         read: () => visibleRows(60),
@@ -202,6 +224,40 @@ export function chatRowsOffers(doc: Document = document) {
           return { kind, key, value: value ?? "default", ...(await keep([[`${OPT}${kind}:${key}`, value]])) };
         },
       },
+      disableTranslator: {
+        description: "Turn a translator off by its id (see translators): its type is translated by the next in line (a user:<via> with none left: as a plain user line). Kept: every window, after a restart.",
+        args: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
+        run: async (a: Record<string, unknown>) => {
+          const id = String(a.id);
+          if (!translatorById(id)) throw new Error(`no chat translator "${id}" (see the translators state)`);
+          return { disabled: id, ...(await keep([[TOFF + id, true]])) };
+        },
+      },
+      enableTranslator: {
+        description: "Turn a translator back on by its id (kept, like disableTranslator).",
+        args: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
+        run: async (a: Record<string, unknown>) => {
+          const id = String(a.id);
+          if (!translatorPrefs().disabled.includes(id) && !translatorById(id)) throw new Error(`no chat translator "${id}" (see the translators state)`);
+          return { enabled: id, ...(await keep([[TOFF + id, null]])) };
+        },
+      },
+      useTranslator: {
+        description:
+          "Choose which registered translator translates an event type (e.g. {type: \"commentary\", id: \"app:commentary:thought\"} folds text beside a tool call under Thought again; builtin:<type> over a plugin's); id omitted: back to the default order (newest plugin translator, else the app's own). Kept, like disableTranslator.",
+        args: { type: "object", properties: { type: { type: "string" }, id: { type: "string" } }, required: ["type"], additionalProperties: false },
+        run: async (a: Record<string, unknown>) => {
+          const type = String(a.type);
+          const id = typeof a.id === "string" && a.id ? a.id : null;
+          if (id) {
+            const x = translatorById(id);
+            if (!x || x.type !== type) throw new Error(`no translator "${id}" for type "${type}" (see the translators state)`);
+          }
+          const writes: [string, unknown][] = [[TUSE + type, id]];
+          if (id && translatorPrefs().disabled.includes(id)) writes.push([TOFF + id, null]);
+          return { type, using: id ?? "default", ...(await keep(writes)) };
+        },
+      },
       scrollTo: {
         description: "Scroll the chat to a row: index (from rows; an older one is drawn first) or last: true.",
         args: { type: "object", properties: { index: { type: "integer" }, last: { type: "boolean" } }, additionalProperties: false },
@@ -231,6 +287,7 @@ export function chatRowsOffers(doc: Document = document) {
       },
     },
     events: {
+      translatorsChanged: { description: "The translators changed (a plugin's registered or removed, one turned on or off or chosen): the active translator of each event type after it." },
       changed: { description: "The renderers changed (registered, removed, enabled, disabled or chosen, here or in another window): the active renderer of each kind after it." },
     },
   };
@@ -239,5 +296,9 @@ export function chatRowsOffers(doc: Document = document) {
 export function mount(_el: HTMLElement, api: PluginApi): () => void {
   const offers = api.offer(chatRowsOffers(document));
   const off = subscribeRows(() => offers.emit("changed", Object.fromEntries(describeRows().map((k) => [k.kind, k.active]))));
-  return off;
+  const offT = subscribeTranslators(() => offers.emit("translatorsChanged", Object.fromEntries(describeTranslators().map((k) => [k.type, k.active]))));
+  return () => {
+    off();
+    offT();
+  };
 }

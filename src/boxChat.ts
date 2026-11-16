@@ -40,6 +40,7 @@ import type { Conversation } from "./conversations";
 import type { LogRecord, PollAnswer } from "./convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, type Picture, type RowState } from "./convlog/reduce";
 import { RETRY_TEXT, makeChatView, type ChatView } from "./convlog/view";
+import { subscribeTranslators } from "./convlog/translators";
 import { MAIN_ID, threadKindOf } from "./threads";
 import { isDriveWindow } from "./windowKind";
 import { probeLaptopReleaseHealth } from "./laptopReleaseHealth";
@@ -330,6 +331,7 @@ class BoxChatSession {
   /** Clear on this surface (src/viewClear.ts): each conversation shows only what came after this device's own Clear. */
   /** Says to the box whether Carl is looking at the laptop (server/pushGate.ts: the phone stays quiet while he is). */
   private beat: AttentionBeat | null = null;
+  private unsubTranslators: (() => void) | null = null;
 
   constructor(
     public vault: string,
@@ -356,6 +358,8 @@ class BoxChatSession {
       }
     });
     if (lastActive) this.open(lastActive);
+    // Another translator (a vault plugin's on or off, the agent's choice): the chats are translated again, at once.
+    this.unsubTranslators = subscribeTranslators(() => this.projectAll());
     void this.loop();
     try {
       this.beat = startAttentionBeat({
@@ -374,6 +378,7 @@ class BoxChatSession {
     this.beat?.stop();
     this.beat = null;
     this.unsub?.();
+    this.unsubTranslators?.();
     if (this.cacheTimer) clearTimeout(this.cacheTimer);
     this.wake?.();
   }
