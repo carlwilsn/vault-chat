@@ -7,6 +7,8 @@ import { createRoot } from "react-dom/client";
 // bundled imports (ElevenLabs from npm instead of esm.sh). It drives the shell
 // that React renders (App.tsx) through element ids, exactly as before.
 import { installMock } from "./mock";
+import { startPhoneHost, type PhoneHost } from "./plugins";
+import { kindOf } from "../../src/chatRows";
 import * as X from "./extras";
 import { createPhoneMarkdown, domToHtml } from "./markdown";
 import { MicPin, canPickOutput, deviceLists, listAudioDevices } from "../../src/voiceMic";
@@ -60,6 +62,13 @@ export function boot(): void {
   const api = (path: string, opts: RequestInit = {}) => fetch(inVault(path), { ...opts, headers: { "X-Vault-Token": TOKEN, ...(opts.headers || {}) } });
   // A vault .html page in a chat is a live page: its vc.ask / vc.api are answered here (src/liveBridge.ts).
   installPhoneLiveBridge(api);
+  // The phone as a plugin host (./plugins.ts): started once the app has booted; null until then.
+  let phoneHost: PhoneHost | null = null;
+  /** Where the plan card shows: app/chat-rows' kept option (every device), else this phone's old switch. */
+  const planPlace = (): string => {
+    const v = phoneHost?.option("plan", "placement");
+    return v === "inline" || v === "pinned" || v === "hidden" ? v : X.choice("todos");
+  };
   // [experience-log] Fire-and-forget: stream what the user SEES and TAPS to a
   // synced client-events.jsonl, so a bug report becomes a replay of the real
   // session instead of a description ("I need Claude to see what I saw"). Never
@@ -656,7 +665,7 @@ export function boot(): void {
     // The pinned plan: while it has work left.
     const todos = convId ? currentPlan(pic && picView ? picView(pic).messages : []) : [];
     const planOpen = running || todos.some((t) => t.status !== "completed");
-    if (pin) pin.innerHTML = X.subagentsHtml(runningTasks, "strip", tasksOpen) + (X.choice("todos") === "pinned" && planOpen ? X.todosHtml(todos) : "");
+    if (pin) pin.innerHTML = X.subagentsHtml(runningTasks, "strip", tasksOpen) + (planPlace() === "pinned" && planOpen ? X.todosHtml(todos) : "");
   }
   // The tasks chip opens on a tap and folds on a second tap or a tap anywhere else.
   document.addEventListener("click", (e) => {
@@ -930,7 +939,17 @@ export function boot(): void {
       o.chosenAnswer = chosen;
       o.optionsLive = !chosen && last;
     }
+    // A plugin's renderer for this kind of row (./plugins.ts), when one draws it; else the phone's own row.
+    if (phoneHost && !m.__mine && !m.__pending) {
+      const pel = phoneHost.rowElement({ kind: kindOf(m, (x: any) => !!(x.compaction || x.rollover)), index: i, message: m });
+      if (pel) return pel;
+    }
     const el = bubble(m.role, m.content, (m.toolCalls || []).map((t) => t.name), o);
+    // A tool call a plugin draws (tool-call / tool-call:<Name>): in its place in the reply's steps.
+    if (phoneHost && m.toolCalls && m.toolCalls.length) {
+      const steps = el.querySelectorAll<HTMLElement>(".steps-list .step");
+      (m.toolCalls as any[]).filter((t) => t.name !== "ProposeMission").forEach((t, j) => { if (steps[j]) phoneHost!.toolInto(steps[j], t, i); });
+    }
     if (m.system && m.working) el.classList.add("working");
     if (live) el.classList.add("pending");
     if (m.__pending) {
@@ -962,7 +981,7 @@ export function boot(): void {
       if (hint) hint.remove();
       const keep = new Set<string>();
       let prev: HTMLElement | null = null;
-      const plans = X.choice("todos") === "inline" ? planCards(msgs) : [];
+      const plans = planPlace() === "inline" ? planCards(msgs) : [];
       msgs.forEach((m, i) => {
         const key = String(m.mid ?? "i" + i);
         keep.add(key);
@@ -970,7 +989,7 @@ export function boot(): void {
         const last = i === msgs.length - 1 && !!v && v.waiting;
         if (!n || (n.msg !== m && !(m.__mine || m.__pending ? n.msg.content === m.content && n.msg.failed === m.failed && n.msg.__pending === m.__pending : false)) || n.live !== !!m.__mine) {
           const el = bubbleOf(m, !!m.__mine && !m.failed, last, msgs, i);
-          if (n) n.el.replaceWith(el);
+          if (n) { phoneHost?.release(n.el); n.el.replaceWith(el); }
           n = { el, msg: m, live: !!m.__mine };
           shownNodes.set(key, n);
         }
@@ -987,7 +1006,7 @@ export function boot(): void {
         if (want !== n.el) msgsEl.insertBefore(n.el, want);
         prev = n.el;
       });
-      for (const [k, n] of shownNodes) if (!keep.has(k)) { n.el.remove(); shownNodes.delete(k); }
+      for (const [k, n] of shownNodes) if (!keep.has(k)) { phoneHost?.release(n.el); n.el.remove(); shownNodes.delete(k); }
     }
     // The open tail and the run.
     running = !!(v && v.running) || mine.some((o) => !o.failed);
@@ -1298,6 +1317,8 @@ export function boot(): void {
     for (const rec of recs) {
       if (rec.conv === null) {
         const s: any = rec.type === "signal" ? rec.signal : {};
+        // The plugin host follows the supervisor's records and app/chat-rows' kept choices.
+        if (phoneHost && (s.type === "plugin.desired" || s.type === "plugin.state")) phoneHost.fold([rec]);
         if (s.type === "notif") { void refreshBadge(); if (page === "alerts") softReload(loadAlerts); }
         else if (s.type === "project") {
           void loadProjects();
@@ -1308,6 +1329,17 @@ export function boot(): void {
           listChanged = true;
         }
         else if (s.type === "show" && s.to === "phone" && s.id) void showOnPhone(s);
+        // The agent's PluginRead / PluginAct with device "phone" (server/pluginOffersTool.ts): answered from the plugins
+        // mounted here, acked on Show's channel.
+        else if (s.type === "plugin" && s.to === "phone" && s.id) {
+          const id = String(s.id);
+          void (async () => {
+            const ack = phoneHost ? await phoneHost.answer(s) : { ok: false, error: "the phone's plugin host has not started yet" };
+            await api("/api/v1/show/" + encodeURIComponent(id) + "/ack", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ack) }).catch(() => {});
+          })();
+        }
+        // A plugin file changed on the box: the phone's plugin list is read again.
+        else if (s.type === "file_changed" && typeof s.path === "string") phoneHost?.fileChanged(s.path);
         // One of Carl's settings changed (the agent's Settings tool, the laptop): the drawer's switch shows it now.
         else if (s.type === "setting" && s.key === "pushAutomatic") showPushPreference(s.value === true);
         // A plugin turned off or on (change 1.6, src/pluginSupervisor.ts): its copies here load again; the box serves a
@@ -2582,4 +2614,20 @@ export function boot(): void {
   void refreshClaude();
   void pollLoop();
   setInterval(() => { void refreshState(); void refreshClaude(); }, 45000);
+  // The plugin host starts after the first paint (it costs nothing with no plugin naming the phone).
+  const startPlugins = () => {
+    if (phoneHost) return;
+    phoneHost = startPhoneHost({
+      api,
+      toast,
+      where: () => ({ page, chat: convId, title: convTitle }),
+      openChat: (id) => void openThread(id),
+      redraw: (rows) => {
+        if (rows) { for (const [, n] of shownNodes) { phoneHost?.release(n.el); n.el.remove(); } shownNodes.clear(); }
+        if (convId) scheduleRender();
+      },
+    });
+  };
+  if (typeof (window as any).requestIdleCallback === "function") (window as any).requestIdleCallback(startPlugins, { timeout: 1500 });
+  else setTimeout(startPlugins, 200);
 }

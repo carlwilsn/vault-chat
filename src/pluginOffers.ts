@@ -300,7 +300,7 @@ async function readAll(e: Entry, only: string | undefined, ms: number): Promise<
   for (const [n, s] of Object.entries(e.offers.state ?? {})) {
     if (only && n !== only) continue;
     const r = await guarded(`state "${n}"`, () => s.read(), ms);
-    if (r.ok) state[n] = r.value;
+    if (!("error" in r)) state[n] = r.value;
     else {
       state[n] = { error: r.error };
       errors.push(r.error);
@@ -336,7 +336,7 @@ export async function actOffers(word: string, action: string, args: Record<strin
   const r = await guarded(`action "${name}"`, () => a.run({ ...(args ?? {}) }), ms);
   // The read-back: what the plugin's state is now, whatever the action said.
   const back = e.alive() ? (await readAll(e, undefined, ms)).state : {};
-  if (!r.ok) return { ok: false, plugin, error: `${e.id} ${r.error}. The plugin is still running.`, state: back };
+  if ("error" in r) return { ok: false, plugin, error: `${e.id} ${r.error}. The plugin is still running.`, state: back };
   return { ok: true, plugin, result: r.value, state: back };
 }
 

@@ -3,7 +3,7 @@
 // takes (no symlinks) and stops at CATALOG_LIMITS.
 import { closeSync, openSync, readSync, readdirSync, statSync, type Dirent } from "node:fs";
 import { join } from "node:path";
-import { VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES, isVaultPluginFile, parseVaultPluginMeta, vaultPluginId } from "../src/vaultPlugins";
+import { VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES, isVaultPluginFile, parseVaultPluginMeta, vaultPluginDevices, vaultPluginId, type PluginDevice } from "../src/vaultPlugins";
 import { CATALOG_LIMITS, catalogAppPlugins, catalogEnters, catalogPlugin, catalogReads, catalogServices, type Catalog, type CatalogPlugin } from "../src/pluginCatalog";
 
 function readText(full: string, size: number): string | null {
@@ -63,7 +63,12 @@ export function vaultPlugins(vault: string): { plugins: CatalogPlugin[]; truncat
 }
 
 /** The code files in .vault-chat/plugins (src/vaultPlugins.ts), by file name: name, description from their meta. */
-export function vaultCodePlugins(vault: string): { file: string; name: string; description: string }[] {
+export function vaultCodePlugins(vault: string): { file: string; name: string; description: string; devices: PluginDevice[] }[] {
+  return vaultCodeFiles(vault).map(({ code, ...c }) => c);
+}
+
+/** The plugin files with their code: what a device host (the phone app) mounts. */
+function vaultCodeFiles(vault: string): { file: string; name: string; description: string; devices: PluginDevice[]; code: string }[] {
   const dir = join(vault, VAULT_PLUGIN_DIR);
   let entries: Dirent[];
   try {
@@ -71,7 +76,7 @@ export function vaultCodePlugins(vault: string): { file: string; name: string; d
   } catch {
     return [];
   }
-  const out: { file: string; name: string; description: string }[] = [];
+  const out: { file: string; name: string; description: string; devices: PluginDevice[]; code: string }[] = [];
   for (const e of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
     if (!e.isFile() || !isVaultPluginFile(e.name)) continue;
     let size = 0;
@@ -82,7 +87,7 @@ export function vaultCodePlugins(vault: string): { file: string; name: string; d
     }
     if (size > VAULT_PLUGIN_MAX_BYTES) continue;
     const code = readText(join(dir, e.name), size);
-    if (code !== null) out.push({ file: e.name, ...parseVaultPluginMeta(code, e.name) });
+    if (code !== null) out.push({ file: e.name, ...parseVaultPluginMeta(code, e.name), devices: vaultPluginDevices(code), code });
   }
   return out;
 }
@@ -90,6 +95,16 @@ export function vaultCodePlugins(vault: string): { file: string; name: string; d
 /** The whole catalog: the services, then the vault's plugins, then the app's own (src/appPlugins.ts). */
 export function pluginCatalog(vault: string): Catalog {
   const { plugins, truncated } = vaultPlugins(vault);
-  plugins.unshift(...vaultCodePlugins(vault).map((c): CatalogPlugin => ({ id: vaultPluginId(c.file), name: c.name, mount: "module", description: c.description || undefined, needs: [], refused: [] })));
+  plugins.unshift(...vaultCodePlugins(vault).map((c): CatalogPlugin => ({ id: vaultPluginId(c.file), name: c.name, mount: "module", description: c.description || undefined, devices: c.devices, needs: [], refused: [] })));
   return { services: catalogServices(), plugins, app: catalogAppPlugins(), ...(truncated ? { truncated: true } : {}) };
+}
+
+/** GET /api/v2/plugin/device?device=phone: the vault plugins whose meta names that surface, with their code (the phone
+ *  app mounts them through the same host as the laptop: phone/src/plugins.ts). */
+export function devicePlugins(vault: string, device: string): { status: number; body: unknown } {
+  if (device !== "phone" && device !== "laptop") return { status: 400, body: { error: "device: laptop or phone" } };
+  const plugins = vaultCodeFiles(vault)
+    .filter((c) => c.devices.includes(device))
+    .map((c) => ({ id: vaultPluginId(c.file), name: c.name, code: c.code }));
+  return { status: 200, body: { device, plugins } };
 }

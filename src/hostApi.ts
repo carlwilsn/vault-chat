@@ -15,11 +15,11 @@
 // fake. Every subscription a plugin makes through it is an Effect of its run (src/pluginSupervisor.ts): disabling the
 // plugin removes the listeners, and a stopped run's api is inert.
 import type { Effects } from "./pluginSupervisor";
-import type { Note } from "./notes";
-import type { HostLayout, LayoutOp, LayoutResult } from "./layoutOps";
+import type { Note } from "./noteTypes";
+import type { HostLayout, LayoutOp, LayoutResult } from "./layoutTypes";
 import type { Capture, CaptureTarget } from "./screenCapture";
 import type { TitlebarItem, TitlebarItemSpec } from "./titlebarItems";
-export type { HostLayout, LayoutOp, LayoutResult } from "./layoutOps";
+export type { HostLayout, LayoutOp, LayoutResult } from "./layoutTypes";
 
 export const HOST_API_VERSION = 1;
 

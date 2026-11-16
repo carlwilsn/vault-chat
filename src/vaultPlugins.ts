@@ -4,6 +4,9 @@
 // added, changed or removed (src/VaultPluginHost.tsx), mounts each through the host in the light DOM (fully trusted, like an
 // app plugin) under the supervisor (its id is its vault path, so "turn off pen-cursor" works like for a page), and the
 // catalog lists them. Shared by the app and the box: no imports.
+//
+// Where it mounts: `export const meta = { devices: "laptop, phone" }` (or an array). Left out: the laptop only, as before.
+// The phone app is a host too (phone/src/plugins.ts): it mounts the plugins that name "phone", with the same api.
 
 export const VAULT_PLUGIN_DIR = ".vault-chat/plugins";
 export const VAULT_PLUGIN_MAX_BYTES = 1024 * 1024;
@@ -35,6 +38,23 @@ export function parseVaultPluginMeta(code: string, file: string): { name: string
   const body = m?.[1] ?? "";
   return { name: stringField(body, "name").slice(0, 120) || fileBase(file), description: stringField(body, "description").slice(0, 400) };
 }
+
+/** The surfaces that host vault plugins. */
+export const PLUGIN_DEVICES = ["laptop", "phone"] as const;
+export type PluginDevice = (typeof PLUGIN_DEVICES)[number];
+
+/** Where the file's meta says it mounts (`devices: "laptop, phone"` or `["laptop", "phone"]`); none named: the laptop. */
+export function vaultPluginDevices(code: string): PluginDevice[] {
+  const m = /export\s+const\s+meta\s*=\s*\{([\s\S]*?)\}\s*;?/.exec(code);
+  const body = m?.[1] ?? "";
+  const list = /\bdevices\s*:\s*\[([^\]]*)\]/.exec(body)?.[1] ?? stringField(body, "devices");
+  const words = (list.match(/[A-Za-z]+/g) ?? []).map((w) => w.toLowerCase());
+  const out = PLUGIN_DEVICES.filter((d) => words.includes(d));
+  return out.length ? out : ["laptop"];
+}
+
+/** Whether the file mounts on that surface. */
+export const vaultPluginRunsOn = (code: string, device: PluginDevice): boolean => vaultPluginDevices(code).includes(device);
 
 /** Whether a word names the plugin file: its id, its file name, that without the extension, or its meta name. */
 export function vaultPluginNamed(word: string, file: string, name: string): boolean {

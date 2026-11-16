@@ -32,6 +32,8 @@ export type CatalogPlugin = {
   mount: LiveMount | "module";
   /** A code file in .vault-chat/plugins (src/vaultPlugins.ts): its meta description. */
   description?: string;
+  /** A code file: the surfaces it mounts on (its meta's devices; the laptop when none). */
+  devices?: string[];
   /** The registered services its manifest names (by service name). */
   needs: string[];
   /** Names its manifest gives that no registered service has. */

@@ -9,8 +9,9 @@
 //
 // Nothing here outlives the app: a start opens with an empty viewer.
 import { useStore, type DropSide, type Pane, type SplitDirection } from "./store";
+import type { PaneSide } from "./layoutTypes";
 
-export type PaneSide = "left" | "right";
+export type { PaneSide } from "./layoutTypes";
 export const PANE_SIDES: readonly PaneSide[] = ["left", "right"];
 
 type LayoutState = { currentFile: string | null; panes: Pane[]; splitDirection: SplitDirection; activePaneId: string | null };

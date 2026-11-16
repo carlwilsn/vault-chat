@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AppPluginMount } from "./PluginMount";
 import { useStore } from "./store";
-import { VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES, isVaultPluginFile, parseVaultPluginMeta, vaultPluginId } from "./vaultPlugins";
+import { VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES, isVaultPluginFile, parseVaultPluginMeta, vaultPluginId, vaultPluginRunsOn } from "./vaultPlugins";
 
 export type VaultPluginFile = { file: string; id: string; name: string; code: string };
 type Invoke = <T>(cmd: string, args: Record<string, unknown>) => Promise<T>;
@@ -26,6 +26,8 @@ export async function scanVaultPlugins(vault: string, call: Invoke = invoke as I
     try {
       const code = await call<string>("read_text_file", { path: e.path });
       if (code.length > VAULT_PLUGIN_MAX_BYTES) continue;
+      // A plugin whose meta names only other surfaces (devices: "phone") is not mounted here.
+      if (!vaultPluginRunsOn(code, "laptop")) continue;
       out.push({ file: e.name, id: vaultPluginId(e.name), name: parseVaultPluginMeta(code, e.name).name, code });
     } catch {
       /* mid-write or gone: the next look sees it */

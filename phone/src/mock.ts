@@ -311,6 +311,8 @@ export function installMock() {
     if (u === "/push/vapid") return reply({ key: "" });
     if (u === "/push/subscribe" || u === "/push/test") return reply({ ok: true });
     if (u === "/file") return new Response("(mock file)", { status: 200 });
+    // The vault plugins that name the phone (server/pluginCatalog.ts devicePlugins): a scenario's own, else none.
+    if (u === "/api/v2/plugin/device") return reply({ device: q.get("device"), plugins: (DB as any).phonePlugins || [] });
     return reply({});
   };
 }
