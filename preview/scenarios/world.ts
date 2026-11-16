@@ -137,6 +137,38 @@ export function longChat(now: number, ctx: number, id = "c-long", turns = 18): C
   };
 }
 
+/** A very long chat with every kind of row (tool calls, notices, voice lines, a failed job): the chat
+ *  transcript's render speed is measured on it (preview/tools/chat-rows-perf.mjs). */
+export function perfChat(now: number, turns = 600, id = "c-perf"): Conv {
+  const msgs: Msg[] = [];
+  for (let i = 0; i < turns; i++) {
+    if (i % 15 === 7) {
+      msgs.push(u(`Spoken line ${i}: check the eval shard`, { voice: true }));
+      msgs.push(a(`Said back ${i}: the shard is fixed at heldout-00.`, { voice: true }));
+      continue;
+    }
+    msgs.push(u(`Turn ${i}: look at run ${i % 7} and tell me what moved. Also check \`train.py\` line ${i}.`));
+    msgs.push(
+      a(
+        `## Run ${i % 7}\n\nEval loss moved from **1.5${i % 10}01** to **1.5${(i + 3) % 10}88**; the schedule is unchanged. ` +
+          "The grad-norm stays under 1.2 through warmup, so this is noise, not a regression.\n\n" +
+          "| seed | tokens | eval loss |\n|---|---|---|\n| 42 | 1.70B | 1.5576 |\n| 43 | 1.70B | 1.5601 |\n\n" +
+          "```python\nlr = peak * min(1, step / warmup)\n```",
+        {
+          toolCalls: [
+            tc("Read", { path: `runs/${i % 7}/metrics.csv` }, "step,loss,grad_norm\n100,2.31,0.92\n200,2.02,0.88", `r${i}`),
+            ...(i % 2 ? [tc("Bash", { command: `python eval.py --run ${i % 7}` }, "eval loss 1.5601", `b${i}`)] : []),
+            ...(i % 5 === 0 ? [tc("Grep", { pattern: "peak_lr", path: "configs" }, "configs/160m.yaml: peak_lr: 3e-3", `g${i}`)] : []),
+          ],
+        },
+      ),
+    );
+    if (i % 10 === 9) msgs.push({ role: "user", system: true, content: `Voice call ended · ${i % 4 + 1} min` });
+    if (i % 50 === 25) msgs.push({ role: "user", system: true, content: `Job failed · sweep-${i}`, job: { id: `job-${i}`, name: `sweep-${i}`, status: "failed", failed: true, output: "Traceback: CUDA out of memory" } });
+  }
+  return { id, kind: "separate", title: "Long chat (render speed)", source: "manual", status: "idle", unread: false, createdAt: now - 48 * HOUR, lastActivityAt: now - 5 * MIN, messages: msgs };
+}
+
 /** Missions, their workers and the ask thread. */
 export function missions(now: number, opts: { awaiting?: boolean } = {}): Conv[] {
   const mission = "BitNet 160M MVP";

@@ -394,6 +394,15 @@ export const scenarios: Scenario[] = [
     open: [...deskOpen(), ...send("Should I extend the BitNet runs to 3.2B tokens?")],
   },
   {
+    id: "chat-long",
+    title: "Chat — a very long chat (1 200+ rows of every kind)",
+    group: "Chat",
+    notes: "A 600-turn chat with tool calls, notices, voice lines and a failed job: scroll up to load older rows. The transcript's render speed is measured on it (node preview/tools/chat-rows-perf.mjs).",
+    build: (c) => world(c, { extraConvs: (now) => [W.perfChat(now)] }),
+    activeConversation: "c-perf",
+    open: [...deskOpen(NOTE, "c-perf")],
+  },
+  {
     id: "chat-errors",
     title: "Chat — errors (rate limit, 502, dropped stream, failing tool)",
     group: "Chat",
