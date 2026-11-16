@@ -374,6 +374,46 @@ describe("the background workers a session still has at work", () => {
     expect(t.workers()).toBe(0);
   });
 
+  // 2026-11-16: health said 8-10 background workers with 2 actually running; the updater waited from 05:58 on.
+  const level = (...ids: (string | { task_id: string; ambient?: boolean })[]) => ({
+    type: "system",
+    subtype: "background_tasks_changed",
+    tasks: ids.map((x) => (typeof x === "string" ? { task_id: x, task_type: "local_bash", description: x } : { task_type: "local_agent", description: x.task_id, ...x })),
+  });
+
+  it("only what Claude Code's own list of live tasks says is running counts, whatever notice was missed", () => {
+    const t = new ClaudeTranslator();
+    // Started, never reported: a worker's own background shells, a stop said nowhere here.
+    for (const id of ["a", "sh1", "sh2", "sh3"]) t.step(started(id, id.startsWith("sh") ? { task_type: "local_bash" } : {}));
+    expect(t.workers()).toBe(4);
+    t.step(level("a"));
+    expect(t.workers()).toBe(1);
+    // A start the list already holds is one task; a start the list does not hold is not running.
+    t.step(level("a", "b"));
+    t.step(started("b"));
+    t.step(started("ghost"));
+    expect(t.workers()).toBe(2);
+    // Ambient entries are not work; an empty list is nothing at work.
+    t.step(level("a", { task_id: "w", ambient: true }));
+    expect(t.workers()).toBe(1);
+    t.step(level());
+    expect(t.workers()).toBe(0);
+    expect(t.openWorkers()).toEqual([]);
+  });
+
+  it("without the list (an older Claude Code), a kill ends a task; an interim completion does not", () => {
+    const t = new ClaudeTranslator();
+    t.step(started("a"));
+    t.step(started("sh", { task_type: "local_bash" }));
+    const updated = (task_id: string, status: string) => ({ type: "system", subtype: "task_updated", task_id, patch: { status } });
+    t.step(updated("a", "completed"));
+    expect(t.workers()).toBe(2);
+    t.step(updated("sh", "killed"));
+    expect(t.workers()).toBe(1);
+    t.step(updated("a", "failed"));
+    expect(t.workers()).toBe(0);
+  });
+
   it("the recorded stream ends with nothing left at work", () => {
     const t = new ClaudeTranslator();
     const seen: number[] = [];

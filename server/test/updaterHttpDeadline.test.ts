@@ -31,14 +31,18 @@ it.each([
   // The wait before the restart (busy.runs, busy.workers, busy.inputs), on the real entry.
   "test_busy_wait_holds_for_background_workers",
   "test_busy_wait_reads_a_server_without_the_workers_field_as_zero",
-  // Running work is never cut: no deadline for it, and a server that does not answer is waited for.
-  "test_busy_wait_never_cuts_live_workers",
+  // The wait is bounded (2026-11-16: a box never idle starved every update until systemd's 3 h timeout): past the
+  // maximum it says so once and updates, inside the unit's timeout; a server that does not answer is waited for.
+  "test_busy_wait_is_bounded_then_updates_anyway",
+  "test_installed_unit_timeout_outlasts_the_maximum_wait",
   "test_busy_wait_holds_while_health_does_not_answer",
   // Behind the front: the hand-over waits for the old server's work, is asked again when declined, and a new
   // server that never stands by never takes traffic.
   "Front.test_hand_over_only_when_no_work_runs",
   "Front.test_declined_hand_over_is_asked_again",
   "Front.test_new_server_that_never_stands_by_never_takes_traffic",
+  // Past the maximum wait an old server that keeps declining is stopped (systemd's stop) and the stand-by serves.
+  "Front.test_old_server_that_keeps_declining_is_stopped_after_the_maximum_wait",
   // A fallback is only a release that supports the front (2026-11-16: 0.8.91 crash-looped on 8848), `current` stays
   // on what serves, marks carry their reason, and a reasonless (older) mark is retried once.
   "Front.test_fallback_never_starts_a_release_from_before_the_front",

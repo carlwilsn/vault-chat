@@ -8,10 +8,13 @@
 #      phone assets tarball (+ .sha256) into versions/<ver>/, refusing any bad sha;
 #   3. wait until /api/v1/health reports busy.runs == 0 and busy.workers == 0 — agent runs,
 #      live voice sessions and background workers (Claude Code's subagents and shells,
-#      BoardMake) always finish on the server they started on: an update never cuts them,
-#      however long they take, and a server that does not answer is waited for, not
-#      skipped. Also busy.inputs == 0 (a surface Carl used in the last 10 minutes), for
-#      at most 2 h;
+#      BoardMake) — and busy.inputs == 0 (a surface Carl used in the last 10 minutes), and a
+#      server that does not answer is waited for, not skipped: for at most BUSY_MAX_S (2 h)
+#      in all, one budget for the whole pass, well inside the unit's TimeoutStartSec (3 h).
+#      Then it updates anyway, with one log line: behind the front an old server that still
+#      declines the hand-over is stopped. (Waiting with no bound starved every update on
+#      2026-11-16: a box with agents at work around the clock never goes idle, and systemd
+#      killed each pass at 3 h, from 05:58 on.);
 #   4. swap the `current` symlink to versions/<ver> and hand over (behind the front,
 #      vault-chat-front.service on 8848): the new version starts in the other slot
 #      (vault-chat-server@8851/8852), reads ahead and stands by; the old one is asked to
@@ -136,13 +139,18 @@ unit_up() { systemctl --user is-active --quiet "$1" 2>/dev/null; }
 # The unit of the server serving now.
 serving_unit() { if front_on; then slot_unit "$(active_slot)"; else echo "$UNIT"; fi; }
 
-# wait_idle: return only when no agent turn, voice call or background worker runs on the serving server
-# (and no surface was used in the last 10 minutes, waited for at most BUSY_MAX_S). Running work is never cut:
-# no deadline for it, and a server that does not answer is waited for — unless it is not running at all.
+# wait_idle: return when no agent turn, voice call or background worker runs on the serving server and no
+# surface was used in the last 10 minutes — or when this pass has waited BUSY_MAX_S in all (one deadline for every
+# wait of the pass, set by the first). Past it: one log line, BUSY_OVER=1, and the update goes ahead (handover stops
+# an old server that still declines). A server that does not answer is waited for (unless it is not running at all).
+BUSY_DEADLINE=""
+BUSY_OVER=0
 wait_idle() {
-  local deadline said=0 h runs workers inputs
-  deadline=$(( $(date +%s) + BUSY_MAX_S ))
+  local said=0 h runs workers inputs
+  [ "$BUSY_OVER" = 1 ] && return 0
+  [ -n "$BUSY_DEADLINE" ] || BUSY_DEADLINE=$(( $(date +%s) + BUSY_MAX_S ))
   while :; do
+    runs="" workers="" inputs=""
     if h="$(health)"; then
       runs="$(printf '%s' "$h" | json_field busy.runs)"
       # A server that predates the field does not report it: that is 0.
@@ -150,12 +158,24 @@ wait_idle() {
       inputs="$(printf '%s' "$h" | json_field busy.inputs)"
       if [ "${runs:-0}" = 0 ] && [ "${workers:-0}" = 0 ]; then
         [ "${inputs:-0}" = 0 ] && return 0
-        [ "$(date +%s)" -ge "$deadline" ] && { log "surfaces used recently, but nothing runs: going ahead (nothing is cut)"; return 0; }
+        [ "$(date +%s)" -ge "$BUSY_DEADLINE" ] && { log "surfaces used recently, but nothing runs: going ahead (nothing is cut)"; BUSY_OVER=1; return 0; }
       fi
-      [ "$said" = 0 ] && { log "server busy (${runs:-0} runs, ${workers:-0} background workers, ${inputs:-0} surfaces in use) — waiting for it to go idle"; said=1; }
     else
       unit_up "$(serving_unit)" || return 0
-      [ "$said" = 0 ] && { log "server not answering /api/v1/health — waiting (an update never cuts running work)"; said=1; }
+    fi
+    if [ "$(date +%s)" -ge "$BUSY_DEADLINE" ]; then
+      if [ -n "$h" ]; then
+        log "still busy after ${BUSY_MAX_S}s (${runs:-0} runs, ${workers:-0} background workers, ${inputs:-0} surfaces in use): updating anyway"
+      else
+        log "server not answering /api/v1/health after ${BUSY_MAX_S}s: updating anyway"
+      fi
+      BUSY_OVER=1
+      return 0
+    fi
+    if [ -n "$h" ]; then
+      [ "$said" = 0 ] && { log "server busy (${runs:-0} runs, ${workers:-0} background workers, ${inputs:-0} surfaces in use) — waiting for it to go idle (at most ${BUSY_MAX_S}s)"; said=1; }
+    else
+      [ "$said" = 0 ] && { log "server not answering /api/v1/health — waiting (at most ${BUSY_MAX_S}s)"; said=1; }
     fi
     sleep "$BUSY_POLL_S"
   done
@@ -188,7 +208,15 @@ handover() {
     fi
     systemctl --user kill --kill-whom=main --signal=SIGUSR2 "$(slot_unit "$from")" 2>/dev/null || true
     for i in $(seq $(( HANDOVER_WAIT_S * 10 ))); do unit_up "$(slot_unit "$from")" || break; sleep 0.1; done
-    unit_up "$(slot_unit "$from")" && log "slot $from declined the hand-over (work started): waiting again"
+    unit_up "$(slot_unit "$from")" || break
+    if [ "$BUSY_OVER" = 1 ]; then
+      # Past the maximum wait it declines while its work runs (any version): systemd's own stop ends it, and the
+      # stand-by takes over the moment its lock is free. Its stop is no restart (the unit does not bring it back).
+      systemctl --user stop "$(slot_unit "$from")" || true
+      unit_up "$(slot_unit "$from")" && { log "slot $from did not stop; slot $to stands by"; sleep "$BUSY_POLL_S"; }
+      continue
+    fi
+    log "slot $from declined the hand-over (work started): waiting again"
   done
   for i in $(seq $(( HEALTH_WAIT_S * 10 ))); do
     [ "$(cat "$STATE/active-backend" 2>/dev/null)" = "$to" ] && return 0

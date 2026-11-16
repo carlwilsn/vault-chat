@@ -452,8 +452,9 @@ async function main(): Promise<void> {
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   // The updater's hand-over (server/deploy/vault-chat-update.sh): this server goes only when no agent turn, voice call
-  // or background worker (Claude Code's subagents and shells, BoardMake) runs here. Running work always finishes on
-  // the server it started on; an update never cuts it. Busy: it stays and keeps serving, and the updater asks again.
+  // or background worker (Claude Code's subagents and shells, BoardMake) runs here. Running work finishes on
+  // the server it started on. Busy: it stays and keeps serving, and the updater asks again (after its maximum wait, 2 h,
+  // the updater stops this slot instead: vault-chat-update.sh handover).
   process.on("SIGUSR2", () => {
     const busy = { agent: activeRuns().length, voice: activeVoiceSessions(), workers: engine.workers?.() ?? 0 };
     if (busy.agent || busy.voice || busy.workers) {

@@ -199,9 +199,15 @@ export class ClaudeTranslator {
   private noticed = new Set<string>();
   /**
    * Background tasks started and not reported finished yet. The box's updater waits for
-   * these (health busy.workers): a restart would kill them mid-work.
+   * these (health busy.workers): a restart would kill them mid-work. Once Claude Code has
+   * sent its own list of live tasks (background_tasks_changed), that list IS this set: the
+   * start/notice pairs alone left tasks that ended without a notice here (a worker's own
+   * background shells, a stop) counted for good, and the box never went idle for an update
+   * (2026-11-16: 10 counted with 2 workers running; the updater waited from 05:58 on).
    */
   private running = new Set<string>();
+  /** Claude Code has said which background tasks are live (background_tasks_changed): its list decides. */
+  private level = false;
   /** What this process saw of each background task: its latest notice (the evidence workers.ts weighs against the transcript). */
   private views = new Map<string, NonNullable<TaskView>>();
   /** The host asked for this turn to end (see expectInterrupt). */
@@ -532,11 +538,25 @@ export class ClaudeTranslator {
   }
 
   private system(m: any): Emit[] {
+    if (m.subtype === "background_tasks_changed" && Array.isArray(m.tasks)) {
+      // The live set, whole (REPLACE semantics): what is not in it is not running, whatever notice was missed.
+      this.level = true;
+      this.running = new Set(m.tasks.filter((x: any) => x?.task_id && !x.ambient).map((x: any) => String(x.task_id)));
+      return [];
+    }
+    if (m.subtype === "task_updated") {
+      // A task killed or failed is over (a kill has no notice of its own on every path). Not "completed": an agent's
+      // interim completion (it waits on its own background work) must keep it live, as its interim notice does.
+      const st = String(m?.patch?.status ?? "");
+      if (m.task_id && (st === "failed" || st === "killed")) this.running.delete(String(m.task_id));
+      return [];
+    }
     if (m.subtype === "task_started") {
       // Remember what the worker was asked to do: the notice names it by that, not by its report.
       if (m.task_id && !m.ambient && !m.skip_transcript) {
         this.tasks.set(String(m.task_id), String(m.description ?? "").trim());
-        this.running.add(String(m.task_id));
+        // With Claude Code's own list, a task is live when that list says so (it joins it before this start).
+        if (!this.level) this.running.add(String(m.task_id));
         this.views.set(String(m.task_id), { status: "running", at: Date.now() });
         // A shell command or monitor running in the background is not a worker: its end is no news in the chat.
         if (/^(local_bash|monitor|monitor_mcp)/.test(String(m.task_type ?? ""))) this.silent.add(String(m.task_id));
