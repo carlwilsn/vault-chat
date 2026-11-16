@@ -8,7 +8,7 @@
 // What the DOM marks (the app's own markup): a chat message `data-message-id`, a note `data-note-id`, a file in the tree
 // `data-tree-path`, a chat in the list `data-chat`, a rendered file `data-file`, a plugin's mount `data-vc-plugin`.
 import { useStore } from "./store";
-import { setContextSource, type ContextFocus, type ContextItem, type ContextPatch, type ContextSelection } from "./sharedContext";
+import { contextNow, setContextSource, type ContextFocus, type ContextItem, type ContextPatch, type ContextSelection } from "./sharedContext";
 
 export const THROTTLE_MS = 150;
 
@@ -83,6 +83,9 @@ export function startContextSource(publish: (p: ContextPatch) => void, doc: Docu
     if (dirty.hover) p.hover = itemAt(hoverEl);
     if (dirty.focus) p.focus = focusAt(focusEl);
     dirty.sel = dirty.hover = dirty.focus = false;
+    // The file tree's selection (published by app/filetree) stands until something else is selected: a click that only
+    // collapses the browser's selection does not clear it.
+    if (p.selection === null && contextNow().selection?.kind === "files") delete p.selection;
     publish(p);
   };
   const mark = (k: keyof typeof dirty) => {

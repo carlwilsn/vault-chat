@@ -74,6 +74,17 @@ export const VAULTS_PLUGIN: AppPluginInfo = {
   words: ["vaults", "vault picker", "vault-picker", "vaultpicker", "vault menu", "vault dropdown", "folder picker", "vault switcher"],
 };
 
+export const FILETREE_PLUGIN_ID = "app/filetree";
+
+/** The left panel's file tree (src/plugins/filetree): the open vault's files and folders. Off or failed, a minimal built-in tree stands in. */
+export const FILETREE_PLUGIN: AppPluginInfo = {
+  id: FILETREE_PLUGIN_ID,
+  name: "File tree",
+  mount: "panel",
+  description: "The left panel's file tree: the open vault's files and folders, to open, reveal, expand or collapse, select, filter, make, rename, move, hide (a path, or every file or folder of a name such as assets) and delete them.",
+  words: ["file tree", "filetree", "file-tree", "files", "tree", "left panel", "file panel", "files panel"],
+};
+
 export const CONTEXT_PLUGIN_ID = "app/context";
 
 /** The shared context (src/plugins/context): what Carl has selected, hovers, the plugin he is in and the open file, for the agent and other plugins. Off: the agent cannot read it. */
@@ -85,7 +96,7 @@ export const CONTEXT_PLUGIN: AppPluginInfo = {
   words: ["context", "shared context", "context plugin", "selection context", "app context"],
 };
 
-export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN, CONTEXT_PLUGIN];
+export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN, FILETREE_PLUGIN, CONTEXT_PLUGIN];
 
 /** The app plugin a word names (its id, its name or one of its words), or null. */
 export function appPluginNamed(word: string): AppPluginInfo | null {

@@ -4,7 +4,8 @@
 // message or a file is the same record whoever drew it.
 //
 //   selection  {kind: "file", path, text, lineStart?, lineEnd?} | {kind: "message", messageId, chatId, text}
-//              | {kind: "note", noteId, text} | {kind: "text", text, path?, plugin?}  (null: nothing selected)
+//              | {kind: "note", noteId, text} | {kind: "text", text, path?, plugin?}
+//              | {kind: "files", paths} (files and folders selected in the file tree, app/filetree)  (null: nothing selected)
 //   hover      {kind: "file", path} | {kind: "message", messageId, chatId} | {kind: "note", noteId}
 //              | {kind: "chat", chatId} | {kind: "plugin", plugin}  (null: nothing known under the pointer)
 //   focus      {plugin: id} the plugin Carl last clicked or focused in, or {plugin: null, area?} the app's own parts
@@ -20,7 +21,8 @@ export type ContextSelection =
   | { kind: "file"; path: string; text: string; lineStart?: number; lineEnd?: number }
   | { kind: "message"; messageId: string; chatId: string | null; text: string }
   | { kind: "note"; noteId: string; text: string }
-  | { kind: "text"; text: string; path?: string; plugin?: string };
+  | { kind: "text"; text: string; path?: string; plugin?: string }
+  | { kind: "files"; paths: string[] };
 export type ContextItem =
   | { kind: "file"; path: string }
   | { kind: "message"; messageId: string; chatId: string | null }
@@ -70,6 +72,10 @@ function clean(key: ContextKey, v: unknown): unknown {
   const kind = String(x.kind ?? "");
   const line = (n: unknown) => (typeof n === "number" && Number.isInteger(n) && n > 0 ? n : undefined);
   if (key === "selection") {
+    if (kind === "files") {
+      const paths = Array.isArray(x.paths) ? x.paths.filter((p) => typeof p === "string" && p).slice(0, 200).map((p) => str(p, 1000)) : [];
+      return paths.length ? { kind, paths } : null;
+    }
     const text = cut(x.text);
     if (!text.trim()) return null;
     if (kind === "file" && str(x.path)) return { kind, path: str(x.path, 1000), text, ...(line(x.lineStart) ? { lineStart: line(x.lineStart) } : {}), ...(line(x.lineEnd) ? { lineEnd: line(x.lineEnd) } : {}) };

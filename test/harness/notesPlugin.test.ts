@@ -44,7 +44,7 @@ test("the Notes panel is a registered app plugin: one id, named by 'notes', list
   assert.equal(NOTES_PLUGIN.id, NOTES_PLUGIN_ID);
   assert.equal(NOTES_PLUGIN_ID, "app/notes");
   assert.ok(!/\.html?$/.test(NOTES_PLUGIN_ID), "never a vault page's id (those end in .html)");
-  assert.deepEqual(APP_PLUGINS.map((p) => p.id), ["app/notes", "app/chats", "app/composer", "app/chat-rows", "app/vaults", "app/context"]);
+  assert.deepEqual(APP_PLUGINS.map((p) => p.id), ["app/notes", "app/chats", "app/composer", "app/chat-rows", "app/vaults", "app/filetree", "app/context"]);
   for (const w of ["notes", "Notes", "app/notes", "notes panel", " NOTES "]) assert.equal(appPluginNamed(w)?.id, "app/notes", w);
   for (const w of ["", "notes.html", "html-lab", "app/note"]) assert.equal(appPluginNamed(w), null, w);
   assert.deepEqual(catalogAppPlugins()[0], { id: "app/notes", name: "Notes", mount: "panel", description: NOTES_PLUGIN.description });

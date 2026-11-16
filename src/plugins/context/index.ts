@@ -12,7 +12,7 @@ import type { ContextApi } from "../../sharedContext";
 export function contextOffers(ctx: Pick<ContextApi, "get">): Offers {
   return {
     state: {
-      selection: { description: "What Carl has selected now: {kind: file, path, text, lineStart?, lineEnd?} | {kind: message, messageId, chatId, text} | {kind: note, noteId, text} | {kind: text, text, path?, plugin?}; null: nothing.", read: () => ctx.get().selection },
+      selection: { description: "What Carl has selected now: {kind: file, path, text, lineStart?, lineEnd?} | {kind: message, messageId, chatId, text} | {kind: note, noteId, text} | {kind: text, text, path?, plugin?} | {kind: files, paths} (selected in the file tree); null: nothing.", read: () => ctx.get().selection },
       hover: { description: "The item under his pointer: a file, chat message, note, chat or plugin; null: none known.", read: () => ctx.get().hover },
       focus: { description: "The plugin he last clicked or focused in ({plugin: id}), or the app's own part ({plugin: null, area}).", read: () => ctx.get().focus },
       file: { description: "The file open in the viewer.", read: () => ctx.get().file },

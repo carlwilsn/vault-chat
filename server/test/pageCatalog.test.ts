@@ -76,6 +76,7 @@ describe("the catalog", () => {
       { id: "app/composer", name: "Composer", mount: "panel", description: expect.stringContaining("chat composer") },
       { id: "app/chat-rows", name: "Chat rows", mount: "panel", description: expect.stringContaining("transcript") },
       { id: "app/vaults", name: "Vault picker", mount: "panel", description: expect.stringContaining("vault picker") },
+      { id: "app/filetree", name: "File tree", mount: "panel", description: expect.stringContaining("file tree") },
       { id: "app/context", name: "Context", mount: "panel", description: expect.stringContaining("shared context") },
     ]);
     expect(c.truncated).toBeUndefined();
