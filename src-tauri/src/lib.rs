@@ -7,6 +7,7 @@ mod agent_projects;
 mod box_sync;
 mod master;
 mod vault_page;
+mod web_embed;
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -6315,6 +6316,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             vault_page::vault_page_root,
+            web_embed::web_embed_open,
+            web_embed::web_embed_place,
+            web_embed::web_embed_go,
+            web_embed::web_embed_url,
+            web_embed::web_embed_close,
             list_markdown_files,
             read_text_file,
             read_binary_file,

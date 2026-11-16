@@ -50,6 +50,9 @@ getrandom = "0.2"
 # Tiny embedded HTTP server for phone voice mode (box serves a Tailscale-reachable
 # voice page + token-guarded session/tool relay). Sync, runs on its own thread.
 tiny_http = "0.12"
+# Inline web pages in the chat (src/web_embed.rs): a native browser view laid over the chat, made with wry directly
+# (not through Tauri's webview manager) so it carries none of the app's IPC or protocols. Same version Tauri uses.
+wry = { version = "0.54", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }

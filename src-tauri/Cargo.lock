@@ -6097,6 +6097,7 @@ dependencies = [
  "walkdir",
  "webkit2gtk",
  "windows-sys 0.59.0",
+ "wry",
 ]
 
 [[package]]
