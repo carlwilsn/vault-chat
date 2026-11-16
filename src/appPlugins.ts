@@ -96,6 +96,18 @@ export const TITLEBAR_PLUGIN: AppPluginInfo = {
   words: ["title bar", "titlebar", "title-bar", "top bar", "topbar", "toolbar", "tool bar", "header bar", "window bar", "menu bar"],
 };
 
+export const VIEWER_PLUGIN_ID = "app/viewer";
+
+/** The viewer (src/plugins/viewer): which viewer draws each type of file, the files open and where they are. Off: the agent cannot reach it; files still draw. */
+export const VIEWER_PLUGIN: AppPluginInfo = {
+  id: VIEWER_PLUGIN_ID,
+  name: "Viewer",
+  mount: "panel",
+  description:
+    "The viewer: the files open in its panes (type, the viewer drawing each, view or edit mode, where each is scrolled), the viewer of each type of file (PDF, markdown, notebook, TeX, HTML, image, video, code; a vault plugin can draw a type its own way) and which types Ctrl+E edits; open a file, scroll to a page, line or heading, find text, zoom a PDF or image, switch mode, choose, disable or enable a viewer. Off: the agent cannot reach it; files still draw.",
+  words: ["viewer", "the viewer", "file viewer", "viewers", "viewer pane", "pdf viewer", "markdown viewer", "document viewer"],
+};
+
 export const CONTEXT_PLUGIN_ID = "app/context";
 
 /** The shared context (src/plugins/context): what Carl has selected, hovers, the plugin he is in and the open file, for the agent and other plugins. Off: the agent cannot read it. */
@@ -107,7 +119,7 @@ export const CONTEXT_PLUGIN: AppPluginInfo = {
   words: ["context", "shared context", "context plugin", "selection context", "app context"],
 };
 
-export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN, FILETREE_PLUGIN, TITLEBAR_PLUGIN, CONTEXT_PLUGIN];
+export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN, FILETREE_PLUGIN, TITLEBAR_PLUGIN, VIEWER_PLUGIN, CONTEXT_PLUGIN];
 
 /** The app plugin a word names (its id, its name or one of its words), or null. */
 export function appPluginNamed(word: string): AppPluginInfo | null {

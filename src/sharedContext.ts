@@ -9,7 +9,8 @@
 //   hover      {kind: "file", path} | {kind: "message", messageId, chatId} | {kind: "note", noteId}
 //              | {kind: "chat", chatId} | {kind: "plugin", plugin}  (null: nothing known under the pointer)
 //   focus      {plugin: id} the plugin Carl last clicked or focused in, or {plugin: null, area?} the app's own parts
-//   file       the open file (vault-relative or absolute as the app holds it), or null
+//   file       the open file (vault-relative or absolute as the app holds it; the viewer, app/viewer, publishes the
+//              active pane's), or null
 //
 // Who publishes: a source bound by the app (src/contextSource.ts: the DOM's selection, pointer and focus, the store's
 // editor selection and open file), and any plugin through api.context.publish (its own list's hover, say). The source
@@ -183,8 +184,9 @@ export type ContextApi = {
   get(): SharedContext;
   /** Hear every change (the context and the keys that changed); undone when the plugin stops. */
   on(fn: ContextListener): () => void;
-  /** Publish what this plugin knows (its own list's hover or selection): `plugin` is filled in with its id. */
-  publish(patch: Pick<ContextPatch, "selection" | "hover">): void;
+  /** Publish what this plugin knows (its own list's hover or selection): `plugin` is filled in with its id. The open
+   *  file only from the app's own viewer (app/viewer); another plugin's `file` is ignored. */
+  publish(patch: Pick<ContextPatch, "selection" | "hover" | "file">): void;
 };
 
 export function contextApi(id: string, alive: () => boolean, track: (off: () => void) => () => void, guard: <A extends unknown[]>(f: (...a: A) => void) => (...a: A) => void): ContextApi {
@@ -203,6 +205,7 @@ export function contextApi(id: string, alive: () => boolean, track: (off: () => 
         p.selection = s && s.kind === "text" && !s.plugin ? ({ ...s, plugin: id } as ContextSelection) : (s as ContextSelection | null);
       }
       if ("hover" in patch) p.hover = patch.hover ?? null;
+      if ("file" in patch && id === "app/viewer") p.file = patch.file ?? null;
       publishContext(p);
     },
   };

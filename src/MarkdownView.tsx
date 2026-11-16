@@ -1,19 +1,12 @@
-import { lazy, memo, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ComponentPropsWithoutRef, MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { isBoxPath, readTextAt, writeTextAt } from "./boxFiles";
 import { editorWrites } from "./saveBeforeSend";
 import { FileText, Eye, Pencil, X } from "lucide-react";
 import { useStore } from "./store";
-import { LiveEditor } from "./LiveEditor";
-import { CodeView } from "./CodeView";
-import { NotebookView } from "./NotebookView";
-import { PdfView } from "./PdfView";
-import { TexView } from "./TexView";
-import { HtmlView } from "./HtmlView";
-import { ImageView } from "./ImageView";
-import { VideoView } from "./VideoView";
-import { UnsupportedView } from "./UnsupportedView";
+import { EDITOR_CHAIN, ViewerBody, type ViewerProps } from "./plugins/viewer/builtins";
+import { editable, subscribeViewers, viewerChain, viewersVersion } from "./viewerRegistry";
 import { VAULT_PANE_MIME } from "./dnd";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { fileKind } from "./fileKind";
@@ -23,15 +16,9 @@ import { findVaultFileByTail, tryOpenLink } from "./linkNav";
 import { noteEditedFile } from "./commit-controller";
 import { applyDiskContent, pendingBoxText, registerDirty, setDiskChanged, useLiveFiles } from "./liveReload";
 
-import { Markdown } from "./Markdown";
 import { flipNthTaskCheckbox, localPathFromUrl } from "./mdPipeline";
 import { hit } from "./shortcuts";
-import { NotePre, NoteSourceContext, useNoteSource } from "./NoteWidget";
-
-// Monaco (with its languages) is most of the bundle and only edits non-markdown
-// files, so it loads on first use (main.tsx prefetches it once startup settles)
-// instead of being parsed before the first paint on every launch.
-const MonacoEditor = lazy(() => import("./MonacoEditor").then((m) => ({ default: m.MonacoEditor })));
+import { NotePre, useNoteSource } from "./NoteWidget";
 
 function resolveRelative(baseFile: string, rel: string): string {
   const sep = baseFile.includes("\\") ? "\\" : "/";
@@ -207,6 +194,7 @@ function publishTextViewport(
 }
 
 type Props = { paneId?: string };
+const NO_CHAIN: readonly never[] = [];
 
 export function MarkdownView({ paneId }: Props) {
   const currentFile = useStore((s) => s.currentFile);
@@ -234,6 +222,15 @@ export function MarkdownView({ paneId }: Props) {
   const toggleMode = paneId ? () => togglePaneMode(paneId) : toggleGlobalMode;
   const isActive = paneId ? paneId === activePaneId : true;
   const inSplit = panes.length > 0;
+
+  // The viewer the registry names for this file (src/viewerRegistry.ts), live: a plugin's viewer on or off redraws the
+  // pane. Ctrl+E switches an editable type to the source editor; code's viewer is the editor itself.
+  useSyncExternalStore(subscribeViewers, viewersVersion, viewersVersion);
+  const keys = file ? fileKind(file) : null;
+  const chain = keys ? viewerChain(keys.kind, keys.ext) : NO_CHAIN;
+  const top = chain[0];
+  const canEdit = !!keys && editable(keys.kind);
+  const editing = !!keys && ((canEdit && mode === "edit") || !!top?.alwaysEdits);
 
   const lastSaved = useRef<string>(content);
   // The most recent value the *user* produced via onChange. Lets us tell
@@ -427,7 +424,7 @@ export function MarkdownView({ paneId }: Props) {
     const scroller = viewScrollRef.current;
     if (!scroller) return;
     const { kind: k, ext: e2 } = fileKind(file);
-    if (mode !== "view" || k !== "markdown" || !isActive) return;
+    if (editing || k !== "markdown" || !isActive) return;
 
     const onKey = (e: KeyboardEvent) => {
       if (!hit(e, "edit.ask")) return;
@@ -483,7 +480,7 @@ export function MarkdownView({ paneId }: Props) {
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [mode, file, isActive, content]);
+  }, [editing, top, file, isActive, content]);
 
   // Ctrl+L ask (no context) for PDF, HTML, and image viewers. These don't
   // have a meaningful source-text window to slice like markdown does, so
@@ -526,18 +523,20 @@ export function MarkdownView({ paneId }: Props) {
   useEffect(() => {
     const req = pendingScrollAnchor;
     if (!req || !file || req.path !== file || fileKind(file).kind !== "markdown") return;
+    // A plugin's viewer of markdown takes the request itself (src/plugins/viewer/builtins.tsx DomViewer).
+    if (!editing && top?.id !== "builtin:markdown") return;
     if (paneId && !isActive && panes.some((p) => p.id === activePaneId && p.file === file)) return; // the active pane shows it too: that one moves
     const t = decodeTarget(req.anchor);
     // A source line while editing: the editor itself goes there (LiveEditor takes the request).
-    if (mode === "edit" && t.line !== undefined) return;
+    if (editing && t.line !== undefined) return;
     useStore.getState().clearScrollAnchor();
-    if (mode === "edit") {
+    if (editing) {
       reportScroll(file, landMarkdown(null, content, req.anchor, file, true));
       return;
     }
     // After a render (a file just opened by this request has not drawn yet). A source line: the heading on it, else its first words.
     requestAnimationFrame(() => reportScroll(file, landMarkdown(viewScrollRef.current, content, req.anchor, file, false)));
-  }, [pendingScrollAnchor, file, mode, paneId, isActive, panes, activePaneId, content]);
+  }, [pendingScrollAnchor, file, editing, top, paneId, isActive, panes, activePaneId, content]);
 
   if (!file) {
     return (
@@ -552,22 +551,41 @@ export function MarkdownView({ paneId }: Props) {
 
   const relPath = file.split("/").slice(-3).join(" › ");
   const showActiveOutline = inSplit && isActive;
-  const { kind, ext } = fileKind(file);
-  // Code files are edit-only — Monaco renders them fine and the toggle
-  // would just flip to a near-identical view. Markdown and .tex have a
-  // meaningful view/edit split (rendered prose / compiled PDF vs. raw
-  // source).
-  const showToggle = kind === "markdown" || kind === "tex";
-  // Editor visibility tracks the pane's own mode. The previous
-  // `&& isActive` gate (kept editor mounted only on the active pane)
-  // unmounted LiveEditor whenever focus moved elsewhere — which broke
-  // the inline-edit Accept button: the floating popup outlived the
-  // editor, but its dispatch had no view to dispatch into and silently
-  // no-op'd. Per-pane mode is the user's intent for what each pane
-  // shows; activation is a separate axis.
-  const showingEditor =
-    kind === "code" ||
-    ((kind === "markdown" || kind === "tex") && mode === "edit");
+  const { kind, ext } = keys!;
+  // A view / edit toggle where Ctrl+E edits the type (markdown and .tex by default: rendered prose / compiled PDF vs.
+  // raw source), except where the viewer is the editor itself (code). Editor visibility tracks the pane's own mode. The
+  // previous `&& isActive` gate (kept editor mounted only on the active pane) unmounted LiveEditor whenever focus moved
+  // elsewhere — which broke the inline-edit Accept button: the floating popup outlived the editor, but its dispatch had
+  // no view to dispatch into and silently no-op'd. Per-pane mode is the user's intent for what each pane shows;
+  // activation is a separate axis.
+  const showToggle = canEdit && !top?.alwaysEdits;
+  const toggleHere = () => {
+    if (paneId && !isActive) setActivePane(paneId);
+    toggleMode();
+  };
+  const viewerProps: ViewerProps = {
+    file,
+    content,
+    ext,
+    type: kind,
+    relPath,
+    paneId,
+    rev,
+    mode,
+    onChange,
+    onToggleMode: toggleHere,
+    md: {
+      viewScrollRef,
+      onViewScroll,
+      components: markdownComponents,
+      noteSource,
+      scrollRatioRef,
+      onEditorScrollRatio: (r) => {
+        scrollRatioRef.current = r;
+        publishTextViewport(file, content, r);
+      },
+    },
+  };
 
   return (
     <div
@@ -580,11 +598,11 @@ export function MarkdownView({ paneId }: Props) {
       data-file={file}
       data-active={isActive ? "true" : "false"}
       data-mode={showToggle ? (mode === "edit" ? "editing" : "viewing") : ""}
+      data-viewer={editing && !top?.alwaysEdits ? "editor" : (top?.id ?? "fallback")}
     >
-      {/* PDFs (and .tex in preview mode, which renders a PDF) own their
-          own toolbar — file path, page count, zoom, source toggle. Skip
-          the generic header so there's only one bar across the top. */}
-      {kind !== "pdf" && !(kind === "tex" && mode === "view") && (
+      {/* A viewer with its own toolbar (PDFs, and .tex in preview mode, which renders a PDF: file path, page count,
+          zoom, source toggle) keeps the generic header out, so there's only one bar across the top. */}
+      {!(!editing && top?.ownHeader?.(mode)) && (
       <div
         data-look-skip
         className={`flex items-center justify-between px-6 py-2.5 border-b border-border/60 ${
@@ -627,8 +645,7 @@ export function MarkdownView({ paneId }: Props) {
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                if (paneId && !isActive) setActivePane(paneId);
-                toggleMode();
+                toggleHere();
               }}
               className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
               title={
@@ -669,64 +686,7 @@ export function MarkdownView({ paneId }: Props) {
         </div>
       </div>
       )}
-      {showingEditor && kind === "markdown" ? (
-        <div className="flex-1 min-h-0">
-          <LiveEditor
-            value={content}
-            onChange={onChange}
-            initialScrollRatio={scrollRatioRef.current}
-            onScrollRatio={(r) => {
-              scrollRatioRef.current = r;
-              publishTextViewport(file, content, r);
-            }}
-            file={file}
-          />
-        </div>
-      ) : showingEditor ? (
-        <div className="flex-1 min-h-0">
-          <Suspense fallback={null}>
-            <MonacoEditor value={content} onChange={onChange} ext={ext} path={file} />
-          </Suspense>
-        </div>
-      ) : kind === "markdown" ? (
-        <div
-          ref={viewScrollRef}
-          onScroll={onViewScroll}
-          data-look-scroll
-          className="flex-1 overflow-auto py-10 px-8"
-        >
-          <div className="prose-md mx-auto" data-note-widgets>
-            <NoteSourceContext.Provider value={noteSource}>
-              <Markdown source={content} profile="note" components={markdownComponents} />
-            </NoteSourceContext.Provider>
-          </div>
-        </div>
-      ) : kind === "notebook" ? (
-        <NotebookView content={content} path={file} />
-      ) : kind === "pdf" ? (
-        <PdfView path={file} relPath={relPath} paneId={paneId} rev={rev} />
-      ) : kind === "tex" ? (
-        <TexView
-          path={file}
-          content={content}
-          relPath={relPath}
-          paneId={paneId}
-          onToggleMode={() => {
-            if (paneId && !isActive) setActivePane(paneId);
-            toggleMode();
-          }}
-        />
-      ) : kind === "html" ? (
-        <HtmlView content={content} path={file} />
-      ) : kind === "image" ? (
-        <ImageView path={file} rev={rev} />
-      ) : kind === "video" ? (
-        <VideoView path={file} />
-      ) : kind === "unsupported" ? (
-        <UnsupportedView path={file} />
-      ) : (
-        <CodeView content={content} ext={ext} path={file} />
-      )}
+      <ViewerBody chain={editing ? EDITOR_CHAIN : chain} props={viewerProps} />
       {inlineAsk && (
         <InlineEditPrompt
           request={inlineAsk}

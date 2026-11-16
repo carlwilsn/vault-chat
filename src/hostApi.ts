@@ -8,6 +8,9 @@
 //              agent's Layout tool runs (src/layoutOps.ts), each answered with the layout read back
 //   titlebar   host.titlebar.item({id, label | icon | render, onClick?, title?, side?}) → off: an item in the title bar
 //              (src/titlebarItems.ts), live until the plugin stops; host.titlebar.items() the items there now
+//   viewer     host.viewer(type, mount, {name?}) → off: draw a type of file in the viewer ("pdf", ".csv", "image/*";
+//              src/viewerRegistry.ts), live until the plugin stops; mount(el, file) → cleanup | {unmount, update, scrollTo};
+//              a throw falls back to the app's own viewer for that file. host.viewers() the viewers of each type now
 //   capture    host.capture(target?) a PNG of the app's own window or one column (the laptop's `capture` service,
 //              src/screenCapture.ts; the agent's Screen tool draws through the same function)
 //   events     host.on("file-opened" | "chat-message" | "selection-changed", fn) → off
@@ -19,6 +22,7 @@ import type { Note } from "./noteTypes";
 import type { HostLayout, LayoutOp, LayoutResult } from "./layoutTypes";
 import type { Capture, CaptureTarget } from "./screenCapture";
 import type { TitlebarItem, TitlebarItemSpec } from "./titlebarItems";
+import type { ViewerMount, ViewerOptions } from "./viewerRegistry";
 export type { HostLayout, LayoutOp, LayoutResult } from "./layoutTypes";
 
 export const HOST_API_VERSION = 1;
@@ -41,6 +45,8 @@ export type HostEvents = {
   "selection-changed": HostSelection | null;
 };
 export type HostEventName = keyof HostEvents;
+/** A type of file (or an extension) and its viewers: the one drawing it now and every one registered. */
+export type HostViewerKey = { key: string; active: string; viewers: readonly { id: string; name: string; by: string; builtin: boolean; enabled: boolean }[] };
 export type HostChatLine = { role: "user" | "assistant"; text: string; hidden?: boolean };
 
 /** What the app supplies. `state()` must return the same object while nothing changed (subscribe-friendly). */
@@ -76,6 +82,10 @@ export type HostBackend = {
   registerTitlebarItem?(spec: TitlebarItemSpec, by: string): () => void;
   /** The title bar's items now. */
   titlebarItems?(): readonly TitlebarItem[];
+  /** Draw a type of file in the viewer (src/viewerRegistry.ts) for plugin `by`; the undo. Absent: no viewer here. */
+  registerViewer?(type: string, mount: ViewerMount, by: string, opts?: ViewerOptions): () => void;
+  /** The viewers of each type now. */
+  viewers?(): readonly HostViewerKey[];
 };
 /** A chat translator: the messages an event of its type shows ([] none), or null to hand it to the next in line (next()
  *  gives that answer). event.item is the log's item: {id, kind, status, at, text?, via?, name?, args?, result?, level?, ...}. */
@@ -132,6 +142,15 @@ export type HostApi = {
     /** Every plugin's title bar items now: {key, id, by, side, label?, title?}. */
     items(): readonly { key: string; id: string; by: string; side: string; label?: string; title?: string }[];
   };
+  /** Draw a type of file in the viewer its own way, live, until the plugin stops (or the returned off): type is a
+   *  type ("pdf", "markdown", "html", "image", "video", "notebook", "tex", "code", "unsupported"), an extension
+   *  (".csv") or a MIME type ("application/pdf", "image/*"). mount(el, file) draws into a plain element and returns a
+   *  cleanup, or {unmount?, update?(file), scrollTo?(target) → where it landed, zoom?: {get, set, min?, max?}}; file: {path, rel, ext, type, content,
+   *  mode, pane, rev, bytes(), save(text), scrolled({ratio?, page?, line?}), select(text, lines?)}. The newest plugin
+   *  viewer of a type draws it; a throw falls back to the app's own viewer for that file. Throws on a bad type. */
+  viewer(type: string, mount: ViewerMount, opts?: ViewerOptions): () => void;
+  /** Every type's viewers now: {key, active, viewers: [{id, name, by, builtin, enabled}]}. */
+  viewers(): readonly HostViewerKey[];
   /** A PNG of the app's own window ("window", default) or its "viewer" / "chat" column; rejects with why it can't. */
   capture(target?: CaptureTarget): Promise<Capture>;
 };
@@ -287,6 +306,15 @@ export function createHostApi(b: HostBackend, fx: Effects, alive: () => boolean,
       },
       items: () => (b.titlebarItems?.() ?? []).map((i) => ({ key: i.key, id: i.id, by: i.by, side: i.side, ...(i.label ? { label: i.label } : {}), ...(i.title ? { title: i.title } : {}) })),
     },
+    viewer(type, mount, opts) {
+      if (!alive()) return () => {};
+      if (!b.registerViewer) throw new Error("no viewer here");
+      if (typeof mount !== "function") throw new Error("a viewer is a function mount(el, file) → cleanup?");
+      // A stopped run's viewer draws nothing (its registration is gone with it; this covers a pane mid-swap).
+      const m: ViewerMount = (el, file) => (alive() ? mount(el, file) : undefined);
+      return fx.add(`viewer ${String(type)}`, b.registerViewer(String(type), m, id, opts));
+    },
+    viewers: () => (b.viewers?.() ?? []).map((k) => ({ key: k.key, active: k.active, viewers: k.viewers.map((v) => ({ id: v.id, name: v.name, by: v.by, builtin: v.builtin, enabled: v.enabled })) })),
     capture: (target = "window") => (!alive() ? Promise.reject(new Error("this plugin is stopped")) : b.capture ? b.capture(target) : Promise.reject(new Error("no screen here"))),
   };
 }

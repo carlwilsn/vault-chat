@@ -8,6 +8,7 @@ import { useStore } from "./store";
 import { readShownBytes } from "./liveReload";
 import { reportScroll } from "./scrollTarget";
 import { decodeTarget, landPdf } from "./viewTarget";
+import { registerZoom } from "./plugins/viewer/zoom";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -57,6 +58,10 @@ export function PdfView({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [zoom, setZoom] = useState(1);
+  // The agent's zoom (app/viewer's zoom action, src/plugins/viewer/zoom.ts) sets the same zoom as the toolbar.
+  const zoomNowRef = useRef(1);
+  zoomNowRef.current = zoom;
+  useEffect(() => registerZoom(path, { get: () => zoomNowRef.current, set: (z) => setZoom(clampZoom(z)), min: MIN_ZOOM, max: MAX_ZOOM }), [path]);
   const [inlineAsk, setInlineAsk] = useState<InlineEditRequest | null>(null);
   const [marqueeOn, setMarqueeOn] = useState(false);
   // Current drag state for the marquee rectangle. Stored as client-space

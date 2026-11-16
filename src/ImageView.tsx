@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { useStore } from "./store";
 import { readShownBytes } from "./liveReload";
+import { registerZoom } from "./plugins/viewer/zoom";
 
 function mimeFor(ext: string): string {
   const e = ext.toLowerCase();
@@ -41,6 +42,19 @@ export function ImageView({ path, rev = 0 }: { path: string; rev?: number }) {
   useEffect(() => {
     setZoom({ scale: 1, tx: 0, ty: 0 });
   }, [path]);
+  // The agent's zoom (app/viewer's zoom action, src/plugins/viewer/zoom.ts): about the image's centre as it is placed.
+  const scaleRef = useRef(1);
+  scaleRef.current = zoom.scale;
+  useEffect(
+    () =>
+      registerZoom(path, {
+        get: () => scaleRef.current,
+        set: (s) => setZoom((z) => (Math.abs(s - 1) < 0.01 ? { scale: 1, tx: 0, ty: 0 } : { scale: s, tx: (z.tx * s) / z.scale, ty: (z.ty * s) / z.scale })),
+        min: 0.2,
+        max: 8,
+      }),
+    [path],
+  );
 
   const shownPathRef = useRef(path);
   useEffect(() => {

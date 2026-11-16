@@ -1,0 +1,370 @@
+// The viewer as a plugin the agent reaches (src/appPlugins.ts VIEWER_PLUGIN, app/viewer): mounted by the viewer area
+// (src/MarkdownArea.tsx), it draws nothing of its own (each file is drawn by the viewer the registry names,
+// src/viewerRegistry.ts, in the pane src/MarkdownView.tsx, with the app's own viewers in ./builtins.tsx) and declares
+// what it offers through api.offer: the files open (pane, type, the viewer drawing each, view / edit mode, where each
+// is scrolled, its zoom), the viewers of each type and which types Ctrl+E edits as state; open, scrollTo, find, zoom,
+// setMode, use, disable, enable and setOption as actions; opened, scrolled, modeChanged and changed as events. Turned off, the agent cannot
+// reach it and files still draw.
+//
+// A vault plugin draws a type its own way with api.host.viewer(type, mount) (src/hostApi.ts). The choices (a viewer
+// off, the one chosen for a type, a type made editable) are kept on the box (./prefs.ts). The active pane's file is
+// published to the shared context (api.context, file).
+import type { PluginApi } from "../../mountHost";
+import type { Offers } from "../../pluginOffers";
+import { useStore } from "../../store";
+import { fileKind } from "../../fileKind";
+import { PANE_SIDES, relToVault, type PaneSide } from "../../paneLayout";
+import { showOnLaptop } from "../../showOnLaptop";
+import { TARGET_KEYS, type ViewTarget } from "../../viewTarget";
+import {
+  describeModes,
+  describeViewers,
+  editable,
+  fileViewerKeys,
+  subscribeViewers,
+  viewerById,
+  viewerChain,
+  viewerKey,
+  viewerOptionProblem,
+} from "../../viewerRegistry";
+import { OFF, OPT, USE, keep, viewerPrefs } from "./prefs";
+import { followScroll, onScroll, scrollOf } from "./scroll";
+import { setZoomOf, zoomOf } from "./zoom";
+import "./builtins"; // the app's own viewers register with the registry
+
+followScroll();
+
+const S = () => useStore.getState();
+const rel = (p: string) => relToVault(S().vaultPath, p);
+const norm = (p: string) => p.replace(/\\/g, "/").toLowerCase();
+
+type Open = { pane: PaneSide | "main"; paneId: string | null; file: string; content: string; mode: "view" | "edit"; active: boolean };
+
+/** The files open now: the one viewer, or the split's two panes. */
+function openNow(): Open[] {
+  const s = S();
+  if (s.panes.length >= 2) {
+    return s.panes.slice(0, 2).map((p, i) => ({ pane: PANE_SIDES[i]!, paneId: p.id, file: p.file, content: p.content, mode: p.mode, active: p.id === s.activePaneId }));
+  }
+  return s.currentFile ? [{ pane: "main", paneId: null, file: s.currentFile, content: s.currentContent, mode: s.mode, active: true }] : [];
+}
+
+/** The viewer drawing an open file now: "editor" (the source editor, Ctrl+E), a viewer's id, or "fallback". */
+function drawnBy(o: Pick<Open, "file" | "mode">): string {
+  const { type, ext } = fileViewerKeys(o.file);
+  const top = viewerChain(type, ext)[0];
+  if (top?.alwaysEdits) return top.id;
+  if (editable(type) && o.mode === "edit") return "editor";
+  return top?.id ?? "fallback";
+}
+
+function describeOpen(o: Open) {
+  const { type, ext } = fileViewerKeys(o.file);
+  const canEdit = editable(type) && !viewerChain(type, ext)[0]?.alwaysEdits;
+  const pos = scrollOf(o.file);
+  const scroll: Record<string, unknown> = {};
+  if (pos) {
+    for (const k of ["ratio", "page", "totalPages", "line"] as const) if (pos[k] !== undefined) scroll[k] = pos[k];
+    // A rendered note says how far down it is: the source line there, roughly.
+    if (scroll.line === undefined && typeof pos.ratio === "number" && (type === "markdown" || type === "code")) {
+      const lines = o.content.split("\n").length;
+      scroll.line = 1 + Math.round(pos.ratio * Math.max(0, lines - 1));
+      scroll.lineApprox = true;
+    }
+  }
+  return {
+    pane: o.pane,
+    path: rel(o.file),
+    type,
+    ext,
+    viewer: drawnBy(o),
+    mode: canEdit ? o.mode : null,
+    editable: canEdit,
+    active: o.active,
+    ...(Object.keys(scroll).length ? { scroll } : {}),
+    ...(zoomOf(o.file) !== null ? { zoom: zoomOf(o.file) } : {}),
+    targets: TARGET_KEYS[type] ?? [],
+  };
+}
+
+/** The open file an action names: a vault-relative path, a pane ("left" / "right" / "main"), else the active one. */
+function openFor(a: Record<string, unknown>): Open {
+  const list = openNow();
+  if (!list.length) throw new Error("no file is open in the viewer");
+  if (typeof a.path === "string" && a.path.trim()) {
+    const want = norm(a.path.trim());
+    const hit = list.find((o) => norm(rel(o.file)) === want || norm(o.file) === want);
+    if (!hit) throw new Error(`${a.path} is not open (open: ${list.map((o) => rel(o.file)).join(", ")}); open it first`);
+    return hit;
+  }
+  if (typeof a.pane === "string" && a.pane) {
+    const hit = list.find((o) => o.pane === a.pane);
+    if (!hit) throw new Error(`no "${a.pane}" pane (panes: ${list.map((o) => o.pane).join(", ")})`);
+    return hit;
+  }
+  return list.find((o) => o.active) ?? list[0]!;
+}
+
+const TARGET_PROPS = {
+  page: { type: "integer", minimum: 1, description: "PDF: a 1-based page." },
+  line: { type: "integer", minimum: 1, description: "Markdown / code: a source line." },
+  endLine: { type: "integer", minimum: 1, description: "Code: the range's last line (highlighted)." },
+  heading: { type: "string", description: "Markdown / HTML: a heading's text or slug." },
+  text: { type: "string", description: "A phrase: the first place with it." },
+  anchor: { type: "string", description: "HTML: an element id." },
+  cell: { type: "integer", minimum: 1, description: "Notebook: a 1-based cell." },
+} as const;
+const targetOf = (a: Record<string, unknown>): ViewTarget => {
+  const t: Record<string, unknown> = {};
+  for (const k of Object.keys(TARGET_PROPS)) if (a[k] !== undefined && a[k] !== null && a[k] !== "") t[k] = a[k];
+  return t as ViewTarget;
+};
+
+/** Open (or scroll) through Show's own path: the same landing and the same answer the agent's Show gets. */
+async function show(path: string, target: ViewTarget, pane?: PaneSide) {
+  const ack = await showOnLaptop({ type: "show", id: "app/viewer", path, target, ...(pane ? { pane } : {}) }, { answerMs: 8000 });
+  if (!ack.ok) throw new Error(ack.error ?? "it could not be shown");
+  return { landed: ack.landed, ...(ack.pane ? { pane: ack.pane } : {}) };
+}
+
+const FIND_MAX = 20;
+/** The lines of a text holding `q` (case-insensitive): 1-based line numbers and the line (trimmed), at most FIND_MAX. */
+export function findLines(content: string, q: string): { count: number; matches: { line: number; text: string }[] } {
+  const want = q.toLowerCase();
+  const matches: { line: number; text: string }[] = [];
+  let count = 0;
+  content.split("\n").forEach((l, i) => {
+    if (!l.toLowerCase().includes(want)) return;
+    count++;
+    if (matches.length < FIND_MAX) matches.push({ line: i + 1, text: l.trim().slice(0, 160) });
+  });
+  return { count, matches };
+}
+
+/** The plugin's offers (exported for tests). */
+export function viewerOffers(): Offers {
+  return {
+    state: {
+      open: {
+        description:
+          "The files open in the viewer: per pane (main, or left / right in a split) its path, type, the viewer drawing it (a viewer's id, \"editor\" = the source editor via Ctrl+E, \"fallback\" = plain text), mode (view | edit, null when the type has no edit mode), whether it is the active pane, where it is scrolled (ratio 0..1, page / totalPages for a PDF, line; lineApprox when read off the scroll position), its zoom when its viewer zooms (1 = fit) and the targets scrollTo takes for it.",
+        read: () => openNow().map(describeOpen),
+      },
+      viewers: {
+        description:
+          "Each type of file (markdown, notebook, pdf, tex, html, image, video, unsupported, code) and each extension a plugin draws (\".csv\") with the viewer drawing it (active: builtin:<type> the app's own, app:<type>:<name> an app alternative drawn only when chosen, <plugin id>#<key> a plugin's, fallback = plain text) and every viewer registered for it (name, by, enabled, failures). A vault plugin adds one with api.host.viewer(type, mount).",
+        read: () => describeViewers(),
+      },
+      modes: {
+        description: "Which types Ctrl+E (and the header's toggle) switches to the source editor: per text type its edit value, default and whether it is set (setOption).",
+        read: () => describeModes(),
+      },
+      kept: {
+        description: "The choices kept on the box (the same in every window, after a restart): disabled = viewer ids turned off, chosen = {type or .ext: viewer id}, options = {type: {edit}}.",
+        read: () => viewerPrefs(),
+      },
+    },
+    actions: {
+      open: {
+        description:
+          "Open a vault file in the viewer (pane: left / right puts it in that pane of a split, turning split on when one other file is open), optionally at a place (page, line, heading, text, anchor, cell, as its type takes them), the way Show does; answers where it landed. An open file is only scrolled.",
+        args: {
+          type: "object",
+          properties: { path: { type: "string", description: "Vault-relative." }, pane: { type: "string", enum: ["left", "right"] }, ...TARGET_PROPS },
+          required: ["path"],
+          additionalProperties: false,
+        },
+        run: async (a) => {
+          const path = String(a.path ?? "").trim().replace(/^[\\/]+/, "");
+          if (!path) throw new Error("path is needed (vault-relative)");
+          return show(path, targetOf(a), (a.pane as PaneSide | undefined) || undefined);
+        },
+      },
+      scrollTo: {
+        description:
+          "Scroll an open file (path, or pane; the active one when left out) to a place: a PDF's page or text, a note's line, heading or text, code's line (endLine highlights a range), an HTML page's anchor, heading or text, a notebook's cell. Answers where it landed, or the valid range / nearest headings.",
+        args: { type: "object", properties: { path: { type: "string" }, pane: { type: "string", enum: ["main", "left", "right"] }, ...TARGET_PROPS }, additionalProperties: false },
+        run: async (a) => {
+          const o = openFor(a);
+          const t = targetOf(a);
+          if (!Object.keys(t).length) throw new Error(`a place is needed (a ${fileKind(o.file).kind} file takes: ${(TARGET_KEYS[fileKind(o.file).kind] ?? []).join(", ") || "none: it only opens"})`);
+          return show(rel(o.file), t);
+        },
+      },
+      find: {
+        description:
+          "Find text in an open file (path, or pane; the active one when left out) and scroll to it: a note or code file answers every line holding it (count, up to 20 {line, text}, case-insensitive) and goes to the nth (default 1); a PDF goes to the first page with it, an HTML page or notebook to the first place with it. Answers where it landed.",
+        args: {
+          type: "object",
+          properties: { text: { type: "string" }, nth: { type: "integer", minimum: 1 }, path: { type: "string" }, pane: { type: "string", enum: ["main", "left", "right"] } },
+          required: ["text"],
+          additionalProperties: false,
+        },
+        run: async (a) => {
+          const q = String(a.text ?? "").trim();
+          if (!q) throw new Error("text is needed");
+          const o = openFor(a);
+          const { type } = fileViewerKeys(o.file);
+          if (type === "markdown" || type === "code") {
+            const f = findLines(o.content, q);
+            if (!f.count) return { path: rel(o.file), text: q, count: 0, matches: [] };
+            const nth = Math.min(Math.max(1, Number(a.nth) || 1), f.matches.length);
+            const line = f.matches[nth - 1]!.line;
+            return { path: rel(o.file), text: q, count: f.count, matches: f.matches, at: line, ...(await show(rel(o.file), type === "code" ? { line, endLine: line } : { line })) };
+          }
+          if (type === "pdf" || type === "html" || type === "notebook") {
+            const out: Record<string, unknown> = { path: rel(o.file), text: q };
+            if (type !== "pdf") out.count = findLines(o.content, q).count;
+            return { ...out, ...(await show(rel(o.file), { text: q })) };
+          }
+          throw new Error(`a ${type} file has no text to find in`);
+        },
+      },
+      zoom: {
+        description:
+          "Zoom an open PDF or image (path, or pane; the active one when left out): zoom is a factor (1 = fit the pane; a PDF takes 0.25..5, an image 0.2..8) or \"in\" / \"out\" (×1.25 / ÷1.25) or \"reset\". Answers the zoom now; the open state shows it.",
+        args: {
+          type: "object",
+          properties: { zoom: { type: ["number", "string"], description: "A factor, or in / out / reset." }, path: { type: "string" }, pane: { type: "string", enum: ["main", "left", "right"] } },
+          required: ["zoom"],
+          additionalProperties: false,
+        },
+        run: (a) => {
+          const o = openFor(a);
+          const z = a.zoom;
+          const want = z === "in" || z === "out" || z === "reset" ? z : Number(z);
+          return { path: rel(o.file), pane: o.pane, ...setZoomOf(o.file, want) };
+        },
+      },
+      setMode: {
+        description: "Switch an open file (path, or pane; the active one when left out) to view or edit (the source editor), as Ctrl+E does. Only a type that Ctrl+E edits (see modes; setOption makes HTML or notebooks editable).",
+        args: { type: "object", properties: { mode: { type: "string", enum: ["view", "edit"] }, path: { type: "string" }, pane: { type: "string", enum: ["main", "left", "right"] } }, required: ["mode"], additionalProperties: false },
+        run: (a) => {
+          const o = openFor(a);
+          const { type, ext } = fileViewerKeys(o.file);
+          if (!editable(type) || viewerChain(type, ext)[0]?.alwaysEdits) {
+            throw new Error(type === "code" ? "a code file is always in the editor" : `Ctrl+E does not edit ${type} files${type === "html" || type === "notebook" ? ` (setOption {type: "${type}", key: "edit", value: true} makes it)` : ""}`);
+          }
+          const want = a.mode === "edit" ? "edit" : "view";
+          if (o.mode !== want) {
+            if (o.paneId) S().togglePaneMode(o.paneId);
+            else S().setMode(want);
+          }
+          return { path: rel(o.file), pane: o.pane, mode: want };
+        },
+      },
+      use: {
+        description:
+          "Choose which registered viewer draws a type or an extension (type: \"pdf\", \".csv\" or a MIME type; id from viewers, e.g. builtin:pdf over a plugin's, or app:code:highlight; it is turned on too); id omitted: back to the default order (the newest plugin viewer, else the app's own). Kept: every window, after a restart.",
+        args: { type: "object", properties: { type: { type: "string" }, id: { type: "string" } }, required: ["type"], additionalProperties: false },
+        run: async (a) => {
+          const key = viewerKey(a.type);
+          const id = typeof a.id === "string" && a.id ? a.id : null;
+          if (id) {
+            const x = viewerById(id);
+            const typeOfKey = key.startsWith(".") ? fileViewerKeys(`x${key}`).type : key;
+            if (!x || (x.key !== key && x.key !== typeOfKey)) throw new Error(`no viewer "${id}" for "${key}" (see the viewers state)`);
+          }
+          const writes: [string, unknown][] = [[USE + key, id]];
+          if (id && viewerPrefs().disabled.includes(id)) writes.push([OFF + id, null]);
+          return { type: key, using: id ?? "default", ...(await keep(writes)) };
+        },
+      },
+      disable: {
+        description: "Turn a viewer off by its id (see viewers): its type is drawn by the next in line (a plugin's off: the app's own; the app's own off: plain text). Kept: every window, after a restart.",
+        args: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
+        run: async (a) => {
+          const id = String(a.id);
+          if (!viewerById(id)) throw new Error(`no viewer "${id}" (see the viewers state)`);
+          return { disabled: id, ...(await keep([[OFF + id, true]])) };
+        },
+      },
+      enable: {
+        description: "Turn a viewer back on by its id (kept, like disable).",
+        args: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
+        run: async (a) => {
+          const id = String(a.id);
+          if (!viewerPrefs().disabled.includes(id) && !viewerById(id)) throw new Error(`no viewer "${id}" (see the viewers state)`);
+          return { enabled: id, ...(await keep([[OFF + id, null]])) };
+        },
+      },
+      setOption: {
+        description:
+          "Set a type's option, live in every window and kept after a restart. The one option: edit (true: Ctrl+E and the header's toggle switch that type to the source editor; HTML and notebooks are false by default, markdown, TeX and code true): e.g. {type: \"html\", key: \"edit\", value: true}. value null: back to its default.",
+        args: { type: "object", properties: { type: { type: "string" }, key: { type: "string" }, value: { type: ["boolean", "null"] } }, required: ["type", "key", "value"], additionalProperties: false },
+        run: async (a) => {
+          const type = String(a.type).trim().toLowerCase();
+          const key = String(a.key);
+          const value = a.value === undefined ? null : a.value;
+          const bad = viewerOptionProblem(type, key, value);
+          if (bad) throw new Error(bad);
+          return { type, key, value: value ?? "default", ...(await keep([[`${OPT}${type}:${key}`, value]])) };
+        },
+      },
+    },
+    events: {
+      opened: { description: "A file was opened in the viewer (or into a pane): path, pane, type, viewer." },
+      scrolled: { description: "An open file was scrolled (at most every 400 ms per file): path, ratio?, page?, totalPages?, line?." },
+      modeChanged: { description: "An open file switched between view and edit: path, pane, mode." },
+      changed: { description: "The viewers changed (a plugin's registered or removed, one turned on or off or chosen, an option set): the active viewer of each type after it." },
+    },
+  };
+}
+
+const SCROLL_EVERY_MS = 400;
+
+export function mount(_el: HTMLElement, api: PluginApi): () => void {
+  const offers = api.offer(viewerOffers());
+  const offs: (() => void)[] = [];
+
+  // Opened / modeChanged: what is open, per pane, compared on each store change (reference checks first).
+  const sig = (o: Open) => `${o.pane}\n${o.file}`;
+  let was = new Map(openNow().map((o) => [sig(o), o]));
+  let lastActive = openNow().find((o) => o.active)?.file ?? null;
+  if (lastActive) api.context.publish({ file: lastActive });
+  offs.push(
+    useStore.subscribe((s, prev) => {
+      if (s.panes === prev.panes && s.currentFile === prev.currentFile && s.mode === prev.mode && s.activePaneId === prev.activePaneId) return;
+      const now = openNow();
+      const next = new Map(now.map((o) => [sig(o), o]));
+      for (const [k, o] of next) {
+        const before = was.get(k);
+        if (!before) offers.emit("opened", { path: rel(o.file), pane: o.pane, type: fileKind(o.file).kind, viewer: drawnBy(o) });
+        else if (before.mode !== o.mode && editable(fileKind(o.file).kind)) offers.emit("modeChanged", { path: rel(o.file), pane: o.pane, mode: o.mode });
+      }
+      was = next;
+      const active = now.find((o) => o.active)?.file ?? null;
+      if (active !== lastActive) {
+        lastActive = active;
+        api.context.publish({ file: active });
+      }
+    }),
+  );
+
+  // Scrolled: trailing, per file.
+  const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  offs.push(
+    onScroll((path) => {
+      if (timers.has(path)) return;
+      timers.set(
+        path,
+        setTimeout(() => {
+          timers.delete(path);
+          const p = scrollOf(path);
+          if (!p) return;
+          const { at: _at, ...pos } = p;
+          offers.emit("scrolled", { path: rel(path), ...pos });
+        }, SCROLL_EVERY_MS),
+      );
+    }),
+  );
+  offs.push(() => {
+    for (const t of timers.values()) clearTimeout(t);
+    timers.clear();
+  });
+
+  offs.push(subscribeViewers(() => offers.emit("changed", Object.fromEntries(describeViewers().map((k) => [k.key, k.active])))));
+  return () => {
+    for (const f of offs) f();
+  };
+}
