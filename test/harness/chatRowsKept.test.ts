@@ -118,3 +118,20 @@ test("after a restart the choices are there at first paint (the local copy) and 
   assert.equal(active("voice"), "builtin:voice");
   assert.deepEqual(offers.state.kept.read().disabled, [".vault-chat/plugins/x.js#notice"]);
 });
+
+test("a renderer option set by the agent is a record; one set in another window applies here from the feed", async () => {
+  // This window connected again (the restart above stopped its feed).
+  await bc.startBoxChat(vault);
+  const polls = box.seen.filter((x) => x.route === "GET /poll").length;
+  await waitFor("the feed again", () => box.seen.filter((x) => x.route === "GET /poll").length > polls);
+  const r = await offers.actions.setOption.run({ kind: "inline-html", key: "placement", value: "viewer" });
+  assert.equal(r.kept, true, JSON.stringify(r));
+  assert.equal(boxState()["opt:inline-html:placement"], "viewer");
+  assert.equal(rows.rowOption("inline-html", "placement"), "viewer");
+  appPluginStateRoute("", "POST", new URLSearchParams(), { plugin: "app/chat-rows", key: "opt:plan:placement", value: "pinned" }, box.log);
+  await waitFor("this window follows", () => rows.rowOption("plan", "placement") === "pinned");
+  appPluginStateRoute("", "POST", new URLSearchParams(), { plugin: "app/chat-rows", key: "opt:plan:placement", value: null }, box.log);
+  await waitFor("the default again", () => rows.rowOption("plan", "placement") === "inline");
+  await offers.actions.setOption.run({ kind: "inline-html", key: "placement", value: null });
+  assert.equal(rows.rowOption("inline-html", "placement"), "inline");
+});

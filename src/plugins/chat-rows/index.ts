@@ -5,17 +5,32 @@
 // a `changed` event when the renderers change. Turned off, the agent cannot reach it and the rows still draw.
 //
 // The choices (a renderer off, the one chosen for a kind) are this plugin's state: plugin.state records on the box
-// (src/appPluginState.ts), keys "off:<renderer id>" = true and "use:<kind>" = <renderer id>. So they survive a restart and
+// (src/appPluginState.ts), keys "off:<renderer id>" = true, "use:<kind>" = <renderer id> and "opt:<kind>:<option>" = a
+// renderer option's value (the plan's placement, the inline page's size: src/plugins/chat-rows/options.ts). So they survive a restart and
 // are the same in every window; the registry follows them (followRowPrefs, from the app's start, so the first paint
 // already has them), also while the plugin itself is off.
 import type { PluginApi } from "../../mountHost";
-import { CHAT_REVEAL_EVENT, describeRows, rowRenderer, setRowPrefs, subscribeRows, visibleRows } from "../../chatRows";
+import { CHAT_REVEAL_EVENT, describeRowOptions, describeRows, rowOptionProblem, rowRenderer, setRowOptionValues, setRowPrefs, subscribeRows, visibleRows } from "../../chatRows";
 import { appPluginState, setAppPluginState, subscribeAppPluginState } from "../../appPluginState";
 import { CHAT_ROWS_PLUGIN_ID } from "../../appPlugins";
 import { useStore } from "../../store";
 
 const OFF = "off:";
 const USE = "use:";
+const OPT = "opt:";
+
+/** The kept option values, from the plugin's state: {kind: {option: value}}. */
+export function rowOptionValues(state: Record<string, unknown> = appPluginState(CHAT_ROWS_PLUGIN_ID)): Record<string, Record<string, unknown>> {
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const [k, v] of Object.entries(state)) {
+    if (!k.startsWith(OPT)) continue;
+    const at = k.lastIndexOf(":");
+    const kind = k.slice(OPT.length, at);
+    const key = k.slice(at + 1);
+    if (kind && key && at > OPT.length) (out[kind] ??= {})[key] = v;
+  }
+  return out;
+}
 
 /** The kept choices, from the plugin's state. */
 export function rowPrefs(state: Record<string, unknown> = appPluginState(CHAT_ROWS_PLUGIN_ID)): { disabled: string[]; chosen: Record<string, string> } {
@@ -33,8 +48,10 @@ let following: (() => void) | null = null;
 export function followRowPrefs(): () => void {
   if (following) return following;
   const apply = () => {
-    const p = rowPrefs();
+    const state = appPluginState(CHAT_ROWS_PLUGIN_ID);
+    const p = rowPrefs(state);
     setRowPrefs(p.disabled, p.chosen);
+    setRowOptionValues(rowOptionValues(state));
   };
   apply();
   const offState = subscribeAppPluginState((id) => id === CHAT_ROWS_PLUGIN_ID && apply());
@@ -92,6 +109,11 @@ export function chatRowsOffers(doc: Document = document) {
           "Each kind of row (user, assistant, notice, working, divider, job, voice, voice-ask, plan, tool-call, tool-call:<Tool>, inline-html) with the renderer drawing it (active: builtin:<kind>, a plugin's <plugin id>#<kind>, or fallback = the plain text row) and every renderer registered for it (by, enabled, failures).",
         read: () => describeRows(),
       },
+      options: {
+        description:
+          "The app's own renderers' options, per kind (plan: placement inline | pinned | hidden, done line | full | hidden; inline-html: placement inline | viewer, foldInViewer, size auto | aspect=W/H | height=N, viewerButton): each with its description, values, default, value now and whether it is set. Set one with setOption.",
+        read: () => describeRowOptions(),
+      },
       kept: {
         description: "The choices kept on the box (the same in every window, after a restart): disabled = renderer ids turned off, chosen = {kind: renderer id}.",
         read: () => rowPrefs(),
@@ -133,6 +155,24 @@ export function chatRowsOffers(doc: Document = document) {
           const writes: [string, unknown][] = [[USE + kind, id]];
           if (id && rowPrefs().disabled.includes(id)) writes.push([OFF + id, null]);
           return { kind, using: id ?? "default", ...(await keep(writes)) };
+        },
+      },
+      setOption: {
+        description:
+          "Set an option of the app's own renderer of a kind (see options), live in every window and kept after a restart: e.g. {kind: \"plan\", key: \"placement\", value: \"pinned\"}, {kind: \"inline-html\", key: \"size\", value: \"aspect=4/3\"}, {kind: \"inline-html\", key: \"placement\", value: \"viewer\"}. value null: back to its default.",
+        args: {
+          type: "object",
+          properties: { kind: { type: "string" }, key: { type: "string" }, value: { type: ["string", "boolean", "number", "null"] } },
+          required: ["kind", "key", "value"],
+          additionalProperties: false,
+        },
+        run: async (a: Record<string, unknown>) => {
+          const kind = String(a.kind);
+          const key = String(a.key);
+          const value = a.value === undefined ? null : a.value;
+          const bad = rowOptionProblem(kind, key, value);
+          if (bad) throw new Error(bad);
+          return { kind, key, value: value ?? "default", ...(await keep([[`${OPT}${kind}:${key}`, value]])) };
         },
       },
       scrollTo: {

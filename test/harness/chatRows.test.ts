@@ -158,8 +158,8 @@ test("app/chat-rows offers its renderers and rows to the agent: list, read, act 
   const list = await ask({ op: "list" });
   const me = list.plugins.find((p: any) => p.id === "app/chat-rows");
   assert.ok(me, "listed");
-  assert.deepEqual(me.actions.map((a: any) => a.name).sort(), ["disable", "enable", "scrollTo", "toolRows", "use"]);
-  assert.deepEqual(me.state.map((s: any) => s.name).sort(), ["kept", "renderers", "rows"]);
+  assert.deepEqual(me.actions.map((a: any) => a.name).sort(), ["disable", "enable", "scrollTo", "setOption", "toolRows", "use"]);
+  assert.deepEqual(me.state.map((s: any) => s.name).sort(), ["kept", "options", "renderers", "rows"]);
 
   const read = await ask({ op: "read", plugin: "chat rows" });
   assert.equal(read.ok, true);

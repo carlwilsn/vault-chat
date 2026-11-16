@@ -22,7 +22,8 @@ import { useStore, type ChatMessage, type TodoItem } from "../../store";
 import { cn } from "../../lib/utils";
 import { boxLinkFor, fetchBoxFile } from "../../boxChat";
 import { AskOptions, ReplyCost, Subagents, Thought, isLegacySubagentRecord, withoutOptionList, type SubagentRec } from "../../chatExtras";
-import { kindOf, noteRowFailure, registerBuiltin, rowChain, rowsVersion, subscribeRows, toolChain, type RowData, type RowRenderer } from "../../chatRows";
+import { chainFor, kindOf, noteRowFailure, registerBuiltin, registerRowOptions, rowChain, rowOption, rowsVersion, subscribeRows, toolChain, type RowData, type RowRenderer } from "../../chatRows";
+import { inlineHtmlOptionDefs, planOptionDefs, type InlinePlacement, type PlanDone, type PlanPlacement } from "./options";
 
 // Markdown (math, tables, code, safe HTML, URLs) renders through the shared
 // pipeline (Markdown.tsx / mdPipeline.ts): data:image URLs and Windows
@@ -396,7 +397,7 @@ function AssistantBubble({ message, index, askLive = false, askChosen = "", onAs
               </summary>
               <div className="mt-2 space-y-2 pl-4 border-l border-border">
                 {calls.map((t, j) => (
-                  <Part key={j} chain={toolChain(t.name)} props={{ tool: t }} data={{ kind: "tool-call", index, message, tool: t }} />
+                  <ToolPart key={j} tool={t} index={index} message={message} />
                 ))}
               </div>
             </details>
@@ -426,12 +427,37 @@ function ToolCallRow({ tool: t }: ToolCallProps) {
   );
 }
 
-/** The plan card under the reply that wrote it. */
-export function PlanRow({ todos, index }: { todos: TodoItem[]; index?: number }) {
-  return <Row kind="plan" props={{ todos, index }} data={{ kind: "plan", index, todos }} />;
+/** One tool call: its renderer chain for this call (a plugin's `when` may step aside for it). */
+function ToolPart({ tool, index, message }: { tool: ToolCallProps["tool"]; index?: number; message: ChatMessage }) {
+  const data: RowData = { kind: "tool-call", index, message, tool };
+  return <Part chain={chainFor(toolChain(tool.name), data)} props={{ tool }} data={data} />;
 }
+
+// The plan: where it shows is the plan renderer's own choice (its `placement` option, settable live through
+// app/chat-rows: src/plugins/chat-rows/options.ts), not the chat pane's. The pane offers two places, under the reply
+// that wrote it (PlanRow) and above the composer (PinnedPlan); each draws only when the plan is placed there.
+
+/** The plan card under the reply that wrote it (placement "inline"). */
+export function PlanRow({ todos, index }: { todos: TodoItem[]; index?: number }) {
+  useSyncExternalStore(subscribeRows, rowsVersion, rowsVersion);
+  if (rowOption<PlanPlacement>("plan", "placement") !== "inline") return null;
+  return <Row kind="plan" props={{ todos, index }} data={{ kind: "plan", index, todos, placement: "inline" }} />;
+}
+
+/** The current plan above the composer (placement "pinned"): while the agent works or a step is left. */
+export function PinnedPlan({ todos, busy }: { todos: TodoItem[]; busy: boolean }) {
+  useSyncExternalStore(subscribeRows, rowsVersion, rowsVersion);
+  if (rowOption<PlanPlacement>("plan", "placement") !== "pinned" || todos.length === 0) return null;
+  if (!busy && !todos.some((t) => t.status !== "completed")) return null;
+  return (
+    <div className="mb-1.5 max-h-40 overflow-auto" data-el="todos-pinned">
+      <Row kind="plan" props={{ todos }} data={{ kind: "plan", todos, placement: "pinned" }} />
+    </div>
+  );
+}
+
 function PlanCardRow({ todos }: { todos: TodoItem[] }) {
-  return <AgentTodoList todos={todos} />;
+  return <AgentTodoList todos={todos} done={rowOption<PlanDone>("plan", "done")} />;
 }
 
 // ---------------------------------------------------------------- the dispatcher
@@ -508,7 +534,7 @@ function drawRenderer(r: RowRenderer | undefined, props: object, data: RowData):
 /** A row of the transcript: follows the registry live (a plugin's renderer on or off redraws it). */
 function Row({ kind, props, data }: { kind: string; props: object; data: RowData }) {
   useSyncExternalStore(subscribeRows, rowsVersion, rowsVersion);
-  return <RowBoundary chain={rowChain(kind)} props={props} data={data} />;
+  return <RowBoundary chain={chainFor(rowChain(kind), data)} props={props} data={data} />;
 }
 
 /** A part of a row (a tool call): the built-in draws as before (the row's own boundary covers it); a plugin's renderer
@@ -521,10 +547,24 @@ function Part({ chain, props, data }: ChainProps) {
 /** A vault .html shown inline (in image syntax): its renderer, live. */
 function InlineHtmlPart(props: { src: string; alt?: string; sizeHint?: string }) {
   useSyncExternalStore(subscribeRows, rowsVersion, rowsVersion);
-  return <Part chain={rowChain("inline-html")} props={props} data={{ kind: "inline-html", src: props.src, alt: props.alt }} />;
+  const data: RowData = { kind: "inline-html", src: props.src, alt: props.alt };
+  return <Part chain={chainFor(rowChain("inline-html"), data)} props={props} data={data} />;
 }
+/** The app's own inline page. Its options (src/plugins/chat-rows/options.ts) decide: live in the chat or only a button
+ *  that opens it in the viewer, whether it folds to that button while the viewer shows it, its frame's size when the
+ *  page asks none, and the "Open in viewer" button on the frame. */
 function InlineHtmlRow({ src, alt, sizeHint }: { src: string; alt?: string; sizeHint?: string }) {
-  return <InlineHtmlFrame src={src} alt={alt} sizeHint={sizeHint} />;
+  return (
+    <InlineHtmlFrame
+      src={src}
+      alt={alt}
+      sizeHint={sizeHint}
+      placement={rowOption<InlinePlacement>("inline-html", "placement")}
+      foldInViewer={rowOption<boolean>("inline-html", "foldInViewer")}
+      size={rowOption<string>("inline-html", "size")}
+      viewerButton={rowOption<boolean>("inline-html", "viewerButton")}
+    />
+  );
 }
 
 
@@ -659,11 +699,12 @@ function CompactionDivider({ message, index }: { message: ChatMessage; index?: n
 // Compact visual of the agent's current plan. Shows one row per todo,
 // uses different glyphs/styles for pending / in_progress / completed.
 // The agent maintains this list via the TodoWrite tool.
-export function AgentTodoList({ todos }: { todos: TodoItem[] }) {
+export function AgentTodoList({ todos, done: whenDone = "line" }: { todos: TodoItem[]; done?: PlanDone }) {
   const done = todos.filter((t) => t.status === "completed").length;
   const [open, setOpen] = useState(false);
-  // Every step done: one quiet line (click for the steps).
-  if (planDone(todos) && !open) {
+  // Every step done: one quiet line (click for the steps), or nothing, or the steps as they are (the plan's `done`).
+  if (planDone(todos) && whenDone === "hidden") return null;
+  if (planDone(todos) && !open && whenDone === "line") {
     return (
       <button
         onClick={() => setOpen(true)}
@@ -733,3 +774,5 @@ registerBuiltin("assistant", AssistantBubble);
 registerBuiltin("tool-call", ToolCallRow);
 registerBuiltin("plan", PlanCardRow);
 registerBuiltin("inline-html", InlineHtmlRow);
+registerRowOptions("plan", planOptionDefs);
+registerRowOptions("inline-html", inlineHtmlOptionDefs);

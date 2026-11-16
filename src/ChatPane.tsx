@@ -25,7 +25,7 @@ import { OngoingLine } from "./OngoingLine";
 import { useChatGate } from "./chatGate";
 import { ComposerSlot } from "./ComposerPanel";
 import { scrollHold } from "./plugins/composer/draft";
-import { AgentTodoList, MessageBubble, PlanRow, chatComponents } from "./plugins/chat-rows/rows";
+import { MessageBubble, PinnedPlan, PlanRow, chatComponents } from "./plugins/chat-rows/rows";
 import { CHAT_REVEAL_EVENT, setVisibleRows } from "./chatRows";
 import { CHAT_ROWS_PLUGIN } from "./appPlugins";
 import * as chatRowsPlugin from "./plugins/chat-rows";
@@ -260,7 +260,6 @@ export function ChatPane() {
     );
   }
 
-  const planInline = uiChoice("todos") === "inline";
   const verdict = activeConv?.state === "done" ? activeConv.verdict : undefined;
   const totalCost = uiChoice("cost") === "total" ? formatCost(activeConv?.costUsd ?? messages.reduce((n, m) => n + (m.costUsd ?? m.usage?.costUsd ?? 0), 0)) : undefined;
   let lastVisible = -1;
@@ -318,7 +317,7 @@ export function ChatPane() {
           onOpenSubagent={openSubagent}
           onSubagent={controlSubagent}
           onRetry={retryTurn}
-          plans={planInline ? plans : null}
+          plans={plans}
         />
 
 
@@ -392,11 +391,8 @@ export function ChatPane() {
 
         <div className="group/composer p-3 max-w-[820px] mx-auto w-full">
           {runningTasks.length > 0 && <Subagents list={runningTasks} variant="strip" onControl={controlSubagent} />}
-          {todos.length > 0 && uiChoice("todos") === "pinned" && (busy || todos.some((t) => t.status !== "completed")) && (
-            <div className="mb-1.5 max-h-40 overflow-auto" data-el="todos-pinned">
-              <AgentTodoList todos={todos} />
-            </div>
-          )}
+          {/* The plan above the composer, when the plan renderer places it there (its placement option). */}
+          <PinnedPlan todos={todos} busy={busy} />
           {activeConv && (
             <OngoingLine
               conversation={{ ...activeConv, messages, ...(uiChoice("cost") !== "reply" ? { costUsd: undefined } : {}) }}
@@ -429,7 +425,8 @@ const HistoryList = memo(function HistoryList({
   onOpenSubagent: (id: string) => void;
   onSubagent: (sid: string, op: "steer" | "stop", text?: string) => Promise<string | null>;
   onRetry: () => void;
-  plans: PlanCard[] | null;
+  /** Each plan's card under the reply that wrote it; the plan renderer decides whether it shows there (PlanRow). */
+  plans: PlanCard[];
 }) {
   // What is on screen, for the agent (src/chatRows.ts visibleRows; read only when asked).
   useEffect(() => setVisibleRows(messages, windowStart, isCompactionDivider as (m: unknown) => boolean), [messages, windowStart]);
@@ -452,7 +449,7 @@ const HistoryList = memo(function HistoryList({
               voiceCont={!!m.voice && i > 0 && !!messages[i - 1]?.voice && !messages[i - 1]?.hidden}
             />
             {/* Native writes own their snapshot; never lift old work into the live window. */}
-            {plans?.filter((p) => p.index === i).map((p) => <PlanRow key={p.id} todos={p.todos} index={i} />)}
+            {plans.filter((p) => p.index === i).map((p) => <PlanRow key={p.id} todos={p.todos} index={i} />)}
           </Fragment>
         ),
       )}

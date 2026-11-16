@@ -66,10 +66,12 @@ export type HostBackend = {
   /** A picture of the app's window or one column; absent: this host has no screen to draw. */
   capture?(target: CaptureTarget): Promise<Capture>;
   /** Draw one kind of chat row with a plugin's renderer (src/chatRows.ts); the undo. Absent: no chat here. */
-  registerChatRow?(kind: string, render: ChatRowRender, by: string): () => void;
+  registerChatRow?(kind: string, render: ChatRowRender, by: string, opts?: ChatRowOptions): () => void;
 };
 /** A chat row renderer: draw `row` ({kind, index?, message?, tool?, todos?, src?, alt?}) into `el`; return a cleanup. */
-export type ChatRowRender = (el: HTMLElement, row: { kind: string; index?: number; message?: unknown; tool?: unknown; todos?: unknown; src?: string; alt?: string }) => void | (() => void);
+/** when(row): the rows of its kind this renderer draws (false: the next in line draws that row; e.g. only some notices). */
+export type ChatRowOptions = { when?: (row: Parameters<ChatRowRender>[1]) => boolean };
+export type ChatRowRender = (el: HTMLElement, row: { kind: string; index?: number; message?: unknown; tool?: unknown; todos?: unknown; src?: string; alt?: string; placement?: string }) => void | (() => void);
 
 export type HostApi = {
   readonly version: number;
@@ -98,8 +100,9 @@ export type HostApi = {
     prime(lines: HostChatLine[]): Promise<boolean>;
     /** Draw one kind of the transcript's rows ("assistant", "notice", "tool-call", "tool-call:Bash", "plan", "inline-html",
      *  ...) with this renderer, live, until the plugin stops (or the returned off). A throw falls back to the app's own
-     *  renderer for that row. Throws on a bad kind. */
-    row(kind: string, render: ChatRowRender): () => void;
+     *  renderer for that row. Throws on a bad kind. opts.when(row): draw only the rows it answers true for (the others
+     *  keep the next renderer in line: hide only some notices, restyle only some tool calls). */
+    row(kind: string, render: ChatRowRender, opts?: ChatRowOptions): () => void;
   };
   layout: { get(): HostLayout; apply(ops: LayoutOp | LayoutOp[]): Promise<LayoutResult> };
   /** A PNG of the app's own window ("window", default) or its "viewer" / "chat" column; rejects with why it can't. */
@@ -217,10 +220,10 @@ export function createHostApi(b: HostBackend, fx: Effects, alive: () => boolean,
     panel: { close: act(() => b.closeNotesPanel(), undefined) },
     chat: {
       prime: act((l) => b.primeChat(l), Promise.resolve(false)),
-      row(kind, render) {
+      row(kind, render, opts) {
         if (!alive()) return () => {};
         if (!b.registerChatRow) throw new Error("no chat here to draw rows in");
-        return fx.add(`chat row ${String(kind)}`, b.registerChatRow(String(kind), render, id));
+        return fx.add(`chat row ${String(kind)}`, b.registerChatRow(String(kind), render, id, opts));
       },
     },
     layout: {

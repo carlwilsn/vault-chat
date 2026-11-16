@@ -126,7 +126,7 @@ export const appHostBackend: HostBackend = {
     return (await import("./screenCapture")).captureWindow(target, { chatFullscreen: s.chatFullscreen, chatPoppedOut: s.popoutOpen });
   },
   applyLayout: (ops) => applyLayoutOps(ops, appLayoutIO),
-  registerChatRow: (kind, render, by) => registerRow(kind, render, by),
+  registerChatRow: (kind, render, by, opts) => registerRow(kind, render, by, opts),
   async primeChat(lines) {
     const store = useStore.getState();
     // Box mode: the box writes the chat; these lines go to it as they are.
