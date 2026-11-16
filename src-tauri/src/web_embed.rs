@@ -164,6 +164,7 @@ pub async fn web_embed_open(
         return Err("only public http(s) pages open inline".into());
     }
     let data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("web-embed");
+    let _ = std::fs::create_dir_all(&data_dir);
     let app2 = app.clone();
     on_main(&app, move || {
         let label = window.label().to_string();
