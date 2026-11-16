@@ -180,57 +180,68 @@ vault/conversation, labelled with their bound device. This does not auto-inject
 a prompt, expose the private service, return command keys or accept model/client
 arguments selecting a different authority. The native per-turn hook is unchanged.
 
-### Claude Code on the laptop
+### Claude Code on the laptop (and any other AI)
 
-**After Keep deploys this implementation**, the laptop must be signed into the
-allowed Tailscale identity and able to reach `thinkbox.tailbb647d.ts.net`.
-Read-only daemon checks on the box confirmed this exact `Self.DNSName` and the
-existing HTTPS port 443 `/` proxy to `http://127.0.0.1:8848`; no production setting
-was changed. The default Host discovery above uses that same name. Do not add a
-new credential, enable Funnel, expose another listener or bypass authentication.
-The box continues loading its already-installed phone/laptop token through
-`phoneToken()`/`tokenOk()`; this change neither reads nor rotates it for setup.
-Carl supplies his existing client credential when pairing; no agent needs to
-retrieve or print it.
+The endpoint is live on the box's existing private HTTPS route (Tailscale Serve
+`https://thinkbox.tailbb647d.ts.net` -> `127.0.0.1:8848`); no new port,
+listener, Funnel or token. The laptop must be signed into the allowed Tailscale
+identity. The credential is the one the laptop app and phone already use; it
+goes in an environment variable on the laptop, never in a config file, URL,
+transcript or issue, and no agent retrieves or prints it.
 
-Claude Code supports HTTP transports and environment expansion in `.mcp.json`
-([official client documentation](https://code.claude.com/docs/en/mcp)). Use:
+1. Once, in PowerShell, store the existing credential as a user environment
+   variable (typed at a hidden prompt, not into the command line):
 
-```json
-{
-  "mcpServers": {
-    "vault_chat": {
-      "type": "http",
-      "url": "https://thinkbox.tailbb647d.ts.net/mcp?vault=vault-chat&device=laptop&conversation=none",
-      "headers": { "X-Vault-Token": "${VAULT_CHAT_TOKEN}" }
-    }
-  }
-}
-```
+   ```powershell
+   [Environment]::SetEnvironmentVariable("VAULT_CHAT_TOKEN", [Net.NetworkCredential]::new("", (Read-Host "vault-chat token" -AsSecureString)).Password, "User")
+   ```
 
-This literal URL binds the existing `vault-chat` vault. To bind Carl's school
-vault instead, change only `vault=vault-chat` to `vault=school2`.
-Supply `VAULT_CHAT_TOKEN` through the laptop's existing credential-manager/secret
-injection facility, using its existing vault-chat credential. Do not paste a
-credential into a shell command, configuration file, URL, transcript or issue;
-do not run a CLI command that expands it into persisted header text. The
-variable references above are literal references, not example credentials.
-Start Claude Code from that environment, approve the configured server, and use
-`/mcp` to check its connection. A harmless first request is “Use vault_chat's
-BoardLook to tell me whether any boards exist; change nothing.” An explicit
-conversation ID may replace `none` only when the client should be bound to that
-real thread. Keep `none` for an independent client.
+2. Add the server to Claude Code for every project (single quotes, so the shell
+   leaves `${VAULT_CHAT_TOKEN}` for Claude Code to expand when it connects;
+   the stored config holds only the reference):
+
+   ```
+   claude mcp add --transport http --scope user vault_chat "https://thinkbox.tailbb647d.ts.net/mcp?vault=school2&device=laptop&conversation=none" --header 'X-Vault-Token: ${VAULT_CHAT_TOKEN}'
+   ```
+
+   (In cmd.exe use double quotes around the header: cmd does not expand `${...}`.)
+   `vault=` names the vault (`school2`, or `vault-chat`); `device=laptop` makes
+   Show/Screen/Layout/Act land on the laptop. `conversation` is a real thread ID or
+   literal `none` (an independent client, the usual case).
+
+3. Open a new terminal, run `claude mcp list` (it should say `Connected`), and
+   ask e.g. "Use vault_chat's Show to open README.md on my laptop".
+
+`server/test/mcpClaudeCodeClient.test.ts` runs exactly this line with the pinned
+Claude Code CLI against the built server behind a Serve-like proxy: `mcp list`
+connects, the stored config never contains the credential, and a scripted
+model turn finds `CreateNote` through Claude Code's ToolSearch and calls it, and
+the note lands in the vault.
+
+**Any other MCP client.** The endpoint is standard Streamable HTTP MCP, so any
+AI harness that speaks MCP drives vault-chat the same way. The credential is
+accepted as `X-Vault-Token: <token>` or as the standard
+`Authorization: Bearer <token>` (for clients that only know bearer auth); never
+as a URL parameter or cookie. Both still require the Serve-vouched Tailscale login.
+
+**What an outside client can do.** Every vault-chat tool a side thread may use:
+Show, Layout, Screen, Act, Drive, Timing, LaptopBuild, PluginRead/PluginAct
+(every live plugin's offers: file tree, notes panel, vault plugins), Settings,
+the Notes tools, BoardLook/BoardSend/BoardInbox, Lookup/PdfRead/PdfPages,
+ListConversations/ReadConversation/PostToConversation (hand work to a chat),
+Rename/Delete/RestoreConversation, ListProjects/OpenProject/RestoreProject,
+JobList/JobStatus, Notify, RecentActivity, SearchHistory, Catalog, Plugins,
+WebFetch, Cost, RecordUI (browser-only), and the `vault-chat://context/you`
+resource. Not listed (they need an owning
+vault-chat turn): AskUser, SubmitChange, TodoWrite, BoardMake, StartJob, JobStop,
+JobSteer, ScheduleWake, Compact; nor Carl's vault tools or a shell (above).
+The outside client's own file and shell tools are its own, on its own machine.
 
 A missing credential variable, explicitly disabled Host allowlist, failed local
 Host discovery, wrong vault/conversation, absent header credential or missing
-Tailscale login must fail closed. `mcpDeployment.test.ts` proves an independent
-SDK can list tools and call BoardLook through the **built server's normal
-`/mcp` mount**, default Host discovery, a real loopback proxy hop and the actual
-existing-token loader, using isolated synthetic credentials and installed
-bubblewrap. It also tests rejection paths; it does not replace laptop pairing.
-A successful SDK call over an internal per-process capability does **not**
-establish this route. Production HTTPS at the changed build remains unproven
-until Keep deploys it; Carl will pair Claude Code himself afterward.
+Tailscale login fail closed. `mcpDeployment.test.ts` also proves an independent
+SDK through the built server's normal mount and the actual token loader, with
+isolated synthetic credentials, and the rejection paths.
 
 ## Verification and limitations
 
@@ -296,7 +307,8 @@ bash command is still running; `streaming-completed.png` shows both final lines.
 `streaming-ui-result.json` records the live stop control, first/final timestamps
 and no page errors. These are in the vault's `.vault-chat/visuals/mcp-tools/`;
 the realbox preview navigation is fixture chrome, not the isolated real chat
-backend. This is not authenticated private-HTTPS/laptop-client proof, which is
+backend. This is not authenticated private-HTTPS/laptop-client proof (see
+mcpClaudeCodeClient.test.ts for the Claude Code client path), which is
 still missing. Full regression gates
 are run separately by the supervising agent; do not confuse focused passes
 with those gates or claim that this document supplies release evidence.

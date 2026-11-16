@@ -883,7 +883,9 @@ export class Engine {
   async mcpBinding(context: { conversation: string | null; device: "laptop" | "phone" | "board" }) {
     return this.scoped(async () => {
       if (context.conversation && !(await readConv(this.d.vault, context.conversation))) return null;
-      const builtin = agentToolSpecs().map((t) => t.name === "RecordUI" ? { ...t, description: `${t.description} External clients: browser-only http(s) pages; run steps and local-file navigation are refused. Omit out: a fresh vault visuals directory is allocated.` } : t);
+      // Only what this caller may run is listed: a tool that needs an owning turn (its question, plan,
+      // background maker, job, wake) is left out rather than listed and then refused.
+      const builtin = agentToolSpecs().filter((t) => !TURN_ONLY_TOOLS.has(t.name) && t.name !== "Compact").map((t) => t.name === "RecordUI" ? { ...t, description: `${t.description} External clients: browser-only http(s) pages; run steps and local-file navigation are refused. Omit out: a fresh vault visuals directory is allocated.` } : t);
       // Carl's vault tools (.vault-chat/tools) are not offered here: each runs his own code in the
       // command sandbox with every command key (vaultTools.ts), the shell authority this endpoint
       // withholds. For the same reason an external write never lands in that folder.
@@ -899,6 +901,7 @@ export class Engine {
           return `Bound device: ${context.device}; conversation: ${context.conversation ?? "none"}.\n${(await this.scoped(() => this.you({ convId: context.conversation, since: null }))).text}`;
         },
         call: async (name: string, args: Record<string, unknown>, contextOfCall: { signal: AbortSignal }) => this.scoped(async () => {
+          if (TURN_ONLY_TOOLS.has(name) || name === "Compact") return { ok: false, text: `${name} needs an owning vault-chat turn; an external MCP client cannot borrow a chat's live turn.` };
           if (!listed.has(name)) return { ok: false, text: `${name} is not available to external MCP clients.` };
           if ((name === "write" || name === "edit") && typeof args.path === "string") {
             const target = resolve(this.d.vault, args.path);
@@ -906,7 +909,6 @@ export class Engine {
             if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return { ok: false, text: "External MCP clients cannot write vault tools (.vault-chat/tools)." };
           }
           if (PI_BUILTIN_TOOLS.includes(name)) return fs.call(name, args, { ...contextOfCall, requestId: "external" });
-          if (TURN_ONLY_TOOLS.has(name) || name === "Compact") return { ok: false, text: `${name} needs an owning vault-chat turn; an external MCP client cannot borrow a chat's live turn.` };
           if (name === "RecordUI") return externalRecordUI(this.d.shell?.(), this.d.vault, args,
             (path, write) => this.d.backend.externalPath(this.d.vault, path, write), { signal: contextOfCall.signal });
           if (name === "PdfRead" || name === "PdfPages") {
