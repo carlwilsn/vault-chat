@@ -3,7 +3,7 @@ import { PanelLeftOpen } from "lucide-react";
 import { ChatPane } from "./ChatPane";
 import { ChatsSidebar } from "./ChatsPanel";
 import { ChatTitle } from "./ProjectChip";
-import { WindowControls } from "./Titlebar";
+import { WindowControls } from "./WindowControls";
 import { useStore } from "./store";
 import { isPopout } from "./windowKind";
 

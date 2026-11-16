@@ -1,465 +1,72 @@
-import { useEffect, useRef, useState } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { invoke } from "@tauri-apps/api/core";
-import { Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, RefreshCw, StickyNote, GitMerge, CloudOff, FileWarning, AlertTriangle, WifiOff } from "lucide-react";
-import { useStore, type FileEntry } from "./store";
-import { NOTES_PLUGIN_ID } from "./appPlugins";
-import { usePluginDesired } from "./pluginSupervisorApp";
-import { runningTaskCount } from "./backgroundTasks";
-import { openChatPopout } from "./sync";
-import { VoiceCockpit, VoiceMicGroup } from "./VoiceCockpit";
+// Where the title bar is mounted. The bar is a plugin (src/plugins/titlebar, app/titlebar), mounted through the plugin
+// host and the supervisor's records (src/PluginMount.tsx AppPluginMount). It holds the window controls, so it never
+// just disappears:
+//  - while the records are not known yet, the bar itself is drawn here in the app's own tree (nothing flashes);
+//  - turned off, or failing to mount or render, a minimal built-in bar stands in (TitlebarFallback): the window drags
+//    by it, the file panel and chat toggles, the vault picker (its own plugin, with its own fallback), Settings and the
+//    window controls (core, src/WindowControls.tsx), with one line that says what happened and Turn on / Reload.
+//    Refresh, Hidden files, Notes, the apps launcher, the mic, plugins' items, the sync chip, the terminal and
+//    pop-out are the plugin's.
+import { PanelLeft, PanelRight, Settings } from "lucide-react";
+import { useStore } from "./store";
+import { TITLEBAR_PLUGIN } from "./appPlugins";
+import { AppPluginMount, type PluginFallbackInfo } from "./PluginMount";
+import { PluginOff } from "./PluginOff";
 import { VaultPicker } from "./VaultPicker";
-import { AppsLauncher } from "./AppsLauncher";
-import { subscribeBoxSync, openTailscale, boxSyncNow, type BoxSyncState } from "./vaultSync";
-import { openTerminal, subscribeTerminalNote, terminalBoxName, terminalTitle } from "./terminal";
+import { WindowControls } from "./WindowControls";
+import * as titlebarPlugin from "./plugins/titlebar";
+import { Bar } from "./plugins/titlebar/Bar";
 
-/** With the chat closed: "1 running" while the agent's background tasks work; a click opens the chat. */
-function TasksRunning({ hidden, onOpen }: { hidden: boolean; onOpen: () => void }) {
-  const n = useStore((s) => runningTaskCount(s.conversations));
-  if (hidden || !n) return null;
-  return (
-    <button onClick={onOpen} data-el="titlebar-tasks" title="Background tasks running — open the chat" className="h-6 mr-2 px-2 flex items-center gap-1.5 rounded-full border border-border/60 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/60">
-      <span className="relative inline-flex h-1.5 w-1.5">
-        <span className="absolute inset-0 rounded-full bg-primary opacity-60 animate-ping" />
-        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
-      </span>
-      <span className="tabular-nums">{n} running</span>
-    </button>
-  );
+/** The bar across the top of the main window. */
+export function Titlebar() {
+  return <AppPluginMount plugin={TITLEBAR_PLUGIN} module={titlebarPlugin} fallback={(f) => (f.pending ? <Bar /> : <TitlebarFallback info={f} />)} />;
 }
 
-export function Titlebar() {
-  const {
-    vaultPath,
-    setFiles,
-    setShowSettings,
-    showSettings,
-    leftCollapsed,
-    rightCollapsed,
-    popoutOpen,
-    toggleLeft,
-    toggleRight,
-    setShowNotesPanel,
-    showNotesPanel,
-    notes,
-  } = useStore();
-  // The Notes panel is a plugin (src/plugins/notes): turned off, its button goes with it.
-  const notesOn = usePluginDesired(NOTES_PLUGIN_ID)?.state === "running";
-  const [hiddenOpen, setHiddenOpen] = useState(false);
-  const [hiddenLines, setHiddenLines] = useState<string[]>([]);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [refreshSpin, setRefreshSpin] = useState(false);
+const BTN = "h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60";
 
-  const refreshTree = async () => {
-    if (!vaultPath || refreshSpin) return;
-    setRefreshSpin(true);
-    try {
-      const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: vaultPath });
-      setFiles(listed);
-    } catch (e) {
-      console.error("[tree] refresh failed:", e);
-    } finally {
-      // Keep the spin visible briefly so a fast refresh still reads as feedback.
-      setTimeout(() => setRefreshSpin(false), 250);
-    }
-  };
-
-
-  const openHidden = async () => {
-    if (!vaultPath) return;
-    try {
-      const lines = await invoke<string[]>("read_ignore_lines", { vault: vaultPath });
-      setHiddenLines(lines);
-      setSelected(new Set());
-      setHiddenOpen(true);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const toggleSel = (line: string) =>
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(line)) next.delete(line);
-      else next.add(line);
-      return next;
-    });
-
-  const unhideSelected = async () => {
-    if (!vaultPath || selected.size === 0) {
-      setHiddenOpen(false);
-      return;
-    }
-    try {
-      await invoke("remove_from_ignore", {
-        vault: vaultPath,
-        relativePaths: Array.from(selected),
-      });
-      const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: vaultPath });
-      setFiles(listed);
-    } catch (e) {
-      console.error(e);
-    }
-    setHiddenOpen(false);
-  };
-
-  useEffect(() => {
-    if (!hiddenOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setHiddenOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [hiddenOpen]);
-
-  // The mic button; Ctrl+D (App.tsx, so it works in fullscreen chat too) runs
-  // the same toggleVoice.
-  const isMac =
-    typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
-
+/** The minimal built-in bar: drag, the two panels, the vault picker, Settings, the window controls. */
+export function TitlebarFallback({ info }: { info: PluginFallbackInfo }) {
+  const leftCollapsed = useStore((s) => s.leftCollapsed);
+  const rightCollapsed = useStore((s) => s.rightCollapsed);
+  const popoutOpen = useStore((s) => s.popoutOpen);
+  const toggleLeft = useStore((s) => s.toggleLeft);
+  const toggleRight = useStore((s) => s.toggleRight);
+  const showSettings = useStore((s) => s.showSettings);
+  const setShowSettings = useStore((s) => s.setShowSettings);
+  const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
   return (
-    <>
-    <div
-      data-tauri-drag-region
-      className="h-9 flex items-center bg-card border-b border-border select-none shrink-0 relative"
-    >
-      <VoiceCockpit />
-      <div
-        className="flex items-center gap-1 px-2"
-        style={isMac ? { paddingLeft: 76 } : undefined}
-      >
-        <button
-          onClick={toggleLeft}
-          className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 ${leftCollapsed ? "text-muted-foreground" : "text-foreground/90"}`}
-          title={`${leftCollapsed ? "Show" : "Hide"} file panel (Ctrl+B)`}
-        >
+    <div data-tauri-drag-region data-el="titlebar-fallback" className="h-9 flex items-center bg-card border-b border-border select-none shrink-0 relative">
+      <div className="flex items-center gap-1 px-2" style={isMac ? { paddingLeft: 76 } : undefined}>
+        <button onClick={toggleLeft} className={`${BTN} ${leftCollapsed ? "text-muted-foreground" : "text-foreground/90"}`} title={`${leftCollapsed ? "Show" : "Hide"} file panel (Ctrl+B)`}>
           <PanelLeft className="h-3.5 w-3.5" />
         </button>
         <VaultPicker />
-        {vaultPath && (
-          <>
-            <button
-              onClick={refreshTree}
-              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground disabled:opacity-50"
-              title="Refresh file tree"
-              disabled={refreshSpin}
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${refreshSpin ? "animate-spin" : ""}`} />
-            </button>
-            <button
-              onClick={openHidden}
-              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground"
-              title="Hidden files"
-            >
-              <Eye className="h-3.5 w-3.5" />
-            </button>
-            {notesOn && <button
-              onClick={() => setShowNotesPanel(!showNotesPanel)}
-              className={`h-7 w-7 flex items-center justify-center rounded relative ${
-                showNotesPanel
-                  ? "bg-accent text-foreground"
-                  : "hover:bg-accent/60 text-muted-foreground"
-              }`}
-              title="Notes (Ctrl+N to create)"
-            >
-              <StickyNote className="h-3.5 w-3.5" />
-              {notes.filter((n) => n.status === "open").length > 0 && (
-                <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-primary" />
-              )}
-            </button>}
-            <AppsLauncher />
-            <VoiceMicGroup />
-          </>
-        )}
       </div>
-
+      {info.off ? (
+        <PluginOff path={TITLEBAR_PLUGIN.id} desired={info.off} className="py-0 min-w-0" />
+      ) : (
+        <div data-el="titlebar-fallback-error" className="flex items-center gap-2 px-3 min-w-0 text-[11.5px] text-muted-foreground">
+          <span className="truncate" title={info.error ?? ""}>The title bar stopped; a plain one until it is back.</span>
+          <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
+            Reload
+          </button>
+        </div>
+      )}
       <div data-tauri-drag-region className="flex-1 h-full" />
-
-      <SyncChip />
-
-      <TasksRunning hidden={!rightCollapsed || popoutOpen} onOpen={toggleRight} />
-
       <div className="flex items-center">
         <button
           onClick={toggleRight}
           disabled={popoutOpen}
-          className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 mr-1 disabled:opacity-40 disabled:cursor-not-allowed ${rightCollapsed ? "text-muted-foreground" : "text-foreground/90"}`}
-          title={
-            popoutOpen
-              ? "Chat is popped out — close the popout window to dock"
-              : `${rightCollapsed ? "Show" : "Hide"} chat panel (Ctrl+Shift+B)`
-          }
+          className={`${BTN} mr-1 disabled:opacity-40 disabled:cursor-not-allowed ${rightCollapsed ? "text-muted-foreground" : "text-foreground/90"}`}
+          title={popoutOpen ? "Chat is popped out — close the popout window to dock" : `${rightCollapsed ? "Show" : "Hide"} chat panel (Ctrl+Shift+B)`}
         >
           <PanelRight className="h-3.5 w-3.5" />
         </button>
-        <button
-          onClick={() => openChatPopout().catch((err) => console.error("[popout] failed:", err))}
-          disabled={popoutOpen}
-          className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground mr-1 disabled:opacity-40 disabled:cursor-not-allowed"
-          title={popoutOpen ? "Chat is popped out" : "Pop out chat"}
-        >
-          <ExternalLink className="h-3.5 w-3.5" />
-        </button>
-        <TerminalButton vaultPath={vaultPath} />
-        <button
-          onClick={() => setShowSettings(!showSettings)}
-          className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground mr-1"
-          title="Settings"
-        >
+        <button onClick={() => setShowSettings(!showSettings)} className={`${BTN} text-muted-foreground mr-1`} title="Settings">
           <Settings className="h-3.5 w-3.5" />
         </button>
         <WindowControls />
       </div>
     </div>
-    {hiddenOpen && (
-      <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-        onMouseDown={(e) => {
-          if (e.target === e.currentTarget) setHiddenOpen(false);
-        }}
-      >
-        <div
-          className="w-[420px] max-h-[70vh] flex flex-col rounded-md border border-border bg-card shadow-xl"
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <div className="px-4 pt-4 pb-2">
-            <div className="text-[13px] font-semibold text-foreground">Hidden files</div>
-            <div className="text-[11.5px] text-muted-foreground mt-0.5">
-              {hiddenLines.length === 0
-                ? "Nothing hidden in this vault."
-                : "Select entries to unhide. The agent can still see hidden files."}
-            </div>
-          </div>
-          <div className="flex-1 overflow-auto px-2 py-1 min-h-0">
-            {hiddenLines.map((line) => (
-              <label
-                key={line}
-                className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/60 cursor-pointer text-[12.5px]"
-              >
-                <input
-                  type="checkbox"
-                  checked={selected.has(line)}
-                  onChange={() => toggleSel(line)}
-                  className="vc-checkbox shrink-0"
-                />
-                <span className="truncate font-mono text-[11.5px] text-foreground/90">{line}</span>
-              </label>
-            ))}
-          </div>
-          <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-border/60">
-            <div className="text-[11px] text-muted-foreground">
-              {selected.size > 0 ? `${selected.size} selected` : ""}
-            </div>
-            <div className="flex gap-2">
-              <button
-                className="px-3 py-1 rounded text-[12px] hover:bg-accent/60 text-foreground"
-                onClick={() => setHiddenOpen(false)}
-              >
-                Close
-              </button>
-              <button
-                className="px-3 py-1 rounded text-[12px] bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed"
-                disabled={selected.size === 0}
-                onClick={unhideSelected}
-              >
-                Unhide
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    )}
-    </>
-  );
-}
-
-// Box sync chip: shown ONLY when something needs attention (a conflict that
-// closed the merge gate, Tailscale on this laptop not connected (at once, with
-// Open Tailscale), the box unreachable for over a minute, a file over 50 MB
-// whose bytes failed to reach the box's LFS store, a GitHub backup failing for 10 min).
-// Amber, red after 10 minutes. Click for the details.
-function SyncChip() {
-  const [st, setSt] = useState<BoxSyncState | null>(null);
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement | null>(null);
-  useEffect(() => subscribeBoxSync(setSt), []);
-  const att = st?.attention ?? null;
-  useEffect(() => {
-    if (!att) setOpen(false);
-  }, [att]);
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-  const [tsError, setTsError] = useState<string | null>(null);
-  if (!att || !st) return null;
-  const canOpenTs = att.kind === "tailscale" && !!st.tailscale?.canOpen;
-  const openTs = async () => {
-    setTsError(null);
-    try {
-      await openTailscale();
-      // Once it's connected the next cycle clears the chip; nudge one sooner.
-      window.setTimeout(() => void boxSyncNow(st.vault), 8000);
-    } catch (e) {
-      setTsError(String(e));
-    }
-  };
-  const kind = att.kind;
-  const Icon = kind === "conflict" ? GitMerge : kind === "tailscale" ? WifiOff : kind === "offline" ? CloudOff : kind === "big" ? FileWarning : AlertTriangle;
-  const color = att.level === "red" ? "text-destructive" : "text-amber-500";
-  const since = new Date(att.since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  const hint =
-    kind === "conflict"
-      ? "Ask the agent: resolve the sync conflict"
-      : kind === "tailscale"
-        ? "Connect Tailscale; sync picks up again by itself."
-        : kind === "offline"
-        ? "Edits are committed here and go up when the box is back."
-        : kind === "big"
-          ? "They are safe on this machine; sync sends them as soon as the box takes them."
-          : kind === "github"
-            ? "The box still has everything; only the GitHub copy is behind."
-            : "Ask the agent to look at this sync error.";
-  return (
-    <div ref={ref} className="relative mr-1 flex items-center">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className={`h-7 flex items-center gap-1.5 px-2 rounded hover:bg-accent/60 text-[11.5px] ${color}`}
-        title="Vault sync needs attention"
-      >
-        <Icon className="h-3.5 w-3.5" />
-        <span className="max-w-[260px] truncate">{att.text}</span>
-      </button>
-      {canOpenTs && (
-        <button
-          onClick={() => void openTs()}
-          className="h-7 px-1.5 rounded hover:bg-accent/60 text-[11.5px] text-foreground/90 underline underline-offset-2"
-          data-testid="open-tailscale"
-        >
-          Open Tailscale
-        </button>
-      )}
-      {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 w-[360px] rounded-md border border-border bg-card shadow-xl p-3 space-y-2">
-          <div className="flex items-baseline justify-between gap-2">
-            <div className={`text-[12px] font-semibold ${color}`}>{att.text}</div>
-            <div className="text-[10.5px] text-muted-foreground shrink-0">since {since}</div>
-          </div>
-          <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-muted-foreground">
-            {att.detail}
-          </pre>
-          <div className="text-[11.5px] text-foreground/90 border-t border-border/60 pt-2">
-            {hint}
-            {kind === "conflict" && (
-              <span className="text-muted-foreground"> (or type /resolve-sync-conflict)</span>
-            )}
-            {tsError && <div className="mt-1 text-[11px] text-amber-500/90 break-words">{tsError}</div>}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Minimize / maximize-restore / close (Windows and Linux; macOS has its own
- *  traffic lights). In the titlebar, and top-right in fullscreen chat. */
-export function WindowControls({ className = "" }: { className?: string }) {
-  const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
-  const win = getCurrentWindow();
-  const [maximized, setMaximized] = useState(false);
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    (async () => {
-      setMaximized(await win.isMaximized());
-      unlisten = await win.onResized(async () => {
-        setMaximized(await win.isMaximized());
-      });
-    })();
-    return () => {
-      if (unlisten) unlisten();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  if (isMac) return null;
-  return (
-    <div className={`flex items-center ${className}`} data-el="window-controls">
-      <button
-        onClick={() => win.minimize()}
-        className="h-9 w-11 flex items-center justify-center hover:bg-accent/60 text-muted-foreground"
-        title="Minimize"
-      >
-        <Minus className="h-3.5 w-3.5" />
-      </button>
-      <button
-        onClick={() => win.toggleMaximize()}
-        className="h-9 w-11 flex items-center justify-center hover:bg-accent/60 text-muted-foreground"
-        title={maximized ? "Restore" : "Maximize"}
-      >
-        {maximized ? <Copy className="h-3 w-3" /> : <Square className="h-3 w-3" />}
-      </button>
-      <button
-        onClick={() => win.close()}
-        className="h-9 w-11 flex items-center justify-center hover:bg-destructive hover:text-destructive-foreground text-muted-foreground"
-        title="Close"
-      >
-        <X className="h-3.5 w-3.5" />
-      </button>
-    </div>
-  );
-}
-
-/** The terminal where the chat runs: on the box for a box vault (Shift: this laptop), else here. */
-function TerminalButton({ vaultPath }: { vaultPath: string | null }) {
-  const [box, setBox] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
-  useEffect(() => {
-    let live = true;
-    setBox(null);
-    void terminalBoxName(vaultPath).then((n) => live && setBox(n));
-    return () => {
-      live = false;
-    };
-  }, [vaultPath]);
-  useEffect(() => {
-    let t: ReturnType<typeof setTimeout> | undefined;
-    const off = subscribeTerminalNote((n) => {
-      setNote(n);
-      if (t) clearTimeout(t);
-      t = setTimeout(() => setNote(null), 6000);
-    });
-    return () => {
-      off();
-      if (t) clearTimeout(t);
-    };
-  }, []);
-  return (
-    <>
-      {note && (
-        <span className="text-[11px] text-muted-foreground mr-1 max-w-[280px] truncate" title={note} data-testid="terminal-note">
-          {note}
-        </span>
-      )}
-      <button
-        onClick={(e) => {
-          void openTerminal({ shift: e.shiftKey }).catch((err) => console.error("[terminal] failed:", err));
-        }}
-        className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground mr-1"
-        title={terminalTitle(box)}
-        aria-label={terminalTitle(box)}
-      >
-        <Terminal className="h-3.5 w-3.5" />
-      </button>
-    </>
   );
 }

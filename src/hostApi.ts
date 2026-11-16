@@ -6,6 +6,8 @@
 //   layout     host.layout.get() (panes, split, panels, chat, window and column sizes) and host.layout.apply(op | ops)
 //              (close/open the left panel or chat, put a file in a pane, split, focus, full-screen chat): the same ops the
 //              agent's Layout tool runs (src/layoutOps.ts), each answered with the layout read back
+//   titlebar   host.titlebar.item({id, label | icon | render, onClick?, title?, side?}) → off: an item in the title bar
+//              (src/titlebarItems.ts), live until the plugin stops; host.titlebar.items() the items there now
 //   capture    host.capture(target?) a PNG of the app's own window or one column (the laptop's `capture` service,
 //              src/screenCapture.ts; the agent's Screen tool draws through the same function)
 //   events     host.on("file-opened" | "chat-message" | "selection-changed", fn) → off
@@ -16,6 +18,7 @@ import type { Effects } from "./pluginSupervisor";
 import type { Note } from "./notes";
 import type { HostLayout, LayoutOp, LayoutResult } from "./layoutOps";
 import type { Capture, CaptureTarget } from "./screenCapture";
+import type { TitlebarItem, TitlebarItemSpec } from "./titlebarItems";
 export type { HostLayout, LayoutOp, LayoutResult } from "./layoutOps";
 
 export const HOST_API_VERSION = 1;
@@ -69,6 +72,10 @@ export type HostBackend = {
   registerChatRow?(kind: string, render: ChatRowRender, by: string, opts?: ChatRowOptions): () => void;
   /** Translate one type of the chat's events with a plugin's translator (src/convlog/translators.ts); the undo. */
   registerChatTranslator?(type: string, fn: ChatTranslator, by: string): () => void;
+  /** Put an item in the title bar (src/titlebarItems.ts) for plugin `by`; the undo. Absent: no title bar here. */
+  registerTitlebarItem?(spec: TitlebarItemSpec, by: string): () => void;
+  /** The title bar's items now. */
+  titlebarItems?(): readonly TitlebarItem[];
 };
 /** A chat translator: the messages an event of its type shows ([] none), or null to hand it to the next in line (next()
  *  gives that answer). event.item is the log's item: {id, kind, status, at, text?, via?, name?, args?, result?, level?, ...}. */
@@ -117,6 +124,14 @@ export type HostApi = {
     translate(type: string, fn: ChatTranslator): () => void;
   };
   layout: { get(): HostLayout; apply(ops: LayoutOp | LayoutOp[]): Promise<LayoutResult> };
+  titlebar: {
+    /** Put an item in the title bar, live, until the plugin stops (or the returned off): a button ({id, label or icon,
+     *  title?, onClick?, side? "left" | "right", order?}) or one that draws itself (render(el) → cleanup). The same id
+     *  again replaces it. A throw in its click or render is this plugin's failure. Throws on a bad spec. */
+    item(spec: TitlebarItemSpec): () => void;
+    /** Every plugin's title bar items now: {key, id, by, side, label?, title?}. */
+    items(): readonly { key: string; id: string; by: string; side: string; label?: string; title?: string }[];
+  };
   /** A PNG of the app's own window ("window", default) or its "viewer" / "chat" column; rejects with why it can't. */
   capture(target?: CaptureTarget): Promise<Capture>;
 };
@@ -246,6 +261,31 @@ export function createHostApi(b: HostBackend, fx: Effects, alive: () => boolean,
     layout: {
       get: () => b.layout(),
       apply: (ops) => (alive() ? b.applyLayout(Array.isArray(ops) ? ops : [ops]) : Promise.resolve({ ok: false, results: [], layout: b.layout() })),
+    },
+    titlebar: {
+      item(spec) {
+        if (!alive()) return () => {};
+        if (!b.registerTitlebarItem) throw new Error("no title bar here");
+        const s = (spec ?? {}) as TitlebarItemSpec;
+        const render = typeof s.render === "function" ? s.render : undefined;
+        const click = typeof s.onClick === "function" ? s.onClick : undefined;
+        const wrapped: TitlebarItemSpec = {
+          ...s,
+          ...(click ? { onClick: guard(() => void click()) } : {}),
+          ...(render
+            ? {
+                render: (el: HTMLElement) => {
+                  if (!alive()) return;
+                  let out: void | (() => void) = undefined;
+                  guard(() => void (out = render(el)))();
+                  return typeof out === "function" ? guard(out as () => void) : undefined;
+                },
+              }
+            : {}),
+        };
+        return fx.add(`titlebar item ${String(s.id)}`, b.registerTitlebarItem(wrapped, id));
+      },
+      items: () => (b.titlebarItems?.() ?? []).map((i) => ({ key: i.key, id: i.id, by: i.by, side: i.side, ...(i.label ? { label: i.label } : {}), ...(i.title ? { title: i.title } : {}) })),
     },
     capture: (target = "window") => (!alive() ? Promise.reject(new Error("this plugin is stopped")) : b.capture ? b.capture(target) : Promise.reject(new Error("no screen here"))),
   };

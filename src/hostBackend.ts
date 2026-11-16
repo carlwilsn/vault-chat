@@ -7,6 +7,7 @@ import { hostTheme } from "./mountHost";
 import { applyLayoutOps, readLayout, type LayoutIO } from "./layoutOps";
 import { placeInPane } from "./paneLayout";
 import { registerRow } from "./chatRows";
+import { registerTitlebarItem, titlebarItems } from "./titlebarItems";
 import { registerTranslator, type Translator } from "./convlog/translators";
 import type { HostBackend, HostState, HostSelection } from "./hostApi";
 
@@ -129,6 +130,8 @@ export const appHostBackend: HostBackend = {
   applyLayout: (ops) => applyLayoutOps(ops, appLayoutIO),
   registerChatRow: (kind, render, by, opts) => registerRow(kind, render, by, opts),
   registerChatTranslator: (type, fn, by) => registerTranslator(type, fn as Translator, by),
+  registerTitlebarItem: (spec, by) => registerTitlebarItem(spec, by),
+  titlebarItems: () => titlebarItems(),
   async primeChat(lines) {
     const store = useStore.getState();
     // Box mode: the box writes the chat; these lines go to it as they are.

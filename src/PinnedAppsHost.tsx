@@ -1,5 +1,5 @@
 // Pinned apps (src/pinnedApps.ts): every pinned page of the vault is mounted when the app starts and stays mounted,
-// hidden (display: none, so it keeps running and keeps its state) until the launcher (Titlebar "Apps") brings it to the
+// hidden (display: none, so it keeps running and keeps its state) until the launcher (the title bar's "Apps", src/plugins/titlebar/AppsLauncher.tsx) brings it to the
 // front in a pane of its own. Each is a HtmlView, so the iframe / in-process machinery, the supervisor ("turned off" +
 // Turn on) and the in-process error card are the ones every page has. A page that cannot be read gets its own error card.
 import { useEffect, useSyncExternalStore } from "react";
@@ -18,7 +18,9 @@ const set = (s: State) => {
   for (const fn of [...listeners]) fn();
 };
 const subscribe = (fn: () => void) => (listeners.add(fn), () => void listeners.delete(fn));
-export const usePinnedApps = () => useSyncExternalStore(subscribe, () => state);
+export const usePinnedApps = () => useSyncExternalStore(subscribe, () => state, () => state);
+/** The pinned apps now and the one in front (the title bar's offers read it). */
+export const pinnedAppsNow = (): Readonly<State> => state;
 
 /** Bring a pinned app to the front (null: back to the background, still running). */
 export function showPinnedApp(id: string | null): void {

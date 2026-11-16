@@ -1,18 +1,19 @@
-// The visible launcher for pinned apps (src/PinnedAppsHost.tsx): lists them and brings one to the front.
-import { useState } from "react";
+// The visible launcher for pinned apps (src/PinnedAppsHost.tsx), in the title bar: lists them and brings one to the
+// front. Its menu's open state is the bar's (./model.ts), so the agent's openAppsLauncher opens the same menu.
 import { LayoutGrid } from "lucide-react";
-import { showPinnedApp, usePinnedApps } from "./PinnedAppsHost";
+import { showPinnedApp, usePinnedApps } from "../../PinnedAppsHost";
+import { emitBarEvent, setAppsOpen, useBar } from "./model";
 
 export function AppsLauncher() {
   const { apps, front } = usePinnedApps();
-  const [open, setOpen] = useState(false);
+  const open = useBar((s) => s.appsOpen);
   if (!apps.length) return null;
   return (
     <span className="relative">
       <button
         type="button"
         data-el="apps-launcher"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setAppsOpen(!open)}
         className={`h-7 w-7 flex items-center justify-center rounded ${open || front ? "bg-accent text-foreground" : "hover:bg-accent/60 text-muted-foreground"}`}
         title="Apps (pinned pages)"
       >
@@ -27,7 +28,8 @@ export function AppsLauncher() {
               data-el="apps-item"
               onClick={() => {
                 showPinnedApp(a.id);
-                setOpen(false);
+                setAppsOpen(false);
+                emitBarEvent("appOpened", { name: a.name, path: a.path });
               }}
               className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[12px] hover:bg-accent/60"
             >

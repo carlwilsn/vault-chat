@@ -153,6 +153,12 @@ export function usePluginDesired(path: string | null | undefined): Desired | nul
   return ready() ? rec.desired(id) : null;
 }
 
+/** What usePluginDesired would say now, outside React (null: not known yet). */
+export function pluginDesiredNow(path: string): Desired | null {
+  const id = pluginIdOf(path);
+  return known && vault === useStore.getState().vaultPath ? rec.desired(id) : null;
+}
+
 /** Carl's word from a view (the off line's Turn on): a plugin.desired record on the box. */
 export async function setPluginRunning(path: string, running: boolean): Promise<boolean> {
   const link = await boxLinkFor(useStore.getState().vaultPath).catch(() => null);

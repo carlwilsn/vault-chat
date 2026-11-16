@@ -85,6 +85,17 @@ export const FILETREE_PLUGIN: AppPluginInfo = {
   words: ["file tree", "filetree", "file-tree", "files", "tree", "left panel", "file panel", "files panel"],
 };
 
+export const TITLEBAR_PLUGIN_ID = "app/titlebar";
+
+/** The title bar (src/plugins/titlebar): its buttons, indicators and plugins' items. Off or failed, a minimal built-in bar stands in (the window controls always work). */
+export const TITLEBAR_PLUGIN: AppPluginInfo = {
+  id: TITLEBAR_PLUGIN_ID,
+  name: "Title bar",
+  mount: "panel",
+  description: "The title bar across the top of the window: the panel toggles, the vault picker, refresh and Hidden files, Notes, the pinned apps launcher, items vault plugins put there, the sync chip, background tasks, the chat toggle and pop-out, the terminal, Settings and the window controls.",
+  words: ["title bar", "titlebar", "title-bar", "top bar", "topbar", "toolbar", "tool bar", "header bar", "window bar", "menu bar"],
+};
+
 export const CONTEXT_PLUGIN_ID = "app/context";
 
 /** The shared context (src/plugins/context): what Carl has selected, hovers, the plugin he is in and the open file, for the agent and other plugins. Off: the agent cannot read it. */
@@ -96,7 +107,7 @@ export const CONTEXT_PLUGIN: AppPluginInfo = {
   words: ["context", "shared context", "context plugin", "selection context", "app context"],
 };
 
-export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN, FILETREE_PLUGIN, CONTEXT_PLUGIN];
+export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN, FILETREE_PLUGIN, TITLEBAR_PLUGIN, CONTEXT_PLUGIN];
 
 /** The app plugin a word names (its id, its name or one of its words), or null. */
 export function appPluginNamed(word: string): AppPluginInfo | null {

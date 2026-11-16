@@ -79,7 +79,7 @@ export const SHORTCUTS = [
       "src/plugins/vaults/Picker.tsx",
       "src/plugins/notes/NotesPanel.tsx",
       "src/NotePopup.tsx",
-      "src/Titlebar.tsx",
+      "src/plugins/titlebar/Bar.tsx",
       "src/plugins/filetree/Tree.tsx",
       "src/InlineEditPrompt.tsx",
       "src/VoiceTextPanel.tsx",
