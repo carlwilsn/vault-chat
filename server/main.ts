@@ -442,9 +442,12 @@ async function main(): Promise<void> {
       // Behind the front the next server takes over the moment this one exits: nothing of this one outlives it.
       if (cfg.backend) {
         stopPipeline();
-        await endOwnProcesses();
+        await endOwnProcesses(cfg.port);
       }
-      process.exit(0);
+      // Behind the front only a hand-over is a clean exit: a SIGTERM nobody planned (not systemd's own stop) must
+      // bring the slot back (vault-chat-server@.service: Restart=always, RestartPreventExitStatus=0), never leave the
+      // box with no server while the front holds every request.
+      process.exit(!cfg.backend || sig === "hand-over" ? 0 : sig === "SIGINT" ? 130 : 143);
     });
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));

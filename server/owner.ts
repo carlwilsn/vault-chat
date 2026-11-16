@@ -59,11 +59,14 @@ export function promote(stateDir: string, port: number): void {
 
 /**
  * Before letting go: end every other process of this server's own unit (the voice pipeline, Claude Code and its
- * shells), so the next owner never meets a straggler still writing a session file or holding the voice port. Only a
- * backend's own cgroup (vault-chat-server@<port>.service) is touched, never a shared one (a shell, a test).
+ * shells), so the next owner never meets a straggler still writing a session file or holding the voice port. Only
+ * when this process IS that unit's server: its main process (started by systemd) on the unit's own port
+ * (vault-chat-server@<port>.service). A server started from inside a unit (an agent's test instance, a test suite's
+ * blue-green slots: the agent's shells live in the live server's cgroup) shares that unit's cgroup without owning it,
+ * and must never end the live server, its turns and its workers. Nothing else is ever touched (a shell, a test).
  */
-export async function endOwnProcesses(graceMs = 3000): Promise<number> {
-  const procs = ownCgroupProcs();
+export async function endOwnProcesses(port: number, graceMs = 3000): Promise<number> {
+  const procs = ownUnitProcs(port);
   if (!procs) return 0;
   const others = () => (readPids(procs) ?? []).filter((p) => p !== process.pid);
   const signal = (sig: NodeJS.Signals) => {
@@ -86,13 +89,34 @@ export async function endOwnProcesses(graceMs = 3000): Promise<number> {
   return n;
 }
 
-function ownCgroupProcs(): string | null {
+/** Where this process's cgroup and its parent are read (tests point them at a stand-in unit). */
+const CGROUP_FS = () => process.env.VC_TEST_CGROUP_FS || "/sys/fs/cgroup";
+const SELF_CGROUP = () => process.env.VC_TEST_SELF_CGROUP || "/proc/self/cgroup";
+
+/** The cgroup.procs of the unit this process is the server of, or null when it is not one (see endOwnProcesses). */
+function ownUnitProcs(port: number): string | null {
   try {
-    const line = readFileSync("/proc/self/cgroup", "utf8").split("\n").find((l) => l.startsWith("0::"));
+    const line = readFileSync(SELF_CGROUP(), "utf8").split("\n").find((l) => l.startsWith("0::"));
     const path = line?.slice(3).trim();
-    if (!path || !/\/vault-chat-server@\d+\.service$/.test(path)) return null;
-    const procs = join("/sys/fs/cgroup", path, "cgroup.procs");
+    if (!path || !isOwnUnit(path, port, parentComm())) return null;
+    const procs = join(CGROUP_FS(), path, "cgroup.procs");
     return existsSync(procs) ? procs : null;
+  } catch {
+    return null;
+  }
+}
+
+/** This process is the server of the unit at cgroup `path`: the unit is vault-chat-server@<its own port>.service
+ *  and systemd started it (its parent is the service manager, as for `ExecStart=/usr/bin/env ... node`). */
+export function isOwnUnit(path: string, port: number, parent: string | null): boolean {
+  const m = /\/vault-chat-server@(\d+)\.service$/.exec(path);
+  return !!m && Number(m[1]) === port && parent === "systemd";
+}
+
+function parentComm(): string | null {
+  if (process.env.VC_TEST_PARENT_COMM !== undefined) return process.env.VC_TEST_PARENT_COMM;
+  try {
+    return readFileSync(`/proc/${process.ppid}/comm`, "utf8").trim();
   } catch {
     return null;
   }

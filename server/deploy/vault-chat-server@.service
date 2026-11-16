@@ -18,8 +18,11 @@ Environment=VC_ENV_FILE=%h/.config/vault-chat-server.env
 Environment=PATH=/run/wrappers/bin:/etc/profiles/per-user/%u/bin:/run/current-system/sw/bin
 Environment=NODE_ENV=production
 WorkingDirectory=%h
-# A crash comes back in the same slot (the front holds requests meanwhile); a hand-over's clean exit does not.
-Restart=on-failure
+# A crash, or a shutdown nobody asked systemd for (exit 143: a stray SIGTERM), comes back in the same slot (the front
+# holds requests meanwhile); a hand-over's clean exit (0) and systemd's own stop do not.
+Restart=always
+RestartPreventExitStatus=0
+SuccessExitStatus=143 130
 RestartSec=2
 # Let a mission's child processes die with the server, not linger.
 KillMode=control-group
