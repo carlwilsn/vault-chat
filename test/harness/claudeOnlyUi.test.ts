@@ -308,7 +308,7 @@ test("the sign-in prompt is drawn only by AI surfaces: no full-window gate", () 
   // blocked by sign in." The shell, the file tree, the editors and the viewers
   // must not be able to block themselves on it, so they must not even be able
   // to reach the prompt.
-  const allowed = new Set(["src/ChatPane.tsx", "src/VoiceCockpit.tsx", "src/SettingsPane.tsx", "src/ClaudeCodeSignIn.tsx"]);
+  const allowed = new Set(["src/ChatPane.tsx", "src/chatGate.ts", "src/ComposerPanel.tsx", "src/plugins/composer/Composer.tsx", "src/VoiceCockpit.tsx", "src/SettingsPane.tsx", "src/ClaudeCodeSignIn.tsx"]);
   const importers: string[] = [];
   for (const [file, src] of uiSources()) {
     if (!/ClaudeSignInPrompt|useAiBlocked|ClaudeAccountLine/.test(src)) continue;

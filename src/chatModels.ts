@@ -46,6 +46,9 @@ const publish = (next: Snapshot) => {
   for (const f of subs) f(snap);
 };
 
+/** The global model, effort and list as last known (code that cannot use the hook: the composer's offers). */
+export const chatModelsNow = (): Snapshot => snap;
+
 /** Read the box's list and the global model/effort. A failed read keeps what is shown. */
 export async function refreshChatModels(vault: string): Promise<void> {
   const l = await boxLinkFor(vault);

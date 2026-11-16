@@ -40,7 +40,18 @@ export const CHATS_PLUGIN: AppPluginInfo = {
   words: ["chats", "chat list", "chat-list", "chatlist", "chats list", "chats panel", "chats-panel", "chatspanel", "chat sidebar", "chats sidebar"],
 };
 
-export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN];
+export const COMPOSER_PLUGIN_ID = "app/composer";
+
+/** The chat composer (src/plugins/composer): the text box, attachments, Send / Stop and the model / effort labels. Off or failed, a minimal built-in composer stands in. */
+export const COMPOSER_PLUGIN: AppPluginInfo = {
+  id: COMPOSER_PLUGIN_ID,
+  name: "Composer",
+  mount: "panel",
+  description: "The chat composer: the text box messages are typed in, with its attached files and pictures, Send / Stop and the model and effort labels under it.",
+  words: ["composer", "chat composer", "the composer", "composer box", "chat input", "chat box", "message box", "text box", "prompt box"],
+};
+
+export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN];
 
 /** The app plugin a word names (its id, its name or one of its words), or null. */
 export function appPluginNamed(word: string): AppPluginInfo | null {

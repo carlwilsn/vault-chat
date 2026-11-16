@@ -1,7 +1,7 @@
 import { useShallow } from "zustand/react/shallow";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import { Markdown, StreamingMarkdown } from "./Markdown";
-import { clipboardImageDataUrls, readChatImage } from "./chatImage";
+import { readChatImage } from "./chatImage";
 import { InlineHtmlFrame } from "./InlineHtmlFrame";
 import { VideoPlayer } from "./VideoPlayer";
 import { isHtmlSrc } from "./inlineHtml";
@@ -9,27 +9,17 @@ import { InlineWebPage } from "./InlineWebPage";
 import { soloWebImages } from "./inlineWeb";
 import { localPathFromUrl } from "./mdPipeline";
 import { planDone, planCards, currentPlan, type PlanCard } from "./planPlace";
-import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare, Mic, Paperclip, Scan, AtSign, AlertCircle, Info, Loader2, FileText } from "lucide-react";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { attachBlob, attachPath, insideVault, pathMentions, sizeLabel } from "./attachFiles";
-import { isExternalFileDrop } from "./dnd";
-import { imageMime } from "./imageMime";
-import { fileKind } from "./fileKind";
-import { filesLine, splitFilesLine } from "./filesLine";
+import { ChevronDown, ChevronUp, Wrench, Mic, AlertCircle, Info, Loader2, FileText } from "lucide-react";
+import { splitFilesLine } from "./filesLine";
 import { invoke } from "@tauri-apps/api/core";
-import { dispatchChatAction, isPopout } from "./sync";
+import { dispatchChatAction } from "./sync";
 import { COMPACTION_DIVIDER_TEXT, isCompactionDivider, dividerSummary } from "./chatContext";
-import { useStore, type ChatMessage, type FileEntry, type FileUpload, type LiveTool, type TodoItem } from "./store";
-import { buildViewportContextText } from "./viewportContext";
-import { toggleVoice } from "./voiceCall";
-import { InlineVoiceWaves, VoiceMuteButton } from "./VoiceCockpit";
+import { useStore, type ChatMessage, type LiveTool, type TodoItem } from "./store";
 import { loadSkills } from "./skills";
-import { isUnreadableAsText } from "./fileKind";
 import { SettingsPane } from "./SettingsPane";
-import { Button, Textarea } from "./ui";
+import { Button } from "./ui";
 import { cn } from "./lib/utils";
-import { ATTACH_MAX_BYTES, BOX_UNREACHABLE, NO_BOX, STARTING, boxAnswer, boxChatOn, boxLinkFor, boxRetry, boxSubagent, fetchBoxFile, unreachableWhy } from "./boxChat";
-import { tailscaleCheck, type TailscaleState } from "./vaultSync";
+import { BOX_UNREACHABLE, NO_BOX, STARTING, boxAnswer, boxChatOn, boxLinkFor, boxRetry, boxSubagent, fetchBoxFile } from "./boxChat";
 import {
   AskOptions,
   ReplyCost,
@@ -46,17 +36,10 @@ import { uiChoice } from "./uiChoices";
 import { taskState } from "./backgroundTasks";
 import { formatCost } from "./ongoingWork";
 import { OngoingLine } from "./OngoingLine";
-import { isArchivedThread, ARCHIVED_THREAD, OLDER_CHAT } from "./conversations";
-import { isOlderChat } from "./threads";
-import { newChatHere } from "./chat-controller";
-import { ChatModelPicker } from "./ChatModelPicker";
-import { UsagePopover } from "./UsagePopover";
-import { ClaudeSignInPrompt, useAiBlocked } from "./ClaudeCodeSignIn";
-import { useFittedPlaceholder } from "./fitPlaceholder";
+import { useChatGate } from "./chatGate";
+import { ComposerSlot } from "./ComposerPanel";
+import { scrollHold } from "./plugins/composer/draft";
 
-type MentionHit = { path: string; name: string; rel: string };
-/** The composer grows with its text up to this height, then scrolls. */
-const COMPOSER_MAX_PX = 200;
 const NO_SUBAGENTS: SubagentRec[] = [];
 
 // Markdown (math, tables, code, safe HTML, URLs) renders through the shared
@@ -231,133 +214,6 @@ function ChatParagraph({ node, children, ...rest }: ComponentPropsWithoutRef<"p"
 }
 
 const chatComponents = { img: ChatMedia, p: ChatParagraph } as const;
-
-// Persist a chat-pane capture's PNG bytes to disk so the agent can
-// reference it from tools like `Write` (e.g. building a markdown file
-// that embeds the screenshot). Returns the vault-relative path on
-// success, or null on any failure — capture data URLs already render
-// in the bubble regardless, so a write failure is non-fatal.
-//
-// Files land in `<vault>/.vault-chat/captures/`; an app-start sweep
-// prunes anything older than CAPTURE_RETENTION_HOURS, so we don't
-// retain user data past the active session.
-async function saveCaptureToDisk(
-  vault: string,
-  imageDataUrl: string,
-): Promise<string | null> {
-  try {
-    const m = imageDataUrl.match(/^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/);
-    if (!m) return null;
-    const ext = m[1] === "jpeg" ? "jpg" : m[1].toLowerCase();
-    const b64 = m[2];
-    const binary = atob(b64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    // Timestamp + short random suffix so two near-simultaneous
-    // captures never collide before write_binary_file_unique's
-    // " (1)" rename kicks in.
-    const ts = new Date()
-      .toISOString()
-      .replace(/[:.]/g, "-")
-      .replace(/T/, "_")
-      .slice(0, 19);
-    const suffix = Math.random().toString(36).slice(2, 7);
-    const name = `capture-${ts}-${suffix}.${ext}`;
-    const dir = `${vault}/.vault-chat/captures`;
-    const absPath = await invoke<string>("write_binary_file_unique", {
-      dir,
-      name,
-      bytes: Array.from(bytes),
-    });
-    if (absPath.startsWith(vault + "/")) {
-      return absPath.slice(vault.length + 1);
-    }
-    return absPath;
-  } catch (e) {
-    console.warn("[capture] disk save failed:", e);
-    return null;
-  }
-}
-
-// Fuzzy-ish file picker for @mentions. Query matches against file name
-// first (startsWith > contains), then against the relative path as a
-// fallback. Folders are excluded — attaching a whole folder isn't a
-// well-defined action (use grep / list instead via the agent).
-function filterFilesForMention(
-  files: FileEntry[],
-  vaultPath: string | null,
-  query: string,
-): MentionHit[] {
-  if (!vaultPath) return [];
-  const q = query.toLowerCase();
-  const hits: Array<MentionHit & { score: number }> = [];
-  for (const f of files) {
-    // Folders are selectable now so the agent can ListDir/Glob into
-    // them — they land as path-only mentions.
-    if (f.hidden) continue;
-    const rel = f.path.startsWith(vaultPath + "/")
-      ? f.path.slice(vaultPath.length + 1)
-      : f.path;
-    const nameLower = f.name.toLowerCase();
-    const relLower = rel.toLowerCase();
-    let score: number;
-    if (!q) score = 10;
-    // Tiers first (name prefix > name contains > path contains), closeness
-    // within a tier — the old flat scores let a long prefix match sink below
-    // a contains match, and a late contains match below a path match.
-    else if (nameLower.startsWith(q)) score = 3000 - Math.min(999, nameLower.length - q.length);
-    else if (nameLower.includes(q)) score = 2000 - Math.min(999, nameLower.indexOf(q));
-    else if (relLower.includes(q)) score = 1000 - Math.min(999, relLower.indexOf(q));
-    else continue;
-    hits.push({ path: f.path, name: f.name, rel, score });
-  }
-  hits.sort((a, b) => b.score - a.score);
-  return hits.map(({ score: _s, ...h }) => h);
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-// Build a context preamble out of attached mentions. Returns an empty
-// string when there's nothing to attach. Unreadable-as-text files
-// (images, pdfs, unsupported) are listed by path only so the agent knows
-// to fetch them explicitly via Read / PdfExtract.
-async function buildMentionPreamble(
-  mentions: Array<{ rel: string; path: string; isDir?: boolean }>,
-): Promise<string> {
-  if (mentions.length === 0) return "";
-  const blocks: string[] = [];
-  for (const { rel, path, isDir } of mentions) {
-    if (isDir) {
-      blocks.push(
-        `@${rel}/ — absolute path: ${path} (directory — use ListDir/Glob/Grep to inspect contents)`,
-      );
-      continue;
-    }
-    if (isUnreadableAsText(path)) {
-      const ext = (path.split(".").pop() ?? "").toLowerCase();
-      blocks.push(`@${rel} — absolute path: ${path} (binary ${ext}, contents not inlined)`);
-      continue;
-    }
-    try {
-      const content = await invoke<string>("read_text_file", { path });
-      blocks.push(`@${rel} — absolute path: ${path}\n\n${content}`);
-    } catch (err) {
-      blocks.push(`@${rel} — absolute path: ${path} (read failed: ${String(err)})`);
-    }
-  }
-  const preamble = [
-    "FILE ATTACHMENTS",
-    "The user attached the following files with @-mentions. The absolute paths below are the ground truth — you already know where each file is. DO NOT run Glob, Grep, or any other tool to search for these files. If the user's question can be answered from the path or the inlined content, answer directly.",
-    "",
-    blocks.join("\n\n"),
-  ].join("\n");
-  // Names only: the app log captures console.info, and it never holds a file's contents.
-  console.info(`[@ref] attaching ${mentions.length} file(s): ${mentions.map((m) => m.rel).join(", ")}`.slice(0, 300));
-  return preamble;
-}
-
 /** Settings, at its Box section. */
 /** How many messages a chat draws at first, and how many more each scroll to the top adds. */
 const CHAT_WINDOW = 60;
@@ -382,62 +238,17 @@ export function ChatPane() {
   // 60+ times per second.
   const vaultPath = useStore((s) => s.vaultPath);
   const messages = useStore((s) => s.messages);
-  const skills = useStore((s) => s.skills);
   const busy = useStore((s) => s.busy);
   const showSettings = useStore((s) => s.showSettings);
-  const lastContext = useStore((s) => s.lastContext);
-  const boxWindow = useStore((s) => (s.boxChat?.on ? s.conversations.find((c) => c.id === s.activeConversationId)?.contextWindow : undefined));
-  // The box's model window (reported with its usage); unknown until it reports one.
-  const ctxWindow = useMemo(() => (boxWindow ? { tokens: boxWindow, known: true } : { tokens: 200_000, known: false }), [boxWindow]);
   const setSkills = useStore((s) => s.setSkills);
   const streamingText = useStore((s) => s.streamingText);
   const streamingReasoning = useStore((s) => s.streamingReasoning);
   const liveTools = useStore((s) => s.liveTools);
-  const files = useStore((s) => s.files);
-  const currentFile = useStore((s) => s.currentFile);
-  const panes = useStore((s) => s.panes);
-  const chatPaneLastCapture = useStore((s) => s.chatPaneLastCapture);
-  const setChatPaneLastCapture = useStore((s) => s.setChatPaneLastCapture);
-  const setChatPaneCapturePending = useStore((s) => s.setChatPaneCapturePending);
-  // Hooks for the saved-chats popover. Must live above the early
-  // `showSettings`/`!activeKey` returns below — React's Rules of Hooks
-  // require the same hook-call order on every render, and putting these
-  // after the returns means they get skipped when settings is open then
-  // run when it closes (React error #310).
-  const setShowChatsPanel = useStore((s) => s.setShowChatsPanel);
-  const showChatsPanel = useStore((s) => s.showChatsPanel);
+  // Hooks must live above the early `showSettings` returns below — React's
+  // Rules of Hooks require the same hook-call order on every render.
   const conversations = useStore((s) => s.conversations);
   const openableThreadIds = useStore(useShallow((s) => s.conversations.map((c) => c.id)));
   const activeConversationId = useStore((s) => s.activeConversationId);
-  // Indicator is for chats you *can't see* — alerts that a background
-  // conversation is still running. Suppressed on the active chat since
-  // the user is already watching it.
-  const offscreenChats = conversations.filter((c) => c.id !== activeConversationId);
-  // Aggregate state of the chats you can't see: "running" (something is still
-  // thinking) takes priority, else "unseen" (a background chat finished and you
-  // haven't looked). Mirrors the per-row dot so the collapsed Chats button
-  // distinguishes generating from done-but-unseen.
-  const indicatorKind: "running" | "unseen" | null = offscreenChats.some(
-    (c) => c.status === "running",
-  )
-    ? "running"
-    : offscreenChats.some((c) => c.unread)
-      ? "unseen"
-      : null;
-  // Fullscreen chat shows the chats as its left sidebar (FullscreenChat.tsx),
-  // so the button opens and closes that; the docked layout keeps the overlay.
-  // The popout window is the fullscreen chat.
-  const chatFullscreen = useStore((s) => isPopout || (s.chatFullscreen && !s.popoutOpen));
-  const chatSidebarOpen = useStore((s) => s.chatSidebarOpen);
-  const chatsShown = chatFullscreen ? chatSidebarOpen : showChatsPanel;
-  // Fullscreen chat: voice replaces the composer with its waves (VoiceCockpit).
-  const voiceMode = useStore((s) => s.voiceMode);
-  const voiceError = useStore((s) => s.voiceError);
-  const voiceNotice = useStore((s) => s.voiceNotice);
-  const voiceBar = false; // fullscreen voice lives in the bottom strip (VoiceStrip); the composer stays
-  const [plusOpen, setPlusOpen] = useState(false);
-  const toggleChatsPanel = () =>
-    chatFullscreen ? useStore.getState().toggleChatSidebar() : setShowChatsPanel(!showChatsPanel);
   const activeConv = conversations.find((c) => c.id === activeConversationId);
   // What the thread shows beside the text (chatExtras.tsx; uiChoices.ts picks
   // where each goes while Carl decides). Stable props, so the bubbles' memo
@@ -467,82 +278,7 @@ export function ChatPane() {
     const id = useStore.getState().activeConversationId;
     return id ? boxSubagent(id, sid, op, text) : Promise.resolve<string | null>("No conversation.");
   }, []);
-  const [pendingImages, setPendingImages] = useState<
-    Array<{
-      imageDataUrl: string;
-      sourcePath?: string;
-      sourceAnchor?: string | null;
-      capturedFilePath?: string;
-    }>
-  >([]);
-  useEffect(() => {
-    if (!chatPaneLastCapture) return;
-    const cap = chatPaneLastCapture;
-    setChatPaneLastCapture(null);
-    // Append immediately with the data URL so the thumbnail is instant;
-    // disk save runs async and patches the entry with capturedFilePath
-    // when ready. Sending before the patch lands is fine — the agent
-    // still sees the image via the data URL, just without a path
-    // reference for tool calls.
-    setPendingImages((prev) => [
-      ...prev,
-      {
-        imageDataUrl: cap.imageDataUrl,
-        sourcePath: cap.sourcePath,
-        sourceAnchor: cap.sourceAnchor,
-      },
-    ]);
-    if (vaultPath) {
-      void saveCaptureToDisk(vaultPath, cap.imageDataUrl).then((rel) => {
-        if (!rel) return;
-        setPendingImages((prev) =>
-          prev.map((img) =>
-            img.imageDataUrl === cap.imageDataUrl && !img.capturedFilePath
-              ? { ...img, capturedFilePath: rel }
-              : img,
-          ),
-        );
-      });
-    }
-  }, [chatPaneLastCapture, setChatPaneLastCapture, vaultPath]);
-  // Files from outside the vault, read when attached; uploaded to the box with the message (attachFiles.ts).
-  const [pendingFiles, setPendingFiles] = useState<FileUpload[]>([]);
-  const [attachError, setAttachError] = useState<string | null>(null);
-  const [dropOver, setDropOver] = useState(false);
-  const addAttached = useCallback((rs: Awaited<ReturnType<typeof attachPath>>[]) => {
-    const ok = rs.flatMap((r) => (r.ok ? [r.file] : []));
-    const bad = rs.flatMap((r) => (r.ok ? [] : [r.error]));
-    if (ok.length) setPendingFiles((prev) => [...prev, ...ok]);
-    setAttachError(bad.length ? bad.join(" ") : null);
-    if (bad.length) console.warn(`[attach] ${bad.join(" ")}`.slice(0, 300));
-  }, []);
-  const [input, setInput] = useState("");
-  // Skill menu opens on a /word-boundary token at the caret — same
-  // shape as fileMention so it can appear mid-message, not just at
-  // input start. start is the index of the "/".
-  const [skillMention, setSkillMention] = useState<{ query: string; start: number } | null>(null);
-  const [skillMentionIdx, setSkillMentionIdx] = useState(0);
-  const [fileMention, setFileMention] = useState<{ query: string; start: number } | null>(null);
-  const [fileMentionIdx, setFileMentionIdx] = useState(0);
-  // Mentions live outside the textarea once picked: chips above the
-  // input own them. Each entry remembers the original "@query" raw
-  // text so backspacing on empty input can restore it for edits.
-  const [mentions, setMentions] = useState<
-    Array<{ rel: string; path: string; name: string; raw: string }>
-  >([]);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  // A waiting message's Edit: its text back into the composer, ahead of anything typed since.
-  useEffect(() => {
-    const onInsert = (e: Event) => {
-      const t = String((e as CustomEvent).detail ?? "");
-      if (!t) return;
-      setInput((prev) => (prev.trim() ? `${t}\n${prev}` : t));
-      requestAnimationFrame(() => inputRef.current?.focus());
-    };
-    window.addEventListener("vc-composer-insert", onInsert);
-    return () => window.removeEventListener("vc-composer-insert", onInsert);
-  }, []);
   // Track whether the user is pinned near the bottom. If they scroll up
   // mid-stream, stop auto-scrolling so they can read older messages in
   // peace. Re-pins automatically when they scroll back to the bottom.
@@ -566,32 +302,9 @@ export function ChatPane() {
   });
 
   // Every turn runs on the box: no box, nothing to chat with; the box out of
-  // reach, the composer is off (with the reason) and the feed retries.
-  const boxChat = useStore((s) => s.boxChat);
-  // Signed out of Claude: the composer is replaced by the sign-in prompt (the
-  // thread stays readable). False until the answer is actually known, so a
-  // signed-in Carl never sees "sign in" flash (src/claudeAuthLive.ts).
-  const aiBlocked = useAiBlocked();
-  // Starting the server this machine runs itself: not on yet, and not a reason
-  // to tell him to connect a box.
-  const starting = !!vaultPath && boxChat?.starting === true;
-  const noBox = !!vaultPath && boxChat?.on === false && !starting;
-  const boxDown = !!boxChat?.on && boxChat.reachable === false;
-  // An older chat (from before one main conversation) or an old mission thread: readable, not continued.
-  const older = !!activeConv && !isArchivedThread(activeConv) && isOlderChat(activeConv);
-  const archived = !!activeConv && (isArchivedThread(activeConv) || older);
-  const ready = Boolean(vaultPath && boxChat?.on) && !boxDown && !archived;
-  // Why the box is out of reach: Tailscale, the box itself, or the wait.
-  const [tailscale, setTailscale] = useState<TailscaleState | null>(null);
-  useEffect(() => {
-    if (!boxDown) return;
-    let alive = true;
-    void tailscaleCheck().then((t) => alive && setTailscale(t));
-    return () => {
-      alive = false;
-    };
-  }, [boxDown, boxChat?.reason]);
-  const downWhy = boxDown ? unreachableWhy(boxChat?.reason ?? "", tailscale) : "";
+  // reach, the composer is off (with the reason) and the feed retries
+  // (src/chatGate.ts: the composer reads the same).
+  const { starting, noBox, boxDown, downWhy } = useChatGate();
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -627,6 +340,7 @@ export function ChatPane() {
   // Pasting an image adds a thumbnail row above the composer, which resizes the thread box
   // (twice: once when the row appears, once when the picture decodes). The thread must stay
   // exactly where it was, at the bottom or wherever he had scrolled to, and never jump to the top.
+  // The composer (a plugin, its own React root) holds and restores it through scrollHold.
   const heldScrollRef = useRef<{ top: number; pinned: boolean; until: number } | null>(null);
   const holdScroll = () => {
     const el = scrollRef.current;
@@ -645,9 +359,8 @@ export function ChatPane() {
     el.scrollTop = h.pinned ? el.scrollHeight : h.top;
     return true;
   };
-  useLayoutEffect(() => {
-    restoreHeldScroll();
-  }, [pendingImages]);
+  scrollHold.hold = holdScroll;
+  scrollHold.restore = restoreHeldScroll;
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -679,38 +392,8 @@ export function ChatPane() {
     }
   }, [vaultPath, setSkills]);
 
-  useEffect(() => {
-    const onFocus = () => inputRef.current?.focus();
-    window.addEventListener("vc-focus-composer", onFocus);
-    return () => window.removeEventListener("vc-focus-composer", onFocus);
-  }, []);
-
-  useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    // Reset to the natural `rows={1}` height first. When the input is
-    // empty we stop here — measuring scrollHeight on an empty textarea
-    // before layout settles can return a stale value (the previous
-    // height of the element), which made the box render unnaturally
-    // tall on mount and reset on first keystroke. Only grow when there
-    // is actual content to fit.
-    el.style.height = "auto";
-    // Never a scrollbar until the text itself passes the cap (an empty or one-line composer has none).
-    el.style.overflowY = "hidden";
-    if (input.length === 0) return;
-    el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_PX)}px`;
-    if (el.scrollHeight > COMPOSER_MAX_PX) el.style.overflowY = "auto";
-  }, [input]);
-
-  // One line at any width, cut with an ellipsis (src/fitPlaceholder.ts).
-  const placeholder = useFittedPlaceholder(
-    inputRef,
-    archived ? (older ? OLDER_CHAT : ARCHIVED_THREAD) : boxDown ? `${BOX_UNREACHABLE} — ${downWhy}. Retrying…` : !ready ? (vaultPath ? "Connecting to the box…" : "Open a vault first") : "Ask anything, or / for commands…",
-  );
-
   const todos = useMemo(() => currentPlan(messages), [messages]);
   const plans = useMemo(() => planCards(messages), [messages]);
-
   if (showSettings) return <SettingsPane />;
 
   if (starting) {
@@ -744,8 +427,6 @@ export function ChatPane() {
 
   const planInline = uiChoice("todos") === "inline";
   const verdict = activeConv?.state === "done" ? activeConv.verdict : undefined;
-  // Held for the usage limit (the box picks it up at the reset): Stop cancels that, as it stops a run.
-  const held = !busy && activeConv?.state === "sleeping" && !!messages[messages.length - 1]?.mid?.startsWith("limit:");
   const totalCost = uiChoice("cost") === "total" ? formatCost(activeConv?.costUsd ?? messages.reduce((n, m) => n + (m.costUsd ?? m.usage?.costUsd ?? 0), 0)) : undefined;
   let lastVisible = -1;
   for (let i = messages.length - 1; i >= 0; i--) if (!messages[i]!.hidden && !messages[i]!.system) { lastVisible = i; break; }
@@ -755,400 +436,6 @@ export function ChatPane() {
     if (++n > shownCount) { windowStart = i + 1; break; }
   }
   windowStartRef.current = windowStart;
-
-  // While the agent works the composer stays open, as in Claude Code: a message
-  // goes to the running agent at once (it reads it at its next step) and shows
-  // in the thread as sent; Esc, or the button with nothing typed, stops.
-  const send = async () => {
-    if (!ready || aiBlocked) return;
-    let text = input.trim();
-    if (!text && pendingImages.length === 0 && pendingFiles.length === 0) return;
-    // "@C:\path\to\file.pdf" typed or pasted: a file on this laptop. Outside the vault it is read and goes up
-    // with the message (the box cannot open a path here); inside, it is an ordinary @-reference.
-    const uploads: FileUpload[] = [...pendingFiles];
-    const typedRefs: Array<{ rel: string; path: string; isDir?: boolean }> = [];
-    const vaultNorm = (vaultPath ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
-    for (const m of pathMentions(text)) {
-      const path = m.path.replace(/\\/g, "/");
-      if (insideVault(path, vaultPath)) {
-        typedRefs.push({ rel: path.slice(vaultNorm.length + 1), path });
-        continue;
-      }
-      const r = await attachPath(path);
-      if (!r.ok) {
-        setAttachError(r.error);
-        return;
-      }
-      uploads.push(r.file);
-      text = text.replace(m.raw, `@${r.file.name}`);
-    }
-    // Resolve every @name token in the text — not just the ones picked
-    // from the dropdown. Users type @name manually all the time, and
-    // without resolution the agent just sees a literal "@foo.md" and
-    // has to go hunting for the file. Start from the already-tracked
-    // mentions (which carry the exact picked path for disambiguation)
-    // and backfill anything else by basename match against the files
-    // list.
-    const tokens = Array.from(text.matchAll(/(?:^|\s)@([\w][\w./-]*)/g)).map((m) => m[1]);
-    const byPath = new Map<string, { rel: string; path: string; isDir?: boolean }>();
-    for (const m of mentions) {
-      const f = files.find((f) => f.path === m.path);
-      byPath.set(m.path, { rel: m.rel, path: m.path, isDir: f?.is_dir ?? false });
-    }
-    for (const tok of tokens) {
-      const lower = tok.toLowerCase();
-      if (mentions.some((m) => m.name.toLowerCase() === lower)) continue;
-      // An attached file's own name (it goes up with the message, not by reference).
-      if (uploads.some((u) => u.name.toLowerCase().startsWith(lower))) continue;
-      // Case-insensitive basename match — users type however they type.
-      const hits = files.filter((f) => !f.hidden && f.name.toLowerCase() === lower);
-      if (hits.length === 0) {
-        console.warn(`[@ref] no vault entry matched "${tok}" — agent will see only the literal token`);
-      }
-      for (const h of hits) {
-        if (!byPath.has(h.path)) {
-          const rel = vaultPath && h.path.startsWith(vaultPath + "/")
-            ? h.path.slice(vaultPath.length + 1)
-            : h.path;
-          byPath.set(h.path, { rel, path: h.path, isDir: h.is_dir });
-        }
-      }
-    }
-    for (const t of typedRefs) if (!byPath.has(t.path)) byPath.set(t.path, t);
-    // A path outside the vault never goes in the prompt (the box cannot open it): those files are uploaded.
-    for (const [p, r] of [...byPath]) {
-      if (!vaultPath || insideVault(p, vaultPath) || r.isDir) continue;
-      byPath.delete(p);
-      const got = await attachPath(p);
-      if (!got.ok) {
-        setAttachError(got.error);
-        return;
-      }
-      if (!uploads.some((u) => u.name === got.file.name && u.size === got.file.size)) uploads.push(got.file);
-    }
-    const resolved = Array.from(byPath.values());
-    const mentionPreamble = await buildMentionPreamble(resolved);
-    const viewportCtx = buildViewportContextText(useStore.getState());
-    const contextPreamble = [mentionPreamble, viewportCtx].filter(Boolean).join("\n\n---\n\n");
-    // Belt-and-suspenders: append the resolved paths as a footer on
-    // the user turn too. Hidden preamble alone wasn't enough — some
-    // models re-search with Glob even when the path is in context.
-    // Footer is stripped from the bubble render below.
-    const pathFooter =
-      resolved.length > 0
-        ? `\n\n[attached: ${resolved.map((r) => `@${r.rel.split("/").pop()} → ${r.path}`).join(", ")}]`
-        : "";
-    // The attached files' names on the message (chips on its bubble: splitFilesLine).
-    const filesLn = filesLine(uploads.map((u) => u.name));
-    const imagesToSend = pendingImages;
-    setInput("");
-    setMentions([]);
-    setSkillMention(null);
-    setFileMention(null);
-    setPendingImages([]);
-    setPendingFiles([]);
-    setAttachError(null);
-    dispatchChatAction({
-      kind: "send",
-      text: text + filesLn + pathFooter,
-      contextPreamble: contextPreamble || undefined,
-      attachments: imagesToSend.length > 0 ? imagesToSend : undefined,
-      uploads: uploads.length > 0 ? uploads : undefined,
-    });
-  };
-
-  const stop = () => dispatchChatAction({ kind: "stop" });
-  const hasDraft = !!input.trim() || pendingImages.length > 0 || pendingFiles.length > 0;
-
-  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    // Snapshot items synchronously — clipboardData is invalidated as
-    // soon as the handler returns, so we can't read items inside
-    // FileReader callbacks. Collect blobs first, then promote them
-    // to data URLs and batch-append in one setState to avoid losing
-    // a paste-then-Enter race (if the user hits send before all
-    // readers fire, only the resolved ones land).
-    const blobs: File[] = [];
-    const others: File[] = [];
-    for (const item of Array.from(e.clipboardData.items)) {
-      if (item.kind !== "file") continue;
-      const file = item.getAsFile();
-      if (!file) continue;
-      if (item.type.startsWith("image/")) blobs.push(file);
-      else others.push(file);
-    }
-    // Some native webviews expose copied browser images as HTML, not Files.
-    // Parse only to extract inline pixels; no clipboard markup/URLs are rendered.
-    const html = blobs.length || others.length ? "" : e.clipboardData.getData("text/html");
-    // A detached template stays inert (including remote img/iframe resources).
-    const clipboard = document.createElement("template");
-    if (html.length <= 20 * 1024 * 1024) clipboard.innerHTML = html;
-    const inline = clipboardImageDataUrls(Array.from(
-      clipboard.content.querySelectorAll("img"), img => img.getAttribute("src") ?? "",
-    ));
-    if (blobs.length === 0 && others.length === 0 && inline.length === 0) return;
-    e.preventDefault();
-    holdScroll();
-    if (inline.length) setPendingImages((prev) => [...prev, ...inline.map(imageDataUrl => ({ imageDataUrl }))]);
-    // A file copied in Explorer and pasted here: attached like a dropped one.
-    if (others.length) void Promise.all(others.map((f) => attachBlob(f.name, f))).then(addAttached);
-    Promise.all(
-      blobs.map(
-        (b) =>
-          new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result as string);
-            reader.onerror = () => reject(reader.error);
-            reader.readAsDataURL(b);
-          }),
-      ),
-    ).then((urls) => {
-      const additions = urls.filter(Boolean).map((u) => ({ imageDataUrl: u }));
-      if (additions.length > 0) setPendingImages((prev) => [...prev, ...additions]);
-    });
-  };
-
-  const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (skillMention && filteredSkills.length > 0) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setSkillMentionIdx((i) => Math.min(i + 1, filteredSkills.length - 1));
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setSkillMentionIdx((i) => Math.max(i - 1, 0));
-        return;
-      }
-      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
-        e.preventDefault();
-        const hit = filteredSkills[skillMentionIdx] ?? filteredSkills[0];
-        pickSkill(hit.name);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setSkillMention(null);
-        return;
-      }
-    }
-    if (fileMention && matchedFiles.length > 0) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setFileMentionIdx((i) => Math.min(i + 1, matchedFiles.length - 1));
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setFileMentionIdx((i) => Math.max(i - 1, 0));
-        return;
-      }
-      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
-        e.preventDefault();
-        const hit = matchedFiles[fileMentionIdx] ?? matchedFiles[0];
-        pickMention(hit);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setFileMention(null);
-        return;
-      }
-    }
-    if (e.key === "Enter" && !e.shiftKey) {
-      // Never fire mid-IME-composition (e.g. CJK candidate selection) — the
-      // Enter that commits a composition must not send the message.
-      if ((e.nativeEvent as { isComposing?: boolean }).isComposing) return;
-      e.preventDefault();
-      void send();
-      return;
-    }
-    if ((busy || held) && e.key === "Escape") {
-      e.preventDefault();
-      stop();
-    }
-  };
-  const onInputChange = (v: string) => {
-    setInput(v);
-    const caret = inputRef.current?.selectionStart ?? v.length;
-    const upToCaret = v.slice(0, caret);
-
-    // /skill tokens at caret — same shape as @mentions so skills can
-    // be invoked anywhere in the message, not only at input start.
-    const slashMatch = upToCaret.match(/(^|\s)\/([\w-]*)$/);
-    if (slashMatch) {
-      setSkillMention({
-        query: slashMatch[2],
-        start: caret - slashMatch[2].length - 1,
-      });
-      setSkillMentionIdx(0);
-    } else {
-      setSkillMention(null);
-    }
-
-    // @file tokens at caret.
-    const atMatch = upToCaret.match(/(^|\s)@([^\s]*)$/);
-    if (atMatch) {
-      setFileMention({
-        query: atMatch[2],
-        start: caret - atMatch[2].length - 1,
-      });
-      setFileMentionIdx(0);
-    } else {
-      setFileMention(null);
-    }
-
-    // Drop any tracked mention whose @name no longer appears in the
-    // text — the user deleted it inline. Lookahead-based terminator so
-    // "@foo.pdf?" / "@foo.md," still count as a mention.
-    setMentions((prev) =>
-      prev.filter((m) =>
-        new RegExp(`(^|\\s)@${escapeRegExp(m.name)}(?![\\w./-])`).test(v),
-      ),
-    );
-  };
-
-  const pickSkill = (name: string) => {
-    if (!skillMention) {
-      // Fallback: no caret ref (programmatic invoke). Insert at end.
-      const next = input.length ? `${input.replace(/\s+$/, "")} /${name} ` : `/${name} `;
-      setInput(next);
-      setSkillMention(null);
-      requestAnimationFrame(() => inputRef.current?.focus());
-      return;
-    }
-    const before = input.slice(0, skillMention.start);
-    const after = input.slice(skillMention.start + 1 + skillMention.query.length);
-    const insertion = `/${name} `;
-    const next = `${before}${insertion}${after.replace(/^\s+/, "")}`;
-    setInput(next);
-    setSkillMention(null);
-    requestAnimationFrame(() => {
-      const el = inputRef.current;
-      if (!el) return;
-      const pos = before.length + insertion.length;
-      el.setSelectionRange(pos, pos);
-      el.focus();
-    });
-  };
-
-  const filteredSkills = skillMention
-    ? skills.filter((s) => s.name.startsWith(skillMention.query))
-    : [];
-
-  const matchedFiles = fileMention
-    ? filterFilesForMention(files, vaultPath, fileMention.query).slice(0, 8)
-    : [];
-
-  const pickMention = (hit: MentionHit) => {
-    if (!fileMention) return;
-    const before = input.slice(0, fileMention.start);
-    const after = input.slice(fileMention.start + 1 + fileMention.query.length);
-    // Keep the @name inline in the textarea — no chip. The mentions
-    // array still tracks the exact path so send() can resolve basenames
-    // to their source even when two files share a name.
-    const insertion = `@${hit.name} `;
-    const next = `${before}${insertion}${after.replace(/^\s+/, "")}`;
-    setInput(next);
-    setMentions((prev) => {
-      if (prev.some((m) => m.path === hit.path)) return prev;
-      return [...prev, { rel: hit.rel, path: hit.path, name: hit.name, raw: `@${hit.name}` }];
-    });
-    setFileMention(null);
-    requestAnimationFrame(() => {
-      const el = inputRef.current;
-      if (!el) return;
-      const pos = before.length + insertion.length;
-      el.setSelectionRange(pos, pos);
-      el.focus();
-    });
-  };
-
-  // Fullscreen's + menu. Every path the composer already has, in one place:
-  // files from disk (images as attachments, the rest as @-references), a
-  // region of the open file (the marquee — over the chat, since fullscreen has
-  // no viewer), and the @ picker for vault files.
-  const capturable = (() => {
-    const paths: string[] = [];
-    if (currentFile) paths.push(currentFile);
-    for (const p of panes) if (p.file) paths.push(p.file);
-    return paths.some((p) => {
-      const k = fileKind(p).kind;
-      return k === "pdf" || k === "html" || k === "image";
-    });
-  })();
-  const addFiles = async () => {
-    setPlusOpen(false);
-    let picked: string | string[] | null = null;
-    try {
-      picked = await openDialog({ multiple: true, directory: false, defaultPath: vaultPath ?? undefined });
-    } catch (e) {
-      console.warn("[attach] file dialog failed:", e);
-      return;
-    }
-    const paths = (picked == null ? [] : Array.isArray(picked) ? picked : [picked]).map((p) => p.replace(/\\/g, "/"));
-    const refs: Array<{ rel: string; path: string; name: string; raw: string }> = [];
-    const outside: string[] = [];
-    for (const path of paths) {
-      const name = path.split("/").pop() ?? path;
-      const mime = imageMime(path);
-      if (mime) {
-        try {
-          const bytes = await invoke<number[]>("read_binary_file", { path });
-          const url = await new Promise<string>((res, rej) => {
-            const r = new FileReader();
-            r.onload = () => res(String(r.result));
-            r.onerror = () => rej(r.error);
-            r.readAsDataURL(new Blob([new Uint8Array(bytes)], { type: mime }));
-          });
-          setPendingImages((prev) => [...prev, { imageDataUrl: url, sourcePath: path }]);
-          continue;
-        } catch (e) {
-          console.warn("[attach] image read failed:", e);
-        }
-      }
-      // Outside the vault: read now, uploaded with the message (the box has no copy of it).
-      if (!insideVault(path, vaultPath)) {
-        outside.push(path);
-        continue;
-      }
-      const rel = path.slice((vaultPath ?? "").replace(/\\/g, "/").replace(/\/+$/, "").length + 1);
-      refs.push({ rel, path, name, raw: `@${name}` });
-    }
-    if (outside.length) addAttached(await Promise.all(outside.map((p) => attachPath(p))));
-    if (refs.length) {
-      setMentions((prev) => [...prev, ...refs.filter((r) => !prev.some((m) => m.path === r.path))]);
-      setInput((prev) => `${prev}${prev && !/\s$/.test(prev) ? " " : ""}${refs.map((r) => r.raw).join(" ")} `);
-    }
-    requestAnimationFrame(() => inputRef.current?.focus());
-  };
-  const captureRegion = () => {
-    setPlusOpen(false);
-    if (!capturable) return;
-    const s = useStore.getState();
-    s.setEditPromptCapturePending(false);
-    s.setNoteCapturePending(false);
-    s.setVoiceCapturePending(false);
-    // Popout: the main window runs the marquee and bounces the image back.
-    if (isPopout) {
-      dispatchChatAction({ kind: "startCapture" });
-      return;
-    }
-    setChatPaneCapturePending(true);
-    // Fullscreen has no viewer: App.tsx shows the open file over the chat and
-    // starts the marquee there. Otherwise the marquee runs on the viewer.
-    window.dispatchEvent(new CustomEvent(chatFullscreen ? "vc-fullscreen-capture" : "vc-marquee-toggle"));
-  };
-  const mentionVaultFile = () => {
-    setPlusOpen(false);
-    const el = inputRef.current;
-    const v = `${input}${input && !/\s$/.test(input) ? " " : ""}@`;
-    if (el) {
-      el.value = v;
-      el.setSelectionRange(v.length, v.length);
-      el.focus();
-    }
-    onInputChange(v);
-  };
 
   return (
     <div className="h-full flex flex-col bg-card border-l border-border relative">
@@ -1281,325 +568,7 @@ export function ChatPane() {
               verdict={uiChoice("verdict") === "ongoing"}
             />
           )}
-          {/* Signed out of Claude, the composer is the one thing the chat pane
-              blocks: the thread above it stays readable, and everything outside
-              this pane (vaults, the tree, the editor, the viewer) is untouched.
-              Carl: "the app should work without claude, only the AI features
-              should be blocked by sign in." */}
-          {aiBlocked ? (
-          <ClaudeSignInPrompt surface="chat" />
-          ) : (
-          <div
-            className={cn("relative flex flex-col rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors", dropOver && "border-ring/60 ring-1 ring-ring/30")}
-            data-el="composer"
-            // A file dropped from Explorer: attached (images as images; anything else uploaded with the message).
-            onDragOver={(e) => {
-              if (!ready || !isExternalFileDrop(e.dataTransfer)) return;
-              e.preventDefault();
-              e.dataTransfer.dropEffect = "copy";
-              if (!dropOver) setDropOver(true);
-            }}
-            onDragLeave={() => setDropOver(false)}
-            onDrop={(e) => {
-              setDropOver(false);
-              if (!ready || !isExternalFileDrop(e.dataTransfer)) return;
-              e.preventDefault();
-              const dropped = Array.from(e.dataTransfer.files);
-              const images = dropped.filter((f) => f.type.startsWith("image/") && f.size <= ATTACH_MAX_BYTES);
-              const rest = dropped.filter((f) => !images.includes(f));
-              for (const f of images) {
-                const r = new FileReader();
-                r.onload = () => setPendingImages((prev) => [...prev, { imageDataUrl: String(r.result), sourcePath: f.name }]);
-                r.readAsDataURL(f);
-              }
-              if (rest.length) void Promise.all(rest.map((f) => attachBlob(f.name, f))).then(addAttached);
-              requestAnimationFrame(() => inputRef.current?.focus());
-            }}
-          >
-            {skillMention && filteredSkills.length > 0 && (
-              <div className="absolute bottom-full left-0 right-0 max-h-[240px] overflow-auto bg-popover border-t border-x border-border shadow-lg z-10">
-                {filteredSkills.slice(0, 8).map((s, i) => (
-                  <div
-                    key={s.name}
-                    className={cn(
-                      "flex items-baseline gap-3 px-3 py-2 cursor-pointer border-b border-border/40 last:border-b-0",
-                      i === skillMentionIdx ? "bg-accent" : "hover:bg-accent/60",
-                    )}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      pickSkill(s.name);
-                    }}
-                    onMouseEnter={() => setSkillMentionIdx(i)}
-                  >
-                    <span className="text-primary font-mono text-[12.5px] font-medium shrink-0">/{s.name}</span>
-                    {s.description && (
-                      <span className="text-muted-foreground text-[11px] truncate">
-                        {s.description}
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-            {fileMention && matchedFiles.length > 0 && (
-              <div className="absolute bottom-full left-0 right-0 max-h-[240px] overflow-auto bg-popover border-t border-x border-border shadow-lg z-10">
-                {matchedFiles.map((f, i) => (
-                  <div
-                    key={f.path}
-                    className={cn(
-                      "flex items-baseline gap-3 px-3 py-2 cursor-pointer border-b border-border/40 last:border-b-0",
-                      i === fileMentionIdx ? "bg-accent" : "hover:bg-accent/60",
-                    )}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      pickMention(f);
-                    }}
-                    onMouseEnter={() => setFileMentionIdx(i)}
-                  >
-                    <span className="text-primary font-mono text-[12.5px] font-medium shrink-0 max-w-[50%] truncate">
-                      {f.name}
-                    </span>
-                    <span className="text-muted-foreground text-[11px] truncate font-mono">
-                      {f.rel}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-            {pendingFiles.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 px-3 pt-2" data-el="attached-files">
-                {pendingFiles.map((f, i) => (
-                  <div key={i} className="group relative flex items-center gap-1.5 rounded-md border border-border/70 bg-muted/40 pl-2 pr-2.5 py-1 text-[11.5px]" data-el="attached-file">
-                    <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <span className="max-w-[220px] truncate text-foreground/90" title={f.name}>{f.name}</span>
-                    <span className="text-[10.5px] text-muted-foreground">{sizeLabel(f.size)}</span>
-                    <button
-                      onClick={() => setPendingFiles((prev) => prev.filter((_, j) => j !== i))}
-                      className="absolute -top-1.5 -right-1.5 h-4 w-4 flex items-center justify-center rounded-full bg-card border border-border text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
-                      title="Remove"
-                    >
-                      <X className="h-2.5 w-2.5" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            {attachError && (
-              <div className="flex items-start gap-1.5 px-3 pt-2 text-[11px] text-destructive/90" data-el="attach-error">
-                <AlertCircle className="h-3 w-3 mt-px shrink-0" />
-                <span className="min-w-0 break-words">{attachError}</span>
-                <button onClick={() => setAttachError(null)} className="ml-auto shrink-0 text-muted-foreground hover:text-foreground" title="Dismiss">
-                  <X className="h-3 w-3" />
-                </button>
-              </div>
-            )}
-            {pendingImages.length > 0 && (
-              <div className="flex flex-wrap gap-2 px-3 pt-2">
-                {pendingImages.map((img, i) => {
-                  const name = img.sourcePath?.split("/").pop();
-                  return (
-                    <div key={i} className="relative group flex flex-col items-start gap-0.5">
-                      <img
-                        src={img.imageDataUrl}
-                        alt={`captured ${i + 1}`}
-                        className="max-h-[72px] rounded border border-border/60"
-                        onLoad={() => { restoreHeldScroll(); }}
-                      />
-                      {name && (
-                        <span className="text-[9.5px] text-muted-foreground font-mono">
-                          {name}
-                          {img.sourceAnchor ? ` · ${img.sourceAnchor}` : ""}
-                        </span>
-                      )}
-                      <button
-                        onClick={() =>
-                          setPendingImages((prev) => prev.filter((_, j) => j !== i))
-                        }
-                        className="absolute -top-1.5 -right-1.5 h-4 w-4 flex items-center justify-center rounded-full bg-card border border-border text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
-                        title="Remove"
-                      >
-                        <X className="h-2.5 w-2.5" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-            <div className="relative flex items-end">
-              {(
-                <div className="absolute left-2 bottom-2 z-10">
-                  <button
-                    onClick={() => setPlusOpen((o) => !o)}
-                    disabled={!ready}
-                    data-el="composer-plus"
-                    className={cn(
-                      "h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed",
-                      plusOpen && "bg-accent/60 text-foreground",
-                    )}
-                    title="Add files, capture a region, or mention a vault file"
-                  >
-                    <Plus className="h-4 w-4" />
-                  </button>
-                  {plusOpen && (
-                    <>
-                      <div className="fixed inset-0 z-10" onMouseDown={() => setPlusOpen(false)} />
-                      <div
-                        data-el="composer-plus-menu"
-                        className="absolute bottom-full left-0 mb-1.5 z-20 w-60 rounded-lg border border-border bg-popover p-1 shadow-lg text-[12.5px]"
-                      >
-                        <PlusItem icon={<Paperclip className="h-3.5 w-3.5" />} label="Add photos & files" onClick={() => void addFiles()} />
-                        <PlusItem
-                          icon={<Scan className="h-3.5 w-3.5" />}
-                          label="Capture a region"
-                          hint={capturable ? "Drag over the open file" : "Open a PDF, HTML file or image first"}
-                          disabled={!capturable || busy}
-                          onClick={captureRegion}
-                        />
-                        <PlusItem icon={<AtSign className="h-3.5 w-3.5" />} label="Mention a vault file" onClick={mentionVaultFile} />
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-              <Textarea
-                data-perf-target="composer"
-                ref={inputRef}
-                value={input}
-                onChange={(e) => onInputChange(e.target.value)}
-                onKeyDown={onKey}
-                onPaste={onPaste}
-                placeholder={placeholder}
-                disabled={!ready}
-                rows={1}
-                className={cn("composer-input border-0 bg-transparent min-h-0 max-h-[200px] overflow-y-hidden focus-visible:ring-0 shadow-none !py-2", voiceMode || voiceNotice ? (chatFullscreen ? "!pr-52" : "!pr-40") : chatFullscreen && voiceError ? "!pr-32" : "!pr-20", "!pl-11")}
-              />
-              <div className="absolute right-3 bottom-2 flex items-center gap-1">
-                {/* Mute, by the composer while voice is on (or where voice went, when it moved to another device). */}
-                <VoiceMuteButton />
-                {chatFullscreen && <InlineVoiceWaves />}
-                {chatFullscreen && (
-                  <button
-                    // Voice runs in the main window (the popout's mic asks it).
-                    onClick={isPopout ? () => dispatchChatAction({ kind: "toggleVoice" }) : () => toggleVoice("mic button")}
-                    disabled={!vaultPath}
-                    data-el="composer-voice"
-                    className={cn(
-                      "h-7 w-7 flex items-center justify-center rounded-lg hover:bg-accent/60 hover:text-foreground disabled:opacity-40",
-                      voiceMode ? "text-foreground" : "text-muted-foreground",
-                    )}
-                    title={voiceMode ? "Voice on — Ctrl+D to turn off" : "Voice (Ctrl+D)"}
-                  >
-                    <Mic className="h-3.5 w-3.5" strokeWidth={voiceMode ? 2.5 : 2} />
-                  </button>
-                )}
-                {/* As in Claude Code: with something to send the button is Send (while the agent works too: it reads
-                    the message at its next step); with nothing typed while it works, Stop. */}
-                {(busy || held) && !hasDraft ? (
-                  <Button
-                    size="icon"
-                    variant="secondary"
-                    onClick={stop}
-                    className="h-7 w-7 rounded-lg"
-                    title={held ? "Don't pick it up at the reset (Esc)" : "Stop the agent (Esc)"}
-                    data-el="composer-stop"
-                  >
-                    <Square className="h-3 w-3 fill-current" />
-                  </Button>
-                ) : (
-                  <Button
-                    size="icon"
-                    onClick={() => void send()}
-                    disabled={!ready || !hasDraft}
-                    className="h-7 w-7 rounded-lg"
-                    title={busy ? "Send — the agent reads it at its next step" : "Send"}
-                    data-el="composer-send"
-                  >
-                    <ArrowUp className="h-3.5 w-3.5" />
-                  </Button>
-                )}
-              </div>
-            </div>
-          </div>
-          )}
-          {!voiceBar && (
-          <div className="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
-            <div className="flex items-center gap-3 min-w-0">
-              {/* What this chat runs on, and how hard it thinks (src/chatModels.ts). */}
-              <ChatModelPicker convId={activeConversationId} />
-              {boxDown && (
-                <span className="truncate text-amber-500/90" data-el="box-unreachable" title={boxChat?.reason || undefined}>
-                  {BOX_UNREACHABLE}: {downWhy}
-                </span>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              {busy && <ElapsedTimer />}
-              {lastContext > 0 && (
-                <UsagePopover
-                  title={contextTitle(lastContext, ctxWindow)}
-                  used={lastContext}
-                  limit={ctxWindow.tokens}
-                  known={ctxWindow.known}
-                  ring={
-                    <>
-                      <TokenRing used={lastContext} limit={ctxWindow.tokens} size={14} />
-                      <span>{formatTokens(lastContext)}</span>
-                    </>
-                  }
-                />
-              )}
-              {!archived && (
-                <button
-                  onClick={() => {
-                    newChatHere();
-                    window.dispatchEvent(new CustomEvent("vc-focus-composer"));
-                  }}
-                  disabled={!ready}
-                  data-el="new-chat"
-                  className="flex items-center gap-1 hover:text-foreground transition-colors disabled:opacity-40"
-                  title="New chat — a fresh conversation in this project (or the vault's main). Nothing is wiped: this one stays in the list."
-                >
-                  <Plus className="h-3 w-3" />
-                  <span>New chat</span>
-                </button>
-              )}
-              {!isPopout && !chatFullscreen && (
-                <button
-                  onClick={toggleChatsPanel}
-                  className={`relative flex items-center gap-1 text-[11px] hover:text-foreground transition-colors ${
-                    chatsShown ? "text-foreground" : "text-muted-foreground"
-                  }`}
-                  data-el="chats-toggle"
-                  title="Chats — Main and your projects, and what's running"
-                  aria-label="Chats"
-                >
-                  <MessageSquare className="h-3 w-3" />
-                  {indicatorKind && (
-                    <span
-                      className="relative inline-flex h-1.5 w-1.5 ml-0.5"
-                      title={
-                        indicatorKind === "running"
-                          ? "A background chat is thinking"
-                          : "A background chat finished — unseen"
-                      }
-                    >
-                      {indicatorKind === "running" ? (
-                        // White, pulsing = a background chat is still thinking.
-                        <>
-                          <span className="absolute inset-0 rounded-full bg-foreground opacity-60 animate-ping" />
-                          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-foreground" />
-                        </>
-                      ) : (
-                        // Solid accent = a background chat finished, unseen.
-                        <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                      )}
-                    </span>
-                  )}
-                </button>
-              )}
-            </div>
-          </div>
-          )}
+          <ComposerSlot />
         </div>
       </div>
     </div>
@@ -1651,19 +620,6 @@ const HistoryList = memo(function HistoryList({
   );
 });
 
-function PlusItem({ icon, label, hint, disabled, onClick }: { icon: React.ReactNode; label: string; hint?: string; disabled?: boolean; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      title={hint}
-      className="w-full flex items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-foreground hover:bg-accent/60 disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
-    >
-      <span className="text-muted-foreground">{icon}</span>
-      <span className="flex-1">{label}</span>
-    </button>
-  );
-}
 
 function toolSummary(input: any): string {
   if (!input || typeof input !== "object") return "";
@@ -2169,34 +1125,6 @@ function ReasoningStream({ text }: { text: string }) {
   );
 }
 
-function ElapsedTimer() {
-  // Count from the run's real start so leaving and returning to a running
-  // thread shows continuous elapsed time, not a restart from 0. The start lives
-  // on the conversation itself (`runStartedAt`, stamped when the prompt was
-  // sent), so it's correct for EVERY source — manual, voice, mission, worker,
-  // phone — and survives open/close and reload. Falls back to the global
-  // busyStartedAt, then to mount time, if a start somehow wasn't recorded.
-  const startedAt = useStore((s) => {
-    const active = s.conversations.find((c) => c.id === s.activeConversationId);
-    return active?.runStartedAt ?? s.busyStartedAt;
-  });
-  const [seconds, setSeconds] = useState(0);
-  useEffect(() => {
-    const start = startedAt ?? Date.now();
-    const tick = () => setSeconds(Math.max(0, Math.floor((Date.now() - start) / 1000)));
-    tick();
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
-  }, [startedAt]);
-  const mm = Math.floor(seconds / 60);
-  const ss = seconds % 60;
-  const label = mm > 0 ? `${mm}:${ss.toString().padStart(2, "0")}` : `${ss}s`;
-  return (
-    <span className="tabular-nums opacity-70" title="Agent running">
-      {label}
-    </span>
-  );
-}
 
 export function ThinkingIndicator({
   liveChars,
@@ -2227,35 +1155,8 @@ export function ThinkingIndicator({
   );
 }
 
-function TokenRing({ used, limit, size }: { used: number; limit: number; size: number }) {
-  const r = (size - 2) / 2;
-  const circ = 2 * Math.PI * r;
-  const pct = Math.min(used / limit, 1);
-  const color = pct < 0.5 ? "hsl(var(--muted-foreground))" : pct < 0.8 ? "hsl(40, 90%, 55%)" : "hsl(0, 72%, 58%)";
-  return (
-    <svg width={size} height={size} className="shrink-0">
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="hsl(var(--border))" strokeWidth={1.5} />
-      <circle
-        cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={1.5}
-        strokeDasharray={circ} strokeDashoffset={circ * (1 - pct)}
-        strokeLinecap="round"
-        transform={`rotate(-90 ${size / 2} ${size / 2})`}
-      />
-    </svg>
-  );
-}
 
-function contextTitle(used: number, w: { tokens: number; known: boolean }): string {
-  const pct = Math.round((used / w.tokens) * 100);
-  const of = w.known ? `${w.tokens.toLocaleString()}` : `~${w.tokens.toLocaleString()} (window unknown)`;
-  return `Context: ${used.toLocaleString()} of ${of} tokens (${pct}%)`;
-}
 
-function formatTokens(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 100_000) return `${(n / 1000).toFixed(1)}k`;
-  return `${Math.round(n / 1000)}k`;
-}
 
 function formatEta(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
