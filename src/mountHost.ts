@@ -248,7 +248,7 @@ export function mountPlugin(
         listen: (target, type, fn, o) => (run === r ? fx.listen(target, String(type), guard(fn), o) : () => {}),
         timer: (fn, ms, repeat) => (run === r ? fx.timer(guard(fn), Math.max(0, Number(ms) || 0), !!repeat) : () => {}),
         effect: (undo) => (run === r && typeof undo === "function" ? fx.add("effect", undo) : () => {}),
-        host: createHostApi(opts.host ?? noHost, fx, () => run === r, guard),
+        host: createHostApi(opts.host ?? noHost, fx, () => run === r, guard, opts.path),
         error: (e) => void (run === r && fail(e)),
         offer: (offers) => {
           if (run !== r) return { emit() {} };

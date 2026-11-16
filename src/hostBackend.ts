@@ -6,6 +6,7 @@ import { isUnreadableAsText } from "./fileKind";
 import { hostTheme } from "./mountHost";
 import { applyLayoutOps, readLayout, type LayoutIO } from "./layoutOps";
 import { placeInPane } from "./paneLayout";
+import { registerRow } from "./chatRows";
 import type { HostBackend, HostState, HostSelection } from "./hostApi";
 
 /** Commands a plugin may run by id (host.runCommand). */
@@ -125,6 +126,7 @@ export const appHostBackend: HostBackend = {
     return (await import("./screenCapture")).captureWindow(target, { chatFullscreen: s.chatFullscreen, chatPoppedOut: s.popoutOpen });
   },
   applyLayout: (ops) => applyLayoutOps(ops, appLayoutIO),
+  registerChatRow: (kind, render, by) => registerRow(kind, render, by),
   async primeChat(lines) {
     const store = useStore.getState();
     // Box mode: the box writes the chat; these lines go to it as they are.

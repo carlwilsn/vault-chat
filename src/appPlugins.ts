@@ -51,7 +51,19 @@ export const COMPOSER_PLUGIN: AppPluginInfo = {
   words: ["composer", "chat composer", "the composer", "composer box", "chat input", "chat box", "message box", "text box", "prompt box"],
 };
 
-export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN];
+
+export const CHAT_ROWS_PLUGIN_ID = "app/chat-rows";
+
+/** The chat transcript's rows (src/plugins/chat-rows): which renderer draws each kind of row, and the rows on screen. */
+export const CHAT_ROWS_PLUGIN: AppPluginInfo = {
+  id: CHAT_ROWS_PLUGIN_ID,
+  name: "Chat rows",
+  mount: "panel",
+  description: "The chat transcript's rows: the renderer of each kind of row (messages, tool calls, notices, plans, inline pages; a vault plugin can draw one kind its own way), the rows on screen, scrolling to a row and opening or closing tool rows. Off: the agent cannot reach it; the rows still draw.",
+  words: ["chat rows", "chat-rows", "chatrows", "transcript", "chat transcript", "rows", "row renderers", "tool rows"],
+};
+
+export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN];
 
 /** The app plugin a word names (its id, its name or one of its words), or null. */
 export function appPluginNamed(word: string): AppPluginInfo | null {

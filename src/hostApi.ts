@@ -65,7 +65,11 @@ export type HostBackend = {
   applyLayout(ops: LayoutOp[]): Promise<LayoutResult>;
   /** A picture of the app's window or one column; absent: this host has no screen to draw. */
   capture?(target: CaptureTarget): Promise<Capture>;
+  /** Draw one kind of chat row with a plugin's renderer (src/chatRows.ts); the undo. Absent: no chat here. */
+  registerChatRow?(kind: string, render: ChatRowRender, by: string): () => void;
 };
+/** A chat row renderer: draw `row` ({kind, index?, message?, tool?, todos?, src?, alt?}) into `el`; return a cleanup. */
+export type ChatRowRender = (el: HTMLElement, row: { kind: string; index?: number; message?: unknown; tool?: unknown; todos?: unknown; src?: string; alt?: string }) => void | (() => void);
 
 export type HostApi = {
   readonly version: number;
@@ -90,7 +94,13 @@ export type HostApi = {
     saveDraft(id: string, draft: string): Promise<void>;
   };
   panel: { close(): void };
-  chat: { prime(lines: HostChatLine[]): Promise<boolean> };
+  chat: {
+    prime(lines: HostChatLine[]): Promise<boolean>;
+    /** Draw one kind of the transcript's rows ("assistant", "notice", "tool-call", "tool-call:Bash", "plan", "inline-html",
+     *  ...) with this renderer, live, until the plugin stops (or the returned off). A throw falls back to the app's own
+     *  renderer for that row. Throws on a bad kind. */
+    row(kind: string, render: ChatRowRender): () => void;
+  };
   layout: { get(): HostLayout; apply(ops: LayoutOp | LayoutOp[]): Promise<LayoutResult> };
   /** A PNG of the app's own window ("window", default) or its "viewer" / "chat" column; rejects with why it can't. */
   capture(target?: CaptureTarget): Promise<Capture>;
@@ -127,7 +137,7 @@ const EVENTS: readonly string[] = ["file-opened", "chat-message", "selection-cha
  * The api.host of one run. `fx` records every subscription (undone on stop); `alive()` is false once the run is over
  * (its calls then do nothing); `guard` wraps plugin callbacks (a throw is the plugin's failure, not the app's).
  */
-export function createHostApi(b: HostBackend, fx: Effects, alive: () => boolean, guard: <A extends unknown[]>(f: (...a: A) => void) => (...a: A) => void): HostApi {
+export function createHostApi(b: HostBackend, fx: Effects, alive: () => boolean, guard: <A extends unknown[]>(f: (...a: A) => void) => (...a: A) => void, id = "plugin"): HostApi {
   const fns = new Set<() => void>();
   let stopBackend: (() => void) | null = null;
   // One backend subscription per run: it fans out to subscribe() and derives the file-opened / chat-message events.
@@ -205,7 +215,14 @@ export function createHostApi(b: HostBackend, fx: Effects, alive: () => boolean,
       saveDraft: act((id, d) => b.saveNoteDraft(id, d), Promise.resolve()),
     },
     panel: { close: act(() => b.closeNotesPanel(), undefined) },
-    chat: { prime: act((l) => b.primeChat(l), Promise.resolve(false)) },
+    chat: {
+      prime: act((l) => b.primeChat(l), Promise.resolve(false)),
+      row(kind, render) {
+        if (!alive()) return () => {};
+        if (!b.registerChatRow) throw new Error("no chat here to draw rows in");
+        return fx.add(`chat row ${String(kind)}`, b.registerChatRow(String(kind), render, id));
+      },
+    },
     layout: {
       get: () => b.layout(),
       apply: (ops) => (alive() ? b.applyLayout(Array.isArray(ops) ? ops : [ops]) : Promise.resolve({ ok: false, results: [], layout: b.layout() })),
