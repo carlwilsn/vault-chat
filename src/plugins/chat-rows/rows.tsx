@@ -466,7 +466,16 @@ function PlanCardRow({ todos }: { todos: TodoItem[] }) {
 function FallbackRow({ data }: { data: RowData }) {
   const m = (data.message ?? {}) as Partial<ChatMessage>;
   const t = data.tool as { name?: string } | undefined;
-  const text = data.kind === "plan" ? `Plan · ${(data.todos as unknown[] | undefined)?.length ?? 0} steps` : t ? String(t.name ?? "tool call") : data.src ? String(data.alt || data.src) : String(m.display ?? m.content ?? "");
+  const tools = data.tools as { name?: string; result?: string }[] | undefined;
+  const live = tools ? tools.find((x) => !x.result) ?? tools[tools.length - 1] : undefined;
+  const text =
+    data.kind === "plan" ? `Plan · ${(data.todos as unknown[] | undefined)?.length ?? 0} steps`
+    : t ? String(t.name ?? "tool call")
+    : data.src ? String(data.alt || data.src)
+    : typeof data.text === "string" ? data.text
+    : live ? `${live.name ?? "tool"}${live.result ? " ✓" : " …"}`
+    : data.kind === "thinking-indicator" ? "Working…"
+    : String(m.display ?? m.content ?? "");
   if (!text.trim()) return null;
   return (
     <div className="flex items-start gap-1.5 text-[11px] leading-snug text-muted-foreground whitespace-pre-wrap break-words" data-el="row-fallback" data-kind={data.kind} {...partAttr(data)}>
@@ -531,8 +540,8 @@ function drawRenderer(r: RowRenderer | undefined, props: object, data: RowData):
   return <C {...props} />;
 }
 
-/** A row of the transcript: follows the registry live (a plugin's renderer on or off redraws it). */
-function Row({ kind, props, data }: { kind: string; props: object; data: RowData }) {
+/** A row of the transcript (or of the live tail, ./tail.tsx): follows the registry live (a plugin's renderer on or off redraws it). */
+export function Row({ kind, props, data }: { kind: string; props: object; data: RowData }) {
   useSyncExternalStore(subscribeRows, rowsVersion, rowsVersion);
   return <RowBoundary chain={chainFor(rowChain(kind), data)} props={props} data={data} />;
 }
@@ -677,6 +686,16 @@ function Elapsed({ since }: { since: number }) {
   return <span className="shrink-0 tabular-nums opacity-70">{`${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`}</span>;
 }
 
+const tokens = (n: number) => (n >= 1000 ? `${+(n / 1000).toFixed(n >= 100_000 ? 0 : 1)}k` : String(n));
+/** A compaction says it compacted, with the runtime's own sizes when it gave them ("182k → 14.2k tokens"); a roll-over
+ *  reads as before. */
+export function dividerLabel(m: ChatMessage): string {
+  const c = m.compaction;
+  if (!c || m.rollover) return COMPACTION_DIVIDER_TEXT;
+  const sizes = c.before && c.after ? ` · ${tokens(c.before)} → ${tokens(c.after)} tokens` : c.before ? ` · from ${tokens(c.before)} tokens` : "";
+  return `Conversation compacted${sizes}`;
+}
+
 // Where the earlier conversation was summarized: the quiet system-line divider,
 // whose summary expands like a tool-call list.
 function CompactionDivider({ message, index }: { message: ChatMessage; index?: number }) {
@@ -686,7 +705,7 @@ function CompactionDivider({ message, index }: { message: ChatMessage; index?: n
       <summary className="flex items-center justify-center gap-2 text-[11px] text-muted-foreground cursor-pointer hover:text-foreground list-none select-none">
         <div className="h-px w-8 bg-border" />
         <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-0 -rotate-90" />
-        <span className="italic">{COMPACTION_DIVIDER_TEXT}</span>
+        <span className="italic">{dividerLabel(message)}</span>
         <div className="h-px w-8 bg-border" />
       </summary>
       <div className="mt-2 pl-4 border-l border-border prose-chat text-[12px] text-muted-foreground">

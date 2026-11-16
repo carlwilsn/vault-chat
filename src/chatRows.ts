@@ -2,7 +2,10 @@
 // reports/09 blocker #1). Each row has a kind (kindOf: a user bubble, an agent reply, a notice, the compaction divider,
 // a job's end, a voice line, a voice ask, the plan card) and parts of a reply have kinds of their own (each tool call,
 // "tool-call" or "tool-call:<Name>"; a vault .html shown inline, "inline-html"). The app's own renderers are registered
-// as the built-in layer (src/plugins/chat-rows/rows.tsx); a plugin registers one over a kind live, with no release:
+// as the built-in layer (src/plugins/chat-rows/rows.tsx). The live tail under the rows (what streams while the agent
+// works) is rows too: the streaming reply ("stream"), the live tool ticker ("live-tool"), the reasoning as it streams
+// ("reasoning") and the working pulse ("thinking-indicator"), built-ins in src/plugins/chat-rows/tail.tsx.
+// A plugin registers one over a kind live, with no release:
 // a vault plugin through api.host.chat.row(kind, render) (render(el, row) draws into a plain element), undone when it
 // stops. Which renderer draws a kind: the one chosen for it (use), else the newest enabled plugin renderer, else the
 // built-in; a throwing renderer falls back down that chain to the built-in, then to the plain fallback row, for that row
@@ -12,11 +15,17 @@
 
 /** What a row is, from its message. */
 export type RowKind = "divider" | "job" | "working" | "notice" | "voice-ask" | "voice" | "user" | "assistant";
-export const ROW_KINDS: readonly string[] = ["divider", "job", "working", "notice", "voice-ask", "voice", "user", "assistant", "plan", "tool-call", "inline-html"];
+export const ROW_KINDS: readonly string[] = ["divider", "job", "working", "notice", "voice-ask", "voice", "user", "assistant", "plan", "tool-call", "inline-html", "stream", "live-tool", "reasoning", "thinking-indicator"];
+/** The live tail's kinds (drawn under the rows while the agent works; no index, no message). */
+export const TAIL_KINDS: readonly string[] = ["stream", "live-tool", "reasoning", "thinking-indicator"];
 
 /** What a plugin's renderer is given: the row's kind, its index in the chat, and its data (the message, a tool call,
- *  a plan's steps, an inline page's src). */
-export type RowData = { kind: string; index?: number; message?: unknown; tool?: unknown; todos?: unknown; src?: string; alt?: string; placement?: string };
+ *  a plan's steps, an inline page's src; the live tail's: the text streamed so far (stream, reasoning), the turn's
+ *  tool calls so far (live-tool: {id, name, input, result?, partial?, startedAt?}), the working pulse's state). */
+export type RowData = {
+  kind: string; index?: number; message?: unknown; tool?: unknown; todos?: unknown; src?: string; alt?: string; placement?: string;
+  text?: string; tools?: readonly unknown[]; live?: { silent: boolean; activeTool?: string; streaming: boolean; reasoning: boolean; liveChars: number };
+};
 /** A plugin's renderer: draw the row into `el` (a plain block element in the transcript); return a cleanup, if any. */
 export type DomRender = (el: HTMLElement, row: RowData) => void | (() => void);
 

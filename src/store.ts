@@ -151,7 +151,8 @@ export type ChatMessage = {
   // summarized here. The model sees this summary plus only the messages AFTER
   // the divider; the chat shows a quiet divider whose summary expands. See
   // chatContext.ts.
-  compaction?: { summary: string; at?: number };
+  // before / after: the context's size in tokens before and right after it (the runtime's own figures, when it gave them).
+  compaction?: { summary: string; at?: number; before?: number; after?: number };
   // [box] A roll-over marker (server/context/rollover.ts): the conversation
   // moved to a fresh session here, with this recap. Shown like a compaction.
   rollover?: { at?: number; fromThread?: string; recap?: string };

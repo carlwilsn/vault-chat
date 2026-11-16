@@ -27,7 +27,7 @@ export type ViewMessage = {
   toolCalls?: { id?: string; name: string; input: any; result?: string; subagents?: string[] }[];
   attachments?: { imageDataUrl: string; capturedFilePath?: string; sourcePath?: string }[];
   askOptions?: { answer: string; title: string; body: string; primary?: boolean }[];
-  compaction?: { summary: string; at?: number };
+  compaction?: { summary: string; at?: number; before?: number; after?: number };
   rollover?: { at?: number; recap?: string };
   /** The items this message shows (in order). */
   items?: string[];
@@ -153,7 +153,7 @@ function messagesOfItem(it: Item, retry = false): ViewMessage[] {
       if (isOpen(it)) return [{ role: "assistant", system: true, content: "Summarizing the earlier conversation…", mid: it.id, working: { since: it.at } }];
       return it.rollover
         ? [{ role: "assistant", system: true, content: DIVIDER_TEXT, mid: it.id, rollover: { recap: it.text ?? "", at: it.at } }]
-        : [{ role: "assistant", system: true, content: DIVIDER_TEXT, mid: it.id, compaction: { summary: it.text ?? "", at: it.at } }];
+        : [{ role: "assistant", system: true, content: DIVIDER_TEXT, mid: it.id, compaction: { summary: it.text ?? "", at: it.at, ...(it.tokensBefore ? { before: it.tokensBefore } : {}), ...(it.tokensAfter ? { after: it.tokensAfter } : {}) } }];
     case "notice":
       // A failed request pi may still retry (reduce.ts blocksOf): not shown; the quiet "Retrying…" line says it.
       if (it.level === "error" && isOpen(it)) return [];

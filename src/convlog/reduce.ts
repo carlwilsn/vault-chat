@@ -48,6 +48,9 @@ export type Item = {
   // notice
   level?: "info" | "warn" | "error";
   rollover?: boolean;
+  // compaction: the context's size before it and right after it (the runtime's figures, when it reported them)
+  tokensBefore?: number;
+  tokensAfter?: number;
 };
 
 export type Picture = {
@@ -245,10 +248,11 @@ function onEntry(d: Draft, r: Extract<LogRecord, { type: "entry" }>): void {
   }
   if (e.type === "compaction") {
     d.inflight = d.inflight.filter((x) => x.kind !== "compaction");
-    place(d, [{ id: e.id, kind: "compaction", status: "done", text: String(e.summary ?? ""), at: r.at }]);
+    const before = Number(e.tokensBefore ?? 0);
+    const after = Number(e.tokensAfter ?? 0);
+    place(d, [{ id: e.id, kind: "compaction", status: "done", text: String(e.summary ?? ""), ...(before > 0 ? { tokensBefore: before } : {}), ...(after > 0 ? { tokensAfter: after } : {}), at: r.at }]);
     // The context is the summary now: its size when the runtime reports it (Claude
     // Code's post_tokens), else unknown until the next reply — never the old size.
-    const after = Number(e.tokensAfter ?? 0);
     d.usage = { context: after > 0 ? after : 0 };
     return;
   }

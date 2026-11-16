@@ -10,7 +10,7 @@
 // are the same in every window; the registry follows them (followRowPrefs, from the app's start, so the first paint
 // already has them), also while the plugin itself is off.
 import type { PluginApi } from "../../mountHost";
-import { CHAT_REVEAL_EVENT, describeRowOptions, describeRows, rowOptionProblem, rowRenderer, setRowOptionValues, setRowPrefs, subscribeRows, visibleRows } from "../../chatRows";
+import { CHAT_REVEAL_EVENT, TAIL_KINDS, describeRowOptions, rowChain, describeRows, rowOptionProblem, rowRenderer, setRowOptionValues, setRowPrefs, subscribeRows, visibleRows } from "../../chatRows";
 import { appPluginState, setAppPluginState, subscribeAppPluginState } from "../../appPluginState";
 import { CHAT_ROWS_PLUGIN_ID } from "../../appPlugins";
 import { useStore } from "../../store";
@@ -101,12 +101,34 @@ function rowEl(doc: Document, index: number | "last"): HTMLElement | null {
 /** The collapsible rows: a reply's tool calls, a voice ask's work, a job's output, the compaction summary. */
 const TOOL_ROWS = 'details[data-el="tool-calls"], details[data-el="voice-ask"], details[data-el="job-end"]';
 
+const lastLine = (t: string) => {
+  const x = t.trimEnd().split("\n").pop() ?? "";
+  return x.length > 140 ? x.slice(0, 139) + "…" : x;
+};
+
+/** The live tail on screen now (the chat pane draws it from these store fields: ./tail.tsx). */
+function liveTail() {
+  const s = useStore.getState();
+  const tools = s.liveTools.map((t) => {
+    const i = (t.input ?? {}) as Record<string, unknown>;
+    const about = [i.path, i.file_path, i.command, i.pattern, i.url, i.query].find((v) => typeof v === "string") as string | undefined;
+    return { name: t.name, running: !t.result, ...(about ? { about: about.slice(0, 140) } : {}) };
+  });
+  return {
+    busy: s.busy,
+    stream: { chars: s.streamingText.length, ...(s.streamingText ? { lastLine: lastLine(s.streamingText) } : {}) },
+    reasoning: { chars: s.streamingReasoning.length },
+    tools,
+    renderers: Object.fromEntries(TAIL_KINDS.map((k) => [k, rowChain(k)[0]?.id ?? "fallback"])),
+  };
+}
+
 export function chatRowsOffers(doc: Document = document) {
   return {
     state: {
       renderers: {
         description:
-          "Each kind of row (user, assistant, notice, working, divider, job, voice, voice-ask, plan, tool-call, tool-call:<Tool>, inline-html) with the renderer drawing it (active: builtin:<kind>, a plugin's <plugin id>#<kind>, or fallback = the plain text row) and every renderer registered for it (by, enabled, failures).",
+          "Each kind of row (user, assistant, notice, working, divider, job, voice, voice-ask, plan, tool-call, tool-call:<Tool>, inline-html; and the live tail while the agent works: stream = the reply as it streams, live-tool = the tool ticker, reasoning = the reasoning as it streams, thinking-indicator = the working pulse) with the renderer drawing it (active: builtin:<kind>, a plugin's <plugin id>#<kind>, or fallback = the plain text row) and every renderer registered for it (by, enabled, failures).",
         read: () => describeRows(),
       },
       options: {
@@ -117,6 +139,11 @@ export function chatRowsOffers(doc: Document = document) {
       kept: {
         description: "The choices kept on the box (the same in every window, after a restart): disabled = renderer ids turned off, chosen = {kind: renderer id}.",
         read: () => rowPrefs(),
+      },
+      live: {
+        description:
+          "The live tail now (what streams under the rows while the agent works): busy, the streaming reply (chars and its last line), the streaming reasoning (chars), the turn's tool calls so far ({name, running, about}) and which renderer draws each tail kind.",
+        read: () => liveTail(),
       },
       rows: {
         description: "The rows drawn now (the newest 60): {index, kind, renderer, mid?, text (one line), tools?}; total = messages in the chat, shownFrom = the first index drawn (older ones join on scroll).",
