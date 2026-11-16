@@ -14,7 +14,7 @@ import { NotePopup } from "./NotePopup";
 import { VoiceTextPanel } from "./VoiceTextPanel";
 import { AppPluginMount } from "./PluginMount";
 import { VaultPlugins } from "./VaultPluginHost";
-import { PinnedApps } from "./PinnedApps";
+import { PinnedApps } from "./PinnedAppsHost";
 import { NOTES_PLUGIN } from "./appPlugins";
 import * as notesPlugin from "./plugins/notes";
 import { ChatsPanel } from "./ChatsPanel";

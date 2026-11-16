@@ -1,7 +1,7 @@
-// The visible launcher for pinned apps (src/PinnedApps.tsx): lists them and brings one to the front.
+// The visible launcher for pinned apps (src/PinnedAppsHost.tsx): lists them and brings one to the front.
 import { useState } from "react";
 import { LayoutGrid } from "lucide-react";
-import { showPinnedApp, usePinnedApps } from "./PinnedApps";
+import { showPinnedApp, usePinnedApps } from "./PinnedAppsHost";
 
 export function AppsLauncher() {
   const { apps, front } = usePinnedApps();

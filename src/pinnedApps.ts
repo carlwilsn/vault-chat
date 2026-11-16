@@ -1,6 +1,6 @@
 // Pinned apps (Track 2): a vault .html page that declares `<meta name="vc-pinned">` is an app. It starts when the app
 // launches, stays mounted and running while Carl uses the app (hidden when not in front, its state kept), and a
-// launcher brings it to the front in its own pane (src/PinnedApps.tsx). The declaration is the one source of truth:
+// launcher brings it to the front in its own pane (src/PinnedAppsHost.tsx). The declaration is the one source of truth:
 // the page-header toggle edits it in the page, so the catalog (src/pluginCatalog.ts) lists the same apps from the
 // vault. Pages are fully trusted. Shared by the app and the box: no imports.
 
