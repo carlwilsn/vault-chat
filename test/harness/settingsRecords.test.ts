@@ -63,6 +63,8 @@ after(async () => {
 
 test("connecting moves the laptop's own theme into a record, once", async () => {
   await waitFor("the laptop's theme reached the box", () => readSettings().values.theme === "light");
+  // The box holds the record before its answer reaches the laptop, which only then marks the move done.
+  await waitFor("the laptop marked the move done", () => localStorage.getItem("vc_settings_moved") === "1");
   assert.match(readSettings().set.theme!.by, /moved/);
   assert.equal(localStorage.getItem("vc_settings_moved"), "1");
   assert.equal(S().theme, "light");
