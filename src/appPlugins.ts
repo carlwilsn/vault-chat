@@ -29,7 +29,18 @@ export const NOTES_PLUGIN: AppPluginInfo = {
   words: ["notes", "notes panel", "notes-panel", "notespanel"],
 };
 
-export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN];
+export const CHATS_PLUGIN_ID = "app/chats";
+
+/** The chat list (src/plugins/chats): the overlay and fullscreen chat's sidebar. Off or failed, a minimal built-in list stands in. */
+export const CHATS_PLUGIN: AppPluginInfo = {
+  id: CHATS_PLUGIN_ID,
+  name: "Chats",
+  mount: "panel",
+  description: "The chat list: Main and the projects with their chats, to open, start, rename, delete or restore chats and expand places (the overlay and fullscreen chat's sidebar).",
+  words: ["chats", "chat list", "chat-list", "chatlist", "chats list", "chats panel", "chats-panel", "chatspanel", "chat sidebar", "chats sidebar"],
+};
+
+export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN];
 
 /** The app plugin a word names (its id, its name or one of its words), or null. */
 export function appPluginNamed(word: string): AppPluginInfo | null {

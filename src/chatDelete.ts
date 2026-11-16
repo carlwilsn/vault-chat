@@ -1,5 +1,5 @@
 // Carl's Delete on chats in the chats list (one row at a time, from its right-click or long-press menu): the
-// same in the chat pane's list and the fullscreen sidebar (src/ChatsPanel.tsx).
+// same in the chat pane's list and the fullscreen sidebar (src/plugins/chats).
 // On the box a delete is recoverable: a mark in each chat's log, its history
 // kept (server/engine/engine.ts deleteConversations; the agent's
 // RestoreConversation brings one back). Main and a project's own thread are
@@ -47,4 +47,11 @@ export async function deleteChats(ids: string[]): Promise<string | null> {
   if (!r.ok) return r.error ?? "the box refused";
   for (const id of r.localOnly) void useStore.getState().deleteConversation(id);
   return null;
+}
+
+/** Bring back a deleted chat (box only: a delete there is a mark, kept). Null when done, else why not. */
+export async function restoreChat(id: string): Promise<string | null> {
+  if (!useStore.getState().boxChat?.on) return "only a chat on the box can be brought back";
+  const r = await (await import("./boxChat")).boxRestore(id);
+  return r.ok ? null : r.error ?? "the box refused";
 }

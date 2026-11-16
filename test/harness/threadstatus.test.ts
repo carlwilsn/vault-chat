@@ -8,7 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { installFakeTauri, makeTempVault } from "./fakes.ts";
 
 installFakeTauri(makeTempVault("vc-threadstatus-"));
-const { ThreadRow } = await import("../../src/ChatsPanel.tsx");
+const { ThreadRow } = await import("../../src/plugins/chats/ChatsList.tsx");
 
 for (const type of ["main", "project"] as const) {
   for (const state of ["running", "unread", "idle"] as const) {

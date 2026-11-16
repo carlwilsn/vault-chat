@@ -1,4 +1,4 @@
-// "Project notes" in the chats panel (src/ChatsPanel.tsx → openProjectNotes in
+// "Project notes" in the chats panel (src/plugins/chats/ChatsList.tsx → openProjectNotes in
 // src/projects.ts): the project's shared project.md lives in the hidden
 // agent-projects/ folder, so the menu opens it in the viewer, writing it first
 // with the project's heading when it is missing.

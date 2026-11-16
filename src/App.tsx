@@ -53,8 +53,6 @@ export default function App() {
   const noteComposer = useStore((s) => s.noteComposer);
   const loadNotes = useStore((s) => s.loadNotes);
   const notesLoaded = useStore((s) => s.notesLoaded);
-  const showChatsPanel = useStore((s) => s.showChatsPanel);
-  const setShowChatsPanel = useStore((s) => s.setShowChatsPanel);
   const loadConversations = useStore((s) => s.loadConversations);
   const conversationsLoaded = useStore((s) => s.conversationsLoaded);
   const newConversation = useStore((s) => s.newConversation);
@@ -444,11 +442,6 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const focusComposer = () => {
-    // Composer focus is owned by ChatPane; emit a custom event so
-    // we don't have to thread a ref through the Allotment tree.
-    window.dispatchEvent(new CustomEvent("vc-focus-composer"));
-  };
   // What floats over either layout (the note composer, Notes, voice text,
   // the update banner). Fullscreen chat used to drop them all with the
   // titlebar, so Ctrl+N, Notes and voice did nothing there.
@@ -469,6 +462,8 @@ export default function App() {
       <VoiceTextPanel />
       <UpdateBanner />
       <ShortcutSheet />
+      {/* The chat list's overlay: a plugin (src/plugins/chats), with a built-in fallback (src/ChatsPanel.tsx). */}
+      <ChatsPanel />
     </>
   );
 
@@ -477,7 +472,7 @@ export default function App() {
   // when the chat is popped out (the popout window is the fullscreen chat).
   if (chatFullscreen && !popoutOpen) {
     return (
-      <FullscreenChat onFocusComposer={focusComposer}>
+      <FullscreenChat>
         {captureOver && (
           <div className="fixed inset-0 z-40 flex flex-col bg-background" data-el="fullscreen-capture">
             <div className="h-8 shrink-0 flex items-center justify-center gap-2 border-b border-border text-[11.5px] text-muted-foreground">
@@ -519,11 +514,6 @@ export default function App() {
         </Allotment>
       </div>
       {overlays}
-      <ChatsPanel
-        open={showChatsPanel}
-        onClose={() => setShowChatsPanel(false)}
-        onFocusComposer={focusComposer}
-      />
     </div>
   );
 }

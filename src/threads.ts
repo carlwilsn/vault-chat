@@ -48,7 +48,7 @@ export type PanelConv = { id: string; title?: string; kind?: unknown; project?: 
 /** One chat inside a group (Carl's place: the vault's main, or a project). */
 export type PanelChat = { id: string; title: string; active: boolean; running: boolean; unread: boolean; at: number };
 
-/** Chats shown per step in a long list (src/ChatsPanel.tsx "Show more" / "Show all"). */
+/** Chats shown per step in a long list (src/plugins/chats/ChatsList.tsx "Show more" / "Show all"). */
 export const CHAT_PAGE = 5;
 
 /**

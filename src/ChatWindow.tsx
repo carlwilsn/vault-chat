@@ -59,7 +59,7 @@ export function ChatWindow() {
 
   return (
     <>
-      <FullscreenChat onFocusComposer={focusComposer} />
+      <FullscreenChat />
       <ShortcutSheet />
     </>
   );

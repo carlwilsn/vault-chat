@@ -8,7 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { installFakeTauri, makeTempVault } from "./fakes.ts";
 
 installFakeTauri(makeTempVault("vc-noselect-"));
-const { ThreadRow } = await import("../../src/ChatsPanel.tsx");
+const { ThreadRow } = await import("../../src/plugins/chats/ChatsList.tsx");
 
 test("a chat row is a plain button: no checkbox, no pressed state, per-row delete wired", () => {
   const html = renderToStaticMarkup(
@@ -27,7 +27,7 @@ test("a chat row is a plain button: no checkbox, no pressed state, per-row delet
 });
 
 test("the source keeps no Select toggle, selection bar or bulk confirm", () => {
-  const src = readFileSync(new URL("../../src/ChatsPanel.tsx", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../../src/plugins/chats/ChatsList.tsx", import.meta.url), "utf8");
   for (const gone of ["chats-select", "chats-bulk", "chat-pick", "ChatSelect", "ListChecks"]) assert.ok(!src.includes(gone), gone);
   for (const kept of ["chat-menu-delete", "chat-delete-confirm", "The agent can bring it back if you ask"]) assert.ok(src.includes(kept), kept);
 });

@@ -14,13 +14,13 @@ import { isPopout } from "./windowKind";
  * viewer. The main window shows it on Ctrl+Shift+F (App.tsx); the chat popout
  * window is always it (ChatWindow.tsx). `children` float over it.
  */
-export function FullscreenChat({ onFocusComposer, children }: { onFocusComposer: () => void; children?: ReactNode }) {
+export function FullscreenChat({ children }: { children?: ReactNode }) {
   const chatSidebarOpen = useStore((s) => s.chatSidebarOpen);
   const toggleChatSidebar = useStore((s) => s.toggleChatSidebar);
   return (
     <div data-perf-view="fullscreen" className="h-full w-full bg-background flex flex-col relative">
       <div className="flex-1 min-h-0 flex relative">
-        {chatSidebarOpen && <ChatsSidebar onFocusComposer={onFocusComposer} />}
+        {chatSidebarOpen && <ChatsSidebar />}
         <div className="flex-1 min-w-0 flex flex-col bg-card">
           {/* The chat's own top bar, in the chat's colour: sidebar toggle (when
               it's hidden), the chat's name, the window controls (this window's). */}

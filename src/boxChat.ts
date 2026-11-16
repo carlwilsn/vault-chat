@@ -1326,6 +1326,13 @@ export async function boxDeleteMany(convIds: string[]): Promise<{ ok: boolean; e
   return { ok: false, error: other.length ? other.map((x) => String(x.why)).join("; ") : r.error, localOnly };
 }
 
+/** Bring back a deleted chat (the chat list plugin's restore; the agent's RestoreConversation does the same on the box). */
+export async function boxRestore(convId: string): Promise<{ ok: boolean; error?: string }> {
+  if (!boxChatOn() || !session) return { ok: false, error: "the box isn't connected" };
+  const r = await intent(session, { type: "restoreConversation", convId });
+  return r.ok ? { ok: true } : { ok: false, error: r.error };
+}
+
 /** Carl's Rename on a chat: his title on the box (every surface's list follows the row). */
 export async function boxRename(convId: string, title: string): Promise<{ ok: boolean; error?: string; local?: boolean }> {
   if (!boxChatOn() || !session) return { ok: false, error: "the box isn't connected" };

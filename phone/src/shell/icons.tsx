@@ -41,7 +41,7 @@ export const Plus = ({ w = "2", join = false }: { w?: string; join?: boolean }) 
     <path d="M12 5v14M5 12h14" />
   </Ico>
 );
-// Lucide's glyphs (the laptop's icon set, src/ChatPane.tsx and src/ChatsPanel.tsx), same 24 grid,
+// Lucide's glyphs (the laptop's icon set, src/ChatPane.tsx and src/plugins/chats/ChatsList.tsx), same 24 grid,
 // stroke 2, round caps — the phone's own icons were drawn to match it.
 export const Eraser = () => (
   <Ico>

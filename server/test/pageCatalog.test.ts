@@ -70,7 +70,10 @@ describe("the catalog", () => {
     expect(c.services.find((s: any) => s.name === "converse")).toMatchObject({ supplier: "box", grantable: true, always: false, call: "vc.converse" });
     expect(c.plugins).toEqual(expected);
     // Stage 2: the app's own parts that are plugins, by id (the Plugins tool turns them off and on).
-    expect(c.app).toEqual([{ id: "app/notes", name: "Notes", mount: "panel", description: expect.stringContaining("notes.jsonl") }]);
+    expect(c.app).toEqual([
+      { id: "app/notes", name: "Notes", mount: "panel", description: expect.stringContaining("notes.jsonl") },
+      { id: "app/chats", name: "Chats", mount: "panel", description: expect.stringContaining("chat list") },
+    ]);
     expect(c.truncated).toBeUndefined();
     // A page added now is in the next answer: the vault is read each time.
     put("late.html", '<meta name="vc-capabilities" content="log, fs">');

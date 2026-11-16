@@ -4,23 +4,28 @@
 // chat around it always stands.
 //
 // AppPluginMount: a part of the app that is a plugin (src/appPlugins.ts; Stage 2), mounted from its module through the
-// same host, and taken down or brought back by the supervisor's records like any page (usePluginDesired).
-import { Component, useEffect, useMemo, useRef, type ReactNode } from "react";
+// same host, and taken down or brought back by the supervisor's records like any page (usePluginDesired). A core part
+// that must always stand (the chat list) passes a `fallback`: turned off, or failing (its mount or render throwing), the
+// fallback renders in its place instead of nothing or the error card, with what happened and a way back.
+import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { Desired } from "./pluginSupervisor";
 import { hostTheme, mountPlugin, type AppPluginSource, type PluginHandle } from "./mountHost";
 import type { AppPluginInfo } from "./appPlugins";
 import { appHostBackend } from "./hostBackend";
 import { usePluginDesired } from "./pluginSupervisorApp";
 
-class PluginBoundary extends Component<{ path: string; children: ReactNode }, { failed: string | null }> {
+class PluginBoundary extends Component<{ path: string; children: ReactNode; onFailed?: (why: string) => void }, { failed: string | null }> {
   state = { failed: null as string | null };
   static getDerivedStateFromError(err: unknown) {
     return { failed: String((err as Error)?.message ?? err) };
   }
   componentDidCatch(err: unknown) {
     console.warn("[plugin] host render failed:", this.props.path, err);
+    this.props.onFailed?.(String((err as Error)?.message ?? err));
   }
   render() {
     if (this.state.failed !== null) {
+      if (this.props.onFailed) return null;
       return (
         <span data-el="plugin-error" className="block m-2 rounded-md border border-destructive/50 bg-card px-3 py-2 text-[12.5px]">
           <b className="block">{this.props.path.split(/[\\/]/).pop()} stopped</b>
@@ -32,14 +37,19 @@ class PluginBoundary extends Component<{ path: string; children: ReactNode }, { 
   }
 }
 
-function Mount({ html, path, className }: { html: string | AppPluginSource; path: string; className?: string }) {
+function Mount({ html, path, className, onFailed }: { html: string | AppPluginSource; path: string; className?: string; onFailed?: (why: string) => void }) {
   const ref = useRef<HTMLSpanElement | null>(null);
   const handle = useRef<PluginHandle | null>(null);
+  const failed = useRef(onFailed);
+  failed.current = onFailed;
   // A changed page (an edit, the agent's write) is a fresh mount: the old one's cleanup runs first.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const h = (handle.current = mountPlugin(el, html, { path, theme: () => hostTheme(), host: appHostBackend, onError: (m) => console.warn(`[plugin] ${path} stopped:`, m) }));
+    const h = (handle.current = mountPlugin(el, html, { path, theme: () => hostTheme(), host: appHostBackend, onError: (m) => {
+      console.warn(`[plugin] ${path} stopped:`, m);
+      failed.current?.(m);
+    } }));
     return () => {
       h.unmount();
       if (handle.current === h) handle.current = null;
@@ -65,15 +75,32 @@ export function PluginMount(props: { html: string; path: string; className?: str
   );
 }
 
-/** A part of the app that is a plugin: mounted while the supervisor says it runs; stopped, it is gone (nothing left). */
-export function AppPluginMount({ plugin, module, code }: { plugin: Pick<AppPluginInfo, "id" | "name">; module?: unknown; code?: string }) {
+/** What a fallback is told: the plugin is turned off (`off`), or it failed (`error`, and `retry` mounts it afresh), or
+ *  whether it runs is not known yet (`pending`: the records are still coming; show the plain list, no banner). */
+export type PluginFallbackInfo = { off: Desired | null; error: string | null; pending: boolean; retry: () => void };
+
+/** A part of the app that is a plugin: mounted while the supervisor says it runs; stopped, it is gone (nothing left),
+ *  or, with a `fallback`, the fallback stands in (also when it fails). */
+export function AppPluginMount({ plugin, module, code, fallback }: { plugin: Pick<AppPluginInfo, "id" | "name">; module?: unknown; code?: string; fallback?: (info: PluginFallbackInfo) => ReactNode }) {
   // One source object per module / code: a new one is a fresh mount (a changed vault plugin file), a re-render is not.
   const source = useMemo<AppPluginSource>(() => (typeof code === "string" ? { name: plugin.name, code } : { name: plugin.name, module }), [plugin.name, module, code]);
   const desired = usePluginDesired(plugin.id);
-  if (desired?.state !== "running") return null;
+  const [failed, setFailed] = useState<string | null>(null);
+  const [run, setRun] = useState(0);
+  const retry = () => {
+    setFailed(null);
+    setRun((n) => n + 1);
+  };
+  // Not known yet (the vault's on/off records not in): nothing is mounted, so a plugin turned off never flashes on;
+  // a core part with a fallback shows its plain fallback meanwhile (`pending`), so its place is never empty.
+  if (desired === null) return fallback ? <>{fallback({ off: null, error: null, pending: true, retry })}</> : null;
+  if (desired.state === "stopped") return fallback ? <>{fallback({ off: desired, error: null, pending: false, retry })}</> : null;
+  if (desired.state !== "running") return null;
+  if (fallback && failed !== null) return <>{fallback({ off: null, error: failed, pending: false, retry })}</>;
+  const onFailed = fallback ? setFailed : undefined;
   return (
-    <PluginBoundary path={plugin.id} key={plugin.id}>
-      <Mount html={source} path={plugin.id} />
+    <PluginBoundary path={plugin.id} key={`${plugin.id}#${run}`} onFailed={onFailed}>
+      <Mount html={source} path={plugin.id} onFailed={onFailed} />
     </PluginBoundary>
   );
 }

@@ -8,7 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { installFakeTauri, makeTempVault } from "./fakes.ts";
 
 installFakeTauri(makeTempVault("vc-placeheader-"));
-const { ThreadRow } = await import("../../src/ChatsPanel.tsx");
+const { ThreadRow } = await import("../../src/plugins/chats/ChatsList.tsx");
 
 for (const type of ["main", "project"] as const) {
   test(`${type}: the header toggles, and its + is in the header row`, () => {

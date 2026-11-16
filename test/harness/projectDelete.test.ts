@@ -35,7 +35,7 @@ fake.setHandler("box_post_json", ({ url, body }) => fetchVia(url, { method: "POS
 const { useStore } = await import("../../src/store.ts");
 const bc = await import("../../src/boxChat.ts");
 const projects = await import("../../src/projects.ts");
-const panel = await import("../../src/ChatsPanel.tsx");
+const panel = await import("../../src/plugins/chats/ChatsList.tsx");
 const S = () => useStore.getState();
 const project = (slug: string, title: string, at: number) => {
   box.create(`project-${slug}`, title, at);
