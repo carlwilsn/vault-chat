@@ -82,7 +82,8 @@ const INSTALL = `(() => {
     const t0 = performance.now();
     requestAnimationFrame(() => requestAnimationFrame(() => w.__bench.ms.push(performance.now() - t0)));
   }, true);
-  const visible = el => { for (let p = el; p; p = p.parentElement) if (p.getBoundingClientRect().width < 1) return false; return true; };
+  // A display: contents box (a plugin's mount, src/PluginMount.tsx) has no box of its own: it is skipped, not "hidden".
+  const visible = el => { for (let p = el; p; p = p.parentElement) if (getComputedStyle(p).display !== 'contents' && p.getBoundingClientRect().width < 1) return false; return true; };
   w.__bench.visible = () => { const c = find(); return !!c && visible(c); };
 })()`;
 
