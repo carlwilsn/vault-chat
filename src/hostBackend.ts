@@ -120,6 +120,10 @@ export const appHostBackend: HostBackend = {
     await s.loadNotes();
   },
   layout: () => readLayout(),
+  async capture(target) {
+    const s = useStore.getState();
+    return (await import("./screenCapture")).captureWindow(target, { chatFullscreen: s.chatFullscreen, chatPoppedOut: s.popoutOpen });
+  },
   applyLayout: (ops) => applyLayoutOps(ops, appLayoutIO),
   async primeChat(lines) {
     const store = useStore.getState();

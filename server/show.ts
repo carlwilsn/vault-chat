@@ -78,7 +78,7 @@ export function resetPresence(): void {
 
 // ---------------------------------------------------------------- acks
 
-export type Ack = { ok: boolean; landed?: string; error?: string; pane?: string; data?: unknown };
+export type Ack = { ok: boolean; landed?: string; error?: string; pane?: string; data?: unknown; image?: { data: string; mimeType?: string } };
 const waits = new Map<string, (a: Ack) => void>();
 
 /** POST /api/v1/show/<id>/ack: a client says what happened. False: no one is waiting for it (late, or unknown). */
@@ -87,8 +87,15 @@ export function ackShow(id: string, body: unknown): boolean {
   if (!w) return false;
   waits.delete(id);
   const b = (body ?? {}) as Record<string, unknown>;
-  w({ ok: b.ok === true, ...(typeof b.pane === "string" ? { pane: b.pane.slice(0, 10) } : {}), ...(typeof b.landed === "string" ? { landed: b.landed.slice(0, 600) } : {}), ...(b.data && typeof b.data === "object" && JSON.stringify(b.data).length < 20_000 ? { data: b.data } : {}), ...(typeof b.error === "string" ? { error: b.error.slice(0, 1200) } : {}) });
+  w({ ok: b.ok === true, ...(typeof b.pane === "string" ? { pane: b.pane.slice(0, 10) } : {}), ...(typeof b.landed === "string" ? { landed: b.landed.slice(0, 600) } : {}), ...(b.data && typeof b.data === "object" && JSON.stringify(b.data).length < 20_000 ? { data: b.data } : {}), ...(typeof b.error === "string" ? { error: b.error.slice(0, 1200) } : {}), ...ackImage(b.image) });
   return true;
+}
+
+/** A picture in an ack (the Screen tool's capture, server/screenTool.ts checks it): kept only when it is a string within ~6 MB. */
+function ackImage(raw: unknown): { image?: { data: string; mimeType?: string } } {
+  const im = (raw ?? {}) as Record<string, unknown>;
+  if (typeof im.data !== "string" || !im.data || im.data.length > 8_000_000) return {};
+  return { image: { data: im.data, ...(typeof im.mimeType === "string" ? { mimeType: im.mimeType.slice(0, 40) } : {}) } };
 }
 
 export function waitAck(id: string, ms: number): Promise<Ack | null> {

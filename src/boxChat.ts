@@ -610,6 +610,17 @@ class BoxChatSession {
           .catch((err) => console.warn("[box-chat] plugin call failed:", err));
         return;
       }
+      case "capture": {
+        // The agent's Screen tool: the app draws its own window (the laptop's `capture` service) and acks with the picture.
+        const id = typeof e.id === "string" ? e.id : "";
+        if (e.to !== "laptop" || !id) return;
+        const link = this.link;
+        void import("./captureOnLaptop")
+          .then((m) => m.captureOnLaptop(e as unknown as import("./captureOnLaptop").CaptureSignal))
+          .then((ack) => httpPost(link, `/api/v1/show/${encodeURIComponent(id)}/ack`, ack))
+          .catch((err) => console.warn("[box-chat] capture failed:", err));
+        return;
+      }
       case "follow": {
         // Carl asked to work in another thread (the agent's OpenProject, server/projectRoutes.ts): this screen follows.
         if (typeof e.convId !== "string" || !e.convId) return;

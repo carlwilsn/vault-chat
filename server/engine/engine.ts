@@ -48,6 +48,7 @@ import { lookBoard } from "../boards";
 import { show, SHOW_DESCRIPTION, SHOW_SCHEMA } from "../show";
 import { layoutTool, LAYOUT_DESCRIPTION, LAYOUT_SCHEMA } from "../layoutTool";
 import { pluginOfferTool, pluginOfferToolSpecs } from "../pluginOffersTool";
+import { screenTool, SCREEN_DESCRIPTION, SCREEN_SCHEMA } from "../screenTool";
 import { boardGuard } from "../boardGuard";
 import { openProject, OPEN_PROJECT_DESCRIPTION, OPEN_PROJECT_SCHEMA } from "../projectRoutes";
 import { startJobWith, jobStatus, jobList, jobStop, reapJobs, readJobs, type JobEnv } from "./jobs";
@@ -400,6 +401,13 @@ export const ENGINE_TOOL_SPECS = [
     name: "Layout",
     description: LAYOUT_DESCRIPTION,
     inputSchema: LAYOUT_SCHEMA as unknown as Record<string, unknown>,
+  },
+  {
+    type: "function",
+    name: "Screen",
+    description: SCREEN_DESCRIPTION,
+    inputSchema: SCREEN_SCHEMA as unknown as Record<string, unknown>,
+    readOnly: true,
   },
   {
     type: "function",
@@ -2947,6 +2955,10 @@ export class Engine {
         case "PluginAct": {
           const r = await pluginOfferTool({ vault, emit: (ev) => this.d.broadcast?.(ev) }, name, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
+        }
+        case "Screen": {
+          const r = await screenTool({ vault, emit: (ev) => this.d.broadcast?.(ev) }, a);
+          return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }, ...r.images.map((im) => ({ type: "inputImage", data: im.data, mimeType: im.mimeType }))] };
         }
         case "DeleteConversation": {
           const ids = Array.isArray(a.ids) ? a.ids.map(String) : typeof a.ids === "string" ? [a.ids] : [];
