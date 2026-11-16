@@ -39,4 +39,11 @@ it.each([
   "Front.test_hand_over_only_when_no_work_runs",
   "Front.test_declined_hand_over_is_asked_again",
   "Front.test_new_server_that_never_stands_by_never_takes_traffic",
-])("bounded owned HTTP updater: %s", async name => { await cases(name); });
+  // A fallback is only a release that supports the front (2026-11-16: 0.8.91 crash-looped on 8848), `current` stays
+  // on what serves, marks carry their reason, and a reasonless (older) mark is retried once.
+  "Front.test_fallback_never_starts_a_release_from_before_the_front",
+  "Front.test_fallback_to_a_release_that_supports_the_front",
+  "Front.test_fallback_that_never_stands_by_leaves_current_on_what_serves",
+  "Front.test_a_failed_mark_without_reason_is_retried_once_with_reason_never",
+// The test timeout covers that 20s process ceiling (vitest's 5s default cut the slower multi-case ones on a loaded box).
+])("bounded owned HTTP updater: %s", async name => { await cases(name); }, 25_000);

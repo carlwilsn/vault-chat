@@ -100,6 +100,12 @@ class Fixture:
                             owner.polls += 1
                             if doc.get("runs") or doc.get("workers"):
                                 owner.busy_at.append(time.monotonic())
+                    if mode == "front-failed":
+                        # Behind the front: 1.0.1 is current and fails readiness; the retained 1.0.0 is healthy.
+                        if (owner.state / "current").readlink() == Path("versions/1.0.0"):
+                            data.update(version="1.0.0", rev="b" * 40)
+                        else:
+                            data["releaseReadiness"] = {"status": "failed"}
                     if mode == "busy" and (owner.state / "current").readlink() == Path("versions/1.0.0"):
                         data.update(version="1.0.0", rev="b" * 40, busy=owner.busy[min(owner.polls, len(owner.busy) - 1)])
                         owner.polls += 1
@@ -338,7 +344,7 @@ class Readiness(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn(b"failed actual release readiness; no retained binary", result.stdout)
             self.assertEqual((state / "current").readlink(), Path("versions/1.0.1"))
-            self.assertEqual((state / "failed/1.0.1").read_bytes(), b"")
+            self.assertRegex((state / "failed/1.0.1").read_bytes(), rb"^\S+Z failed actual release readiness after install; no retained binary\n$")
             calls = self.calls.read_bytes()
             retry = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, timeout=3)
             self.assertEqual(retry.returncode, 0, retry.stderr)
@@ -374,7 +380,7 @@ class Readiness(unittest.TestCase):
                 elif mode == "pending":
                     self.assertIn(b"not confirmed and not reverted", result.stdout)
                 else:
-                    self.assertEqual((state / "failed/1.0.1").read_bytes(), b"")
+                    self.assertIn(b" failed actual release readiness after install; no retained binary", (state / "failed/1.0.1").read_bytes())
                     self.assertEqual(json.loads(next((state / "release-failures").glob("*.json")).read_text())["revision"], REV)
                 for call in self.calls.read_text().splitlines():
                     self.assertEqual(json.loads(call), ["--user", "--no-block", "restart", "owned-fixture.service"])
@@ -596,7 +602,78 @@ if a[0] == "kill":
             self.assertEqual((self.state / "active-backend").read_text(), "8851")
             self.assertTrue((self.active / "vault-chat-server@8851.service").exists())
             self.assertEqual((self.state / "current").readlink(), Path("versions/1.0.0"))
-            self.assertTrue((self.state / "failed/1.0.1").exists())
+            self.assertIn(b"never stood by beside v1.0.0", (self.state / "failed/1.0.1").read_bytes())
+
+    def current_is_failing_1_0_1(self, old_bundle):
+        # 1.0.1 serves from slot 8851 and stops passing readiness; 1.0.0 is retained as its previous release.
+        cur = self.state / "versions/1.0.1"
+        cur.mkdir()
+        (cur / "server-version.json").write_bytes(Fixture().meta)
+        (cur / "previous.json").write_text(json.dumps({"previous": "versions/1.0.0"}))
+        (self.state / "versions/1.0.0/vault-chat-server.mjs").write_text(old_bundle)
+        (self.state / "current").unlink()
+        (self.state / "current").symlink_to("versions/1.0.1")
+
+    def test_fallback_never_starts_a_release_from_before_the_front(self):
+        # 2026-11-16: 0.8.91 (before the front) was started in slot 8852 as the fallback and crash-looped on
+        # "address already in use 127.0.0.1:8848"; `current` was left on it while 0.8.92 still served.
+        self.current_is_failing_1_0_1("// listens on 8848 itself\n")
+        with Fixture("front-failed") as fixture:
+            result, calls = self.run_update(fixture)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertFalse([c for c in calls if c[1] in ("start", "stop", "kill", "restart")])
+            self.assertEqual((self.state / "current").readlink(), Path("versions/1.0.1"))
+            self.assertEqual((self.state / "active-backend").read_text(), "8851")
+            self.assertIn(b"1.0.1 failed actual release readiness; retained v1.0.0 predates the front, not started; v1.0.1 stays", result.stdout)
+            self.assertIn(b"while current; retained v1.0.0 predates the front", (self.state / "failed/1.0.1").read_bytes())
+            self.assertEqual(fixture.posts, [])
+
+    def test_fallback_to_a_release_that_supports_the_front(self):
+        self.current_is_failing_1_0_1("// reads VC_BACKEND_PORT\n")
+        with Fixture("front-failed") as fixture:
+            result, calls = self.run_update(fixture)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertEqual([c[-1] for c in calls if c[1] == "start"], ["vault-chat-server@8852.service"])
+            self.assertEqual((self.state / "active-backend").read_text(), "8852")
+            self.assertEqual((self.state / "current").readlink(), Path("versions/1.0.0"))
+            self.assertIn(b"restored healthy retained v1.0.0", result.stdout)
+            self.assertIn(b"restored healthy retained v1.0.0", (self.state / "failed/1.0.1").read_bytes())
+
+    def test_fallback_that_never_stands_by_leaves_current_on_what_serves(self):
+        self.current_is_failing_1_0_1("// reads VC_BACKEND_PORT\n")
+        with Fixture("front-failed") as fixture:
+            result, calls = self.run_update(fixture, T_NO_STANDBY="1")
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn(["stop", "vault-chat-server@8852.service"], [c[1:] for c in calls])
+            self.assertEqual((self.state / "current").readlink(), Path("versions/1.0.1"))
+            self.assertEqual((self.state / "active-backend").read_text(), "8851")
+            self.assertIn(b"retained v1.0.0 never stood by; v1.0.1 stays", result.stdout)
+
+    def test_a_failed_mark_without_reason_is_retried_once_with_reason_never(self):
+        # Marks from before reasons (the crash loop's 0.8.92) are retried; a mark with its reason is not.
+        failed = self.state / "failed"
+        failed.mkdir()
+        (failed / "1.0.1").write_bytes(b"")
+        records = self.state / "release-failures"
+        records.mkdir()
+        record = records / (hashlib.sha256(b"1.0.1").hexdigest() + ".json")
+        record.write_text("{}")
+        with self.front_fixture([{"runs": 0, "workers": 0, "inputs": 0}]) as fixture:
+            result, _ = self.run_update(fixture)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn(b"retrying 1.0.1: its failed mark has no reason", result.stdout)
+            self.assertFalse((failed / "1.0.1").exists())
+            self.assertFalse(record.exists())
+            self.assertEqual((self.state / "current").readlink(), Path("versions/1.0.1"))
+        (self.state / "current").unlink()
+        (self.state / "current").symlink_to("versions/1.0.0")
+        (failed / "1.0.1").write_text("2026-11-16T08:42:55Z failed actual release readiness after install; no retained binary\n")
+        self.calls.unlink()
+        with self.front_fixture([{"runs": 0, "workers": 0, "inputs": 0}]) as fixture:
+            result, calls = self.run_update(fixture)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn(b"skipping 1.0.1: it failed here before (2026-11-16T08:42:55Z failed actual release readiness after install", result.stdout)
+            self.assertEqual(calls, [])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

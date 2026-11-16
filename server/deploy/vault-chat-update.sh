@@ -21,8 +21,10 @@
 #      standby is stopped and the old one never noticed. (Before the front is installed:
 #      restart the one server unit, as before);
 #   5. /api/v1/health must report <ver> within 90 s — otherwise swap the symlink back,
-#      restart, mark <ver> failed (so it is not retried every 10 min) and
-#      log the failure without alerts or source mutation;
+#      restart, mark <ver> failed with its reason (so it is not retried every 10 min) and
+#      log the failure without alerts or source mutation. Behind the front only a retained
+#      release that supports the front is a fallback: an older one would crash-loop on 8848,
+#      so <ver> keeps serving instead. A mark without a reason (older updaters) is retried once;
 #   6. keep the two most recent old versions, delete older ones;
 #   7. refresh itself: the release's own copy of this script, the front and the units
 #      (vault-chat-deploy.tar.gz, from server/deploy/) replace the installed ones when
@@ -34,7 +36,7 @@
 # Layout under $VC_SERVER_STATE (default ~/.local/state/vault-chat-server):
 #   current -> versions/<ver>          what the systemd unit runs
 #   versions/<ver>/vault-chat-server.mjs, server-version.json, assets/
-#   failed/<ver>                        versions whose health check failed here
+#   failed/<ver>                        versions whose health check failed here: one line, when and why
 #   update.lock                         one pass at a time
 #
 # Never reads or touches secrets. Talks to the server over loopback only.
@@ -311,27 +313,62 @@ if (!fs.existsSync(file)) {
   for (const p of [directory, root]) { const d = fs.openSync(p, "r"); try { fs.fsyncSync(d); } finally { fs.closeSync(d); } }
 }
 NODE
-  : > "failed/$ver"
 }
 
+# mark_failed <reason>: failed/<ver> holds one line, when and why, so a later pass (and Carl) can tell a broken
+# release from one that failed for another reason. A mark without a reason predates this (see retry_legacy_mark).
+mark_failed() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" > "failed/$ver"; }
+
+# supports_front <dir>: that release's server can run in a slot behind the front (it reads VC_BACKEND_PORT).
+# One from before the front (48c422fb) listens on 8848 itself: started in a slot it only crash-loops on
+# "address already in use" while the front holds 8848.
+supports_front() { [ -f "$1/$BUNDLE" ] && grep -qF VC_BACKEND_PORT "$1/$BUNDLE"; }
+
+# fallback_failed_release <why>: $ver failed; go back to the retained $prev, only when it can serve (behind the
+# front: only a release that supports it), and keep `current` on what actually serves. Logs one line, marks
+# $ver failed with <why> and the outcome. Never notifies.
 fallback_failed_release() {
+  local why="${1:-failed actual release readiness}" outcome="no retained binary" serving
+  serving="$(read_current)"
   record_failure
-  local outcome="no retained binary"
   if [ -n "$prev" ] && [ -d "$prev" ]; then
     local oldver oldrev
     oldver="$(strip_v "$(json_field version < "$prev/$META")")"
     oldrev="$(json_field rev < "$prev/$META")"
-    point_current "$prev"
-    local again=restart
-    if front_on; then again=""; handover "$(active_slot)" "$(other_slot "$(active_slot)")" || true; fi
-    if wait_for_version "$oldver" "$HEALTH_WAIT_S" "$oldrev" legacy-fallback "$again"; then
-      outcome="restored healthy retained v$oldver"
+    if front_on && ! supports_front "$prev"; then
+      outcome="retained v$oldver predates the front, not started; v$ver stays"
     else
-      outcome="retained v$oldver failed readiness"
+      point_current "$prev"
+      local again=restart
+      if front_on; then
+        again=""
+        if ! handover "$(active_slot)" "$(other_slot "$(active_slot)")"; then
+          point_current "$serving"
+          outcome="retained v$oldver never stood by; v$ver stays"
+          again=skip
+        fi
+      fi
+      if [ "$again" = skip ]; then :
+      elif wait_for_version "$oldver" "$HEALTH_WAIT_S" "$oldrev" legacy-fallback "$again"; then
+        outcome="restored healthy retained v$oldver"
+      else
+        outcome="retained v$oldver failed readiness"
+      fi
     fi
   fi
+  mark_failed "$why; $outcome"
   log "$ver failed actual release readiness; $outcome"
   return 1
+}
+
+# retry_legacy_mark: a failed mark without a reason was written before marks carried one, by an updater that could
+# fall back to a release from before the front: its crash loop (2026-11-16) marked releases failed that were never
+# shown broken. Such a mark is retried once (a new failure marks it again, with its reason); the updater's private
+# failure record for it goes too, so the retry is judged on what it does now.
+retry_legacy_mark() {
+  [ -f "failed/$ver" ] && [ ! -s "failed/$ver" ] || return 1
+  log "retrying $ver: its failed mark has no reason (from before marks carried one, possibly the old fallback crash loop)"
+  rm -f "failed/$ver" "release-failures/$(printf '%s' "$ver" | sha256sum | awk '{print $1}').json"
 }
 
 # refresh_self <dir>: install the release's deploy files (DEPLOY_FILES) from <dir> where
@@ -382,8 +419,8 @@ tag="$(json_field tag_name < "$tmp/release.json")"
 ver="$(strip_v "$tag")"
 case "$ver" in *[!0-9A-Za-z.+-]*|"") die "refusing odd version '$ver'";; esac
 
-if [ -e "failed/$ver" ]; then
-  log "skipping $ver: it failed its health check here before (rm $STATE/failed/$ver to retry)"
+if [ -e "failed/$ver" ] && ! retry_legacy_mark; then
+  log "skipping $ver: it failed here before ($(head -c 300 "failed/$ver" | head -n 1); rm $STATE/failed/$ver to retry)"
   exit 0
 fi
 cur="$(strip_v "$(current_version)")"
@@ -398,7 +435,7 @@ if [ "$ver" = "$cur" ]; then
     prev=""
     if [ -f "versions/$ver/previous.json" ]; then prev="$(json_field previous < "versions/$ver/previous.json")"; fi
     case "$prev" in versions/*) ;; *) prev="" ;; esac
-    fallback_failed_release
+    fallback_failed_release "failed actual release readiness while current"
     exit 1
   elif [ "$status" != 0 ]; then
     log "$ver matches source/version but actual readiness remains pending; not confirmed and not reverted"
@@ -509,6 +546,7 @@ if front_on; then
     # It never stood by: the old version served throughout and still does.
     point_current "$prev"
     record_failure
+    mark_failed "never stood by beside v$cur; v$cur kept serving"
     log "$ver failed to start beside $cur; $cur kept serving"
     exit 1
   fi
@@ -527,7 +565,7 @@ elif [ "$status" = 2 ]; then
   refresh_self "versions/$ver/deploy"
   ensure_front || true
 else
-  fallback_failed_release
+  fallback_failed_release "failed actual release readiness after install"
   exit 1
 fi
 

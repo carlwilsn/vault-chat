@@ -50,11 +50,12 @@ describe("actual updater readiness contract (real bash helper and owned ephemera
   });
   it("writes a source-pinned durable failure BEFORE fallback and retains its first observation on retry", () => {
     const root = mkdtempSync(join(tmpdir(), "vc-updater-delivery-")); roots.push(root);
-    const result = spawnSync("bash", ["-c", 'PATH="$TEST_PATH"; set -eu; STATE="$TEST_ROOT"; ver=1.0.1; expected_rev="$TEST_REV"; mkdir -p "$STATE/failed"; cd "$STATE";\n' + helpers + '\nrecord_failure; record_failure'], { env: { PATH: process.env.PATH, TEST_PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}`, TEST_ROOT: root, TEST_REV: "a".repeat(40) }, encoding: "utf8" });
+    const result = spawnSync("bash", ["-c", 'PATH="$TEST_PATH"; set -eu; STATE="$TEST_ROOT"; ver=1.0.1; expected_rev="$TEST_REV"; mkdir -p "$STATE/failed"; cd "$STATE";\n' + helpers + '\nrecord_failure; record_failure; mark_failed "never stood by beside v1.0.0"'], { env: { PATH: process.env.PATH, TEST_PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}`, TEST_ROOT: root, TEST_REV: "a".repeat(40) }, encoding: "utf8" });
     expect(result.status, result.stderr).toBe(0);
     const file = join(root, "release-failures", createHash("sha256").update("1.0.1").digest("hex") + ".json");
     expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ version: "1.0.1", revision: "a".repeat(40), observedAt: expect.any(Number) });
-    expect(existsSync(join(root, "failed", "1.0.1"))).toBe(true);
+    // The mark says when and why (2026-11-16: reasonless marks hid that a fallback crash loop, not 1.0.1, failed).
+    expect(readFileSync(join(root, "failed", "1.0.1"), "utf8")).toMatch(/^\d{4}-\d\d-\d\dT\S+Z never stood by beside v1\.0\.0\n$/);
     expect(script.indexOf("  record_failure\n")).toBeLessThan(script.indexOf('    point_current "$prev"'));
   });
 });
@@ -72,7 +73,7 @@ log() { printf '%s\n' "$*"; }; wait_for_version() { printf '%s\n' "$*" > "$STATE
     expect(readFileSync(join(root, "checked"), "utf8")).toBe(`1.0.0 1 ${"b".repeat(40)} legacy-fallback restart\n`);
     expect(result.stdout.trim().split("\n")).toHaveLength(1);
     expect(result.stdout).toContain(status === 0 ? "restored healthy retained" : "failed readiness");
-    expect(existsSync(join(root, "failed/1.0.1"))).toBe(true);
+    expect(readFileSync(join(root, "failed/1.0.1"), "utf8")).toContain(status === 0 ? "restored healthy retained v1.0.0" : "retained v1.0.0 failed readiness");
     expect(script).not.toMatch(/--failed-release|--rollback|recover-published-release|simple-ship\.mjs|alert\(\)|\/api\/v1\/alert/);
   });
 });
