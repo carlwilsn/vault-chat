@@ -133,6 +133,40 @@ describe("box sync loop", () => {
     expect(git(box, "status", "--porcelain").trim()).toBe("");
   });
 
+  it("big files still go through the box's own LFS store when git-lfs is installed system-wide (its process filter and pre-push hook)", async () => {
+    // A system git-lfs sets filter.lfs.process, which git prefers over clean/smudge, and leaves a pre-push hook
+    // in every repo it touched (`git lfs pre-push` fails on the local hub: no locking API).
+    const sysCfg = join(root, "gitconfig-system");
+    writeFileSync(sysCfg, '[filter "lfs"]\n\tprocess = false\n\trequired = true\n');
+    writeFileSync(join(box, ".git", "hooks", "pre-push"), "#!/bin/sh\necho 'does not support the Git LFS locking API' >&2\nexit 1\n", { mode: 0o755 });
+    const prev = process.env.GIT_CONFIG_SYSTEM;
+    process.env.GIT_CONFIG_SYSTEM = sysCfg;
+    try {
+      mkdirSync(join(box, "data"), { recursive: true });
+      for (const name of ["a.bin", "b.bin"]) {
+        const fd = openSync(join(box, "data", name), "w");
+        ftruncateSync(fd, 50 * 1024 * 1024 + (name === "a.bin" ? 1 : 2));
+        closeSync(fd);
+      }
+      for (let i = 0; i < 20; i++) writeFileSync(join(box, "notes", `n${i}.md`), `note ${i}\n`);
+      await sync.runOnce();
+      expect(sync.status.ok, sync.status.lastError ?? "").toBe(true);
+      expect(bareRef("refs/heads/box")).toBe(head(box));
+      expect(sh(bare, "git", ["show", "box:data/b.bin"])).toMatch(/^version https:\/\/git-lfs\.github\.com\/spec\/v1\noid sha256:[0-9a-f]{64}\nsize 52428802\n$/);
+      expect(sh(bare, "git", ["show", "box:notes/n7.md"])).toBe("note 7\n");
+      // Checkout hands the real bytes back (smudge through the same process filter).
+      git(box, "rm", "-q", "--cached", "data/a.bin");
+      git(box, "checkout", "-q", "HEAD", "--", "data/a.bin");
+      expect(readFileSync(join(box, "data", "a.bin")).length).toBe(50 * 1024 * 1024 + 1);
+      await sync.runOnce();
+      expect(sync.status.ok, sync.status.lastError ?? "").toBe(true);
+      expect(git(box, "status", "--porcelain").trim()).toBe("");
+    } finally {
+      if (prev === undefined) delete process.env.GIT_CONFIG_SYSTEM;
+      else process.env.GIT_CONFIG_SYSTEM = prev;
+    }
+  });
+
   it("never commits a new archive: excluded for good, reported, one alert naming the work area", async () => {
     // What filled the backup on 2026-10-22: a job wrote a .tar.gz of a board every 10 s into the vault.
     const dir = join(box, "Whiteboard Backups", "checkpoints-1");

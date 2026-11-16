@@ -143,49 +143,190 @@ const lfs = join(dirname(fileURLToPath(import.meta.url)), "lfs");
 const RE = /^version https:\\/\\/git-lfs\\.github\\.com\\/spec\\/v1\\noid sha256:([0-9a-f]{64})\\nsize ([0-9]+)\\n$/;
 const objPath = (oid) => join(lfs, "objects", oid.slice(0, 2), oid.slice(2, 4), oid);
 const pointer = (oid, size) => "version https://git-lfs.github.com/spec/v1\\noid sha256:" + oid + "\\nsize " + size + "\\n";
-async function clean() {
+// git's filter.lfs.process wins over clean/smudge: a machine with git-lfs installed system-wide sets it, and
+// would bypass this store (and leave git-lfs hooks that block the push to the local hub). So this script is
+// the process filter too (git's long-running filter protocol, version 2).
+async function cleanTo(input, write) {
   mkdirSync(join(lfs, "tmp"), { recursive: true });
   const tmp = join(lfs, "tmp", randomBytes(8).toString("hex"));
   const out = createWriteStream(tmp);
-  const h = createHash("sha256");
-  let size = 0;
-  const head = [];
-  for await (const c of process.stdin) {
-    h.update(c);
-    size += c.length;
-    if (size <= 1024) head.push(c);
-    if (!out.write(c)) await new Promise((r) => out.once("drain", r));
-  }
-  await new Promise((r, j) => out.end((e) => (e ? j(e) : r())));
-  const small = size <= 1024 ? Buffer.concat(head).toString("utf8") : null;
-  if (small !== null && RE.test(small)) {
+  try {
+    const h = createHash("sha256");
+    let size = 0;
+    const head = [];
+    for await (const c of input) {
+      h.update(c);
+      size += c.length;
+      if (size <= 1024) head.push(c);
+      if (!out.write(c)) await new Promise((r) => out.once("drain", r));
+    }
+    await new Promise((r, j) => out.end((e) => (e ? j(e) : r())));
+    const small = size <= 1024 ? Buffer.concat(head).toString("utf8") : null;
+    if (small !== null && RE.test(small)) {
+      rmSync(tmp, { force: true });
+      return small;
+    }
+    const oid = h.digest("hex");
+    const dst = objPath(oid);
+    if (existsSync(dst) && statSync(dst).size === size) rmSync(tmp, { force: true });
+    else {
+      mkdirSync(dirname(dst), { recursive: true });
+      renameSync(tmp, dst);
+    }
+    return pointer(oid, size);
+  } catch (e) {
+    out.destroy();
     rmSync(tmp, { force: true });
-    process.stdout.write(small);
-    return;
+    throw e;
   }
-  const oid = h.digest("hex");
-  const dst = objPath(oid);
-  if (existsSync(dst) && statSync(dst).size === size) rmSync(tmp, { force: true });
-  else {
-    mkdirSync(dirname(dst), { recursive: true });
-    renameSync(tmp, dst);
-  }
-  process.stdout.write(pointer(oid, size));
+}
+/** What smudge gives back for these input bytes: the object's path, or the bytes themselves. */
+function smudgeSource(buf) {
+  const m = buf.length <= 1024 ? RE.exec(buf.toString("utf8")) : null;
+  const obj = m ? objPath(m[1]) : null;
+  return obj && existsSync(obj) && statSync(obj).size === Number(m[2]) ? obj : null;
+}
+async function collect(input) {
+  const chunks = [];
+  for await (const c of input) chunks.push(c);
+  return Buffer.concat(chunks);
+}
+async function clean() {
+  process.stdout.write(await cleanTo(process.stdin));
 }
 async function smudge() {
-  const chunks = [];
-  let n = 0;
-  for await (const c of process.stdin) {
-    chunks.push(c);
-    n += c.length;
-  }
-  const buf = Buffer.concat(chunks);
-  const m = n <= 1024 ? RE.exec(buf.toString("utf8")) : null;
-  const obj = m ? objPath(m[1]) : null;
-  if (obj && existsSync(obj) && statSync(obj).size === Number(m[2])) await pipeline(createReadStream(obj), process.stdout);
+  const buf = await collect(process.stdin);
+  const obj = smudgeSource(buf);
+  if (obj) await pipeline(createReadStream(obj), process.stdout);
   else process.stdout.write(buf);
 }
-(process.argv[2] === "clean" ? clean() : smudge()).catch((e) => {
+// ---- long-running filter protocol (gitprotocol-common pkt-line, gitattributes "Long Running Filter Process") ----
+const MAX_PKT = 65516;
+function pktReader(stream) {
+  const it = stream[Symbol.asyncIterator]();
+  let buf = Buffer.alloc(0);
+  async function need(n) {
+    while (buf.length < n) {
+      const r = await it.next();
+      if (r.done) return false;
+      buf = buf.length ? Buffer.concat([buf, r.value]) : r.value;
+    }
+    return true;
+  }
+  /** A packet's payload, null for a flush, undefined at end of input (before any byte of a packet). */
+  return async function read() {
+    if (!(await need(4))) {
+      if (buf.length) throw new Error("truncated pkt-line header");
+      return undefined;
+    }
+    const len = parseInt(buf.subarray(0, 4).toString("ascii"), 16);
+    if (!Number.isFinite(len) || (len !== 0 && len < 4)) throw new Error("bad pkt-line length");
+    if (len === 0) {
+      buf = buf.subarray(4);
+      return null;
+    }
+    if (!(await need(len))) throw new Error("truncated pkt-line");
+    const data = buf.subarray(4, len);
+    buf = buf.subarray(len);
+    return data;
+  };
+}
+async function writeOut(b) {
+  if (!process.stdout.write(b)) await new Promise((r) => process.stdout.once("drain", r));
+}
+async function pkt(data) {
+  const b = typeof data === "string" ? Buffer.from(data) : data;
+  for (let i = 0; i < b.length || i === 0; i += MAX_PKT) {
+    const part = b.subarray(i, i + MAX_PKT);
+    await writeOut(Buffer.concat([Buffer.from((part.length + 4).toString(16).padStart(4, "0")), part]));
+    if (!b.length) break;
+  }
+}
+const flush = () => writeOut(Buffer.from("0000"));
+async function readList(read) {
+  const out = [];
+  for (;;) {
+    const p = await read();
+    if (p === undefined) return out.length ? out : undefined;
+    if (p === null) return out;
+    out.push(p.toString("utf8").replace(/\\n$/, ""));
+  }
+}
+function contentOf(read) {
+  const st = { done: false };
+  st.chunks = (async function* () {
+    for (;;) {
+      const p = await read();
+      if (p === undefined) throw new Error("input ended inside content");
+      if (p === null) {
+        st.done = true;
+        return;
+      }
+      yield p;
+    }
+  })();
+  return st;
+}
+async function serve() {
+  const read = pktReader(process.stdin);
+  const hello = await readList(read);
+  if (!hello || hello[0] !== "git-filter-client" || !hello.includes("version=2")) throw new Error("not a git filter client: " + JSON.stringify(hello));
+  await pkt("git-filter-server\\n");
+  await pkt("version=2\\n");
+  await flush();
+  const caps = (await readList(read)) || [];
+  for (const c of ["clean", "smudge"]) if (caps.includes("capability=" + c)) await pkt("capability=" + c + "\\n");
+  await flush();
+  for (;;) {
+    const head = await readList(read);
+    if (head === undefined) return;
+    const kv = Object.fromEntries(head.map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+    const cmd = kv.command;
+    let result = null;
+    let err = null;
+    const content = contentOf(read);
+    try {
+      if (cmd === "clean") result = Buffer.from(await cleanTo(content.chunks));
+      else {
+        const buf = await collect(content.chunks);
+        if (cmd === "smudge") result = smudgeSource(buf) || buf;
+        else err = "unknown command " + cmd;
+      }
+    } catch (e) {
+      err = e && e.message ? e.message : String(e);
+      // The rest of this file's content is still on the wire: read past it to stay in step with git.
+      while (!content.done) {
+        const p = await read();
+        if (p === undefined) throw e;
+        if (p === null) content.done = true;
+      }
+    }
+    if (err !== null) {
+      process.stderr.write("vault-chat lfs filter: " + (kv.pathname || "") + ": " + err + "\\n");
+      await pkt("status=error\\n");
+      await flush();
+      continue;
+    }
+    await pkt("status=success\\n");
+    await flush();
+    try {
+      if (typeof result === "string") {
+        for await (const c of createReadStream(result, { highWaterMark: MAX_PKT })) await pkt(c);
+      } else {
+        for (let i = 0; i < result.length; i += MAX_PKT) await pkt(result.subarray(i, i + MAX_PKT));
+      }
+      await flush();
+      await flush(); // status unchanged
+    } catch (e) {
+      process.stderr.write("vault-chat lfs filter: " + (kv.pathname || "") + ": " + (e && e.message ? e.message : e) + "\\n");
+      await flush();
+      await pkt("status=error\\n");
+      await flush();
+    }
+  }
+}
+const mode = process.argv[2];
+(mode === "process" ? serve() : mode === "clean" ? clean() : smudge()).catch((e) => {
   process.stderr.write("vault-chat lfs filter: " + (e && e.message ? e.message : e) + "\\n");
   process.exit(1);
 });
@@ -200,7 +341,7 @@ function shQuote(s: string): string {
 /** The filter commands the box configures for a repo's .git. */
 export function lfsFilterConfig(gitDir: string, node = process.execPath): Record<string, string> {
   const base = `${shQuote(node)} ${shQuote(join(gitDir, LFS_FILTER_NAME))}`;
-  return { "filter.lfs.clean": `${base} clean`, "filter.lfs.smudge": `${base} smudge`, "filter.lfs.required": "true" };
+  return { "filter.lfs.clean": `${base} clean`, "filter.lfs.smudge": `${base} smudge`, "filter.lfs.process": `${base} process`, "filter.lfs.required": "true" };
 }
 
 /** Write the filter script into `<repo>/.git` when it differs (a file read when it does not). */
