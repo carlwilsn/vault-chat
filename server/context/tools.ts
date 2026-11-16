@@ -11,7 +11,8 @@ import { ctxConfig } from "./config";
 import { cap } from "./files";
 import { allProjects, PROJECT_DIR, PROJECT_NOTES_FILE } from "./projects";
 import { readOr, slugify } from "./files";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { threadKindOf } from "../../src/threads";
 import type { ContextConv, DynamicToolCallResponse, DynamicToolSpec, ToolContext } from "./types";
 
 export const CONTEXT_TOOL_NAMES = ["ListProjects", "ListConversations", "ReadConversation"] as const;
@@ -34,7 +35,8 @@ export const contextToolSpecs: DynamicToolSpec[] = [
     type: "function",
     name: "ListConversations",
     readOnly: true,
-    description: "Carl's other chats, most recent first: id, title, project and when it was last active. The \"you\" layer points at his recent messages in them; read one with ReadConversation.",
+    description:
+      "Carl's other chats in every vault, most recent first (deleted ones are left out: RestoreConversation lists those): id, title, what it is (Main, a project's thread, a chat in a project, a loose chat, an older read-only chat), who named it (Carl, a summary, his first message, or its place), its vault when he has more than one, and when it was last active. The \"you\" layer points at his recent messages in them; read one with ReadConversation.",
     inputSchema: { type: "object", properties: { limit: { type: "number" } }, additionalProperties: false },
   },
   {
@@ -116,6 +118,30 @@ export function listProjectsText(project?: string | null, currentProject?: strin
   };
 }
 
+/** What a chat is, for ListConversations: Main, a project's thread, a chat in a project, a loose chat, an older one. */
+export function chatKind(c: { id: string; kind?: unknown; project?: unknown }): string {
+  const k = threadKindOf(c);
+  if (k === "main") return "Main";
+  if (k === "project") return `project thread${c.project ? ` of ${String(c.project)}` : ""}`;
+  if (k === "older") return "older chat (read-only)";
+  return c.project ? `chat in project ${String(c.project)}` : "loose chat";
+}
+
+/** Who named it: Carl (by hand, or the agent on his ask), a summary, his first message, or its place. */
+export function namedBy(c: { id: string; kind?: unknown; titleBy?: unknown }): string {
+  const k = threadKindOf(c);
+  if (k === "main" || k === "project") return "named by its place";
+  if (c.titleBy === "carl") return "named by Carl";
+  if (c.titleBy === "auto") return "summary title";
+  return "his first message";
+}
+
+function chatLine(c: any, at: number, withVault: boolean): string {
+  const title = String(c.title ?? "").trim() || "(untitled)";
+  const vault = withVault && typeof c.vault === "string" && c.vault ? `, vault ${basename(c.vault)}` : "";
+  return `${c.id} — "${title}" · ${chatKind(c)} · ${namedBy(c)}${vault}, last active ${new Date(at).toISOString().slice(0, 16)}`;
+}
+
 /** Handle a context tool call (an engine tool call). Never throws. */
 export async function handleContextTool(name: string, args: unknown, ctx: ToolContext): Promise<DynamicToolCallResponse> {
   const a = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
@@ -130,7 +156,8 @@ export async function handleContextTool(name: string, args: unknown, ctx: ToolCo
       if (name === "ListConversations") {
         const n = Math.min(Math.max(Number(a.limit) || 25, 1), 100);
         const rows = all.sort((x, y) => at(y) - at(x)).slice(0, n);
-        return ok(rows.length ? rows.map((c) => `${c.id} — "${String(c.title ?? "").trim() || "(untitled)"}"${c.project ? ` (project ${c.project})` : ""}, last active ${new Date(at(c)).toISOString().slice(0, 16)}`).join("\n") : "(no other chats)");
+        const vaults = new Set(all.map((c: any) => (typeof c.vault === "string" ? c.vault : "")).filter(Boolean));
+        return ok(rows.length ? rows.map((c) => chatLine(c, at(c), vaults.size > 1)).join("\n") : "(no other chats)");
       }
       const id = String(a.conversation_id ?? "").trim();
       const c = all.find((x) => x.id === id);

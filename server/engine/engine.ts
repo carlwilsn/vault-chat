@@ -13,7 +13,7 @@ import { globalCutover } from '../convlog/globalCutover';
 // host calls.
 import { vaultPath } from "../vaultPath";
 import { conversationRoot } from "../context/config";
-import { ownerVault } from "../convlog/log";
+import { chatVaults, ownerVault } from "../convlog/log";
 import { appendFileSync, existsSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { LIVE_LIMITS, allowRate, liveAskText } from "../../src/liveBridge";
 import { holdRun, registerRun, unregisterRun } from "../../src/runRegistry";
@@ -1629,6 +1629,22 @@ export class Engine {
     return out;
   }
 
+  /** Every vault's conversations (one list, the agent's ListConversations / ReadConversation / ListProjects), each with the vault it lives in. */
+  private async convsEverywhere(vault: string): Promise<Array<EngineConv & { vault: string }>> {
+    const seen = new Set<string>();
+    const out: Array<EngineConv & { vault: string }> = [];
+    for (const v of chatVaults(vault)) {
+      let these: EngineConv[] = [];
+      try {
+        these = await allConvs(v);
+      } catch (e) {
+        this.log(`chats of ${v} not read: ${(e as Error).message}`);
+      }
+      for (const c of these) if (!seen.has(c.id)) (seen.add(c.id), out.push({ ...c, vault: v }));
+    }
+    return out;
+  }
+
   /** The agent's rename (RenameConversation): the engine of the vault that holds the chat names it; no title: a fresh summary. */
   async renameAcrossVaults(id: string, title?: string): Promise<{ ok: true; title: string } | { ok: false; error: string }> {
     const e = await this.ownerOf(id);
@@ -2872,7 +2888,7 @@ export class Engine {
     try {
       p.signal?.throwIfAborted();
       // ListProjects only reads. A project is made only by Carl: in the app, or by asking for it (OpenProject below).
-      if (isContextTool(name)) return await handleContextTool(name, a, { conv: conv as any, convs: (await allConvs(vault)) as any });
+      if (isContextTool(name)) return await handleContextTool(name, a, { conv: conv as any, convs: (await this.convsEverywhere(vault)) as any });
       // The notes tools: the same code voice runs (server/notesTools.ts), every result read back from the file.
       if (isNoteTool(name)) {
         const r = await noteTool(vault, name, a);

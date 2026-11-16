@@ -975,6 +975,11 @@ export function globalFeed(vault: string): GlobalFeed | ConvLog {
   return v;
 }
 
+/** Every vault whose log holds conversations (the main one first); without setFeedVaults, just `fallback`. */
+export function chatVaults(fallback: string): string[] {
+  return feed ? conversationVaults(feed.main, feed.vaults()) : [fallback];
+}
+
 /** The vault whose log holds conversation `id` (Main: the main vault), or null when none does. Without
  *  setFeedVaults: `fallback` when its log has it. */
 export function ownerVault(id: string, fallback: string): string | null {
