@@ -145,6 +145,8 @@ test("AppPluginMount follows the supervisor: running, the host's mount point; a 
   const { _appReconciler } = await import("../../src/pluginSupervisorApp.ts");
   const mod = await import("../../src/plugins/notes/index.tsx");
   const view = () => renderToStaticMarkup(createElement(AppPluginMount, { plugin: NOTES_PLUGIN, module: mod }));
+  assert.equal(view(), "", "its records not known yet: not mounted (a plugin turned off is never painted)");
+  _appReconciler(true);
   assert.equal(view(), '<span data-el="plugin-mount" data-vc-plugin="app/notes" style="display:contents"></span>');
   const rec = _appReconciler();
   rec.sup.fold({ seq: 9001, at: 1, type: "signal", signal: { type: "plugin.desired", plugin: "app/notes", state: "stopped", at: 1, by: "agent" } });

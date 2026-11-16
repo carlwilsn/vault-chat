@@ -371,7 +371,9 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
   // A vault page is a plugin (its id: its vault path): the supervisor may have it stopped (src/pluginSupervisorApp.ts).
   const pluginId = path && insideVault(path, vaultRoot) ? vaultRelative(path, vaultRoot) : null;
   const desired = usePluginDesired(pluginId);
-  const off = pluginId !== null && desired.state === "stopped";
+  const off = pluginId !== null && desired?.state === "stopped";
+  // Not known yet whether it runs: nothing of it is shown (a plugin turned off is never painted).
+  const pending = pluginId !== null && desired === null;
   const srcDoc = useMemo(() => {
     if (base === undefined) return null;
     const html = path ? rewriteAssetUrls(content, path, !base) : content;
@@ -642,11 +644,11 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
         </button>
       )}
       <div className="flex-1 relative">
-        {off && <PluginOff path={pluginId!} desired={desired} className="absolute inset-x-0 top-0" />}
-        {!off && inProcess && (
+        {off && <PluginOff path={pluginId!} desired={desired!} className="absolute inset-x-0 top-0" />}
+        {!off && !pending && inProcess && (
           <PluginMount html={content} path={path ? vaultRelative(path, vaultRoot) : "page.html"} className="absolute inset-0 overflow-auto bg-background" />
         )}
-        {!off && !inProcess && srcDoc !== null && <iframe
+        {!off && !pending && !inProcess && srcDoc !== null && <iframe
           ref={iframeRef}
           data-look-frame
           {...(live && path ? { "data-vc-live": vaultRelative(path, vaultRoot) } : {})}

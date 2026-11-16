@@ -44,7 +44,7 @@ export function Titlebar() {
     notes,
   } = useStore();
   // The Notes panel is a plugin (src/plugins/notes): turned off, its button goes with it.
-  const notesOn = usePluginDesired(NOTES_PLUGIN_ID).state === "running";
+  const notesOn = usePluginDesired(NOTES_PLUGIN_ID)?.state === "running";
   const [hiddenOpen, setHiddenOpen] = useState(false);
   const [hiddenLines, setHiddenLines] = useState<string[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());

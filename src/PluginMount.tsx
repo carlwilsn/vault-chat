@@ -70,7 +70,7 @@ export function AppPluginMount({ plugin, module, code }: { plugin: Pick<AppPlugi
   // One source object per module / code: a new one is a fresh mount (a changed vault plugin file), a re-render is not.
   const source = useMemo<AppPluginSource>(() => (typeof code === "string" ? { name: plugin.name, code } : { name: plugin.name, module }), [plugin.name, module, code]);
   const desired = usePluginDesired(plugin.id);
-  if (desired.state === "stopped") return null;
+  if (desired?.state !== "running") return null;
   return (
     <PluginBoundary path={plugin.id} key={plugin.id}>
       <Mount html={source} path={plugin.id} />

@@ -195,7 +195,7 @@ function LiveInlineHtml({ src, alt, sizeHint }: { src: string; alt?: string; siz
   const title = alt || name;
   // A vault page is a plugin: stopped by the supervisor (src/pluginSupervisorApp.ts), its copy here is taken down too.
   const desired = usePluginDesired(pagePath);
-  if (pagePath !== null && desired.state === "stopped") {
+  if (pagePath !== null && desired?.state === "stopped") {
     return (
       <span className="block my-2 rounded-md border border-border/60 bg-muted/40" data-el="chat-html-wrap">
         <PluginOff path={pagePath} desired={desired} />
@@ -203,7 +203,7 @@ function LiveInlineHtml({ src, alt, sizeHint }: { src: string; alt?: string; siz
     );
   }
 
-  if (!live) return <span className="block text-[11.5px] text-muted-foreground italic" data-el="chat-html-loading">Loading {name}…</span>;
+  if (!live || (pagePath !== null && desired === null)) return <span className="block text-[11.5px] text-muted-foreground italic" data-el="chat-html-loading">Loading {name}…</span>;
   if (doc === null) {
     return (
       <span className="text-muted-foreground italic text-[11.5px] border border-dashed border-border/60 rounded px-1.5 py-0.5 inline-block">
