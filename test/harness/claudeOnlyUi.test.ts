@@ -317,7 +317,7 @@ test("the sign-in prompt is drawn only by AI surfaces: no full-window gate", () 
   assert.deepEqual(importers, [], `the sign-in prompt reached a non-AI surface: ${importers.join(", ")}`);
 
   // And the shell itself never reads the sign-in at all.
-  for (const shell of ["src/App.tsx", "src/main.tsx", "src/Titlebar.tsx", "src/FileTree.tsx", "src/VaultPicker.tsx"]) {
+  for (const shell of ["src/App.tsx", "src/main.tsx", "src/Titlebar.tsx", "src/FileTree.tsx", "src/VaultPicker.tsx", "src/plugins/vaults/Picker.tsx"]) {
     const src = readFileSync(join(root, shell), "utf8");
     assert.ok(!/claudeAuth|ClaudeSignInPrompt|useAiBlocked/.test(src), `${shell} gates itself on the Claude sign-in; only the AI features may`);
   }

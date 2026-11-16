@@ -63,7 +63,18 @@ export const CHAT_ROWS_PLUGIN: AppPluginInfo = {
   words: ["chat rows", "chat-rows", "chatrows", "transcript", "chat transcript", "rows", "row renderers", "tool rows"],
 };
 
-export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN];
+export const VAULTS_PLUGIN_ID = "app/vaults";
+
+/** The title bar's vault picker (src/plugins/vaults): the vault folders, to open one, make, rename or delete a vault. Off or failed, a minimal built-in picker stands in. */
+export const VAULTS_PLUGIN: AppPluginInfo = {
+  id: VAULTS_PLUGIN_ID,
+  name: "Vault picker",
+  mount: "panel",
+  description: "The title bar's vault picker: the vault folders (vaults only; Main and projects are in the chat list), to open one as the workspace, make a new vault, rename or delete one (recoverably), or make one a project.",
+  words: ["vaults", "vault picker", "vault-picker", "vaultpicker", "vault menu", "vault dropdown", "folder picker", "vault switcher"],
+};
+
+export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN];
 
 /** The app plugin a word names (its id, its name or one of its words), or null. */
 export function appPluginNamed(word: string): AppPluginInfo | null {

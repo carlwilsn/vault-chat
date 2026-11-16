@@ -1,7 +1,7 @@
 // The vault-chat folder on the laptop (src/master.ts): the vault picker's list, setting the folder (its file names
 // the box the open vault syncs with), bringing what the box has and this laptop lacks (each vault and project made
 // from its hub, a project with its own remote and branch), "New vault" (made on the box and here), the folder
-// picker's rows (src/VaultPicker.tsx folderRows), and the migration's switch and one-step switch back (never both
+// picker's rows (src/plugins/vaults/model.ts folderRows), and the migration's switch and one-step switch back (never both
 // copies syncing).
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
@@ -10,7 +10,7 @@ import { installFakeTauri, makeTempVault } from "./fakes.ts";
 const vault = makeTempVault("vc-master-");
 const fake = installFakeTauri(vault);
 const M = await import("../../src/master.ts");
-const { folderRows, pickerPathKey } = await import("../../src/VaultPicker.tsx");
+const { folderRows, pickerPathKey } = await import("../../src/plugins/vaults/model.ts");
 const { useStore } = await import("../../src/store.ts");
 
 after(async () => (await import("../../src/vaultSync.ts")).stopVaultSyncLoop());

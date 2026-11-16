@@ -61,8 +61,8 @@ export const SHORTCUTS = [
   { id: "view.terminal", keys: ["Mod+J"], label: "Terminal", group: "Views & windows", where: "anywhere (the box's, for a box vault)", files: ["src/App.tsx"] },
   { id: "view.terminalOther", keys: ["Mod+Shift+J"], label: "Laptop terminal", group: "Views & windows", where: "anywhere", files: ["src/App.tsx"] },
   { id: "view.theme", keys: ["Alt+L"], label: "Light / dark", group: "Views & windows", where: "anywhere", files: ["src/App.tsx"] },
-  { id: "view.vaultActionMove", keys: ["ArrowDown", "ArrowUp", "Home", "End"], label: "Move between actions", group: "Views & windows", where: "the vault picker's folder-action menu", files: ["src/VaultPicker.tsx"] },
-  { id: "view.vaultActionLeave", keys: ["Tab", "Shift+Tab"], label: "Leave folder actions", group: "Views & windows", where: "the vault picker's folder-action menu; normal tabbing continues", files: ["src/VaultPicker.tsx"] },
+  { id: "view.vaultActionMove", keys: ["ArrowDown", "ArrowUp", "Home", "End"], label: "Move between actions", group: "Views & windows", where: "the vault picker's folder-action menu", files: ["src/plugins/vaults/Picker.tsx"] },
+  { id: "view.vaultActionLeave", keys: ["Tab", "Shift+Tab"], label: "Leave folder actions", group: "Views & windows", where: "the vault picker's folder-action menu; normal tabbing continues", files: ["src/plugins/vaults/Picker.tsx"] },
   {
     id: "view.close",
     keys: ["Esc"],
@@ -76,7 +76,7 @@ export const SHORTCUTS = [
       "src/ChatsPanel.tsx",
       "src/plugins/chats/ChatsList.tsx",
       "src/NewProjectForm.tsx",
-      "src/VaultPicker.tsx",
+      "src/plugins/vaults/Picker.tsx",
       "src/plugins/notes/NotesPanel.tsx",
       "src/NotePopup.tsx",
       "src/Titlebar.tsx",
@@ -100,7 +100,7 @@ export const SHORTCUTS = [
   { id: "edit.ask", keys: ["Mod+L"], label: "Ask or edit", group: "Editing", where: "a file", files: ["src/LiveEditor.tsx", "src/MonacoEditor.tsx", "src/MarkdownView.tsx"] },
   { id: "edit.mode", keys: ["Mod+E"], label: "Edit / view", group: "Editing", where: "an open file", files: ["src/App.tsx"] },
   { id: "edit.marquee", keys: ["Mod+M"], label: "Capture a region", group: "Editing", where: "a PDF, HTML page or image", files: ["src/MarkdownView.tsx"] },
-  { id: "edit.confirm", keys: ["Enter"], label: "Confirm a name", group: "Editing", where: "rename, new project, a key", files: ["src/FileTree.tsx", "src/plugins/chats/ChatsList.tsx", "src/NewProjectForm.tsx", "src/VaultPicker.tsx", "src/ProjectChip.tsx", "src/SettingsPane.tsx", "src/ClaudeCodeSignIn.tsx"] },
+  { id: "edit.confirm", keys: ["Enter"], label: "Confirm a name", group: "Editing", where: "rename, new project, a key", files: ["src/FileTree.tsx", "src/plugins/chats/ChatsList.tsx", "src/NewProjectForm.tsx", "src/plugins/vaults/Picker.tsx", "src/ProjectChip.tsx", "src/SettingsPane.tsx", "src/ClaudeCodeSignIn.tsx"] },
 
   // ---- A video (the app's own player, src/VideoPlayer.tsx)
   { id: "video.play", keys: [" "], label: "Play / pause", group: "Views & windows", where: "a video with focus", files: ["src/VideoPlayer.tsx"] },

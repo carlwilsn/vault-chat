@@ -75,6 +75,7 @@ describe("the catalog", () => {
       { id: "app/chats", name: "Chats", mount: "panel", description: expect.stringContaining("chat list") },
       { id: "app/composer", name: "Composer", mount: "panel", description: expect.stringContaining("chat composer") },
       { id: "app/chat-rows", name: "Chat rows", mount: "panel", description: expect.stringContaining("transcript") },
+      { id: "app/vaults", name: "Vault picker", mount: "panel", description: expect.stringContaining("vault picker") },
     ]);
     expect(c.truncated).toBeUndefined();
     // A page added now is in the next answer: the vault is read each time.
