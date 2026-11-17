@@ -11,7 +11,7 @@ import { dirname, join, sep } from "node:path";
 import { inProjectFolder } from "./projectFolders";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { legacyPushEnabled, setLegacyPushEnabled } from "./pushPreferences";
-import { settingsRoute } from "./settings";
+import { readSetting, settingsRoute } from "./settings";
 import { trackWrites } from "./drain";
 import { inputSurface, noteInput } from "./presence";
 import { authorize, isDirectLoopback, phoneToken, tailnetIdentity } from "./auth";
@@ -787,7 +787,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // The laptop app's core bundle (server/coreBundles.ts): the offer, and each bundle's manifest and files (immutable:
   // a version is the hash of its manifest, which holds every file's hash). The box's main vault holds the records.
   if ((path === "/api/v2/core" || path.startsWith("/api/v2/core/")) && method === "GET") {
-    const out = coreRoute(cfg.stateDir, supervisorOf(cfg.vault).changes(CORE_PART), path.slice("/api/v2/core".length));
+    const out = coreRoute(cfg.stateDir, supervisorOf(cfg.vault).changes(CORE_PART), path.slice("/api/v2/core".length), readSetting("corePublish") === true);
     if (out.bytes) return send(res, out.status, out.type ?? "application/octet-stream", out.bytes, { "Cache-Control": "private, max-age=31536000, immutable" });
     return json(res, out.status, out.json);
   }

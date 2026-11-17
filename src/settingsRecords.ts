@@ -84,6 +84,12 @@ export const SETTINGS = {
     description: "Automatic phone pushes (the phone's Box & settings switch): true sends questions, failures and finishes while Carl is away; false pushes only work he asked to be pinged for.",
     legacy: { where: "box", key: "vc_push_legacy_automatic", read: (raw) => raw === "true" },
   },
+  corePublish: {
+    applies: "box",
+    kind: "boolean",
+    default: false,
+    description: "Whether the box builds the laptop app's core (its frontend) from each accepted main and offers it to the laptop with no installer (server/coreBundles.ts). Off (the default) until Carl says yes: nothing is built, landed or offered; the installed app's own core runs.",
+  },
   chatSidebar: {
     applies: "window",
     kind: "boolean",

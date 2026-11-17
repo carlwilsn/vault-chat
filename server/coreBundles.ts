@@ -5,11 +5,13 @@
 //
 //   store     <state>/core-bundles/<version>/manifest.json + files/<path> (outside every vault), written by
 //             scripts/core-publish.ts; <state>/core-bundles/work/<commit12>/ is a build's scratch and its result.json.
-//   publisher every minute: main of the vault-chat repo on this box (VC_CORE_REPO, default ~/vc/projects/vault-chat;
-//             VC_CORE_PUBLISH=0 turns it off). A new main starts one build as a job of the user's systemd (the
-//             StartJob argv: its own memory ceiling, low CPU/IO share, outside this server's memory: a vite build
-//             takes ~3.6 GB). Its result lands the bundle (a keep by "gate"), unless the bundle needs a newer box API
-//             than this server serves (then it waits for the box to update). Two failed builds of one commit: given up.
+//   publisher OFF unless Carl's setting corePublish is true (default false): while off nothing is built, no bundle
+//             lands (a keep on app/core is refused) and none is offered as current; the laptop runs its installed core.
+//             On: every minute, main of the vault-chat repo on this box (VC_CORE_REPO, default ~/vc/projects/vault-chat;
+//             VC_CORE_PUBLISH=0 turns it off for good). A new main starts one build through the existing StartJob path
+//             (server/engine/jobs.ts startJobWith: its memory ceiling, low CPU/IO share, outside this server's memory: a
+//             vite build takes ~3.6 GB). Its result lands the bundle (a keep by "gate"), unless the bundle needs a newer
+//             box API than this server serves (then it waits). Two failed builds of one commit: given up.
 //   routes    GET /api/v2/core: the offer (the version in effect, its sha256, needs), this box's API, recent builds.
 //             GET /api/v2/core/<version>/manifest.json, GET /api/v2/core/<version>/files/<path>: the bundle's bytes.
 //             A switch (the laptop's loader fell back, or the agent's word) is a plugin.change through /api/v2/supervisor.
@@ -20,7 +22,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { BUILT_IN, landing, type ChangeKind, type ChangeRecord } from "../src/pluginDrafts";
 import { CORE_BOX_API, CORE_PART, CORE_VERSION_RE, manifestProblem, safeCorePath, type CoreManifest, type CoreOffer } from "../src/coreBundle";
-import { jobArgv, jobEnvDir, writeJobEnvFile } from "./engine/jobs";
+import { probeJob, readJobs, startJobWith, type JobEnv } from "./engine/jobs";
 
 export const coreRoot = (stateDir: string) => join(stateDir, "core-bundles");
 
@@ -76,7 +78,8 @@ export function storedCores(stateDir: string): StoredCore[] {
 }
 
 /** The bundle in effect by the app/core records (null: the installed app's own, "built-in"). */
-export function coreOffer(stateDir: string, changes: readonly ChangeRecord[]): CoreOffer | null {
+export function coreOffer(stateDir: string, changes: readonly ChangeRecord[], on = true): CoreOffer | null {
+  if (!on) return null;
   const l = landing(changes);
   if (!l || l.version === BUILT_IN) return null;
   const m = readCoreManifest(stateDir, l.version);
@@ -110,7 +113,7 @@ export function coreLanding(stateDir: string, changes: readonly ChangeRecord[], 
 
 // ---------------------------------------------------------------- the publisher
 
-type Attempt = { commit: string; at: number; tries: number; state: "building" | "built" | "failed" | "waiting"; version?: string; error?: string; unit?: string };
+type Attempt = { commit: string; at: number; tries: number; state: "building" | "built" | "failed" | "waiting"; version?: string; error?: string; job?: string };
 type PubState = { attempts: Attempt[] };
 const pubFile = (stateDir: string) => join(coreRoot(stateDir), "publisher.json");
 
@@ -146,6 +149,12 @@ export type PublisherDeps = {
   now?: () => number;
   /** How long one build may run (default 40 min). */
   buildMs?: number;
+  /** Whether Carl turned publishing on (the corePublish setting). Off: the tick does nothing at all. */
+  on: () => boolean;
+  /** Start the build job (default: startJobWith, the StartJob path). Tests replace it. */
+  startJob?: typeof startJobWith;
+  /** A started job's state (default: probeJob). */
+  probe?: typeof probeJob;
 };
 
 const MAX_TRIES = 2;
@@ -168,8 +177,10 @@ export function buildShell(repo: string, commit: string, root: string): string {
 
 /** One look: start a build for a new main, or take a finished build's result. Returns what it did (for the log). */
 export function publishTick(d: PublisherDeps): string {
+  if (!d.on()) return "off";
   const exec = d.exec ?? realExec;
   const now = (d.now ?? Date.now)();
+  const env: JobEnv = { logDir: workDir(d.stateDir), wrap: null, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? homedir(), NODE_OPTIONS: "--max-old-space-size=4096", LANG: "C.UTF-8" }, memoryMax: "6G", max: 1 };
   const st = readPublisher(d.stateDir);
   const head = exec("git", ["-C", d.repo, "rev-parse", "--verify", "refs/heads/main^{commit}"]);
   const main = head.status === 0 ? head.stdout.trim() : "";
@@ -185,10 +196,10 @@ export function publishTick(d: PublisherDeps): string {
       /* not finished */
     }
     if (!r) {
-      const active = running.unit ? exec("systemctl", ["--user", "is-active", running.unit]).stdout.trim() : "";
-      const alive = active === "active" || active === "activating";
+      const job = running.job ? readJobs(env).find((j) => j.id === running.job) : undefined;
+      const alive = !!job && (d.probe ?? probeJob)(env, job).state === "running";
       if (alive && now - running.at < (d.buildMs ?? 40 * 60_000)) return `building ${running.commit.slice(0, 12)}`;
-      if (alive && running.unit) exec("systemctl", ["--user", "stop", running.unit]);
+      if (alive && job) exec("systemctl", ["--user", "stop", `vc-job-${job.id}`]);
       running.state = "failed";
       running.error = alive ? "the build ran too long" : "the build ended without a result (see its log in core-bundles/work)";
       writePublisher(d.stateDir, st);
@@ -225,24 +236,15 @@ export function publishTick(d: PublisherDeps): string {
   // A new main: one build at a time, MAX_TRIES per commit.
   const tried = st.attempts.filter((a) => a.commit === main);
   if (tried.some((a) => a.state !== "failed") || tried.length >= MAX_TRIES) return "up to date";
-  const id = `core-${main.slice(0, 12)}-${now.toString(36)}`;
   mkdirSync(workDir(d.stateDir), { recursive: true });
-  const env = { logDir: workDir(d.stateDir), wrap: null, env: {}, memoryMax: "6G" };
-  const vars: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? homedir(), NODE_OPTIONS: "--max-old-space-size=4096", LANG: "C.UTF-8" };
-  let envFile = "";
-  try {
-    envFile = writeJobEnvFile(jobEnvDir(), id, vars);
-    const shell = `(${buildShell(d.repo, main, coreRoot(d.stateDir))}) > ${JSON.stringify(join(workDir(d.stateDir), `${main.slice(0, 12)}.log`))} 2>&1`;
-    const r = exec("systemd-run", jobArgv(env, d.repo, id, shell, Math.round((d.buildMs ?? 40 * 60_000) / 1000) + 300, envFile));
-    if (r.status !== 0) {
-      st.attempts.push({ commit: main, at: now, tries: tried.length + 1, state: "failed", error: `could not start the build: ${(r.stderr || r.stdout).trim().slice(0, 200)}` });
-      writePublisher(d.stateDir, st);
-      return "could not start the build";
-    }
-  } finally {
-    if (envFile) rmSync(envFile, { force: true });
+  const command = `${buildShell(d.repo, main, coreRoot(d.stateDir))}`;
+  const started = (d.startJob ?? startJobWith)(env, d.repo, { command, name: `core-${main.slice(0, 8)}`, timeout: Math.round((d.buildMs ?? 40 * 60_000) / 1000) + 300 });
+  if (!started.job) {
+    st.attempts.push({ commit: main, at: now, tries: tried.length + 1, state: "failed", error: `could not start the build: ${started.text.slice(0, 200)}` });
+    writePublisher(d.stateDir, st);
+    return "could not start the build";
   }
-  st.attempts.push({ commit: main, at: now, tries: tried.length + 1, state: "building", unit: `vc-job-${id}` });
+  st.attempts.push({ commit: main, at: now, tries: tried.length + 1, state: "building", job: started.job.id });
   writePublisher(d.stateDir, st);
   pruneCores(d.stateDir, d.changes());
   return `building core from main ${main.slice(0, 12)}`;
@@ -288,10 +290,10 @@ export function startCorePublisher(d: Omit<PublisherDeps, "repo"> & { repo?: str
 }
 
 /** GET /api/v2/core and the bundle's bytes. */
-export function coreRoute(stateDir: string, changes: readonly ChangeRecord[], sub: string): { status: number; json?: unknown; bytes?: Buffer; type?: string } {
+export function coreRoute(stateDir: string, changes: readonly ChangeRecord[], sub: string, on = true): { status: number; json?: unknown; bytes?: Buffer; type?: string } {
   if (sub === "" || sub === "/") {
     const st = readPublisher(stateDir);
-    return { status: 200, json: { part: CORE_PART, boxApi: CORE_BOX_API, offer: coreOffer(stateDir, changes), builds: st.attempts.slice(-5).map(({ unit: _u, ...a }) => a) } };
+    return { status: 200, json: { part: CORE_PART, boxApi: CORE_BOX_API, publish: on, offer: coreOffer(stateDir, changes, on), builds: st.attempts.slice(-5).map(({ job: _j, ...a }) => a) } };
   }
   const m = /^\/([0-9a-f]{8})\/(manifest\.json|files\/(.+))$/.exec(sub);
   if (!m) return { status: 404, json: { error: "no such route" } };
@@ -310,12 +312,13 @@ export function coreRoute(stateDir: string, changes: readonly ChangeRecord[], su
 }
 
 /** For health: the core in effect and the newest build. */
-export function coreHealth(stateDir: string, changes: readonly ChangeRecord[]): Record<string, unknown> {
-  const offer = coreOffer(stateDir, changes);
+export function coreHealth(stateDir: string, changes: readonly ChangeRecord[], on = true): Record<string, unknown> {
+  const offer = coreOffer(stateDir, changes, on);
   const last = readPublisher(stateDir).attempts.at(-1);
   const l = landing(changes);
   return {
     boxApi: CORE_BOX_API,
+    publish: on ? "on" : "off (setting corePublish)",
     version: offer?.version ?? BUILT_IN,
     commit: offer?.commit ?? null,
     ...(l ? { by: l.by, reason: l.reason, at: l.at } : {}),

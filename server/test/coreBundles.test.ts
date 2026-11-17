@@ -10,7 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
 import { freePort } from "./helpers";
-import { _resetConvLogs, setFeedVaults } from "../convlog/log";
+import { _resetConvLogs, setFeedVaults, signalLog } from "../convlog/log";
+import { configureSettings, setSetting } from "../settings";
 import { startHttpServer, type VaultScope } from "../http";
 import { storeCore, needsOf } from "../../scripts/core-publish";
 import { CORE_BOX_API, CORE_PART, manifestProblem, missingNeeds, nextCoreStep, safeCorePath, scanNeeds, type CoreNeeds } from "../../src/coreBundle";
@@ -65,6 +66,7 @@ describe("core bundles on the box", () => {
     core = await import("../coreBundles");
     sup = await import("../supervisor");
     core.configureCore({ stateDir: state, vault: A.path });
+    configureSettings({ log: () => signalLog(A.path) });
   });
   afterAll(async () => {
     if (srv) await new Promise<void>((r) => srv!.close(() => r()));
@@ -83,6 +85,23 @@ describe("core bundles on the box", () => {
     const r = await fetch(base + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     return { status: r.status, json: await r.json().catch(() => ({})) };
   };
+
+  it("is off until Carl turns it on: nothing built, nothing lands, nothing offered", async () => {
+    const calls: string[] = [];
+    const exec = (cmd: string) => (calls.push(cmd), { status: 0, stdout: "c".repeat(40), stderr: "" });
+    let started = 0;
+    const deps = { stateDir: state, repo: join(home, "repo"), changes: () => sup.supervisorOf(A.path).changes(CORE_PART), land: () => ({ ok: true }), exec, on: () => false, startJob: (() => (started++, { text: "" })) as never };
+    expect(core.publishTick(deps)).toBe("off");
+    expect(calls).toEqual([]);
+    expect(started).toBe(0);
+    const x = build("x", { "index.html": "<p>x</p>" });
+    const keep = await post("/api/v2/supervisor", { plugin: CORE_PART, change: "keep", version: x.version, by: "gate" });
+    expect(keep.status).toBe(409);
+    expect(keep.json.error).toContain("corePublish");
+    expect(await getJson("/api/v2/core")).toMatchObject({ publish: false, offer: null });
+    expect(setSetting("corePublish", true, "carl").ok).toBe(true);
+    expect((await getJson("/api/v2/core")).publish).toBe(true);
+  });
 
   it("stores a bundle by its manifest's hash and serves it byte for byte; tampering and paths outside it are refused", async () => {
     const one = build("one", { "index.html": "<p>one</p>", "assets/app-1.js": "console.log(1)" });
@@ -135,11 +154,9 @@ describe("core bundles on the box", () => {
   it("the publisher builds a new main once, as a job outside the server, lands its result, and never lands a bundle switched away from", async () => {
     const main = "c".repeat(40);
     const calls: string[][] = [];
-    let active = "active";
     const exec = (cmd: string, args: string[]) => {
       calls.push([cmd, ...args]);
       if (cmd === "git") return { status: 0, stdout: main + "\n", stderr: "" };
-      if (cmd === "systemctl") return { status: 0, stdout: active + "\n", stderr: "" };
       return { status: 0, stdout: "", stderr: "" };
     };
     const land = (version: string, reason: string) => {
@@ -147,22 +164,31 @@ describe("core bundles on the box", () => {
       return "error" in w ? { ok: false, error: w.error } : { ok: true };
     };
     const changes = () => sup.supervisorOf(A.path).changes(CORE_PART);
-    const deps = { stateDir: state, repo: join(home, "repo"), changes, land, exec };
+    // The build goes through the existing StartJob path (startJobWith), never a systemd-run call of its own.
+    const jobs: { cmd: string; logDir: string; memoryMax?: string }[] = [];
+    let running = true;
+    const startJob = ((env: { logDir: string; memoryMax?: string }, _cwd: string, a: { command: string }) => {
+      jobs.push({ cmd: a.command, logDir: env.logDir, memoryMax: env.memoryMax });
+      const job = { id: "core-job-1", name: "core", command: a.command, startedAt: Date.now(), timeoutS: 3000, state: "running" as const };
+      writeFileSync(join(env.logDir, "jobs.json"), JSON.stringify([job]));
+      return { text: "started", job };
+    }) as never;
+    const probe = (() => ({ state: running ? "running" : "finished", tail: "" })) as never;
+    const deps = { stateDir: state, repo: join(home, "repo"), changes, land, exec, on: () => true, startJob, probe };
     expect(core.publishTick(deps)).toContain("building core from main cccccccccccc");
-    const run = calls.find((c) => c[0] === "systemd-run")!;
-    expect(run).toContain("--user");
-    expect(run.some((a) => a.startsWith("--property=MemoryMax="))).toBe(true);
-    expect(run.at(-1)).toContain("scripts/core-publish.ts");
-    expect(run.at(-1)).toContain(`archive ${main}`);
-    // While it builds, nothing else starts.
-    calls.length = 0;
-    expect(core.publishTick(deps)).toContain("building");
     expect(calls.some((c) => c[0] === "systemd-run")).toBe(false);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.memoryMax).toBe("6G");
+    expect(jobs[0]!.cmd).toContain("scripts/core-publish.ts");
+    expect(jobs[0]!.cmd).toContain(`archive ${main}`);
+    // While it builds, nothing else starts.
+    expect(core.publishTick(deps)).toContain("building");
+    expect(jobs).toHaveLength(1);
     // Its result: the bundle lands as a keep by the gate.
     const built = build("built", { "index.html": "<p>main c</p>" });
     mkdirSync(join(root, "work", main.slice(0, 12)), { recursive: true }); // the job's shell makes it
     writeFileSync(join(root, "work", main.slice(0, 12), "result.json"), JSON.stringify({ ok: true, version: built.version, sha256: built.sha256, commit: main }));
-    active = "inactive";
+    running = false;
     expect(core.publishTick(deps)).toBe(`landed core ${built.version} (main cccccccccccc)`);
     expect(changes().at(-1)).toMatchObject({ change: "keep", version: built.version, by: "gate" });
     expect(core.coreHealth(state, changes())).toMatchObject({ version: built.version, lastBuild: { state: "built", version: built.version } });
@@ -175,12 +201,9 @@ describe("core bundles on the box", () => {
   it("a failed build is given up after two tries", () => {
     const main = "d".repeat(40);
     let runs = 0;
-    const exec = (cmd: string) => {
-      if (cmd === "git") return { status: 0, stdout: main, stderr: "" };
-      if (cmd === "systemd-run") runs++;
-      return { status: 0, stdout: "inactive", stderr: "" };
-    };
-    const deps = { stateDir: state, repo: join(home, "repo"), changes: () => sup.supervisorOf(A.path).changes(CORE_PART), land: () => ({ ok: true }), exec };
+    const exec = (cmd: string) => (cmd === "git" ? { status: 0, stdout: main, stderr: "" } : { status: 0, stdout: "", stderr: "" });
+    const startJob = (() => (runs++, { text: "started", job: { id: `j${runs}`, name: "core", command: "", startedAt: 0, timeoutS: 1, state: "running" } })) as never;
+    const deps = { stateDir: state, repo: join(home, "repo"), changes: () => sup.supervisorOf(A.path).changes(CORE_PART), land: () => ({ ok: true }), exec, on: () => true, startJob, probe: (() => ({ state: "finished", tail: "" })) as never };
     for (let i = 0; i < 6; i++) {
       core.publishTick(deps);
       mkdirSync(join(root, "work", main.slice(0, 12)), { recursive: true });

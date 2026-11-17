@@ -68,7 +68,7 @@ export async function followCoreOnce(d: CoreDeps, o: { swap?: boolean } = {}): P
   if (!s) return { step: { kind: "none", why: "an installed app from before the core loader" }, did: "nothing" };
   const link = await d.link();
   if (!link) return { step: { kind: "none", why: "no box" }, did: "nothing" };
-  let box: { boxApi?: number; offer?: CoreOffer | null };
+  let box: { boxApi?: number; offer?: CoreOffer | null; publish?: boolean };
   try {
     box = (await d.get(link, "/api/v2/core")) ?? {};
   } catch (e) {
@@ -76,7 +76,8 @@ export async function followCoreOnce(d: CoreDeps, o: { swap?: boolean } = {}): P
   }
   const offer = box.offer ?? null;
   await reportFallbacks(s, link, offer, d);
-  const step = nextCoreStep({
+  // Carl turned the box's core publishing off: the installed app's own core again.
+  const step: CoreStep = box.publish === false && s.active !== BUILT_IN ? { kind: "baked", why: "the box's core publishing is off" } : nextCoreStep({
     offer,
     active: s.active === BUILT_IN ? null : s.active,
     bad: s.bad,

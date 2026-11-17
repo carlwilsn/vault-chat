@@ -16,7 +16,7 @@ export const settingsToolSpecs = [
     type: "function" as const,
     name: SETTINGS_TOOL,
     description:
-      "Read or change Carl's app settings, the same ones his Settings, the composer's model picker and the phone's drawer change: theme, model, effort, voice, pushAutomatic, chatSidebar. " +
+      "Read or change Carl's app settings, the same ones his Settings, the composer's model picker and the phone's drawer change: theme, model, effort, voice, pushAutomatic, chatSidebar, corePublish. " +
       "No key: lists every setting with its value, what it takes and who set it. key + value: sets it (value null: back to its default); it shows at once in every open app and on the phone. " +
       "Use it when Carl asks for a lighter theme, another model or effort, another voice, automatic pushes on or off. Not for keys or secrets. " +
       "A change that is your own idea, not Carl asking for that setting: draft: true; nothing is set, it waits for him as Change ready on his laptop (Try shows it on his windows only, Keep sets it, Discard drops it).",

@@ -3,8 +3,9 @@
 // bundle baked into the installer as its last resort. Only native changes (Rust commands, plugins, the WebView shell,
 // the installer) still need a release.
 //
-//   build    the box, after main moves (server/coreBundles.ts starts scripts/core-publish.ts as a job outside the
-//            server's memory): `vite build` of that commit into <state>/core-bundles/<version>/, with manifest.json.
+//   build    the box, after main moves, only while Carl's setting corePublish is on (default off; server/coreBundles.ts
+//            starts scripts/core-publish.ts through the StartJob path, outside the server's memory): `vite build` of that
+//            commit into <state>/core-bundles/<version>/, with manifest.json.
 //   version  the first 8 hex digits of the manifest's sha256 (the same shape as a plugin copy's version); the full
 //            sha256 travels with it and the loader checks it, and every file's own sha256, before it keeps a copy.
 //   record   the existing plugin.change record for the part `app/core` (src/pluginDrafts.ts): a keep by "gate" lands a

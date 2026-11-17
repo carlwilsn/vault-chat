@@ -96,3 +96,11 @@ test("a newer installer runs its own core over an older box bundle", async () =>
   assert.equal(r.did, "swapped");
   assert.deepEqual(t.calls.at(-1), { cmd: "core_use", args: { version: null } });
 });
+
+test("the box's core publishing turned off: back to the installed app's own core, at a quiet moment", async () => {
+  const t = deps({ status: status({ active: "11112222" }), offer: null });
+  t.d.get = async () => ({ boxApi: CORE_BOX_API, publish: false, offer: null });
+  const r = await followCoreOnce(t.d, { swap: true });
+  assert.equal(r.did, "swapped");
+  assert.deepEqual(t.calls.at(-1), { cmd: "core_use", args: { version: null } });
+});

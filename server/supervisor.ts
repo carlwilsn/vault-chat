@@ -17,7 +17,7 @@ import { changeSignal } from "../src/pluginDrafts";
 import { landChange, landPreset, slotOf } from "./pluginDrafts";
 import { PRESET_PLUGIN_ID, presetSignal, type PresetInEffect } from "../src/appPreset";
 import { SETTINGS_DRAFT_ID } from "../src/settingsRecords";
-import { settingsChange } from "./settings";
+import { readSetting, settingsChange } from "./settings";
 import { isMigrationId } from "../src/migrations";
 import { migrationChange } from "./migrations";
 import { CORE_PART } from "../src/coreBundle";
@@ -114,6 +114,8 @@ export function setPluginChange(vault: string, b: Record<string, unknown> | null
     const dir = coreStateDir();
     const main = coreVault() ?? vault;
     if (!dir) return { status: 503, error: "this box keeps no core bundles" };
+    // Until Carl turns the box's core publishing on, nothing lands as the laptop's core (a switch back still records).
+    if (sig.change === "keep" && readSetting("corePublish") !== true) return { status: 409, error: "the box's core publishing is off (Carl's setting corePublish): no core bundle lands" };
     const landed = coreLanding(dir, supervisorOf(main).changes(CORE_PART), sig.change, sig.version);
     if (!landed.ok) return { status: landed.status, error: landed.error };
     followed(signalLog(main));

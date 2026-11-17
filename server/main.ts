@@ -113,13 +113,17 @@ async function main(): Promise<void> {
   // Box plugins (server/boxPlugins.ts): the vault's own server-side modules, loaded live by this server, the owner now.
   (await import("./boxPlugins")).startBoxPlugins(() => vaultRefs().map((v) => v.path));
   // The laptop app's core is a bundle this box builds from accepted main and serves (server/coreBundles.ts): its records
-  // are app/core plugin.change records in the main vault's log; a new main is built as a job outside this server.
+  // are app/core plugin.change records in the main vault's log; a new main is built as a StartJob job outside this
+  // server, only while Carl's setting corePublish is on (off by default).
   {
     const core = await import("./coreBundles");
     core.configureCore({ stateDir: cfg.stateDir, vault: cfg.vault });
     const { setPluginChange } = await import("./supervisor");
+    const { readSetting } = await import("./settings");
     core.startCorePublisher({
       stateDir: cfg.stateDir,
+      // Off until Carl turns it on (setting corePublish): then the tick does nothing at all.
+      on: () => readSetting("corePublish") === true,
       changes: () => supervisorOf(cfg.vault).changes(CORE_PART),
       land: (version, reason) => {
         const w = setPluginChange(cfg.vault, { plugin: CORE_PART, change: "keep", version, by: "gate", reason }, "gate");
@@ -326,7 +330,7 @@ async function main(): Promise<void> {
       })(),
       conversations: convLog(cfg.vault).rows().length,
       // The laptop app's core bundle (server/coreBundles.ts): which one the box offers, and its newest build.
-      core: (await import("./coreBundles")).coreHealth(cfg.stateDir, supervisorOf(cfg.vault).changes(CORE_PART)),
+      core: (await import("./coreBundles")).coreHealth(cfg.stateDir, supervisorOf(cfg.vault).changes(CORE_PART), (await import("./settings")).readSetting("corePublish") === true),
       sync: syncSummary(),
       engine: engine.error ? { error: engine.error } : engine.health(),
     }),
