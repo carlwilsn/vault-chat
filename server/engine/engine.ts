@@ -55,6 +55,7 @@ import { actTool, ACT_DESCRIPTION, ACT_SCHEMA } from "../actTool";
 import { timingTool, TIMING_DESCRIPTION, TIMING_SCHEMA } from "../timingTool";
 import { SERVER_REV as BOX_SERVER_REV } from "../config";
 import { boardGuard } from "../boardGuard";
+import { surfaceOff } from "../surfaces";
 import { openProject, OPEN_PROJECT_DESCRIPTION, OPEN_PROJECT_SCHEMA } from "../projectRoutes";
 import { startJobWith, jobStatus, jobList, jobStop, reapJobs, readJobs, type JobEnv } from "./jobs";
 import { formatWorker, formatWorkers } from "./claude/workers";
@@ -3026,6 +3027,8 @@ export class Engine {
           const explicitPush = a.push === true && scope?.byCarl === true && !!scope.workId;
           const needsYou = a.needsYou === true;
           await this.d.notify({ kind: "info", title: String(a.title ?? "vault-chat").slice(0, 90), body: String(a.body ?? "").slice(0, 2000), convId, why: needsYou ? "failed" : "finished", byCarl: scope ? scope.byCarl === true : !!this.live.get(convId)?.byCarl, trigger: "Notify", ...(explicitPush ? { explicitPush: true, workId: scope.workId } : {}) });
+          const phoneOff = explicitPush ? surfaceOff(vault, "phone") : null;
+          if (phoneOff) return text(`In Carl's alerts. No phone push: ${phoneOff}`);
           return text(explicitPush ? "In Carl's alerts. One event push requested for this work, subject to away/seen/dedup rules; no future alerts armed." : "In Carl's alerts. No explicit phone push requested (legacy automatic pushes apply only if Carl enabled them in Settings).");
         }
         case "BoardSend": {
@@ -3035,7 +3038,7 @@ export class Engine {
           const make = p.notifyScope?.boardMake;
           const ownedMake = make && a.make === make.id ? make : null;
           const origin = ownedMake?.interaction ?? interaction;
-          const no = boardGuard({ vault, request: origin.request, device: origin.device, asked: ownedMake?.asked === true || a.asked === true, tool: "BoardSend" });
+          const no = boardGuard({ vault, request: origin.request, device: origin.device, asked: ownedMake?.asked === true || a.asked === true, tool: "BoardSend" , off: surfaceOff(vault, "board") });
           if (no) return { success: false, contentItems: [{ type: "inputText", text: no }] };
           delete a.asked;
           const r = await sendEntry(vault, a, { conversation: convId, emit: (ev) => this.inboxEvent(ev) });
@@ -3050,7 +3053,7 @@ export class Engine {
           const request = String(a.request ?? "").trim();
           const title = String(a.title ?? "").trim();
           if (!request || !title) return text("BoardMake needs a request and a title.");
-          const no = boardGuard({ vault, request: interaction.request, device: interaction.device, asked: a.asked === true, tool: "BoardMake" });
+          const no = boardGuard({ vault, request: interaction.request, device: interaction.device, asked: a.asked === true, tool: "BoardMake" , off: surfaceOff(vault, "board") });
           if (no) return { success: false, contentItems: [{ type: "inputText", text: no }] };
           const entry = startMake(vault, { title, request }, { conversation: convId, emit: (ev) => this.inboxEvent(ev) });
           const t0 = Date.now();
@@ -3081,13 +3084,13 @@ export class Engine {
           // The board named by the agent, not by Carl, while he is elsewhere: refused with why (server/boardGuard.ts).
           const destination = !a.where || a.where === "here" ? interaction.device : String(a.where).trim();
           const toBoard = /^(board|ipad)$/i.test(destination ?? "");
-          const no = toBoard ? boardGuard({ vault, request: interaction.request, device: interaction.device, asked: a.asked === true, tool: "Show" }) : null;
+          const no = toBoard ? boardGuard({ vault, request: interaction.request, device: interaction.device, asked: a.asked === true, tool: "Show" , off: surfaceOff(vault, "board") }) : null;
           if (no) return { success: false, contentItems: [{ type: "inputText", text: no }] };
           if ((!a.where || a.where === "here") && interaction.device === "laptop" && /\b(?:not|away from)\s+(?:near\s+)?(?:at\s+)?my\s+(?:laptop|computer)\b/i.test(interaction.request)) {
             return { success: false, contentItems: [{ type: "inputText", text: "Nothing opened: Carl said he is away from his laptop. Keep the visual in the reply or use the destination he explicitly requested." }] };
           }
           delete a.asked;
-          const r = await show({ vault, device: interaction.device, emit: (ev) => this.d.broadcast?.(ev), sendBoard: (b) => sendEntry(vault, b, { conversation: convId, emit: (ev) => this.inboxEvent(ev) }), dev: (port) => this.devUrl(port) }, a);
+          const r = await show({ vault, device: interaction.device, off: (s) => surfaceOff(vault, s), emit: (ev) => this.d.broadcast?.(ev), sendBoard: (b) => sendEntry(vault, b, { conversation: convId, emit: (ev) => this.inboxEvent(ev) }), dev: (port) => this.devUrl(port) }, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "Layout": {

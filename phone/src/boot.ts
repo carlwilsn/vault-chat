@@ -1319,6 +1319,10 @@ export function boot(): void {
         const s: any = rec.type === "signal" ? rec.signal : {};
         // The plugin host follows the supervisor's records and app/chat-rows' kept choices.
         if (phoneHost && (s.type === "plugin.desired" || s.type === "plugin.state")) phoneHost.fold([rec]);
+        // The phone app itself switched off (server/surfaces.ts): the box's /phone now says so; go there.
+        if (s.type === "plugin.desired" && s.plugin === "app/phone" && s.state === "stopped" && !MOCK) {
+          fetch("/phone", { cache: "no-store" }).then((r) => r.text()).then((t) => { if (t.includes('data-el="surface-off"')) location.reload(); }).catch(() => {});
+        }
         if (s.type === "notif") { void refreshBadge(); if (page === "alerts") softReload(loadAlerts); }
         else if (s.type === "project") {
           void loadProjects();

@@ -6,7 +6,7 @@
 // Shared by the app and the box: no node imports.
 import { LIVE_SERVICES, serviceOfCap } from "./liveServices";
 import { parseLiveMount, parseLiveNeeds, type LiveMount } from "./liveBridge";
-import { APP_PLUGINS } from "./appPlugins";
+import { APP_PLUGINS, SURFACE_PLUGINS } from "./appPlugins";
 import { APP_PLUGIN_LIVE_DIR } from "./appPluginLive";
 import { VAULT_PLUGIN_DIR } from "./vaultPlugins";
 import { parsePinned } from "./pinnedApps";
@@ -55,9 +55,9 @@ export type CatalogAppPlugin = {
 
 export type Catalog = { services: CatalogService[]; plugins: CatalogPlugin[]; app?: CatalogAppPlugin[]; truncated?: boolean };
 
-/** The app's own plugins, in registry order. */
+/** The app's own plugins, in registry order, then the surfaces (the phone app, the iPad board). */
 export function catalogAppPlugins(copies: Readonly<Record<string, string[]>> = {}): CatalogAppPlugin[] {
-  return APP_PLUGINS.map((p) => ({ id: p.id, name: p.name, mount: p.mount, description: p.description, ...(copies[p.id]?.length ? { copies: copies[p.id] } : {}) }));
+  return [...APP_PLUGINS, ...SURFACE_PLUGINS].map((p) => ({ id: p.id, name: p.name, mount: p.mount, description: p.description, ...(copies[p.id]?.length ? { copies: copies[p.id] } : {}) }));
 }
 
 export const CATALOG_LIMITS = {

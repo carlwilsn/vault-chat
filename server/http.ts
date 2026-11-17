@@ -20,6 +20,7 @@ import { appCss } from "./appCss";
 import { liveGateway, liveManifest, liveRevoke, liveToken } from "./liveProxy";
 import { devicePlugins, pluginCatalog } from "./pluginCatalog";
 import { offDocument, pluginDesired, supervisorRoute } from "./supervisor";
+import { surfaceOff, surfaceOffPage } from "./surfaces";
 import { appPluginStateRoute } from "./pluginState";
 import { APP_STYLES_HREF, HTML_CSP, embedRelativeImages, inlineHtmlDocument, isHtmlSrc, joinPagePath, relativeImageRefs } from "../src/inlineHtml";
 import { createExternalMcpHandler, type ExternalContext } from "./mcp/external";
@@ -355,11 +356,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // The app's real stylesheet, for the .html pages the chat shows inline (src/inlineHtml.ts). Public: it is the app's CSS.
   if (path === APP_STYLES_HREF && method === "GET") return send(res, 200, "text/css; charset=utf-8", appCss());
   if (path === "/phone" && method === "GET") {
+    // Switched off (server/surfaces.ts): the one line instead of the app, and no token.
+    const off = surfaceOff(cfg.vault, "phone");
+    if (off) return send(res, 200, "text/html; charset=utf-8", surfaceOffPage("phone", off), { "Cache-Control": "no-store" });
     // voice_server.rs:276 resp_phone_shell — provisions the token cookie.
     return send(res, 200, "text/html; charset=utf-8", phonePage(), tokenCookie());
   }
   // The whiteboard's shell: the same model as the phone's (token-free page, the cookie provisioned).
-  if ((path === "/board" || path === "/board/") && method === "GET") return send(res, 200, "text/html; charset=utf-8", boardPage(), tokenCookie());
+  if ((path === "/board" || path === "/board/") && method === "GET") {
+    const off = surfaceOff(cfg.vault, "board");
+    if (off) return send(res, 200, "text/html; charset=utf-8", surfaceOffPage("board", off), { "Cache-Control": "no-store" });
+    return send(res, 200, "text/html; charset=utf-8", boardPage(), tokenCookie());
+  }
   if (path === "/board/manifest.webmanifest") return send(res, 200, "application/manifest+json", BOARD_MANIFEST);
   for (const [prefix, files] of [["/phone/", PHONE_APP], ["/board/", BOARD_APP]] as const) {
     if (path.startsWith(`${prefix}assets/`) && method === "GET") {
@@ -633,7 +641,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     const ictx: InboxCtx = { stateDir: cfg.stateDir, emit: (ev) => tagged(ev) };
     const [id = "", sub, n, what, ...rest] = path.slice("/api/v1/inbox/".length).split("/");
     let out: { status: number; body: unknown; file?: Buffer; mime?: string; headers?: Record<string, string> };
-    if (path === "/api/v1/inbox" && method === "GET") out = { status: 200, body: listEntries(vault, ictx) };
+    // The board switched off (server/surfaces.ts): its open inbox says so, and nothing new lands in it.
+    const boardOff = surfaceOff(vault, "board");
+    if (path === "/api/v1/inbox" && method === "GET") out = { status: 200, body: { ...listEntries(vault, ictx), ...(boardOff ? { off: boardOff } : {}) } };
+    else if (path === "/api/v1/inbox" && method === "POST" && boardOff) out = { status: 422, body: { ok: false, refusals: [boardOff] } };
     else if (path === "/api/v1/inbox" && method === "POST") {
       const r = await sendEntry(vault, await jsonBody(req), ictx);
       out = { status: r.ok ? 200 : 422, body: r };

@@ -80,6 +80,8 @@ describe("the catalog", () => {
       { id: "app/titlebar", name: "Title bar", mount: "panel", description: expect.stringContaining("title bar") },
       { id: "app/viewer", name: "Viewer", mount: "panel", description: expect.stringContaining("viewer") },
       { id: "app/context", name: "Context", mount: "panel", description: expect.stringContaining("shared context") },
+      { id: "app/phone", name: "Phone app", mount: "surface", description: expect.stringContaining("phone app") },
+      { id: "app/board", name: "iPad board", mount: "surface", description: expect.stringContaining("iPad whiteboard") },
     ]);
     expect(c.truncated).toBeUndefined();
     // A page added now is in the next answer: the vault is read each time.

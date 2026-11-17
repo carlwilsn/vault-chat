@@ -48,6 +48,8 @@ function partsLine(parts: { kind: string; n?: number }[], full?: Part[]): string
 // ---------------------------------------------------------------- the live list and the badge
 
 let entries: EntrySummary[] = [];
+/** The board switched off (the box's line), or null. */
+let offLine: string | null = null;
 const listeners = new Set<() => void>();
 let started = false;
 let refreshT = 0;
@@ -100,6 +102,7 @@ async function refresh(): Promise<void> {
   try {
     const r = await api.listInbox();
     entries = r.entries;
+    offLine = typeof r.off === "string" && r.off ? r.off : null;
   } catch {
     /* offline: keep what we had */
   }
@@ -272,6 +275,7 @@ export function openInbox(root: HTMLElement, host: InboxHost): () => void {
     const was = sheet.querySelector<HTMLElement>("[data-scroll]")?.scrollTop ?? 0;
     sheet.innerHTML = `${header("", "Inbox")}
       <div data-scroll class="flex-1 space-y-2 overflow-y-auto overscroll-contain px-3 pb-4">
+        ${offLine ? `<div data-el="surface-off" class="rounded-2xl bg-sys-fill/15 px-3.5 py-3 text-footnote text-sys-secondary">${esc(offLine.replace(/, so nothing was sent to it\..*$/, "."))} Nothing new lands here until it is turned on.</div>` : ""}
         ${cards || `<div class="grid h-full place-items-center px-8 text-center"><div><div class="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-sys-fill/15 text-sys-secondary/60">${icon("tray", 28)}</div><div class="text-subhead font-semibold text-sys-label">Nothing here yet</div><div class="mt-1 text-footnote text-sys-secondary/60">Ask the agent for a problem set, a graph or pages of a PDF; they land here.</div></div></div>`}
       </div>`;
     if (was) (sheet.querySelector("[data-scroll]") as HTMLElement).scrollTop = was;

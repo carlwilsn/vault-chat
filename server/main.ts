@@ -195,9 +195,12 @@ async function main(): Promise<void> {
   const { configurePushGate, ACTIVITY_MS } = await import("./pushGate");
   const { readActivity } = await import("./activity");
   const { legacyPushEnabled } = await import("./pushPreferences");
+  const { surfaceOff } = await import("./surfaces");
   const gate = configurePushGate({
     legacyEnabled: legacyPushEnabled,
     send: (title, body, url, tag) => sendPush(title, body, url, tag),
+    // The phone app switched off (server/surfaces.ts): nothing buzzes it.
+    phoneOff: (vault) => surfaceOff(vault, "phone") ?? surfaceOff(cfg.vault, "phone"),
     attention: (vault, now) => {
       if (voiceLiveIn(vault, now)) return { looking: true, where: "a voice call" };
       const mine = readActivity(vault, now, ACTIVITY_MS).filter((e) => e.device || e.kind === "voice");

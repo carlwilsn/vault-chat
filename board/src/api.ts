@@ -150,7 +150,8 @@ export const renameBoard = (slug: string, name: string) => call<{ ok: true; name
 export const deleteBoard = (slug: string) => call<{ ok: true }>(`/api/v1/boards/${enc(slug)}/delete`, { method: "POST", body: "{}" });
 
 // ---- the inbox (board/INBOX.md, server/inbox.ts)
-export const listInbox = () => call<{ entries: EntrySummary[]; unread: number }>("/api/v1/inbox");
+/** `off`: the board is switched off (server/surfaces.ts): the line to show instead of new entries. */
+export const listInbox = () => call<{ entries: EntrySummary[]; unread: number; off?: string }>("/api/v1/inbox");
 export const getEntry = (id: string) => call<Entry>(`/api/v1/inbox/${enc(id)}`);
 export const markRead = (id: string) => call<{ ok: true }>(`/api/v1/inbox/${enc(id)}/read`, { method: "POST", body: "{}" });
 export const markAdded = (id: string, part: number, board: string, items: string[]) =>

@@ -18,7 +18,7 @@ export const pluginToolSpecs = [
     type: "function" as const,
     name: PLUGIN_TOOL,
     description:
-      "Turn a plugin (a vault .html page, or a part of the app that is a plugin: the Notes panel, \"notes\") off or on everywhere it shows (the viewer, chats, the phone, its own link, the app's window), or from a later time (an end date), set its budget, or list what each plugin is. " +
+      "Turn a plugin (a vault .html page, or a part of the app that is a plugin: the Notes panel, \"notes\"; or a whole surface: the phone app, \"phone\", the iPad board, \"board\") off or on everywhere it shows (the viewer, chats, the phone, its own link, the app's window), or from a later time (an end date), set its budget, or list what each plugin is. " +
       "Off: it is taken down in every view and the box gives it nothing; on: it comes back. action: status | disable | enable | budget. plugin: its vault path or its file name (\"html-lab\"), or the app part's name (\"notes\").",
     inputSchema: {
       type: "object",

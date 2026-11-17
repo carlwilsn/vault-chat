@@ -131,6 +131,8 @@ export type ShowDeps = {
   vault: string;
   /** Actual talking surface from this request, never inferred from network presence. */
   device?: Device | null;
+  /** The phone app or the iPad board is switched off (server/surfaces.ts surfaceOff): its line, else null. */
+  off?: (surface: "phone" | "board") => string | null;
   /** A vault-level signal on the feed (/poll). */
   emit: (ev: Record<string, unknown>) => void;
   /** The validated inbox send (server/inbox.ts sendEntry, with this conversation and the inbox events). */
@@ -218,6 +220,8 @@ async function run(d: ShowDeps, a: Record<string, unknown>): Promise<ShowResult>
   } else if (DEVICES.includes(asked as Device)) where = asked as Device;
   else if (asked === "ipad") where = "board";
   else return fail(`Error: where is "laptop", "board", "phone" or "here", not "${asked}".`);
+  const off = where !== "laptop" ? d.off?.(where) : null;
+  if (off) return fail(`Not shown on the ${DEVICE_NAME[where]}: ${off}`, where);
 
   // A pane of the laptop's split screen.
   let pane: "left" | "right" | undefined;

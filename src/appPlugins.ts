@@ -11,8 +11,8 @@ export type AppPluginInfo = {
   id: string;
   /** What Carl calls it. */
   name: string;
-  /** Where it mounts: a panel of the app's window. */
-  mount: "panel";
+  /** Where it mounts: a panel of the app's window, or a whole surface (the phone app, the iPad board). */
+  mount: "panel" | "surface";
   description: string;
   /** Words that name it (lower case), for the agent's Plugins tool ("disable notes"). */
   words: readonly string[];
@@ -121,9 +121,38 @@ export const CONTEXT_PLUGIN: AppPluginInfo = {
 
 export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN, FILETREE_PLUGIN, TITLEBAR_PLUGIN, VIEWER_PLUGIN, CONTEXT_PLUGIN];
 
-/** The app plugin a word names (its id, its name or one of its words), or null. */
+// The surfaces (Track 2: the phone and the iPad are hosts, apps Carl can switch off). A `plugin.desired` record for one
+// turns the whole app off or on live, no release: off, the box serves the one "turned off" line where its app would
+// open (/phone, /board), pushes to the phone and sends to it (Show, BoardSend, BoardMake) stop and say so, and an app
+// already open goes to that line (server/surfaces.ts).
+
+export const PHONE_SURFACE_ID = "app/phone";
+
+/** The phone app (phone/): chats, alerts and pushes on the phone, and the vault plugins it hosts. */
+export const PHONE_SURFACE: AppPluginInfo = {
+  id: PHONE_SURFACE_ID,
+  name: "Phone app",
+  mount: "surface",
+  description: "The phone app: chats, alerts, Show on the phone and phone pushes, and the vault plugins it hosts. Off: /phone shows that it is turned off, no push or Show reaches the phone.",
+  words: ["phone", "phone app", "the phone", "the phone app", "iphone", "mobile", "mobile app", "phone surface"],
+};
+
+export const BOARD_SURFACE_ID = "app/board";
+
+/** The iPad whiteboard (board/): its boards and the inbox the agent sends to. */
+export const BOARD_SURFACE: AppPluginInfo = {
+  id: BOARD_SURFACE_ID,
+  name: "iPad board",
+  mount: "surface",
+  description: "The iPad whiteboard app: Carl's boards and the inbox BoardSend, BoardMake and Show \"board\" send to. Off: /board shows that it is turned off and nothing is sent to its inbox.",
+  words: ["board", "ipad", "ipad board", "the board", "the ipad", "whiteboard", "ipad app", "board app", "whiteboard app", "tablet", "ipad whiteboard", "board surface"],
+};
+
+export const SURFACE_PLUGINS: readonly AppPluginInfo[] = [PHONE_SURFACE, BOARD_SURFACE];
+
+/** The app plugin or surface a word names (its id, its name or one of its words), or null. */
 export function appPluginNamed(word: string): AppPluginInfo | null {
   const w = String(word ?? "").trim().toLowerCase().replace(/\\/g, "/");
   if (!w) return null;
-  return APP_PLUGINS.find((p) => p.id === w || p.name.toLowerCase() === w || p.words.includes(w)) ?? null;
+  return [...APP_PLUGINS, ...SURFACE_PLUGINS].find((p) => p.id === w || p.name.toLowerCase() === w || p.words.includes(w)) ?? null;
 }

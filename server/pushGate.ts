@@ -148,6 +148,8 @@ export type GateDeps = {
   attention?: (vault: string, now: number) => Attention;
   now?: () => number;
   log?: (line: string) => void;
+  /** The phone app is switched off (server/surfaces.ts): no push goes to it, held ones included. */
+  phoneOff?: (vault: string) => string | null;
 };
 
 type Held = { o: PushOffer; at: number; key: string };
@@ -173,6 +175,14 @@ export class PushGate {
     return this.d.attention?.(vault, now) ?? { looking: false, where: null };
   }
 
+  private phoneOff(o: PushOffer): boolean {
+    try {
+      return !!this.d.phoneOff?.(o.vault);
+    } catch {
+      return false;
+    }
+  }
+
   private authorized(o: PushOffer): boolean {
     return this.d.legacyEnabled?.() === true || (o.explicitPush === true && o.trigger === "Notify" && o.why !== "ask" && o.byCarl === true && !!o.workId && !!o.eventId);
   }
@@ -196,6 +206,10 @@ export class PushGate {
 
   /** Offer a push: it goes out now, waits for Carl to leave, or is dropped. Resolves to what was done. */
   async offer(o: PushOffer): Promise<Decision & { sent?: number }> {
+    if (this.phoneOff(o)) {
+      this.line("dropped", o, "the phone app is turned off");
+      return { act: "drop", reason: "the phone app is turned off" };
+    }
     if (!this.authorized(o)) {
       this.line("dropped", o, "phone push not requested; legacy automatic push is off");
       return { act: "drop", reason: "phone push not requested" };
@@ -232,7 +246,9 @@ export class PushGate {
       const o = h.o;
       // He opened that conversation since it was held: he has seen it.
       const seen = !!o.convId && lastViewed(o.vault, o.convId) > h.at;
-      const dec = !this.authorized(o)
+      const dec = this.phoneOff(o)
+        ? { act: "drop" as const, reason: "the phone app is turned off" }
+        : !this.authorized(o)
         ? { act: "drop" as const, reason: "legacy automatic push turned off" }
         : seen
         ? { act: "drop" as const, reason: "Carl opened it" }

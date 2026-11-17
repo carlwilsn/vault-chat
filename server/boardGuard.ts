@@ -26,6 +26,8 @@ export type BoardGuardInput = {
   tool: "BoardSend" | "BoardMake" | "Show";
   /** Authoritative originating interaction, not a viewer/poll or another live call. */
   device?: Device | null;
+  /** The board is switched off (server/surfaces.ts surfaceOff's line): refused whatever was asked. */
+  off?: string | null;
 };
 
 /**
@@ -33,6 +35,7 @@ export type BoardGuardInput = {
  * A string: why not, and what to do instead — the tool's result, nothing sent.
  */
 export function boardGuard(o: BoardGuardInput): string | null {
+  if (o.off) return `Not sent to the board: ${o.off} ${o.tool === "BoardMake" ? "Nothing was made. " : ""}Show it where Carl is talking instead (in your reply, or Show {path} "here").`;
   if (o.asked === true) return null;
   if (asksForBoard(o.request)) return null;
   if (o.device === "board") return null;
