@@ -6,7 +6,8 @@
 // typing or moving the mouse, and acks over POST /api/v1/show/<id>/ack. The result is only that ack, or an honest
 // "offline" / "didn't answer" / "refused".
 import { randomBytes } from "node:crypto";
-import { feedLive, waitAck, type Ack } from "./show";
+import { waitAck, type Ack } from "./show";
+import { controlDown, noteAnswer, unansweredNote } from "./deviceLink";
 import { checkSteps, MAX_SHOTS, MAX_STEPS } from "../src/driveSteps";
 import { checkScreenImage, type ScreenImage } from "./screenTool";
 
@@ -47,18 +48,21 @@ export async function askLaptop(d: { emit: DriveDeps["emit"] }, type: string, fi
   const id = `${type}-${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
   const got = waitAck(id, ms);
   d.emit({ type, id, to: "laptop", ...fields });
-  return { id, ack: await got };
+  const ack = await got;
+  noteAnswer("laptop", type, !!ack);
+  return { id, ack };
 }
 
 export async function driveTool(d: DriveDeps, args: Record<string, unknown>): Promise<DriveToolResult> {
   const steps = checkSteps(args.steps);
   if (typeof steps === "string") return { ok: false, text: `Bad steps: ${steps}. Nothing was run.`, images: [] };
-  if (!feedLive(d.vault, "laptop")) return { ok: false, text: "The laptop isn't online (the vault-chat app isn't open and connected on it), so nothing was run there. Say so; don't guess.", images: [] };
+  const down = controlDown("laptop");
+  if (down) return { ok: false, text: `${down} So nothing was run there. Say so; don't guess.`, images: [] };
   const run = laptopRunArgs(args);
   // Opening the Drive copy of the app takes a while the first time (it loads the whole app).
   const ms = d.ackMs ?? run.timeoutMs + 75_000;
   const { ack } = await askLaptop(d, "drive", { steps, ...run }, ms);
-  if (!ack) return { ok: false, text: `Sent the steps to the laptop, but it did not answer within ${Math.round(ms / 1000)} s (an app from before Drive: check LaptopBuild; or it is busy). Nothing is known to have run.`, images: [] };
+  if (!ack) return { ok: false, text: `Sent the steps to the laptop, but it did not answer within ${Math.round(ms / 1000)} s (an app from before Drive: check LaptopBuild; or it is busy). Nothing is known to have run.${unansweredNote("laptop")}`, images: [] };
   const data = (ack.data ?? {}) as AckData;
   if (data.refused) return { ok: false, text: `Refused by the laptop: ${ack.error ?? "Carl is using it"}`, images: [] };
   const images: ScreenImage[] = [];

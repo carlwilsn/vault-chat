@@ -853,6 +853,11 @@ const MAIN = "main";
  *  has open. Every other signal (a file or the vault changed, the inbox, a Show) is about one vault's files and reaches
  *  only the surfaces on that vault. */
 const CONVERSATION_SIGNALS = new Set(["follow", "project", "notif", "setting"]);
+/** The agent's requests to a device app (Act, Screen, Layout, PluginRead / PluginAct, LaptopBuild, Drive, Timing:
+ *  server/deviceLink.ts): about the app's window, not a vault, so every vault's feed carries them whatever vault the
+ *  app has open (each names its device in `to` and has its own id; the app acks it once). Before, a vault switch in
+ *  the app left a chat in the other vault sending them nowhere. Show stays the open vault's (its paths are a vault's). */
+export const CONTROL_SIGNALS = new Set(["act", "capture", "layout", "plugin", "build", "drive", "timing"]);
 
 /**
  * The box's conversations, whatever vault is open (Carl, 2026-10-29: "conversations never change when the workspace
@@ -882,7 +887,7 @@ export class GlobalFeed {
     if (r.conv !== null) return this.shows(log, r.conv);
     if (log === this.here()) return true;
     const t = (r as { signal?: { type?: unknown } }).signal?.type;
-    return typeof t === "string" && CONVERSATION_SIGNALS.has(t);
+    return typeof t === "string" && (CONVERSATION_SIGNALS.has(t) || CONTROL_SIGNALS.has(t));
   }
   /** The log holding conversation `id` (Main: the main vault's), or null. */
   owner(id: string): ConvLog | null {

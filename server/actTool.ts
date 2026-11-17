@@ -7,18 +7,18 @@
 // step is a record in <state>/logs/act.jsonl (what the agent did to his app, when, from which chat).
 import { join } from "node:path";
 import { RotatingLog } from "./boxLogs";
-import { feedLive } from "./show";
+import { controlDown, unansweredNote } from "./deviceLink";
 import { askLaptop } from "./driveTool";
 import { checkSteps, MAX_SHOTS, MAX_STEPS, stepAction, type Step } from "../src/driveSteps";
 import { checkScreenImage, type ScreenImage } from "./screenTool";
 
 export const ACT_DESCRIPTION =
   "Do things in Carl's REAL laptop app window (the Windows desktop app he is looking at): click, type, press keys, scroll, wait for something, and get back each step's outcome, the app's errors, its visible text and a picture of the window after. " +
-  "Prefer the app's own offers when they exist: PluginAct for a plugin's actions (PluginRead lists them), Layout to arrange panes and panels, Show to open a file, Settings for settings; use Act only for what none of those covers. For checking a change without touching his window, use Drive (a hidden copy). " +
+  "Prefer the app's own offers when they exist: PluginAct for a plugin's actions (PluginRead lists them), Layout to arrange panes and panels, Show to open a file, Settings for settings; use Act only for what none of those covers. To switch chats use Layout {action: \"openChat\", id} (a chat's id, \"main\", or \"project-<slug>\"), not clicks: in the chat list a place's bar (Main or a project) only shows or hides its chats, it never opens a chat. For checking a change without touching his window, use Drive (a hidden copy). " +
   "steps, in order, one action each; a target is a CSS selector \"css\", {\"text\": \"Save\"} (visible text, aria-label or title) or {\"role\": \"button\", \"name\"?: \"Save\"} (ARIA role and accessible name): {\"click\": target}, {\"hover\": target}, {\"type\": \"hello\", \"into\"?: target} (into the focused field otherwise), {\"press\": \"Control+K\"} (Enter, Escape, Tab, Backspace, Arrow keys, F1-F12, letters, with Control/Shift/Alt), {\"wait\": ms}, {\"waitFor\": target, \"timeout\"?: ms} (fails if it never appears), {\"scroll\": px, \"in\"?: target}, {\"shot\": \"name\"} (at most 4). The first failing step stops the run. " +
   "The steps are events inside the app's own window only: they can't reach other programs, the desktop or the OS. Real effects: a click on Send sends. " +
   "It refuses while Carl is using the app (a key, click, scroll or mouse movement in it within idleSeconds, default 30) and stops at once if he starts; pass force only when he asked for it now (it still stops when he types, clicks or scrolls). " +
-  "Offline (app not open), no answer (an app from before Act: check LaptopBuild) and refusals are said as such; claim only what the outcomes, text and picture show.";
+  "A control link that is down (the app closed, asleep or not following the feed) says since when and why, no answer (an app from before Act: check LaptopBuild) and refusals are said as such; claim only what the outcomes, text and picture show.";
 
 export const ACT_SCHEMA = {
   type: "object",
@@ -62,9 +62,10 @@ export async function actTool(d: ActDeps, args: Record<string, unknown>): Promis
   };
   const steps = checkSteps(args.steps);
   if (typeof steps === "string") return { ok: false, text: `Bad steps: ${steps}. Nothing was done.`, images: [] };
-  if (!feedLive(d.vault, "laptop")) {
-    record({ kind: "run", outcome: "offline", steps: steps.length });
-    return { ok: false, text: "The laptop isn't online (the vault-chat app isn't open and connected on it), so nothing was done there. Say so; don't guess.", images: [] };
+  const down = controlDown("laptop");
+  if (down) {
+    record({ kind: "run", outcome: "offline", steps: steps.length, why: down.slice(0, 300) });
+    return { ok: false, text: `${down} So nothing was done there. Say so; don't guess.`, images: [] };
   }
   const idleSec = typeof args.idleSeconds === "number" && args.idleSeconds >= 0 ? Math.min(args.idleSeconds, 3600) : 30;
   const timeoutSec = typeof args.timeoutSec === "number" && args.timeoutSec > 0 ? Math.min(args.timeoutSec, 180) : 60;
@@ -73,7 +74,7 @@ export async function actTool(d: ActDeps, args: Record<string, unknown>): Promis
   const { ack } = await askLaptop(d, "act", { steps, force, idleMs: Math.round(idleSec * 1000), timeoutMs: Math.round(timeoutSec * 1000) }, ms);
   if (!ack) {
     record({ kind: "run", outcome: "no-answer", steps: steps.length, force });
-    return { ok: false, text: `Sent the steps to the laptop, but it did not answer within ${Math.round(ms / 1000)} s (an app from before Act: check LaptopBuild; or it is busy). Nothing is known to have been done.`, images: [] };
+    return { ok: false, text: `Sent the steps to the laptop, but it did not answer within ${Math.round(ms / 1000)} s (an app from before Act: check LaptopBuild; or it is busy). Nothing is known to have been done.${unansweredNote("laptop")}`, images: [] };
   }
   const data = (ack.data ?? {}) as AckData;
   if (data.refused) {

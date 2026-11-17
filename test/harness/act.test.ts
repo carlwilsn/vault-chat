@@ -38,6 +38,7 @@ const { useStore } = await import("../../src/store.ts");
 const bc = await import("../../src/boxChat.ts");
 const { actTool } = await import("../../server/actTool.ts");
 const { resetPresence } = await import("../../server/show.ts");
+const { controlLive } = await import("../../server/deviceLink.ts");
 const { setActRunner } = await import("../../src/actOnLaptop.ts");
 const { setCaptureDriver } = await import("../../src/captureOnLaptop.ts");
 const { noteInput, _resetUserActivity, _inputListenerCount } = await import("../../src/userActivity.ts");
@@ -122,12 +123,35 @@ after(async () => {
 
 test("offline and bad steps: nothing is sent", async () => {
   const before = sent.length;
-  let r = await Act({ steps: [{ click: "#x" }] }, { vault: "/no-such-vault" });
+  resetPresence(); // no poll from the laptop since: its control link is down (whatever vault it follows)
+  let r = await Act({ steps: [{ click: "#x" }] });
   assert.equal(r.ok, false);
   assert.match(r.text, /laptop isn't online/);
   r = await Act({ steps: [{ click: { role: "" } }] });
   assert.match(r.text, /Bad steps: step 1: click needs a CSS selector, \{text\} or \{role, name\?\}/);
   assert.equal(sent.length, before);
+  await waitFor("the laptop polls again", () => controlLive("laptop"));
+});
+
+test("a chat in another vault than the one the app has open still reaches it (the control link is the device's, 2026-11-17)", async () => {
+  _resetUserActivity();
+  run = async (s) => allOk(s);
+  const r = await Act({ steps: [{ click: "#x" }], force: true }, { vault: "/a-vault-the-app-does-not-have-open" });
+  assert.equal(r.ok, true, r.text);
+  assert.equal(sent.at(-1)!.type, "act");
+});
+
+test("a step that never settles and ignores the stop can't wedge Act: cut off after the time limit, and the next run is answered", async () => {
+  _resetUserActivity();
+  run = () => new Promise(() => {});
+  const t0 = Date.now();
+  const r = await Act({ steps: [{ click: "#x" }], force: true, timeoutSec: 0.3 });
+  assert.equal(r.ok, false);
+  assert.match(r.text, /Stopped: the 0 s time limit \(a step did not stop: cut off\)/);
+  assert.ok(Date.now() - t0 < 7000, "answered soon after the limit, not at the box's ack timeout");
+  run = async (s) => allOk(s);
+  const next = await Act({ steps: [{ click: "#y" }], force: true });
+  assert.equal(next.ok, true, next.text);
 });
 
 test("round trip: the steps run in Carl's window; outcomes, text and a picture of the window after come back, each step logged", async () => {

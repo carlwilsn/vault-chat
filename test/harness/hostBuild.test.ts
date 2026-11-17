@@ -36,6 +36,7 @@ const bc = await import("../../src/boxChat.ts");
 const { laptopBuildTool, recordHostBuild, lastHostBuild, readWatches, cleanHostBuild } = await import("../../server/hostBuild.ts");
 const { readWakes } = await import("../../server/engine/wakes.ts");
 const { resetPresence } = await import("../../server/show.ts");
+const { controlLive } = await import("../../server/deviceLink.ts");
 const { reportBuildAtLaunch } = await import("../../src/hostBuild.ts");
 const S = () => useStore.getState();
 
@@ -68,12 +69,14 @@ after(async () => {
 
 test("offline: the laptop isn't asked, and the tool says there is no report yet", async () => {
   const before = sent.length;
-  const r = await Tool({}, { vault: "/no-such-vault" });
+  resetPresence(); // no poll from the laptop since: its control link is down (whatever vault it follows)
+  const r = await Tool({});
   assert.equal(r.ok, false);
   assert.match(r.text, /laptop isn't online/);
   assert.match(r.text, /No launch report from the laptop yet/);
   assert.match(r.text, /Box server: v0\.7\.30 \(aaaaaaaaaaaa\)/);
   assert.equal(sent.length, before, "nothing sent to a laptop that isn't there");
+  await waitFor("the laptop polls again", () => controlLive("laptop"));
 });
 
 test("live: the laptop's box chat answers with its build", async () => {

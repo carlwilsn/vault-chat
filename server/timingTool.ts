@@ -10,7 +10,7 @@
 import { readFileSync } from "node:fs";
 // @ts-expect-error plain .mjs script, no declarations
 import { summarize, table, compare, compareTable, flatten, dedupe, REQUIRED } from "../scripts/perf-baseline.mjs";
-import { feedLive } from "./show";
+import { controlDown } from "./deviceLink";
 import { readLaptopPerf } from "./laptopPerf";
 import { lastHostBuild } from "./hostBuild";
 import { askLaptop, laptopRunArgs } from "./driveTool";
@@ -53,7 +53,7 @@ export async function timingTool(d: TimingDeps, args: Record<string, unknown>): 
 
   // Live, in the app.
   if (args.live === false) lines.push("Live: skipped (live: false).");
-  else if (!feedLive(d.vault, "laptop")) lines.push("Live: the laptop isn't online (the app isn't open and connected), so nothing was measured there now.");
+  else if (controlDown("laptop")) lines.push(`Live: ${controlDown("laptop")} So nothing was measured there now.`);
   else {
     const run = laptopRunArgs(args, 120, 240);
     const ms = d.ackMs ?? run.timeoutMs + 75_000;

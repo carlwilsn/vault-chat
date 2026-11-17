@@ -48,6 +48,7 @@ import { addAsset, assetFile, copyAssets, createBoard, deleteBoard, getBoard, ge
 import { addToBoard, getEntry, listEntries, markAdded, markRead, partFile, sendEntry, type InboxCtx } from "./inbox";
 import { boxLogs } from "./boxLogs";
 import { ackShow, feedOpened } from "./show";
+import { chatSeen, linkStates } from "./deviceLink";
 import { hostBuildHistory, lastHostBuild, recordHostBuild } from "./hostBuild";
 import { noteAttention, pushGate } from "./pushGate";
 import { boardLogPost, boxDiag } from "./diag";
@@ -402,7 +403,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     // terminal button opens an SSH shell there); null when this box has no such vault.
     const want = url.searchParams.get("vault") || String(req.headers["x-vc-vault"] ?? "") || null;
     const sc = hooks.vault ? hooks.vault(want) : !want || want === cfg.vaultName ? { path: cfg.vault } : null;
-    return json(res, 200, { ...(await hooks.health()), vaultPath: sc?.path ?? null });
+    // `links`: each device app's control link (server/deviceLink.ts): up/down since when and why, the chat link, unanswered requests.
+    return json(res, 200, { ...(await hooks.health()), vaultPath: sc?.path ?? null, links: linkStates() });
   }
   if (path === "/api/v1/sync" && method === "GET") return json(res, 200, hooks.syncStatus());
   if (path === "/api/v1/alert" && method === "POST") {
@@ -967,6 +969,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
 function logIntent(stateDir: string, vault: string, req: IncomingMessage, b: any, out: any, ms: number): void {
   const ua = String(req.headers["user-agent"] ?? "");
   const client = typeof b?.client === "string" && b.client ? b.client.slice(0, 20) : /iPad|iPhone|Android/.test(ua) ? "phone" : null;
+  // Carl's chat link from that device is up (server/deviceLink.ts: tools say it beside a control link that is down).
+  if (!out?.error) chatSeen(client);
   const result = out && typeof out === "object" ? ["steered", "queued", "answered", "duplicate", "unqueued"].filter((k) => out[k]) : [];
   boxLogs(stateDir).turns.append({
     at: new Date().toISOString(),

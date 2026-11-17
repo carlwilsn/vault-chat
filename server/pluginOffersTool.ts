@@ -23,7 +23,8 @@
 import { randomBytes } from "node:crypto";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { feedLive, waitAck, type Device } from "./show";
+import { waitAck } from "./show";
+import { controlDown, controlLive, noteAnswer } from "./deviceLink";
 import { awaitPluginRecords, pagesWithRecords, readPluginRecords, type PluginActivity } from "./pluginState";
 import { vaultFor, type NamedVault } from "./vaultRefs";
 import { parseLiveNeeds } from "../src/liveBridge";
@@ -123,23 +124,21 @@ function hostsFor(d: PluginOfferDeps, device: unknown, all: boolean): { hosts: H
     if (!(HOSTS as readonly string[]).includes(w)) return { error: `device is "laptop" or "phone", not "${String(device)}". Nothing was asked.` };
     return { hosts: [w as Host] };
   }
-  const live = HOSTS.filter((h) => feedLive(d.vault, h as Device));
+  const live = HOSTS.filter((h) => controlLive(h));
   if (!live.length) return { hosts: ["laptop"] };
   return { hosts: all ? live : [live[0]!] };
 }
 
 async function ask(d: PluginOfferDeps, host: Host, body: Record<string, unknown>): Promise<Asked> {
-  if (!feedLive(d.vault, host as Device)) {
-    return host === "laptop"
-      ? { ok: false, text: "The laptop isn't online (the vault-chat app isn't open and connected on it), and that is where plugins are mounted, so none can be read or run now. Say so; don't guess." }
-      : { ok: false, text: "The phone isn't online (the vault-chat phone app isn't open on it), so its plugins can't be read or run now. Say so; don't guess." };
-  }
+  const down = controlDown(host);
+  if (down) return { ok: false, text: `${down} Its plugins are mounted there, so none can be read or run now. Say so; don't guess.` };
   const where = HOST_NAME[host];
   const id = `plugin-${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
   const ms = d.ackMs ?? 20_000;
   const got = waitAck(id, ms);
   d.emit({ type: "plugin", id, to: host, ...body });
   const ack = await got;
+  noteAnswer(host, "plugin", !!ack);
   if (!ack) return { ok: false, text: `Asked the ${where}, but it did not answer within ${Math.round(ms / 1000)} s (an older app without plugin offers, or it is busy). Nothing is confirmed.` };
   const raw = (ack.data as { answer?: unknown } | undefined)?.answer;
   if (typeof raw !== "string") return { ok: false, text: `The ${where} answered without a plugin answer${ack.error ? `: ${ack.error}` : ""} (an older app?). Nothing is confirmed.` };
@@ -227,7 +226,7 @@ export async function pluginOfferTool(d: PluginOfferDeps, name: string, a: Recor
     if (tv && "error" in tv) return { ok: false, text: `Error: ${tv.error}. Nothing was read.` };
     const pageId = tv ? pageNamed(tv.vault, tv.path) : null;
     const host = to.hosts[0]!;
-    const online = feedLive(d.vault, host as Device);
+    const online = controlLive(host);
     const wait = Number(a.wait);
     if (pageId && tv && Number.isFinite(wait) && wait > 0) {
       const after = Number.isFinite(Number(a.after)) ? Math.trunc(Number(a.after)) : readPluginRecords(tv.vault, pageId).seq;

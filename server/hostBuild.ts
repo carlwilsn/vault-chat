@@ -16,7 +16,8 @@ import { dirname, join } from "node:path";
 import { RotatingLog } from "./boxLogs";
 import { renameRetry } from "./atomic";
 import { addWake } from "./engine/wakes";
-import { feedLive, waitAck } from "./show";
+import { waitAck } from "./show";
+import { controlDown, noteAnswer, unansweredNote } from "./deviceLink";
 
 export const HOSTS = ["laptop"] as const;
 export type Host = (typeof HOSTS)[number];
@@ -231,16 +232,18 @@ export async function laptopBuildTool(d: LaptopBuildDeps, args: Record<string, u
   if (action !== "get") return { ok: false, text: `Unknown action "${action}". Use get or wake.` };
   const lines: string[] = [];
   let ok = false;
-  if (!feedLive(d.vault, "laptop")) {
-    lines.push("Live: the laptop isn't online (the app isn't open and connected), so it couldn't be asked now.");
+  const down = controlDown("laptop");
+  if (down) {
+    lines.push(`Live: ${down} So it couldn't be asked now.`);
   } else {
     const id = `build-${now.toString(36)}-${randomBytes(4).toString("hex")}`;
     const ms = d.ackMs ?? 15_000;
     const got = waitAck(id, ms);
     d.emit({ type: "build", id, to: "laptop" });
     const ack = await got;
+    noteAnswer("laptop", "build", !!ack);
     const live = ack?.ok ? cleanHostBuild(ack.data) : null;
-    if (!ack) lines.push(`Live: asked the laptop, but it did not answer within ${Math.round(ms / 1000)} s (an app from before this tool, or busy).`);
+    if (!ack) lines.push(`Live: asked the laptop, but it did not answer within ${Math.round(ms / 1000)} s (an app from before this tool, or busy).${unansweredNote("laptop")}`);
     else if (!live || typeof live === "string") lines.push(`Live: the laptop answered without a build${ack.error ? `: ${ack.error}` : typeof live === "string" ? ` (${live})` : ""}.`);
     else {
       ok = true;

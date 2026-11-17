@@ -36,8 +36,20 @@ export const ACT_DEFAULT_IDLE_MS = 30_000;
 const fmtIdle = (ms: number) => (ms < 90_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60_000)} min`);
 const how = (kind: string) => (kind === "keydown" ? "typing" : kind === "pointermove" ? "moving the mouse" : kind === "wheel" ? "scrolling" : "clicking");
 
+/** A picture of the window gets this long (drawing a window that never settles must not hold the run, src/screenCapture.ts). */
+export const ACT_CAPTURE_MS = 15_000;
+/** After the time limit, a step that ignores the stop gets this long before the run is answered without it. */
+export const ACT_STOP_GRACE_MS = 3_000;
+
+/** `p`, or a rejection with `why` after `ms` (the timer never outlives it). */
+function within<T>(p: Promise<T>, ms: number, why: string): Promise<T> {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([p, new Promise<T>((_, rej) => (t = setTimeout(() => rej(new Error(why)), ms)))]).finally(() => clearTimeout(t));
+}
+
 let queue: Promise<unknown> = Promise.resolve();
-/** One run at a time: a second request waits for the first. */
+/** One run at a time: a second request waits for the first. Every run is time-boxed (its steps, each picture, the
+ *  picture after), so a hung step can never hold the queue and leave every later Act unanswered. */
 export function actOnLaptop(sig: ActSignal): Promise<ActAck> {
   const next = queue.then(() => runAct(sig), () => runAct(sig));
   queue = next.catch(() => {});
@@ -45,7 +57,7 @@ export function actOnLaptop(sig: ActSignal): Promise<ActAck> {
 }
 
 async function shot(name: string): Promise<Shot> {
-  const c = await captureOnLaptop({ type: "capture", id: `act-shot-${name}`, target: "window", maxWidth: 1600 });
+  const c = await within(captureOnLaptop({ type: "capture", id: `act-shot-${name}`, target: "window", maxWidth: 1600 }), ACT_CAPTURE_MS, `drawing the window took over ${ACT_CAPTURE_MS / 1000} s`);
   if (!c.ok || !c.image) throw new Error(`couldn't draw the window: ${c.error ?? "no picture"}`);
   return { name, ...c.image };
 }
@@ -73,7 +85,18 @@ async function runAct(sig: ActSignal): Promise<ActAck> {
   let r: StepsResult;
   try {
     const run = runner ?? ((s, o) => runSteps(document, s, o));
-    r = await run(steps, { signal: ac.signal, shot });
+    // A step that ignores the stop (a promise that never settles) is cut off a moment after the time limit.
+    let hung: ReturnType<typeof setTimeout> | undefined;
+    const cut = new Promise<StepsResult>((res) => {
+      const at = () => (hung = setTimeout(() => res({ ok: false, aborted: `${String(ac.signal.reason ?? "stopped")} (a step did not stop: cut off)`, steps: [], errors: [], text: "", shots: [], ms: timeoutMs }), ACT_STOP_GRACE_MS));
+      if (ac.signal.aborted) at();
+      else ac.signal.addEventListener("abort", at, { once: true });
+    });
+    try {
+      r = await Promise.race([run(steps, { signal: ac.signal, shot }), cut]);
+    } finally {
+      clearTimeout(hung);
+    }
   } catch (e) {
     return { ok: false, error: String((e as Error)?.message ?? e), data: { idleSec } };
   } finally {
@@ -83,7 +106,7 @@ async function runAct(sig: ActSignal): Promise<ActAck> {
   const aborted = r.aborted ?? (ac.signal.aborted ? String(ac.signal.reason) : undefined);
   const images = r.shots.map((s) => ({ data: s.data, mimeType: s.mimeType, name: s.name }));
   // What the window looks like now, whatever happened.
-  const fin = await captureOnLaptop({ type: "capture", id: `act-${sig.id}`, target: "window", maxWidth: 1600 });
+  const fin = await within(captureOnLaptop({ type: "capture", id: `act-${sig.id}`, target: "window", maxWidth: 1600 }), ACT_CAPTURE_MS, `drawing the window took over ${ACT_CAPTURE_MS / 1000} s`).catch((e) => ({ ok: false as const, error: String((e as Error)?.message ?? e), image: undefined }));
   let final: ActAckData["final"];
   if (fin.ok && fin.image) {
     images.push({ data: fin.image.data, mimeType: fin.image.mimeType, name: "after" });

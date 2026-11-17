@@ -39,6 +39,7 @@ const { driveTool } = await import("../../server/driveTool.ts");
 const { timingTool } = await import("../../server/timingTool.ts");
 const { recordHostBuild } = await import("../../server/hostBuild.ts");
 const { resetPresence } = await import("../../server/show.ts");
+const { controlLive } = await import("../../server/deviceLink.ts");
 const { setDriveHostFactory } = await import("../../src/driveHost.ts");
 const { noteInput, _resetUserActivity } = await import("../../src/userActivity.ts");
 const { checkSteps, parseKey } = await import("../../src/driveSteps.ts");
@@ -133,14 +134,15 @@ after(async () => {
 
 test("offline and bad steps: refused before anything is sent", async () => {
   const before = sent.length;
-  let r = await Drive({ steps: [{ click: "#x" }] }, { vault: "/no-such-vault" });
+  resetPresence(); // no poll from the laptop since: its control link is down (whatever vault it follows)
+  let r = await Drive({ steps: [{ click: "#x" }] });
   assert.equal(r.ok, false);
   assert.match(r.text, /laptop isn't online/);
   r = await Drive({ steps: [{ click: "#x", press: "Enter" }] });
   assert.match(r.text, /exactly one of/);
   r = await Drive({ steps: [] });
   assert.match(r.text, /non-empty/);
-  assert.equal(sent.length, before);
+  assert.equal(sent.length, before);  await waitFor("the laptop polls again", () => controlLive("laptop"));
 });
 
 test("Carl is using the laptop: refused with when, nothing opened; force runs anyway", async () => {

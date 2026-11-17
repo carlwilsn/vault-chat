@@ -36,6 +36,7 @@ import { parsePages, MAX_PARTS } from "../src/inboxFormat";
 import { loopbackUrl } from "./devProxy";
 import type { SendResult } from "./inbox";
 import { vaultFor, type NamedVault } from "./vaultRefs";
+import { linkOpened, resetLinks } from "./deviceLink";
 
 export type Device = "laptop" | "board" | "phone";
 const DEVICES: Device[] = ["laptop", "board", "phone"];
@@ -52,6 +53,8 @@ const pkey = (vault: string, client: string) => `${resolve(vault).toLowerCase()}
 export function feedOpened(vault: string, client: string | null | undefined): () => void {
   const c = DEVICES.includes(client as Device) ? (client as Device) : null;
   if (!c) return () => {};
+  // The device's control link, across vaults (server/deviceLink.ts).
+  const leaveLink = linkOpened(vault, c);
   const k = pkey(vault, c);
   const p = presence.get(k) ?? { open: 0, last: 0 };
   p.open++;
@@ -63,6 +66,7 @@ export function feedOpened(vault: string, client: string | null | undefined): ()
     done = true;
     p.open = Math.max(0, p.open - 1);
     p.last = Date.now();
+    leaveLink();
   };
 }
 
@@ -75,6 +79,7 @@ export function feedLive(vault: string, client: Device, now = Date.now()): boole
 /** Tests: forget every client. */
 export function resetPresence(): void {
   presence.clear();
+  resetLinks();
 }
 
 // ---------------------------------------------------------------- acks

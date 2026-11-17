@@ -33,6 +33,7 @@ const { useStore } = await import("../../src/store.ts");
 const bc = await import("../../src/boxChat.ts");
 const { screenTool, checkScreenImage, pngSize, SCREEN_MAX_WIDTH } = await import("../../server/screenTool.ts");
 const { resetPresence } = await import("../../server/show.ts");
+const { controlLive } = await import("../../server/deviceLink.ts");
 const { setCaptureDriver } = await import("../../src/captureOnLaptop.ts");
 const { fitSize } = await import("../../src/screenCapture.ts");
 const S = () => useStore.getState();
@@ -95,11 +96,13 @@ after(async () => {
 
 test("offline: no laptop on the feed, so the tool says so and sends nothing", async () => {
   const before = sent.length;
-  const r = await screenTool({ vault: "/no-such-vault", emit, ackMs: 500 }, {});
+  resetPresence(); // no poll from the laptop since: its control link is down (whatever vault it follows)
+  const r = await screenTool({ vault, emit, ackMs: 500 }, {});
   assert.equal(r.ok, false);
   assert.match(r.text, /laptop isn't online/);
   assert.equal(r.images.length, 0);
   assert.equal(sent.length, before, "no signal for a laptop that isn't there");
+  await waitFor("the laptop polls again", () => controlLive("laptop"));
 });
 
 test("round trip: the laptop draws its window and the agent gets the picture as an image", async () => {

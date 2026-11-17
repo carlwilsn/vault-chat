@@ -4,7 +4,8 @@
 // desktop) and acks over POST /api/v1/show/<id>/ack with {ok, image:{data, mimeType, width, height}}. The result is
 // only ever that picture, or an honest "offline" / "didn't answer" / "couldn't draw it".
 import { randomBytes } from "node:crypto";
-import { feedLive, waitAck } from "./show";
+import { waitAck } from "./show";
+import { controlDown, noteAnswer, unansweredNote } from "./deviceLink";
 
 export const SCREEN_TARGETS = ["window", "viewer", "chat"] as const;
 export type ScreenTarget = (typeof SCREEN_TARGETS)[number];
@@ -64,13 +65,15 @@ export function checkScreenImage(raw: unknown): (ScreenImage & { width: number; 
 export async function screenTool(d: ScreenDeps, args: Record<string, unknown>): Promise<ScreenResult> {
   const target = args.target === undefined || args.target === "" ? "window" : String(args.target);
   if (!(SCREEN_TARGETS as readonly string[]).includes(target)) return { ok: false, text: `Unknown target "${target}". Use window, viewer or chat.`, images: [] };
-  if (!feedLive(d.vault, "laptop")) return { ok: false, text: "The laptop isn't online (the vault-chat app isn't open and connected on it), so its screen can't be seen. Say so; don't guess what is on it.", images: [] };
+  const down = controlDown("laptop");
+  if (down) return { ok: false, text: `${down} So its screen can't be seen. Say so; don't guess what is on it.`, images: [] };
   const id = `capture-${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
   const ms = d.ackMs ?? 20_000;
   const got = waitAck(id, ms);
   d.emit({ type: "capture", id, to: "laptop", target, maxWidth: SCREEN_MAX_WIDTH });
   const ack = await got;
-  if (!ack) return { ok: false, text: `Asked the laptop for a picture of its screen, but it did not answer within ${Math.round(ms / 1000)} s (an older app without screen capture, or it is busy). Nothing was seen; don't describe the screen.`, images: [] };
+  noteAnswer("laptop", "capture", !!ack);
+  if (!ack) return { ok: false, text: `Asked the laptop for a picture of its screen, but it did not answer within ${Math.round(ms / 1000)} s (an older app without screen capture, or it is busy). Nothing was seen; don't describe the screen.${unansweredNote("laptop")}`, images: [] };
   if (!ack.ok) return { ok: false, text: `The laptop could not draw its screen: ${ack.error ?? "no reason given"}. Nothing was seen.`, images: [] };
   const im = checkScreenImage(ack.image);
   if (typeof im === "string") return { ok: false, text: `The laptop answered, but ${im}. Nothing was seen.`, images: [] };
