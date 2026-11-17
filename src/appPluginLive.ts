@@ -1,5 +1,5 @@
 // App plugins load live (corrected model, point 4: change by asking, not releasing). The app's own plugins
-// (src/appPlugins.ts: the chat list, the vault picker, the file tree, the title bar, the composer, Notes...) ship inside
+// (src/appPlugins.ts: the chat list, the vault picker, the file tree, the title bar, the composer, the chat pane, Settings, voice, Notes...) ship inside
 // the build, and that built-in copy stays the fallback. A live copy of one is a code file in the vault,
 //   <vault>/.vault-chat/app-plugins/<name>.js          the live copy (name: the id without "app/": filetree.js)
 //   <vault>/.vault-chat/app-plugins/<name>.draft.js    a draft of it, tried first
@@ -24,7 +24,7 @@ export const APP_PLUGIN_LIVE_DIR = ".vault-chat/app-plugins";
 export const APP_PLUGIN_LIVE_MAX_BYTES = 4 * 1024 * 1024;
 
 /** The app plugins that can run a live copy (their code is under src/plugins/<name>/, with an index module). */
-export const LIVE_APP_PLUGINS: readonly string[] = ["app/notes", "app/chats", "app/composer", "app/chat-rows", "app/vaults", "app/filetree", "app/titlebar", "app/context"];
+export const LIVE_APP_PLUGINS: readonly string[] = ["app/notes", "app/chats", "app/composer", "app/chat-rows", "app/vaults", "app/filetree", "app/titlebar", "app/chat", "app/settings", "app/voice", "app/context"];
 
 export type LiveCopyKind = "draft" | "live";
 

@@ -54,7 +54,7 @@ test("the decision itself: an answer when nothing is being asked, a wait when so
 });
 
 test("nothing in Settings still assumes a box is the only thing that runs a vault", () => {
-  const src = readFileSync(join(root, "src", "SettingsPane.tsx"), "utf8");
+  const src = readFileSync(join(root, "src", "plugins", "settings", "Pane.tsx"), "utf8");
   // Keys go to the box when there is one and to the server the app runs itself
   // when there is not (src/boxKeys.ts keysChanged), so saying "sent to the box"
   // was telling a laptop with no box that its sign-in went nowhere.
@@ -66,7 +66,7 @@ test("Settings has no model picker at all: the model is the chat's, beside Send"
   // Carl: "No model picker in Settings at all." The line that used to wait on a
   // box for a model list is gone with the section itself (src/ChatModelPicker.tsx
   // is where a model is chosen now, per chat).
-  const src = readFileSync(join(root, "src", "SettingsPane.tsx"), "utf8");
+  const src = readFileSync(join(root, "src", "plugins", "settings", "Pane.tsx"), "utf8");
   for (const gone of ["Set on the box once it is connected", "Open a vault to choose the model.", "The models appear once the vault's server has answered.", "ModelsSection", "useAgentModel"]) {
     assert.ok(!src.includes(gone), `Settings still has a model picker: ${gone}`);
   }

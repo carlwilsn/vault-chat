@@ -238,6 +238,8 @@ test("ComposerSlot: unknown, the composer itself in the app's tree; running, the
   Object.assign(useDraft.getInitialState(), { input: "half a thought" });
   Object.assign(useStore.getInitialState(), { vaultPath: vault, boxChat: { on: true, reachable: true, reason: "" } });
   const { ComposerSlot } = await import("../../src/ComposerPanel.tsx");
+  // (The composer's Mute is the voice plugin's control, which reads the records too: start from not known.)
+  _appReconciler(false);
   // Records not known yet: the full composer, no banner (nothing missing, nothing different).
   const pending = renderToStaticMarkup(createElement(ComposerSlot));
   assert.match(pending, /data-el="composer"/);

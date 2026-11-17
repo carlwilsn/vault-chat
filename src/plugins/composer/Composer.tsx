@@ -15,7 +15,7 @@ import { clipboardImageDataUrls } from "../../chatImage";
 import { dispatchChatAction, isPopout } from "../../sync";
 import { useStore } from "../../store";
 import { toggleVoice } from "../../voiceCall";
-import { InlineVoiceWaves, VoiceMuteButton } from "../../VoiceCockpit";
+import { InlineVoiceWaves, VoiceMuteButton } from "../../voiceParts";
 import { Button, Textarea } from "../../ui";
 import { cn } from "../../lib/utils";
 import { ATTACH_MAX_BYTES, BOX_UNREACHABLE } from "../../boxChat";

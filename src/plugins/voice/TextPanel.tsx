@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Camera, X, GripHorizontal, ArrowRight } from "lucide-react";
-import { useStore } from "./store";
-import { fileKind } from "./fileKind";
+import { useStore } from "../../store";
+import { fileKind } from "../../fileKind";
 import {
   isVoiceSessionActive,
   setVoiceMicMuted,
@@ -9,7 +9,7 @@ import {
   sendVoiceUserText,
   sendVoiceUserMultimodal,
   endVoiceCall,
-} from "./voiceCall";
+} from "../../voiceCall";
 
 // Plug-replacement for talking back to the voice agent: a floating
 // popup with an auto-grow textarea + the same marquee/camera button

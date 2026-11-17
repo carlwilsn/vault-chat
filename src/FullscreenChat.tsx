@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { PanelLeftOpen } from "lucide-react";
 import { ChatPane } from "./ChatPane";
 import { ChatsSidebar } from "./ChatsPanel";
-import { ChatTitle } from "./ProjectChip";
+import { ChatBarSlot } from "./ChatHeader";
 import { WindowControls } from "./WindowControls";
 import { useStore } from "./store";
 import { isPopout } from "./windowKind";
@@ -23,7 +23,7 @@ export function FullscreenChat({ children }: { children?: ReactNode }) {
         {chatSidebarOpen && <ChatsSidebar />}
         <div className="flex-1 min-w-0 flex flex-col bg-card">
           {/* The chat's own top bar, in the chat's colour: sidebar toggle (when
-              it's hidden), the chat's name, the window controls (this window's). */}
+              it's hidden), the chat's name and ⋯ menu (the chat pane plugin, app/chat), the window controls (this window's). */}
           <div
             data-tauri-drag-region
             className="h-9 shrink-0 flex items-center relative select-none"
@@ -42,7 +42,7 @@ export function FullscreenChat({ children }: { children?: ReactNode }) {
               )}
             </div>
             <div data-tauri-drag-region className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <ChatTitle />
+              <ChatBarSlot />
             </div>
             <div data-tauri-drag-region className="flex-1 h-full" />
             <WindowControls className="relative z-10" />

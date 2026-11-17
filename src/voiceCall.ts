@@ -68,7 +68,7 @@ export async function startVoiceCall(): Promise<void> {
   // The voice IS the agent, so it needs the Claude sign-in like a typed turn
   // does. Not a red error: the mic has no room for a prompt, so the cockpit
   // draws the sentence and the button where the waves would have been
-  // (src/claudeAuthLive.ts askVoiceSignIn, src/VoiceCockpit.tsx).
+  // (src/claudeAuthLive.ts askVoiceSignIn, src/plugins/voice/Controls.tsx).
   if (!claudeSignedIn(state.serviceKeys.claudeCode, await readClaudeHealth())) {
     useStore.setState({ voiceMode: false, voiceError: null });
     useStore.getState().setVoiceConnecting(false);

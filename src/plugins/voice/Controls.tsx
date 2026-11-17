@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Keyboard, Mic, MicOff } from "lucide-react";
-import { useStore } from "./store";
-import { toggleVoice, toggleVoiceMute, voiceBarLevels } from "./voiceCall";
-import { isPopout } from "./windowKind";
-import { relayedVoiceLevels } from "./sync";
-import { WaitTracker, calibFrom, renderWaitLine, waitInputs, type WaitCalib } from "./voiceWaitLine";
-import { askVoiceSignIn, useVoiceSignInAsked } from "./claudeAuthLive";
-import { ClaudeSignInPrompt, useAiBlocked } from "./ClaudeCodeSignIn";
+import { useStore } from "../../store";
+import { toggleVoice, toggleVoiceMute, voiceBarLevels } from "../../voiceCall";
+import { isPopout } from "../../windowKind";
+import { relayedVoiceLevels } from "../../sync";
+import { WaitTracker, calibFrom, renderWaitLine, waitInputs, type WaitCalib } from "../../voiceWaitLine";
+import { askVoiceSignIn, useVoiceSignInAsked } from "../../claudeAuthLive";
+import { ClaudeSignInPrompt, useAiBlocked } from "../../ClaudeCodeSignIn";
 
 const NUM_BARS = 12;
 const LEVEL_DECAY = 0.85;
@@ -98,7 +98,7 @@ function WaitLine() {
     if (!boxCalib || Date.now() - boxCalib.at > 10 * 60_000) {
       void (async () => {
         try {
-          const { boxGet, boxLinkFor } = await import("./boxChat");
+          const { boxGet, boxLinkFor } = await import("../../boxChat");
           const link = await boxLinkFor(useStore.getState().vaultPath);
           const r = link ? await boxGet(link, "/api/v1/brain/expect", 5000) : null;
           if (r?.calib) boxCalib = { at: Date.now(), calib: r.calib };

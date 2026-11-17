@@ -108,7 +108,7 @@ test("Ctrl+/ (Cmd+/ on a Mac) opens the sheet; typing / does not", () => {
   assert.match(sheet, /hit\(e, "view\.shortcuts"\)/);
   assert.match(sheet, /e\.key === "Escape"/, "Esc closes it");
   for (const f of ["src/App.tsx", "src/ChatWindow.tsx"]) assert.match(readFileSync(join(root, f), "utf8"), /<ShortcutSheet \/>/, `${f} mounts the sheet`);
-  assert.match(readFileSync(join(root, "src/SettingsPane.tsx"), "utf8"), /openShortcutSheet/, "Settings has the item");
+  assert.match(readFileSync(join(root, "src/plugins/settings/Pane.tsx"), "utf8"), /openShortcutSheet/, "Settings has the item");
 });
 
 test("chords match exactly, and translate for the editors and the Mac", () => {

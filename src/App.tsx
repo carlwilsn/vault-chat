@@ -11,7 +11,7 @@ import { SettingsPane } from "./SettingsPane";
 import { Titlebar } from "./Titlebar";
 import { FullscreenChat } from "./FullscreenChat";
 import { NotePopup } from "./NotePopup";
-import { VoiceTextPanel } from "./VoiceTextPanel";
+import { VoiceSlot } from "./VoiceSlot";
 import { AppPluginMount } from "./PluginMount";
 import { VaultPlugins } from "./VaultPluginHost";
 import { PinnedApps } from "./PinnedAppsHost";
@@ -466,7 +466,8 @@ export default function App() {
       {/* Plugins that are code files in .vault-chat/plugins: live as they are added, changed or removed. */}
       <VaultPlugins />
       <PinnedApps />
-      <VoiceTextPanel />
+      {/* Voice: a plugin (src/plugins/voice): its text box here, its controls in the title bar and the composer. */}
+      <VoiceSlot />
       {!isDriveWindow && <UpdateBanner />}
       <ShortcutSheet />
       {/* The chat list's overlay: a plugin (src/plugins/chats), with a built-in fallback (src/ChatsPanel.tsx). */}

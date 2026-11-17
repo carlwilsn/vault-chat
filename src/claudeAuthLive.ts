@@ -116,7 +116,7 @@ export function useClaudeSignedIn(): ClaudeAuth {
 
 // Voice has no room of its own to put a prompt in: the mic is a 28 px button in
 // the titlebar. So a mic press while signed out raises this flag instead of
-// starting a call, and the cockpit (src/VoiceCockpit.tsx) draws the prompt where
+// starting a call, and the cockpit (src/plugins/voice/Controls.tsx) draws the prompt where
 // the waves would have been. Module state rather than the store: it is one
 // boolean that only these two files care about.
 let voiceAsked = false;

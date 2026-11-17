@@ -6,6 +6,8 @@
 //   layout     host.layout.get() (panes, split, panels, chat, window and column sizes) and host.layout.apply(op | ops)
 //              (close/open the left panel or chat, put a file in a pane, split, focus, full-screen chat): the same ops the
 //              agent's Layout tool runs (src/layoutOps.ts), each answered with the layout read back
+//   chat menu  host.chat.menuItem({id, label, onClick, title?, order?}) → off: an entry in the chat's ⋯ menu
+//              (src/chatMenuItems.ts), live until the plugin stops; host.chat.menuItems() the entries there now
 //   titlebar   host.titlebar.item({id, label | icon | render, onClick?, title?, side?}) → off: an item in the title bar
 //              (src/titlebarItems.ts), live until the plugin stops; host.titlebar.items() the items there now
 //   viewer     host.viewer(type, mount, {name?}) → off: draw a type of file in the viewer ("pdf", ".csv", "image/*";
@@ -22,6 +24,7 @@ import type { Note } from "./noteTypes";
 import type { HostLayout, LayoutOp, LayoutResult } from "./layoutTypes";
 import type { Capture, CaptureTarget } from "./screenCapture";
 import type { TitlebarItem, TitlebarItemSpec } from "./titlebarItems";
+import type { ChatMenuItem, ChatMenuItemSpec } from "./chatMenuItems";
 import type { ViewerMount, ViewerOptions } from "./viewerRegistry";
 export type { HostLayout, LayoutOp, LayoutResult } from "./layoutTypes";
 
@@ -78,6 +81,10 @@ export type HostBackend = {
   registerChatRow?(kind: string, render: ChatRowRender, by: string, opts?: ChatRowOptions): () => void;
   /** Translate one type of the chat's events with a plugin's translator (src/convlog/translators.ts); the undo. */
   registerChatTranslator?(type: string, fn: ChatTranslator, by: string): () => void;
+  /** Put an entry in the chat's ⋯ menu (src/chatMenuItems.ts) for plugin `by`; the undo. Absent: no chat here. */
+  registerChatMenuItem?(spec: ChatMenuItemSpec, by: string): () => void;
+  /** The chat menu's plugin entries now. */
+  chatMenuItems?(): readonly ChatMenuItem[];
   /** Put an item in the title bar (src/titlebarItems.ts) for plugin `by`; the undo. Absent: no title bar here. */
   registerTitlebarItem?(spec: TitlebarItemSpec, by: string): () => void;
   /** The title bar's items now. */
@@ -132,6 +139,12 @@ export type HostApi = {
      *  "compaction", "notice") into the messages it shows, live, until the plugin stops (or the returned off): add a type
      *  the app has no translator for, or override its own. Return null to hand an event on. Throws on a bad type. */
     translate(type: string, fn: ChatTranslator): () => void;
+    /** Put an entry in the chat's ⋯ menu (beside Memory), live, until the plugin stops (or the returned off):
+     *  {id, label, onClick, title?, order?}. The same id again replaces it. A throw in its click is this plugin's
+     *  failure. Throws on a bad spec. */
+    menuItem(spec: ChatMenuItemSpec): () => void;
+    /** Every plugin's entries in the chat's ⋯ menu now: {key, id, by, label, title?}. */
+    menuItems(): readonly { key: string; id: string; by: string; label: string; title?: string }[];
   };
   layout: { get(): HostLayout; apply(ops: LayoutOp | LayoutOp[]): Promise<LayoutResult> };
   titlebar: {
@@ -276,6 +289,14 @@ export function createHostApi(b: HostBackend, fx: Effects, alive: () => boolean,
         if (!b.registerChatTranslator) throw new Error("no chat here to translate for");
         return fx.add(`chat translator ${String(type)}`, b.registerChatTranslator(String(type), fn, id));
       },
+      menuItem(spec) {
+        if (!alive()) return () => {};
+        if (!b.registerChatMenuItem) throw new Error("no chat menu here");
+        const s = (spec ?? {}) as ChatMenuItemSpec;
+        const click = typeof s.onClick === "function" ? s.onClick : undefined;
+        return fx.add(`chat menu item ${String(s.id)}`, b.registerChatMenuItem({ ...s, ...(click ? { onClick: guard(() => void click()) } : {}) } as ChatMenuItemSpec, id));
+      },
+      menuItems: () => (b.chatMenuItems?.() ?? []).map((i) => ({ key: i.key, id: i.id, by: i.by, label: i.label, ...(i.title ? { title: i.title } : {}) })),
     },
     layout: {
       get: () => b.layout(),

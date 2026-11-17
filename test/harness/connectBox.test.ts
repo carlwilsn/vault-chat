@@ -29,7 +29,7 @@ fake.setHandler("box_post_json", (args: any) => {
 });
 
 const { tailscaleHelp, connectTrouble, GET_TAILSCALE_URL } = await import("../../src/tailscaleHelp.ts");
-const { TailscaleNote } = await import("../../src/SettingsPane.tsx");
+const { TailscaleNote } = await import("../../src/plugins/settings/Pane.tsx");
 const { useStore } = await import("../../src/store.ts");
 const { pushKeysToBox } = await import("../../src/boxKeys.ts");
 const { KEY } = await import("../../src/keychain.ts");
@@ -81,7 +81,7 @@ test("keys that never load are never pushed: an empty set would remove them from
 });
 
 test("no OpenRouter key is asked for anywhere in the box section", () => {
-  const src = readFileSync(join(root, "src", "SettingsPane.tsx"), "utf8");
+  const src = readFileSync(join(root, "src", "plugins", "settings", "Pane.tsx"), "utf8");
   assert.ok(!/OpenRouter/i.test(src), "Settings must not name OpenRouter at all");
   // The old gate, in the two shapes it had: a sentence to paste a key first, and
   // a Sync button disabled without one.

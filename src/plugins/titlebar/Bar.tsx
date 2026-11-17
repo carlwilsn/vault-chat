@@ -10,7 +10,7 @@ import { NOTES_PLUGIN_ID } from "../../appPlugins";
 import { usePluginDesired } from "../../pluginSupervisorApp";
 import { runningTaskCount } from "../../backgroundTasks";
 import { openChatPopout } from "../../sync";
-import { VoiceCockpit, VoiceMicGroup } from "../../VoiceCockpit";
+import { VoiceCockpit, VoiceMicGroup } from "../../voiceParts";
 import { VaultPicker } from "../../VaultPicker";
 import { WindowControls } from "../../WindowControls";
 import { subscribeBoxSync, openTailscale, boxSyncNow, type BoxSyncState } from "../../vaultSync";

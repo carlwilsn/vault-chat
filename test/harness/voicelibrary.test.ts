@@ -181,6 +181,6 @@ test("no hide UI: the module has no hide action and Settings renders none", asyn
   assert.equal((L as Record<string, unknown>).hideVoice, undefined);
   assert.equal((L as Record<string, unknown>).keepOnly, undefined);
   const { readFileSync } = await import("node:fs");
-  const src = readFileSync(new URL("../../src/SettingsPane.tsx", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../../src/plugins/settings/Pane.tsx", import.meta.url), "utf8");
   for (const word of [/>\s*Hide\s*</, /Show hidden/, /Keep only/, /Unhide/]) assert.doesNotMatch(src, word);
 });

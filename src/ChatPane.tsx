@@ -18,7 +18,6 @@ import {
 } from "./chatExtras";
 import { uiChoice } from "./uiChoices";
 import { taskState } from "./backgroundTasks";
-import { formatCost } from "./ongoingWork";
 import { OngoingLine } from "./OngoingLine";
 import { useChatGate } from "./chatGate";
 import { ComposerSlot } from "./ComposerPanel";
@@ -29,6 +28,9 @@ import { CHAT_REVEAL_EVENT, setVisibleRows } from "./chatRows";
 import { CHAT_ROWS_PLUGIN } from "./appPlugins";
 import * as chatRowsPlugin from "./plugins/chat-rows";
 import { AppPluginMount } from "./PluginMount";
+import { ChatHeaderSlot } from "./ChatHeader";
+import { setPaneScroll } from "./plugins/chat/model";
+import { isPopout } from "./windowKind";
 
 /** The transcript's row (src/plugins/chat-rows/rows.tsx); exported here as it always was. */
 export { MessageBubble };
@@ -61,6 +63,8 @@ export function ChatPane() {
   const messages = useStore((s) => s.messages);
   const busy = useStore((s) => s.busy);
   const showSettings = useStore((s) => s.showSettings);
+  // Fullscreen chat and the popout draw the header in their own top bar (src/FullscreenChat.tsx).
+  const inOwnBar = useStore((s) => isPopout || (s.chatFullscreen && !s.popoutOpen));
   const setSkills = useStore((s) => s.setSkills);
   const streamingText = useStore((s) => s.streamingText);
   const streamingReasoning = useStore((s) => s.streamingReasoning);
@@ -218,6 +222,44 @@ export function ChatPane() {
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   };
 
+  // The pane's scroll, for the chat pane plugin's offers (src/plugins/chat: scrollToBottom, showOlder, scroll state).
+  const scrollLive = useRef({ shownCount, activeConversationId });
+  scrollLive.current = { shownCount, activeConversationId };
+  useEffect(() => {
+    if (showSettings) return;
+    const visible = () => useStore.getState().messages.filter((m) => !m.hidden && !m.waiting).length;
+    return setPaneScroll({
+      state: () => {
+        const el = scrollRef.current;
+        const total = visible();
+        const shown = Math.min(total, scrollLive.current.shownCount);
+        return { atBottom: el ? el.scrollHeight - el.scrollTop - el.clientHeight < 40 : true, shown, total, older: total - shown };
+      },
+      toBottom: () => {
+        const el = scrollRef.current;
+        pinnedToBottomRef.current = true;
+        setShowJumpToLatest(false);
+        if (el) el.scrollTop = el.scrollHeight;
+      },
+      older: (n, top) => {
+        const el = scrollRef.current;
+        const { shownCount: now, activeConversationId: conv } = scrollLive.current;
+        const total = visible();
+        const count = n === "all" ? total : Math.min(total, now + Math.max(1, Math.floor(n)));
+        if (count > now) {
+          if (el && !top) heightBeforeOlderRef.current = el.scrollHeight;
+          setChatWindow({ conv, count });
+        }
+        if (top) {
+          pinnedToBottomRef.current = false;
+          requestAnimationFrame(() => {
+            if (scrollRef.current) scrollRef.current.scrollTop = 0;
+          });
+        }
+      },
+    });
+  }, [showSettings]);
+
   useEffect(() => {
     if (vaultPath) {
       loadSkills(vaultPath).then(setSkills).catch(() => setSkills([]));
@@ -260,7 +302,6 @@ export function ChatPane() {
   }
 
   const verdict = activeConv?.state === "done" ? activeConv.verdict : undefined;
-  const totalCost = uiChoice("cost") === "total" ? formatCost(activeConv?.costUsd ?? messages.reduce((n, m) => n + (m.costUsd ?? m.usage?.costUsd ?? 0), 0)) : undefined;
   let lastVisible = -1;
   for (let i = messages.length - 1; i >= 0; i--) if (!messages[i]!.hidden && !messages[i]!.system) { lastVisible = i; break; }
   let windowStart = 0;
@@ -274,18 +315,9 @@ export function ChatPane() {
     <div className="h-full flex flex-col bg-card border-l border-border relative">
       {/* The transcript's rows as a plugin the agent reaches (offers only; it draws nothing of its own). */}
       <AppPluginMount plugin={CHAT_ROWS_PLUGIN} module={chatRowsPlugin} />
-      {/* Projects are set in the chats panel (a row's folder action), not here. */}
-      {totalCost && (
-        <div className="shrink-0 px-3 pt-2">
-          <div className="max-w-[820px] mx-auto flex items-center">
-            {totalCost && (
-              <span className="ml-auto text-[11px] text-muted-foreground tabular-nums" data-el="total-cost" title="What this conversation has cost so far">
-                {totalCost}
-              </span>
-            )}
-          </div>
-        </div>
-      )}
+      {/* The pane's header (the chat's name, the cost, the ⋯ menu with Memory): a plugin (src/plugins/chat), with a
+          built-in fallback (src/ChatHeader.tsx). Fullscreen chat and the popout draw it in their top bar instead. */}
+      {!inOwnBar && <ChatHeaderSlot />}
       <div
         className="flex-1 min-h-0 overflow-auto px-3 py-4 pb-8 relative"
         ref={scrollRef}

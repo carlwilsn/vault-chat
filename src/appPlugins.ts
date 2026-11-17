@@ -108,6 +108,42 @@ export const VIEWER_PLUGIN: AppPluginInfo = {
   words: ["viewer", "the viewer", "file viewer", "viewers", "viewer pane", "pdf viewer", "markdown viewer", "document viewer"],
 };
 
+export const CHAT_PLUGIN_ID = "app/chat";
+
+/** The chat pane's shell (src/plugins/chat): its header (the chat's name, the ⋯ menu with Memory and plugins' entries) and the pane's scroll. Off or failed, a plain header with Memory stands in. */
+export const CHAT_PLUGIN: AppPluginInfo = {
+  id: CHAT_PLUGIN_ID,
+  name: "Chat pane",
+  mount: "panel",
+  description:
+    "The chat pane: its header (the chat's name and project, the cost, the ⋯ menu with Memory, which opens Main's memory or the chat's project memory, and entries vault plugins put there) and the pane around the transcript (which chat, docked or full screen, scrolled to the bottom or up, older messages shown, the way back to a worker's parent).",
+  words: ["chat", "chat pane", "chat-pane", "chatpane", "the chat", "chat header", "chat menu", "chat's menu", "chat window", "conversation pane"],
+};
+
+export const SETTINGS_PLUGIN_ID = "app/settings";
+
+/** The Settings pane (src/plugins/settings). Off or failed, a plain pane stands in (back, Keyboard shortcuts). */
+export const SETTINGS_PLUGIN: AppPluginInfo = {
+  id: SETTINGS_PLUGIN_ID,
+  name: "Settings",
+  mount: "panel",
+  description:
+    "The Settings pane: the Claude sign-in, keys, voice, the vault-chat folder, the box (connect, sync, the phone link), appearance and keyboard shortcuts; open or close it, go to a section, read its sections and the app's settings.",
+  words: ["settings", "settings pane", "settings-pane", "settingspane", "preferences", "settings page", "options"],
+};
+
+export const VOICE_PLUGIN_ID = "app/voice";
+
+/** Voice (src/plugins/voice): the mic, the waves, Mute and the voice text box. Off or failed, a plain mic and Mute stand in. */
+export const VOICE_PLUGIN: AppPluginInfo = {
+  id: VOICE_PLUGIN_ID,
+  name: "Voice",
+  mount: "panel",
+  description:
+    "Voice: the title bar's mic and waves, the composer's Mute and the box to type to the voice agent; the call's state (on, connecting, listening, speaking, muted, its error), start or end a call, mute, open the text box, say something to the voice agent in text.",
+  words: ["voice", "voice controls", "voice-controls", "mic", "microphone", "voice mode", "voice call", "call", "mute", "voice text"],
+};
+
 export const CONTEXT_PLUGIN_ID = "app/context";
 
 /** The shared context (src/plugins/context): what Carl has selected, hovers, the plugin he is in and the open file, for the agent and other plugins. Off: the agent cannot read it. */
@@ -119,7 +155,7 @@ export const CONTEXT_PLUGIN: AppPluginInfo = {
   words: ["context", "shared context", "context plugin", "selection context", "app context"],
 };
 
-export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN, FILETREE_PLUGIN, TITLEBAR_PLUGIN, VIEWER_PLUGIN, CONTEXT_PLUGIN];
+export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN, FILETREE_PLUGIN, TITLEBAR_PLUGIN, VIEWER_PLUGIN, CHAT_PLUGIN, SETTINGS_PLUGIN, VOICE_PLUGIN, CONTEXT_PLUGIN];
 
 // The surfaces (Track 2: the phone and the iPad are hosts, apps Carl can switch off). A `plugin.desired` record for one
 // turns the whole app off or on live, no release: off, the box serves the one "turned off" line where its app would

@@ -8,7 +8,7 @@
 //   node --import tsx scripts/app-plugin-live.ts <name> --vault <vault> --remove    the live copy is dropped (built-in runs)
 //   node --import tsx scripts/app-plugin-live.ts --shared                           every shared name, by plugin (JSON)
 //
-// <name> is the plugin's folder (filetree, chats, vaults, composer, titlebar, notes, chat-rows, context) or its id.
+// <name> is the plugin's folder (filetree, chats, vaults, composer, titlebar, notes, chat-rows, chat, settings, voice, context) or its id.
 import { build, type Plugin } from "esbuild";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";

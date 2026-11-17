@@ -8,6 +8,7 @@ import { applyLayoutOps, readLayout, type LayoutIO } from "./layoutOps";
 import { placeInPane } from "./paneLayout";
 import { registerRow } from "./chatRows";
 import { registerTitlebarItem, titlebarItems } from "./titlebarItems";
+import { chatMenuItems, registerChatMenuItem } from "./chatMenuItems";
 import { describeViewers, registerViewer } from "./viewerRegistry";
 import { registerTranslator, type Translator } from "./convlog/translators";
 import type { HostBackend, HostState, HostSelection } from "./hostApi";
@@ -133,6 +134,8 @@ export const appHostBackend: HostBackend = {
   registerChatTranslator: (type, fn, by) => registerTranslator(type, fn as Translator, by),
   registerTitlebarItem: (spec, by) => registerTitlebarItem(spec, by),
   titlebarItems: () => titlebarItems(),
+  registerChatMenuItem: (spec, by) => registerChatMenuItem(spec, by),
+  chatMenuItems: () => chatMenuItems(),
   registerViewer: (type, mount, by, opts) => registerViewer(type, mount, by, opts),
   viewers: () => describeViewers(),
   async primeChat(lines) {
