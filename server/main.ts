@@ -114,21 +114,16 @@ async function main(): Promise<void> {
   (await import("./boxPlugins")).startBoxPlugins(() => vaultRefs().map((v) => v.path));
   // The laptop app's core is a bundle this box builds from accepted main and serves (server/coreBundles.ts): its records
   // are app/core plugin.change records in the main vault's log; a new main is built as a StartJob job outside this
-  // server, only while Carl's setting corePublish is on (off by default).
+  // server while Carl's setting corePublish is on (the default), and waits for him as Change ready (never lands itself).
   {
     const core = await import("./coreBundles");
     core.configureCore({ stateDir: cfg.stateDir, vault: cfg.vault });
-    const { setPluginChange } = await import("./supervisor");
     const { readSetting } = await import("./settings");
     core.startCorePublisher({
       stateDir: cfg.stateDir,
-      // Off until Carl turns it on (setting corePublish): then the tick does nothing at all.
+      // Carl's setting corePublish off: the tick does nothing at all.
       on: () => readSetting("corePublish") === true,
       changes: () => supervisorOf(cfg.vault).changes(CORE_PART),
-      land: (version, reason) => {
-        const w = setPluginChange(cfg.vault, { plugin: CORE_PART, change: "keep", version, by: "gate", reason }, "gate");
-        return "error" in w ? { ok: false, error: w.error } : { ok: true };
-      },
     });
   }
   // Carl's settings are records in the main vault's log (server/settings.ts); what the box kept in its localStorage

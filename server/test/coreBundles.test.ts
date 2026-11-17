@@ -1,7 +1,7 @@
 // The app's core as a part the box builds and serves (src/coreBundle.ts, server/coreBundles.ts, scripts/core-publish.ts):
 // a bundle stored by its manifest's hash, served over the box's own routes byte for byte, landed and switched with the
 // existing plugin.change record for app/core, refused when it needs a newer box; the publisher building a new main as
-// a job outside the server and landing its result once. Real HTTP against the box's own server; no vault is written
+// a job outside the server, its result waiting for Carl as a Change ready card (never landing by itself). Real HTTP against the box's own server; no vault is written
 // outside the test's temp folder.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
@@ -37,13 +37,13 @@ describe("core bundles on the box", () => {
   let sup: typeof import("../supervisor");
 
   /** A built dist with these files, stored as a bundle. */
-  const build = (name: string, files: Record<string, string>, needs: CoreNeeds = NEEDS, commitTime = 100) => {
+  const build = (name: string, files: Record<string, string>, needs: CoreNeeds = NEEDS, commitTime = 100, builtAt = `2026-11-17T00:00:0${name.length % 10}Z`) => {
     const dist = join(home, "dist-" + name);
     for (const [p, c] of Object.entries(files)) {
       mkdirSync(join(dist, p, ".."), { recursive: true });
       writeFileSync(join(dist, p), c);
     }
-    return storeCore(root, dist, { commit: COMMIT, commitTime, needs, builtAt: `2026-11-17T00:00:0${name.length % 10}Z` });
+    return storeCore(root, dist, { commit: COMMIT, commitTime, needs, builtAt });
   };
 
   beforeAll(async () => {
@@ -86,19 +86,22 @@ describe("core bundles on the box", () => {
     return { status: r.status, json: await r.json().catch(() => ({})) };
   };
 
-  it("is off until Carl turns it on: nothing built, nothing lands, nothing offered", async () => {
+  it("is on by default; Carl can turn it off: then nothing is built, nothing lands, nothing is offered", async () => {
+    expect((await getJson("/api/v2/core")).publish).toBe(true);
+    expect(setSetting("corePublish", false, "carl").ok).toBe(true);
     const calls: string[] = [];
     const exec = (cmd: string) => (calls.push(cmd), { status: 0, stdout: "c".repeat(40), stderr: "" });
     let started = 0;
-    const deps = { stateDir: state, repo: join(home, "repo"), changes: () => sup.supervisorOf(A.path).changes(CORE_PART), land: () => ({ ok: true }), exec, on: () => false, startJob: (() => (started++, { text: "" })) as never };
+    const deps = { stateDir: state, repo: join(home, "repo"), changes: () => sup.supervisorOf(A.path).changes(CORE_PART), exec, on: () => false, startJob: (() => (started++, { text: "" })) as never };
     expect(core.publishTick(deps)).toBe("off");
     expect(calls).toEqual([]);
     expect(started).toBe(0);
     const x = build("x", { "index.html": "<p>x</p>" });
-    const keep = await post("/api/v2/supervisor", { plugin: CORE_PART, change: "keep", version: x.version, by: "gate" });
+    const keep = await post("/api/v2/supervisor", { plugin: CORE_PART, change: "keep", version: x.version, by: "carl" });
     expect(keep.status).toBe(409);
     expect(keep.json.error).toContain("corePublish");
     expect(await getJson("/api/v2/core")).toMatchObject({ publish: false, offer: null });
+    expect((await getJson("/api/v2/changes?surface=laptop")).changes.some((c: { plugin: string }) => c.plugin === CORE_PART)).toBe(false);
     expect(setSetting("corePublish", true, "carl").ok).toBe(true);
     expect((await getJson("/api/v2/core")).publish).toBe(true);
   });
@@ -151,7 +154,7 @@ describe("core bundles on the box", () => {
     expect(r.json.error).toContain(`box API ${CORE_BOX_API + 1}`);
   });
 
-  it("the publisher builds a new main once, as a job outside the server, lands its result, and never lands a bundle switched away from", async () => {
+  it("the publisher builds a new main once, as a job outside the server; its result waits as Change ready; Keep, Switch back and Discard are the plugin.change records", async () => {
     const main = "c".repeat(40);
     const calls: string[][] = [];
     const exec = (cmd: string, args: string[]) => {
@@ -159,11 +162,8 @@ describe("core bundles on the box", () => {
       if (cmd === "git") return { status: 0, stdout: main + "\n", stderr: "" };
       return { status: 0, stdout: "", stderr: "" };
     };
-    const land = (version: string, reason: string) => {
-      const w = sup.setPluginChange(A.path, { plugin: CORE_PART, change: "keep", version, by: "gate", reason }, "gate");
-      return "error" in w ? { ok: false, error: w.error } : { ok: true };
-    };
     const changes = () => sup.supervisorOf(A.path).changes(CORE_PART);
+    const cards = async () => ((await getJson("/api/v2/changes?surface=laptop")).changes as { plugin: string; version: string; name: string; what: string; tryOn: string[]; core?: { sha256: string } }[]).filter((c) => c.plugin === CORE_PART);
     // The build goes through the existing StartJob path (startJobWith), never a systemd-run call of its own.
     const jobs: { cmd: string; logDir: string; memoryMax?: string }[] = [];
     let running = true;
@@ -174,7 +174,7 @@ describe("core bundles on the box", () => {
       return { text: "started", job };
     }) as never;
     const probe = (() => ({ state: running ? "running" : "finished", tail: "" })) as never;
-    const deps = { stateDir: state, repo: join(home, "repo"), changes, land, exec, on: () => true, startJob, probe };
+    const deps = { stateDir: state, repo: join(home, "repo"), changes, exec, on: () => true, startJob, probe };
     expect(core.publishTick(deps)).toContain("building core from main cccccccccccc");
     expect(calls.some((c) => c[0] === "systemd-run")).toBe(false);
     expect(jobs).toHaveLength(1);
@@ -184,18 +184,43 @@ describe("core bundles on the box", () => {
     // While it builds, nothing else starts.
     expect(core.publishTick(deps)).toContain("building");
     expect(jobs).toHaveLength(1);
-    // Its result: the bundle lands as a keep by the gate.
-    const built = build("built", { "index.html": "<p>main c</p>" });
+    // Its result is stored, and waits for Carl: no record, the offer does not move, a Change ready card lists it.
+    const before = changes().length;
+    const offerBefore = (await getJson("/api/v2/core")).offer;
+    const built = build("built-newest", { "index.html": "<p>main c</p>" }, NEEDS, 300, "2026-11-18T00:00:01Z");
     mkdirSync(join(root, "work", main.slice(0, 12)), { recursive: true }); // the job's shell makes it
     writeFileSync(join(root, "work", main.slice(0, 12), "result.json"), JSON.stringify({ ok: true, version: built.version, sha256: built.sha256, commit: main }));
     running = false;
-    expect(core.publishTick(deps)).toBe(`landed core ${built.version} (main cccccccccccc)`);
-    expect(changes().at(-1)).toMatchObject({ change: "keep", version: built.version, by: "gate" });
-    expect(core.coreHealth(state, changes())).toMatchObject({ version: built.version, lastBuild: { state: "built", version: built.version } });
-    // The laptop fell back from it: it is never landed again for this main.
-    sup.setPluginChange(A.path, { plugin: CORE_PART, change: "switch", by: "auto", reason: "threw before it was ready" }, "auto");
+    expect(core.publishTick(deps)).toBe(`built core ${built.version} (main cccccccccccc): Change ready on the laptop`);
+    expect(changes().length).toBe(before);
+    expect((await getJson("/api/v2/core")).offer).toEqual(offerBefore);
     expect(core.publishTick(deps)).toBe("up to date");
-    expect(core.coreOffer(state, changes())?.version).not.toBe(built.version);
+    expect(changes().length).toBe(before);
+    const [card] = await cards();
+    expect(card).toMatchObject({ plugin: CORE_PART, name: "App core", version: built.version, tryOn: ["laptop"], core: { sha256: built.sha256, commit: COMMIT, commitTime: 300, needs: NEEDS, boxApi: CORE_BOX_API } });
+    expect(card!.what).toContain(`main ${COMMIT.slice(0, 12)}`);
+    // The phone lists it too (Keep / Discard there; Try only on the laptop).
+    expect((await getJson("/api/v2/changes?surface=phone")).changes.some((c: { plugin: string }) => c.plugin === CORE_PART)).toBe(true);
+    // Keep (Carl's word): the core every laptop runs; the card goes.
+    const from = core.coreOffer(state, changes())?.version ?? "built-in";
+    expect((await post("/api/v2/supervisor", { plugin: CORE_PART, change: "keep", version: built.version })).status).toBe(200);
+    expect(changes().at(-1)).toMatchObject({ change: "keep", version: built.version, from, by: "carl" });
+    expect((await getJson("/api/v2/core")).offer.version).toBe(built.version);
+    expect(await cards()).toEqual([]);
+    // Switch back: what the Keep replaced; the bundle switched away from is never offered again.
+    expect((await post("/api/v2/supervisor", { plugin: CORE_PART, change: "switch" })).status).toBe(200);
+    expect(changes().at(-1)).toMatchObject({ change: "switch", version: from, from: built.version });
+    expect(core.coreOffer(state, changes())?.version ?? "built-in").toBe(from);
+    expect(await cards()).toEqual([]);
+    // A newer build: a card again; Discard drops it (nothing lands).
+    const next = build("built-newest-2", { "index.html": "<p>main d</p>" }, NEEDS, 400, "2026-11-18T00:00:02Z");
+    expect((await cards()).map((c) => c.version)).toEqual([next.version]);
+    expect((await post("/api/v2/supervisor", { plugin: CORE_PART, change: "discard", version: next.version })).status).toBe(200);
+    expect(await cards()).toEqual([]);
+    expect(core.coreOffer(state, changes())?.version ?? "built-in").toBe(from);
+    // One needing a newer box API is never a card.
+    build("built-newest-3", { "index.html": "<p>future</p>" }, { ...NEEDS, boxApi: CORE_BOX_API + 1 }, 500, "2026-11-18T00:00:03Z");
+    expect(await cards()).toEqual([]);
   });
 
   it("a failed build is given up after two tries", () => {
@@ -203,7 +228,7 @@ describe("core bundles on the box", () => {
     let runs = 0;
     const exec = (cmd: string) => (cmd === "git" ? { status: 0, stdout: main, stderr: "" } : { status: 0, stdout: "", stderr: "" });
     const startJob = (() => (runs++, { text: "started", job: { id: `j${runs}`, name: "core", command: "", startedAt: 0, timeoutS: 1, state: "running" } })) as never;
-    const deps = { stateDir: state, repo: join(home, "repo"), changes: () => sup.supervisorOf(A.path).changes(CORE_PART), land: () => ({ ok: true }), exec, on: () => true, startJob, probe: (() => ({ state: "finished", tail: "" })) as never };
+    const deps = { stateDir: state, repo: join(home, "repo"), changes: () => sup.supervisorOf(A.path).changes(CORE_PART), exec, on: () => true, startJob, probe: (() => ({ state: "finished", tail: "" })) as never };
     for (let i = 0; i < 6; i++) {
       core.publishTick(deps);
       mkdirSync(join(root, "work", main.slice(0, 12)), { recursive: true });
@@ -248,6 +273,8 @@ describe("what a bundle needs, and what the laptop takes", () => {
     expect(nextCoreStep({ ...base, shell: { ...shell, commands: ["app_ready"] } })).toMatchObject({ kind: "stay", why: expect.stringContaining("read_text_file") });
     expect(nextCoreStep({ ...base, boxApi: null }).kind).toBe("stay");
     expect(nextCoreStep({ ...base, offer: null }).kind).toBe("stay");
+    // Switched back to the installed app's own core (no box bundle in effect): the laptop runs its baked one.
+    expect(nextCoreStep({ ...base, offer: null, active: "87654321" }).kind).toBe("baked");
   });
 });
 

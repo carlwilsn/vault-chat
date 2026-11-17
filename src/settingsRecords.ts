@@ -87,8 +87,8 @@ export const SETTINGS = {
   corePublish: {
     applies: "box",
     kind: "boolean",
-    default: false,
-    description: "Whether the box builds the laptop app's core (its frontend) from each accepted main and offers it to the laptop with no installer (server/coreBundles.ts). Off (the default) until Carl says yes: nothing is built, landed or offered; the installed app's own core runs.",
+    default: true,
+    description: "Whether the box builds the laptop app's core (its frontend) from each accepted main and offers it to the laptop as Change ready, with no installer (server/coreBundles.ts): Try swaps it into his windows, Keep makes it current, Switch back returns. Off: nothing is built, landed or offered; the installed app's own core runs.",
   },
   chatSidebar: {
     applies: "window",

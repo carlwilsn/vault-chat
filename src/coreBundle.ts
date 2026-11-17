@@ -3,13 +3,18 @@
 // bundle baked into the installer as its last resort. Only native changes (Rust commands, plugins, the WebView shell,
 // the installer) still need a release.
 //
-//   build    the box, after main moves, only while Carl's setting corePublish is on (default off; server/coreBundles.ts
+//   build    the box, after main moves, while Carl's setting corePublish is on (the default; server/coreBundles.ts
 //            starts scripts/core-publish.ts through the StartJob path, outside the server's memory): `vite build` of that
 //            commit into <state>/core-bundles/<version>/, with manifest.json.
+//   offer    a new bundle is a Change ready card (the part app/core, GET /api/v2/changes), like a plugin's draft: Try runs
+//            it in Carl's windows (src/coreFollow.ts tryCore: the loader serves it, the old screen stays painted until
+//            the new one is up, and the open chat, its scroll, the composer draft and the panes come back:
+//            src/coreSwap.ts), Keep makes it the core every launch runs, Discard drops it, Switch back returns to the
+//            core the Keep replaced.
 //   version  the first 8 hex digits of the manifest's sha256 (the same shape as a plugin copy's version); the full
 //            sha256 travels with it and the loader checks it, and every file's own sha256, before it keeps a copy.
-//   record   the existing plugin.change record for the part `app/core` (src/pluginDrafts.ts): a keep by "gate" lands a
-//            new bundle, a switch by "auto" is the laptop's loader falling back. The loader's cache only mirrors it.
+//   record   the existing plugin.change record for the part `app/core` (src/pluginDrafts.ts): Carl's keep lands a new
+//            bundle, a switch by "auto" is the laptop's loader falling back. The loader's cache only mirrors it.
 //   needs    the manifest says what the bundle needs: the native commands it invokes and the shell plugins it imports
 //            (scanned from its source at build time), and the box API (CORE_BOX_API of its commit). The loader refuses a
 //            bundle whose commands the installed shell lacks, and the laptop one whose box API the box does not serve.
@@ -29,6 +34,8 @@
 // Shared by the app, the box and the build script: no imports.
 
 export const CORE_PART = "app/core";
+/** What Carl calls it on the Change ready card. */
+export const CORE_NAME = "App core";
 /** The box API this source needs (bundle) or serves (box). Raise it when the frontend starts to depend on a box route
  *  or record shape older boxes lack: a box below the bundle's number is never offered that bundle. */
 export const CORE_BOX_API = 1;
@@ -48,6 +55,8 @@ export type CoreManifest = {
   needs: CoreNeeds;
   files: CoreFile[];
 };
+/** A bundle waiting for Carl (the Change ready card's `core`): how to fetch and check it, and whether this laptop can run it. */
+export type CoreCandidate = { sha256: string; commit: string; commitTime: number; needs: CoreNeeds; boxApi: number };
 /** What the box offers: the bundle in effect and how to check it. */
 export type CoreOffer = { version: string; sha256: string; commit: string; commitTime: number; needs: CoreNeeds; seq: number };
 
@@ -127,7 +136,8 @@ export function nextCoreStep(o: {
   boxApi: number | null;
 }): CoreStep {
   const { offer } = o;
-  if (!offer) return { kind: "stay", why: "the box offers no core bundle" };
+  // No box bundle in effect (none kept yet, or Carl switched back to the installed app's own): the baked core.
+  if (!offer) return o.active ? { kind: "baked", why: "the box's core is the installed app's own" } : { kind: "stay", why: "the box offers no core bundle" };
   if (offer.version === o.active) return { kind: "stay", why: "running it already" };
   if (o.bad.includes(offer.version)) return { kind: "stay", why: `${offer.version} failed here before` };
   if (o.bakedCommitTime !== null && offer.commitTime <= o.bakedCommitTime) {

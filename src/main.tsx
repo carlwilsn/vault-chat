@@ -103,6 +103,13 @@ if (isDriveWindow) {
   // A self-test launch (VC_SELFTEST in the environment, src-tauri/src/self_test.rs): run its steps in this window
   // and exit. Every other launch: the native side says no and nothing happens.
   void import("./selfTest").then((m) => m.startSelfTestIfAsked()).catch((e) => console.warn("[selftest]", e));
+  // A core swap just loaded this bundle (src/coreSwap.ts): put the chat, its scroll, the draft and the panes back, then
+  // let the old screen's picture go. Nothing is loaded for it on an ordinary launch.
+  try {
+    if (sessionStorage.getItem("vc.coreSwap") || sessionStorage.getItem("vc.coreSwapShot")) void import("./coreSwap").then((m) => m.restoreAfterSwap());
+  } catch {
+    /* no storage */
+  }
   // The core bundle the box built from accepted main (src/coreFollow.ts): fetched and taken with no installer, once the
   // first screen is interactive (never on the launch path).
   void import("./laptopPerf")

@@ -5,13 +5,16 @@
 //
 //   store     <state>/core-bundles/<version>/manifest.json + files/<path> (outside every vault), written by
 //             scripts/core-publish.ts; <state>/core-bundles/work/<commit12>/ is a build's scratch and its result.json.
-//   publisher OFF unless Carl's setting corePublish is true (default false): while off nothing is built, no bundle
-//             lands (a keep on app/core is refused) and none is offered as current; the laptop runs its installed core.
-//             On: every minute, main of the vault-chat repo on this box (VC_CORE_REPO, default ~/vc/projects/vault-chat;
+//   publisher on while Carl's setting corePublish is true (the default; false: nothing is built, no bundle lands (a
+//             keep on app/core is refused) and none is offered; the laptop runs its installed core).
+//             Every minute, main of the vault-chat repo on this box (VC_CORE_REPO, default ~/vc/projects/vault-chat;
 //             VC_CORE_PUBLISH=0 turns it off for good). A new main starts one build through the existing StartJob path
 //             (server/engine/jobs.ts startJobWith: its memory ceiling, low CPU/IO share, outside this server's memory: a
-//             vite build takes ~3.6 GB). Its result lands the bundle (a keep by "gate"), unless the bundle needs a newer
-//             box API than this server serves (then it waits). Two failed builds of one commit: given up.
+//             vite build takes ~3.6 GB). Two failed builds of one commit: given up.
+//   offer     a built bundle never lands by itself: the newest one nobody decided on is a Change ready card for the part
+//             app/core (pendingCore, listed by GET /api/v2/changes like a plugin's draft). Try runs it in Carl's windows
+//             only (the laptop's loader serves it; src/coreFollow.ts tryCore), Keep is a plugin.change keep (it becomes
+//             the core every window and launch runs), Discard drops it, Switch back returns to what the Keep replaced.
 //   routes    GET /api/v2/core: the offer (the version in effect, its sha256, needs), this box's API, recent builds.
 //             GET /api/v2/core/<version>/manifest.json, GET /api/v2/core/<version>/files/<path>: the bundle's bytes.
 //             A switch (the laptop's loader fell back, or the agent's word) is a plugin.change through /api/v2/supervisor.
@@ -20,8 +23,9 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { BUILT_IN, landing, type ChangeKind, type ChangeRecord } from "../src/pluginDrafts";
-import { CORE_BOX_API, CORE_PART, CORE_VERSION_RE, manifestProblem, safeCorePath, type CoreManifest, type CoreOffer } from "../src/coreBundle";
+import { BUILT_IN, decision, landing, type ChangeKind, type ChangeRecord } from "../src/pluginDrafts";
+import { CORE_BOX_API, CORE_NAME, CORE_PART, CORE_VERSION_RE, manifestProblem, safeCorePath, type CoreManifest, type CoreOffer } from "../src/coreBundle";
+import type { BoxPendingChange } from "../src/changeCards";
 import { probeJob, readJobs, startJobWith, type JobEnv } from "./engine/jobs";
 
 export const coreRoot = (stateDir: string) => join(stateDir, "core-bundles");
@@ -111,8 +115,33 @@ export function coreLanding(stateDir: string, changes: readonly ChangeRecord[], 
   return { ok: true, version, from: now, text: `${version} will not land` };
 }
 
+/**
+ * The core bundle waiting for Carl (Change ready), or null: the newest stored bundle, unless it is the one in effect, was
+ * kept or discarded, was switched away from (it failed somewhere, or Carl went back from it), or needs a newer box API.
+ * Older undecided bundles are never offered: the newest carries every fix before it.
+ */
+export function pendingCore(stateDir: string, changes: readonly ChangeRecord[], on = true): BoxPendingChange | null {
+  if (!on) return null;
+  const newest = storedCores(stateDir)[0];
+  if (!newest) return null;
+  const v = newest.version;
+  if (landing(changes)?.version === v || decision(changes, v) !== null || changes.some((c) => c.change === "switch" && c.from === v)) return null;
+  const m = newest.manifest;
+  if (m.needs.boxApi > CORE_BOX_API) return null;
+  return {
+    plugin: CORE_PART,
+    name: CORE_NAME,
+    what: `the app's frontend from main ${m.commit.slice(0, 12)} (${new Date(m.commitTime * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC)`,
+    version: v,
+    added: false,
+    tryOn: ["laptop"],
+    core: { sha256: newest.sha256, commit: m.commit, commitTime: m.commitTime, needs: m.needs, boxApi: CORE_BOX_API },
+  };
+}
+
 // ---------------------------------------------------------------- the publisher
 
+/** "waiting": written by older boxes (a built bundle that needed a newer box); read as built. */
 type Attempt = { commit: string; at: number; tries: number; state: "building" | "built" | "failed" | "waiting"; version?: string; error?: string; job?: string };
 type PubState = { attempts: Attempt[] };
 const pubFile = (stateDir: string) => join(coreRoot(stateDir), "publisher.json");
@@ -143,8 +172,6 @@ export type PublisherDeps = {
   repo: string;
   /** The app/core change records now (the main vault's supervisor). */
   changes: () => readonly ChangeRecord[];
-  /** Land a built bundle: a plugin.change keep by "gate" (supervisor.ts setPluginChange). */
-  land: (version: string, reason: string) => { ok: boolean; error?: string };
   exec?: Exec;
   now?: () => number;
   /** How long one build may run (default 40 min). */
@@ -175,7 +202,8 @@ export function buildShell(repo: string, commit: string, root: string): string {
   ].join("\n");
 }
 
-/** One look: start a build for a new main, or take a finished build's result. Returns what it did (for the log). */
+/** One look: start a build for a new main, or take a finished build's result (stored: it waits for Carl as Change
+ *  ready, it never lands by itself). Returns what it did (for the log). */
 export function publishTick(d: PublisherDeps): string {
   if (!d.on()) return "off";
   const exec = d.exec ?? realExec;
@@ -214,25 +242,9 @@ export function publishTick(d: PublisherDeps): string {
     running.state = "built";
     running.version = r.version;
     writePublisher(d.stateDir, st);
+    pruneCores(d.stateDir, d.changes());
+    return `built core ${r.version} (main ${running.commit.slice(0, 12)}): Change ready on the laptop`;
   }
-  // A built (or waiting) bundle of the newest commit lands, unless the box is too old for it.
-  const last = [...st.attempts].reverse().find((a) => (a.state === "built" || a.state === "waiting") && a.version);
-  if (last?.version && landing(d.changes())?.version !== last.version && !d.changes().some((c) => (c.version === last.version && c.change === "discard") || (c.change === "switch" && c.from === last.version))) {
-    const m = readCoreManifest(d.stateDir, last.version);
-    if (m && m.manifest.needs.boxApi > CORE_BOX_API) {
-      if (last.state !== "waiting") {
-        last.state = "waiting";
-        writePublisher(d.stateDir, st);
-      }
-    } else if (m) {
-      const w = d.land(last.version, `built from accepted main ${last.commit.slice(0, 12)} on the box`);
-      last.state = w.ok ? "built" : last.state;
-      if (!w.ok) last.error = w.error;
-      writePublisher(d.stateDir, st);
-      if (w.ok) return `landed core ${last.version} (main ${last.commit.slice(0, 12)})`;
-    }
-  }
-  if (running && running.state === "building") return "building";
   // A new main: one build at a time, MAX_TRIES per commit.
   const tried = st.attempts.filter((a) => a.commit === main);
   if (tried.some((a) => a.state !== "failed") || tried.length >= MAX_TRIES) return "up to date";

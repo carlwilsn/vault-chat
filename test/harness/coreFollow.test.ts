@@ -104,3 +104,66 @@ test("the box's core publishing turned off: back to the installed app's own core
   assert.equal(r.did, "swapped");
   assert.deepEqual(t.calls.at(-1), { cmd: "core_use", args: { version: null } });
 });
+
+// ---------------------------------------------------------------- Change ready: Try, Back, a tried bundle that fails
+
+test("while Carl tries a bundle (Change ready), following leaves it running: no swap to the kept core under him", async () => {
+  const t = deps({ status: status({ active: "77778888" }), offer: null });
+  t.d.tried = () => "77778888";
+  const r = await followCoreOnce(t.d, { swap: true, now: true });
+  assert.equal(r.did, "nothing");
+  assert.match((r.step as { why: string }).why, /trying 77778888/);
+  assert.ok(!t.cmds().includes("core_use"));
+});
+
+test("a tried bundle the loader fell back from is discarded by itself (with why), and the core in effect runs", async () => {
+  const ev = { from: "77778888", to: "built-in", reason: "did not say ready within 30 s", at_ms: 1 };
+  const t = deps({ status: status({ active: "built-in", events: [ev], bad: ["77778888"] }), offer: null });
+  let tried: string | null = "77778888";
+  const failed: [string, string][] = [];
+  t.d.tried = () => tried;
+  t.d.triedFailed = (v, why) => {
+    failed.push([v, why]);
+    tried = null;
+  };
+  const r = await followCoreOnce(t.d, { swap: true });
+  assert.deepEqual(failed, [["77778888", "the loader fell back from it: did not say ready within 30 s"]]);
+  assert.deepEqual(t.posts, [], "not a switch of the kept core: the tried one was never kept");
+  assert.equal(r.did, "nothing");
+});
+
+test("Back / Discard / Switch back (now): the core in effect is taken at once, busy or not, after the screen is kept", async () => {
+  const t = deps({ status: status({ active: "77778888" }), offer: null, quiet: false });
+  const order: string[] = [];
+  t.d.beforeSwap = async () => void order.push("kept the screen");
+  const native = t.d.native;
+  t.d.native = async (cmd, args) => (cmd === "core_use" && order.push("core_use"), native(cmd, args));
+  const r = await followCoreOnce(t.d, { swap: true, now: true });
+  assert.equal(r.did, "swapped");
+  assert.deepEqual(order, ["kept the screen", "core_use"]);
+  assert.deepEqual(t.calls.at(-1), { cmd: "core_use", args: { version: null } });
+  // Not asked for (the periodic look) while he is busy: it waits.
+  const later = deps({ status: status({ active: "77778888" }), offer: null, quiet: false });
+  assert.equal((await followCoreOnce(later.d, { swap: true })).did, "waiting");
+});
+
+test("Try: the loader fetches and checks the bundle, the screen is kept, then it loads; one this laptop can't run is refused with why", async () => {
+  const { tryCore, candidateProblem } = await import("../../src/coreFollow.ts");
+  const c = { sha256: OFFER.sha256, commit: OFFER.commit, commitTime: 300, needs: OFFER.needs, boxApi: CORE_BOX_API };
+  const t = deps();
+  const order: string[] = [];
+  t.d.beforeSwap = async () => void order.push("kept the screen");
+  const native = t.d.native;
+  t.d.native = async (cmd, args) => (order.push(cmd), native(cmd, args));
+  await tryCore("abcd1234", c, t.d);
+  assert.deepEqual(order, ["core_status", "core_install", "kept the screen", "core_use"]);
+  assert.deepEqual(t.calls.find((x) => x.cmd === "core_install")!.args, { baseUrl: "https://box.example.ts.net", token: "t", version: "abcd1234", sha256: OFFER.sha256 });
+  assert.deepEqual(t.calls.at(-1), { cmd: "core_use", args: { version: "abcd1234" } });
+  const s = status();
+  assert.equal(candidateProblem("abcd1234", c, s), null);
+  assert.match(String(candidateProblem("abcd1234", { ...c, needs: { ...c.needs, commands: ["brand_new"] } }, s)), /newer installed app/);
+  assert.match(String(candidateProblem("abcd1234", { ...c, commitTime: 50 }, s)), /installed app's own core/);
+  assert.match(String(candidateProblem("abcd1234", c, { ...s, bad: ["abcd1234"] })), /failed here before/);
+  await assert.rejects(tryCore("abcd1234", c, deps({ status: null }).d), /no core loader/);
+  await assert.rejects(tryCore("abcd1234", { ...c, commitTime: 50 }, deps().d), /installed app's own core/);
+});

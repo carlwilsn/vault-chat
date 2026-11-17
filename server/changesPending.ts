@@ -6,6 +6,7 @@
 //   - a vault plugin's draft (.vault-chat/plugins/<name>.draft.js; `added` when no live file is there yet),
 //   - a box plugin's draft (.vault-chat/box-plugins/<name>.draft.js, server/boxPlugins.ts; the laptop also reads these),
 //   - a migration draft (.vault-chat/migrations/<name>.draft.js, server/migrations.ts: a plugin's state reshaped),
+//   - the app's core bundle the box built from main (server/coreBundles.ts pendingCore, part app/core),
 //   - the agent's draft of Carl's settings (setting.draft in the main log).
 // Carl's word goes through the same POST /api/v2/supervisor as the laptop's (a plugin.change / setting.change record),
 // so a decision on any surface clears the card on every one.
@@ -24,9 +25,11 @@ import { SETTINGS_DRAFT_ID, SETTINGS_DRAFT_NAME, describeValues, pendingSettings
 import { VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES, parseVaultPluginMeta, vaultPluginDevices } from "../src/vaultPlugins";
 import { slotCode } from "./pluginDrafts";
 import { pendingMigrations } from "./migrations";
+import { coreStateDir, coreVault, pendingCore } from "./coreBundles";
+import { CORE_PART } from "../src/coreBundle";
 import { supervisorOf } from "./supervisor";
 import { surfaceOff, type Surface } from "./surfaces";
-import { readSettings } from "./settings";
+import { readSetting, readSettings } from "./settings";
 import type { BoxPendingChange, ChangeSurface } from "../src/changeCards";
 
 /** The same name the laptop's notice gives the preset. */
@@ -39,6 +42,14 @@ function settingsNow(): SettingsState | null {
     return readSettings();
   } catch {
     return null; // no main log configured (a bare test box): no settings drafts
+  }
+}
+
+function corePublishOn(): boolean {
+  try {
+    return readSetting("corePublish") === true;
+  } catch {
+    return false;
   }
 }
 
@@ -100,6 +111,13 @@ export function pendingOnBox(vault: string, surface: ChangeSurface = "laptop", s
     const code = slotCode(vault, slot);
     const v = code.draft !== undefined ? draftPending(code, sup.changes(slot.plugin)) : null;
     if (v) out.push({ plugin: slot.plugin, name: `Box: ${name}`, what: draftWhat(code.draft!), version: v, added: code.live === undefined, tryOn: ["laptop"] });
+  }
+  // The app's core (server/coreBundles.ts): the newest bundle the box built from main, one for the box (the main
+  // vault's records), tried in the laptop's windows only.
+  const coreDir = coreStateDir();
+  if (coreDir) {
+    const c = pendingCore(coreDir, supervisorOf(coreVault() ?? vault).changes(CORE_PART), corePublishOn());
+    if (c) out.push(c);
   }
   // Migration drafts (src/migrations.ts): a plugin's state reshaped; Try runs it on a copy of real data (the laptop).
   out.push(...pendingMigrations(vault));

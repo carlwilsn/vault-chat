@@ -24,6 +24,8 @@ export type BoxPendingChange = {
   code?: string;
   /** A migration draft (src/migrations.ts): whose state it reshapes. Try runs it on a copy and shows a summary. */
   migration?: { target: string | null };
+  /** The app's core bundle (src/coreBundle.ts, part app/core): how the laptop's loader fetches and checks it. */
+  core?: { sha256: string; commit: string; commitTime: number; needs: { commands: string[]; plugins: string[]; boxApi: number }; boxApi: number };
 };
 
 export type ChangeWord = "keep" | "discard" | "switch";

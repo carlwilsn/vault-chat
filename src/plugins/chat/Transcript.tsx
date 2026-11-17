@@ -318,6 +318,7 @@ export function Transcript() {
       {!inOwnBar && <ChatHeaderSlot />}
       <div
         className="flex-1 min-h-0 overflow-auto px-3 py-4 pb-8 relative"
+        data-el="chat-scroll"
         ref={scrollRef}
         onScroll={onScroll}
         onWheel={() => { heldScrollRef.current = null; }}

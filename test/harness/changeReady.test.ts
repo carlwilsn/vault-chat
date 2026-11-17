@@ -515,3 +515,101 @@ export function migrate(old) {
   fs.rmSync(dir, { recursive: true, force: true });
   fs.rmSync(backups, { recursive: true, force: true });
 });
+
+test("the app's core: a bundle the box built is a Change ready card; Try has the loader run it in Carl's windows, Keep makes it current, Switch back returns, Discard drops it; a tried bundle that fails is discarded by itself", async () => {
+  CR._resetChangeReady();
+  await loadSupervisor(true);
+  const { configureCore, coreOffer } = await import("../../server/coreBundles.ts");
+  const { storeCore } = await import("../../scripts/core-publish.ts");
+  const { CORE_PART, CORE_BOX_API } = await import("../../src/coreBundle.ts");
+  const state = fs.mkdtempSync(path.join(fs.realpathSync(path.dirname(vault)), "vc-core-state-"));
+  configureCore({ stateDir: state, vault });
+  const needs = { commands: ["app_ready"], plugins: ["dialog"], boxApi: CORE_BOX_API };
+  const bundle = (n: string, at: string) => {
+    const dist = path.join(state, `dist-${n}`);
+    fs.mkdirSync(dist, { recursive: true });
+    fs.writeFileSync(path.join(dist, "index.html"), `<p>${n}</p>`);
+    return storeCore(path.join(state, "core-bundles"), dist, { commit: "e".repeat(40), commitTime: 400, needs, builtAt: at });
+  };
+  // The loader's side: what it was asked to do (the native app is not here).
+  const acts: string[] = [];
+  CR._setCoreRunsHere(async () => true);
+  CR._setCoreActs({ tryCore: async (v) => void acts.push(`try ${v}`), followNow: async () => void acts.push("follow now") });
+  const a = bundle("a", "2026-11-18T00:00:01Z");
+  await CR.refreshBoxDrafts();
+  const card = CR.pendingChanges().find((c) => c.plugin === CORE_PART);
+  assert.deepEqual({ ...card, what: undefined }, { plugin: CORE_PART, name: "App core", what: undefined, version: a.version, added: false, triable: true, core: { sha256: a.sha256, commit: "e".repeat(40), commitTime: 400, needs, boxApi: CORE_BOX_API } });
+  assert.match(card!.what, /the app's frontend from main eeeeeeeeeeee/);
+
+  // The card: Try (the loader runs it here; nothing on the box changes), then Keep.
+  const notice = document.createElement("div") as unknown as HTMLElement;
+  const root = createRoot(notice);
+  await act(async () => root.render(createElement(ChangeReady)));
+  await waitFor("the core's card", () => /frontend from main/.test(text(notice.querySelector('[data-el="change-ready-title"]'))));
+  const posted = posts.length;
+  await click(notice, "change-try");
+  await waitFor("tried", () => acts.includes(`try ${a.version}`));
+  assert.equal(CR.triedVersion(CORE_PART), a.version);
+  assert.equal(posts.length, posted, "Try writes nothing");
+  await waitFor("the trying card", () => !!notice.querySelector('[data-el="change-keep"]'));
+  await click(notice, "change-keep");
+  await waitFor("kept", () => posts.length > posted);
+  assert.deepEqual(posts.at(-1), { plugin: CORE_PART, change: "keep", version: a.version, by: "carl" });
+  await loadSupervisor(true);
+  await CR.refreshBoxDrafts();
+  assert.equal(CR.pendingChanges().some((c) => c.plugin === CORE_PART), false, "kept: no card");
+  assert.equal(CR.triedVersion(CORE_PART), null, "kept: it runs as the core, not as a try");
+  const { supervisorOf } = await import("../../server/supervisor.ts");
+  assert.equal(coreOffer(state, supervisorOf(vault).changes(CORE_PART))?.version, a.version, "the box offers it as current");
+  assert.equal(CR.canSwitchBack(CORE_PART), true);
+
+  // Switch back (the outcome's link): a record, and the loader runs what it replaced at once.
+  await waitFor("the switch back link", () => !!notice.querySelector('[data-el="change-switch-back"]'));
+  acts.length = 0;
+  await click(notice, "change-switch-back");
+  await waitFor("switched", () => acts.includes("follow now"));
+  assert.deepEqual(posts.at(-1), { plugin: CORE_PART, change: "switch", by: "carl" });
+  assert.equal(coreOffer(state, supervisorOf(vault).changes(CORE_PART)), null, "back to the installed app's own core");
+  await loadSupervisor(true);
+  await CR.refreshBoxDrafts();
+  assert.equal(CR.pendingChanges().some((c) => c.plugin === CORE_PART), false, "a bundle switched away from is not offered again");
+
+  // A newer build: Try, then Back (stop trying): the loader runs the core in effect again; nothing is written.
+  const b = bundle("b", "2026-11-18T00:00:02Z");
+  await CR.refreshBoxDrafts();
+  await waitFor("the new card", () => CR.pendingChanges().some((c) => c.plugin === CORE_PART && c.version === b.version));
+  acts.length = 0;
+  const before = posts.length;
+  CR.tryChange(CORE_PART, b.version);
+  await waitFor("tried b", () => acts.includes(`try ${b.version}`));
+  CR.stopTrying(CORE_PART);
+  await waitFor("back", () => acts.includes("follow now"));
+  assert.equal(posts.length, before);
+  assert.equal(CR.triedVersion(CORE_PART), null);
+
+  // Tried again, and the loader fell back from it (no ready in 30 s): discarded by itself, the card says why.
+  CR.tryChange(CORE_PART, b.version);
+  CR.autoDiscard(CORE_PART, b.version, "the loader fell back from it: did not say ready within 30 s");
+  await waitFor("discarded", () => posts.at(-1)?.change === "discard");
+  assert.deepEqual(posts.at(-1), { plugin: CORE_PART, change: "discard", version: b.version, by: "auto", reason: "the loader fell back from it: did not say ready within 30 s" });
+  assert.match(String(CR.lastOutcome()?.text), /^Discarded by itself: the loader fell back/);
+  await loadSupervisor(true);
+  await CR.refreshBoxDrafts();
+  assert.equal(CR.pendingChanges().some((c) => c.plugin === CORE_PART), false);
+
+  // A loader that can't run it (an older installed app): no card; a Try the loader refuses says why and stops trying.
+  const c = bundle("c", "2026-11-18T00:00:03Z");
+  CR._setCoreRunsHere(async () => false);
+  await CR.refreshBoxDrafts();
+  assert.equal(CR.pendingChanges().some((p) => p.plugin === CORE_PART), false);
+  CR._setCoreRunsHere(async () => true);
+  CR._setCoreActs({ tryCore: async () => { throw new Error("c needs a newer installed app (command brand_new)"); }, followNow: async () => {} });
+  await CR.refreshBoxDrafts();
+  CR.tryChange(CORE_PART, c.version);
+  await waitFor("refused", () => /^Not tried: c needs a newer installed app/.test(String(CR.lastOutcome()?.text)));
+  assert.equal(CR.triedVersion(CORE_PART), null);
+
+  await act(async () => root.unmount());
+  configureCore(null);
+  fs.rmSync(state, { recursive: true, force: true });
+});

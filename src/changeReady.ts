@@ -21,6 +21,11 @@
 // - A migration draft (src/migrations.ts, id migrate/<name>: a plugin's state reshaped) comes from the box's list like a
 //   box plugin's. Its Try changes nothing anywhere: the box runs migrate on a copy of the real state and the notice
 //   shows the before / after summary (migrationTryOf); Keep has the box back up, migrate and switch the epoch.
+// - The app's core (src/coreBundle.ts, part app/core) comes from the box's list the same way: a bundle the box built
+//   from main. Try has the native loader run it in Carl's windows (src/coreFollow.ts tryCore: the screen is kept across
+//   the load, src/coreSwap.ts); Keep makes it the core every launch runs (the record; it runs already); Back, Discard
+//   and Switch back have the loader run the core in effect again at once (followCoreNow). A tried bundle that does not
+//   come up is the loader's to fall back from (30 s, a throw), and it is discarded by "auto" like a failing draft.
 import { useMemo, useSyncExternalStore } from "react";
 import { useStore } from "./store";
 import { appPluginFolder, LIVE_APP_PLUGINS } from "./appPluginLive";
@@ -33,6 +38,8 @@ import { PRESET_DRAFT_FILE, PRESET_PLUGIN_ID, parseDraft } from "./appPreset";
 import { SETTINGS_DRAFT_ID, SETTINGS_DRAFT_NAME, describeValues, pendingSettingsDraft, triable as settingsTriable, windowValues } from "./settingsRecords";
 import { onPickWhileTrying, onSettingsDrafts, refreshBoxSettings, setSettingsTry, settingsDraftsNow, settingsDraftsVersion } from "./settings";
 import { isMigrationId, summaryLine, type MigrationSummary } from "./migrations";
+import { CORE_NAME, CORE_PART, type CoreCandidate } from "./coreBundle";
+import { provideCoreTrying } from "./coreFollow";
 import { BUILT_IN, KEEP_WATCH_MS, TRY_SLOW_MS, draftPending, draftWhat, landing, slowMedian, watchedKeep, type ChangeRecord, type SlotCode } from "./pluginDrafts";
 
 export const CHANGES_PLUGIN = { id: "app/changes", name: "Change ready" } as const;
@@ -180,6 +187,41 @@ export function boxTries(): Record<string, string> {
 provideBoxTries(boxTries);
 provideNewChatTries(boxTries);
 
+/** Whether this laptop's loader can run a core bundle waiting on the box (tests replace it). */
+let coreRunsHere = async (version: string, c: CoreCandidate): Promise<boolean> => {
+  try {
+    const m = await import("./coreFollow");
+    const s = await m.coreStatus();
+    // The bundle Carl tries runs here already: it stays on the card.
+    return !!s && (s.active === version || m.candidateProblem(version, c, s) === null);
+  } catch {
+    return false;
+  }
+};
+/** Tests: what the loader says about a core bundle. */
+export function _setCoreRunsHere(fn: typeof coreRunsHere): void {
+  coreRunsHere = fn;
+}
+
+/** The loader's side of a core change (src/coreFollow.ts); tests replace it. */
+type CoreActs = { tryCore: (version: string, c: CoreCandidate) => Promise<void>; followNow: () => Promise<unknown> };
+let coreActs: CoreActs = {
+  tryCore: async (version, c) => {
+    const m = await import("./coreFollow");
+    await m.tryCore(version, c, await m.defaultDeps());
+  },
+  followNow: async () => (await import("./coreFollow")).followCoreNow(),
+};
+provideCoreTrying({ tried: () => triedVersion(CORE_PART), triedFailed: (version, why) => autoDiscard(CORE_PART, version, why) });
+/** Tests: the loader's side. */
+export function _setCoreActs(a: CoreActs): void {
+  coreActs = a;
+}
+/** After Back / Discard / Switch back of the core: the loader runs what is in effect now. */
+const coreFollowNow = (plugin: string) => {
+  if (plugin === CORE_PART) void coreActs.followNow().catch((e) => console.warn("[core] follow failed:", e));
+};
+
 /** Read the box plugins' drafts from the box. A tried one that is gone stops being tried (discarded by itself: said). */
 export async function refreshBoxDrafts(): Promise<void> {
   const v = useStore.getState().vaultPath;
@@ -193,7 +235,14 @@ export async function refreshBoxDrafts(): Promise<void> {
   }
   if (useStore.getState().vaultPath !== v || !Array.isArray(r?.changes)) return;
   const list: PendingChange[] = [];
-  for (const c of r.changes as Record<string, unknown>[])
+  for (const c of r.changes as Record<string, unknown>[]) {
+    if (c?.plugin === CORE_PART && typeof c.version === "string" && c.core && typeof c.core === "object") {
+      // Only a bundle this laptop's loader can run (an app with the loader, the shell's commands, newer than its own).
+      const core = c.core as CoreCandidate;
+      if (!(await coreRunsHere(c.version, core))) continue;
+      list.push({ plugin: CORE_PART, name: CORE_NAME, what: String(c.what ?? ""), version: c.version, added: false, triable: true, core });
+      continue;
+    }
     if (typeof c?.plugin === "string" && (c.plugin.startsWith("box/") || isMigrationId(c.plugin)) && typeof c.version === "string")
       list.push({
         plugin: c.plugin,
@@ -204,9 +253,13 @@ export async function refreshBoxDrafts(): Promise<void> {
         triable: true,
         ...(isMigrationId(c.plugin) ? { migration: { target: typeof (c.migration as { target?: unknown } | undefined)?.target === "string" ? String((c.migration as { target: string }).target) : null } } : {}),
       });
+  }
+  if (useStore.getState().vaultPath !== v) return;
   for (const [plugin, version] of Object.entries(followTries())) {
-    if (!(plugin.startsWith("box/") || isMigrationId(plugin)) || list.some((p) => p.plugin === plugin && p.version === version)) continue;
+    if (!(plugin.startsWith("box/") || isMigrationId(plugin) || plugin === CORE_PART) || list.some((p) => p.plugin === plugin && p.version === version)) continue;
     setTried(plugin, null);
+    // A core bundle no longer waiting (kept or discarded elsewhere): the loader runs what is in effect.
+    coreFollowNow(plugin);
     const d = changesOf(plugin).filter((c) => c.change === "discard" && c.version === version).pop();
     if (d?.by === "auto") say({ plugin, name: list.find((p) => p.plugin === plugin)?.name ?? boxPending.find((p) => p.plugin === plugin)?.name ?? plugin, text: `Discarded by itself: ${d.reason ?? "it failed while tried"}`, ok: false, at: Date.now() });
   }
@@ -228,6 +281,8 @@ export type PendingChange = {
   triable: boolean;
   /** A migration draft: whose state it reshapes (Try runs it on a copy of the real state and shows the summary). */
   migration?: { target: string | null };
+  /** The app's core bundle (part app/core): how the loader fetches and checks it. */
+  core?: CoreCandidate;
 };
 
 const appName = (id: string) => APP_PLUGINS.find((p) => p.id === id)?.name ?? id.replace(/^app\//, "");
@@ -311,7 +366,7 @@ export const clearOutcome = () => {
 };
 export const lastOutcome = () => outcome;
 
-const nameOf = (plugin: string) => (plugin === SETTINGS_DRAFT_ID ? SETTINGS_DRAFT_NAME : plugin === PRESET_PLUGIN_ID ? PRESET_NAME : plugin.startsWith("app/") ? appName(plugin) : plugin.startsWith("box/") || isMigrationId(plugin) ? boxPending.find((p) => p.plugin === plugin)?.name ?? (isMigrationId(plugin) ? `Data: ${plugin.slice(8)}` : `Box: ${plugin.slice(4)}`) : vaultSlots.find((s) => s.id === plugin)?.name ?? plugin.split("/").pop() ?? plugin);
+const nameOf = (plugin: string) => (plugin === CORE_PART ? CORE_NAME : plugin === SETTINGS_DRAFT_ID ? SETTINGS_DRAFT_NAME : plugin === PRESET_PLUGIN_ID ? PRESET_NAME : plugin.startsWith("app/") ? appName(plugin) : plugin.startsWith("box/") || isMigrationId(plugin) ? boxPending.find((p) => p.plugin === plugin)?.name ?? (isMigrationId(plugin) ? `Data: ${plugin.slice(8)}` : `Box: ${plugin.slice(4)}`) : vaultSlots.find((s) => s.id === plugin)?.name ?? plugin.split("/").pop() ?? plugin);
 
 // ---------------------------------------------------------------- the actions
 
@@ -360,6 +415,17 @@ export async function tryMigration(plugin: string, version: string): Promise<Mig
 export function tryChange(plugin: string, version: string): Promise<MigrationTry> | null {
   if (plugin === SETTINGS_DRAFT_ID && !pendingChanges().some((p) => p.plugin === plugin && p.version === version && p.triable)) return null;
   say(null);
+  if (plugin === CORE_PART) {
+    const p = boxPending.find((x) => x.plugin === plugin && x.version === version);
+    if (!p?.core) return null;
+    setTried(plugin, version);
+    // The loader fetches, checks and loads it: every window loads it (the screen is kept). What stops it is said.
+    void coreActs.tryCore(version, p.core).catch((e) => {
+      setTried(plugin, null);
+      say({ plugin, name: CORE_NAME, text: `Not tried: ${String((e as Error)?.message ?? e).slice(0, 200)}`, ok: false, at: Date.now() });
+    });
+    return null;
+  }
   setTried(plugin, version);
   return isMigrationId(plugin) ? tryMigration(plugin, version) : null;
 }
@@ -376,6 +442,7 @@ async function post(body: Parameters<typeof postPluginChange>[0]): Promise<{ ok:
 export function stopTrying(plugin: string): void {
   setTried(plugin, null);
   if (migrationTry?.plugin === plugin) setMigrationTry(null);
+  coreFollowNow(plugin);
 }
 
 /** Keep a draft: the record (the box moves the files); this window stops "trying", the kept copy runs as live. */
@@ -392,6 +459,7 @@ export async function discardChange(plugin: string, version: string, opts: { by?
   setTried(plugin, null);
   if (migrationTry?.plugin === plugin) setMigrationTry(null);
   const r = await post({ plugin, change: "discard", version, by: opts.by ?? "carl", ...(opts.reason ? { reason: opts.reason } : {}) });
+  coreFollowNow(plugin);
   if (!opts.reason) say({ plugin, name: nameOf(plugin), text: r.ok ? "Discarded." : `Discard not written: ${r.text}`, ok: r.ok, at: Date.now() });
   return r;
 }
@@ -399,6 +467,7 @@ export async function discardChange(plugin: string, version: string, opts: { by?
 /** Switch back: the copy the last Keep replaced runs again (a record; undo is another switch). */
 export async function switchBack(plugin: string, by = "carl"): Promise<{ ok: boolean; text: string }> {
   const r = await post({ plugin, change: "switch", by });
+  if (r.ok) coreFollowNow(plugin);
   say({ plugin, name: nameOf(plugin), text: r.ok ? r.text : `Not switched: ${r.text}`, ok: r.ok, at: Date.now() });
   return r;
 }
@@ -419,13 +488,13 @@ export function autoDiscard(plugin: string, version: string, why: string): void 
   autoDone.add(key);
   const short = why.split("\n")[0]!.slice(0, 200);
   say({ plugin, name: nameOf(plugin), text: `Discarded by itself: ${short}`, ok: false, at: Date.now() });
-  void post({ plugin, change: "discard", version, by: "auto", reason: short });
+  void post({ plugin, change: "discard", version, by: "auto", reason: short }).then(() => coreFollowNow(plugin));
 }
 
 // ---------------------------------------------------------------- after Keep: switching back by itself
 
 /** Every plugin that can have drafts here: the app plugins with live copies and the vault plugins' slots. */
-const slotIds = (): string[] => [...LIVE_APP_PLUGINS, ...vaultSlots.map((s) => s.id), SETTINGS_DRAFT_ID];
+const slotIds = (): string[] => [...LIVE_APP_PLUGINS, ...vaultSlots.map((s) => s.id), SETTINGS_DRAFT_ID, CORE_PART];
 
 /** The keeps under watch now (src/pluginDrafts.ts watchedKeep): plugin, kept version, when the watch ends. */
 export function keepsUnderWatch(now = Date.now()): { plugin: string; version: string; until: number }[] {
@@ -451,6 +520,7 @@ export function autoRevert(plugin: string, version: string | null, why: string):
   const short = why.split("\n")[0]!.slice(0, 200);
   say({ plugin, name: nameOf(plugin), text: `Switched back by itself: ${short}`, ok: false, at: Date.now() });
   void post({ plugin, change: "switch", version: k.version, by: "auto", reason: short }).then((r) => {
+    if (r.ok) coreFollowNow(plugin);
     // Another window switched it first ("already switched"): the same outcome.
     if (!r.ok && !/already switched/.test(r.text)) return say({ plugin, name: nameOf(plugin), text: `It broke after Keep (${short}) but could not switch back: ${r.text}`, ok: false, at: Date.now() });
     // The record this notice tells of: dismissing it here dismisses it in every window.
