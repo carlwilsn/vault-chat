@@ -6154,6 +6154,17 @@ pub fn run() {
             std::thread::spawn(move || responder.respond(vault_page::respond(&request)));
         })
         .on_window_event(|window, event| {
+            // The agent's Drive window (src/driveHost.ts) belongs to the main window: it goes with it. Left alone it
+            // kept the process alive with no main window (its keep-warm timer lived in main), as an undecorated
+            // window Carl could not close (2026-11-17, v0.9.38).
+            if let tauri::WindowEvent::Destroyed = event {
+                if window.label() == "main" {
+                    use tauri::Manager;
+                    if let Some(drive) = window.app_handle().get_webview_window("vc-drive") {
+                        let _ = drive.destroy();
+                    }
+                }
+            }
             // Close-to-tray: when "run in background" is on, intercept the
             // main window's close and hide it instead of letting the app
             // exit, so the daemon (scheduler + supervisor) keeps running.

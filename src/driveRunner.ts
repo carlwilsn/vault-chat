@@ -66,6 +66,19 @@ export function installDriveRunner(): void {
       runs.delete(m.reqId);
     }
   };
+  // Carl's own click or key in the Drive window means it is on his screen and in his way (it never should be: it is
+  // placed off every monitor, src/driveHost.ts): stop what runs and have the main window close it.
+  if (native) {
+    let asked = false;
+    const onHuman = (e: Event) => {
+      if (!e.isTrusted || asked) return;
+      asked = true;
+      for (const ac of runs.values()) ac.abort("Carl clicked or typed in the Drive window");
+      // Give an aborted run a moment to report before the window goes.
+      setTimeout(() => send({ kind: "close", reason: `Carl's ${e.type} in the Drive window` }), 300);
+    };
+    for (const t of ["keydown", "pointerdown"]) window.addEventListener(t, onHuman, true);
+  }
   let readyMs = 0;
   const start = async () => {
     const unsafe = driveUnsafe(native);

@@ -15,6 +15,8 @@ export type DriveRequest =
 
 export type DriveReply =
   | { kind: "ready"; ok: boolean; error?: string; note?: string; readyMs: number }
-  | { kind: "result"; reqId: string; steps?: StepsResult; timing?: TimingResult; error?: string; aborted?: string };
+  | { kind: "result"; reqId: string; steps?: StepsResult; timing?: TimingResult; error?: string; aborted?: string }
+  /** Carl's own click or key reached the Drive window (it is on his screen after all): the main window closes it. */
+  | { kind: "close"; reason: string };
 
 export const isDriveMsg = (d: unknown): d is { __vcDrive: true; msg: DriveRequest | DriveReply } => !!d && typeof d === "object" && (d as { __vcDrive?: unknown }).__vcDrive === true && !!(d as { msg?: unknown }).msg;
