@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useStore } from "./store";
 import { isUnreadableAsText } from "./fileKind";
 import { openUrl, isExternalHref } from "./opener";
@@ -116,11 +117,19 @@ export function useGlobalAnchorClickHandler(): void {
       if (e.button === 1) onClick(e);
     };
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      // A core swap (src/coreSwap.ts) loads the window on purpose, with the screen kept: no "Leave site?" there.
+      if ((window as { __vcCoreSwapping?: boolean }).__vcCoreSwapping) return;
       e.preventDefault();
     };
     window.addEventListener("click", onClick, true);
     window.addEventListener("auxclick", onAuxClick, true);
     window.addEventListener("beforeunload", onBeforeUnload);
+    // The main window is about to swap the core: every window (a chat popout too) is loaded with it.
+    let unlistenSwap: (() => void) | null = null;
+    let gone = false;
+    void listen("vc-core-swapping", () => void ((window as { __vcCoreSwapping?: boolean }).__vcCoreSwapping = true))
+      .then((u) => (gone ? u() : (unlistenSwap = u)))
+      .catch(() => {});
 
     // Nuclear option: walk the DOM and strip `href` from every anchor
     // whose target is an internal link (vault:// / relative path / file:).
@@ -159,6 +168,8 @@ export function useGlobalAnchorClickHandler(): void {
       window.removeEventListener("click", onClick, true);
       window.removeEventListener("auxclick", onAuxClick, true);
       window.removeEventListener("beforeunload", onBeforeUnload);
+      gone = true;
+      unlistenSwap?.();
       observer.disconnect();
     };
   }, []);

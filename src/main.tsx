@@ -104,9 +104,9 @@ if (isDriveWindow) {
   // and exit. Every other launch: the native side says no and nothing happens.
   void import("./selfTest").then((m) => m.startSelfTestIfAsked()).catch((e) => console.warn("[selftest]", e));
   // A core swap just loaded this bundle (src/coreSwap.ts): put the chat, its scroll, the draft and the panes back, then
-  // let the old screen's picture go. Nothing is loaded for it on an ordinary launch.
+  // show the screen (index.html kept it hidden). Nothing is loaded for it on an ordinary launch.
   try {
-    if (sessionStorage.getItem("vc.coreSwap") || sessionStorage.getItem("vc.coreSwapShot")) void import("./coreSwap").then((m) => m.restoreAfterSwap());
+    if (sessionStorage.getItem("vc.coreSwap")) void import("./coreSwap").then((m) => m.restoreAfterSwap());
   } catch {
     /* no storage */
   }

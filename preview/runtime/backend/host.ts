@@ -11,6 +11,7 @@ import { parseLiveNeeds } from "../../../src/liveBridge";
 import { foldPluginState, logSignal, stateQuery, stateSignal, type PluginState } from "../../../src/pluginRecords";
 import { budgetSignal, desiredSignal, Supervisor } from "../../../src/pluginSupervisor";
 import { changeSignal } from "../../../src/pluginDrafts";
+import { coreBoxGet, coreChange, coreCommands, coreSignals, setCoreConfig, type CoreConfig } from "./core";
 import { converseAfter, converseIntent } from "../../../src/pluginConverse";
 import { catalogAppPlugins, catalogPlugin, catalogReads, catalogServices } from "../../../src/pluginCatalog";
 
@@ -147,6 +148,8 @@ export type HostConfig = {
   updater?: { version: string; notes?: string } | null;
   appVersion?: string;
   dialogOpen?: string | string[] | null;
+  /** The hot core (./core.ts): bundles the box built, as Change ready; the fake loader runs them. */
+  core?: CoreConfig;
 };
 
 let cfg: HostConfig = {};
@@ -283,6 +286,9 @@ export function setHostConfig(c: HostConfig, now: () => number): void {
   keys.clear();
   const defaults: Record<string, string> = { "api.openrouter": "sk-or-PREVIEW-0000000000000000000000000000000000000000", "service.elevenlabs": "sk_PREVIEW0000000000000000000000000000000000" };
   for (const [k, v] of Object.entries({ ...defaults, ...(cfg.keys ?? {}) })) if (v) keys.set(k, v);
+  // The hot core: its records outlive a core swap's load, as the box's log does.
+  setCoreConfig(c?.core);
+  for (const sig of coreSignals()) box.emit(null, { type: "signal", signal: sig } as any);
   void now;
 }
 
@@ -340,6 +346,7 @@ function fakeBox(u: URL): FakeBox {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export const hostCommands: Record<string, (a: Record<string, any>) => unknown> = {
+  ...coreCommands,
   // ---- sync ----
   vault_box_config: ({ vault }) => {
     if (vault) laptopVault = String(vault);
@@ -419,6 +426,8 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     const real = await realBox(String(url), "GET");
     if (real) return real;
     const u = new URL(String(url));
+    const core = coreBoxGet(u);
+    if (core) return core;
     if (u.pathname === "/api/v1/health") {
       const b = fakeBox(u);
       await sleep(400);
@@ -601,6 +610,13 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       return { status: 200, body: JSON.stringify({ ok: true, seq: rec.seq }) };
     }
     if (path === "/api/v2/supervisor") {
+      // The app's core (./core.ts): resolved as the box does, kept across a core swap's load.
+      const cc = coreChange(b);
+      if (cc) {
+        if (!cc.sig) return { status: cc.status, body: JSON.stringify({ error: cc.error }) };
+        const rec = box.emit(null, { type: "signal", signal: cc.sig } as any);
+        return { status: 200, body: JSON.stringify({ ok: true, seq: rec.seq, text: `the core is ${cc.sig.version} now (was ${cc.sig.from})` }) };
+      }
       // Carl's word on a plugin (server/supervisor.ts): a record in the fake box's log, on /poll like the box's.
       // Carl's word on a draft (change by asking): only the record here; the app runs a kept draft from the record.
       const sig = b && "change" in b ? changeSignal(b, typeof b.by === "string" ? b.by : "carl", Date.now()) : b && "callsPerMinute" in b ? budgetSignal(b, "carl", Date.now()) : desiredSignal(b, "carl", Date.now());

@@ -7,8 +7,8 @@
 //            starts scripts/core-publish.ts through the StartJob path, outside the server's memory): `vite build` of that
 //            commit into <state>/core-bundles/<version>/, with manifest.json.
 //   offer    a new bundle is a Change ready card (the part app/core, GET /api/v2/changes), like a plugin's draft: Try runs
-//            it in Carl's windows (src/coreFollow.ts tryCore: the loader serves it, the old screen stays painted until
-//            the new one is up, and the open chat, its scroll, the composer draft and the panes come back:
+//            it in Carl's windows (src/coreFollow.ts tryCore: the loader serves it, the old frame stays up until
+//            the new one is back, and the open chat, its scroll, the composer draft and the panes come back:
 //            src/coreSwap.ts), Keep makes it the core every launch runs, Discard drops it, Switch back returns to the
 //            core the Keep replaced.
 //   version  the first 8 hex digits of the manifest's sha256 (the same shape as a plugin copy's version); the full

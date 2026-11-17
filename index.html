@@ -31,6 +31,8 @@
         color: hsl(0 0% 12%);
       }
       #root { height: 100%; }
+      html.vc-swapping #vault-splash { display: none; }
+      html.vc-swapping #root { visibility: hidden; }
 
       /* Splash sits on top of #root while React mounts and the initial
          vault/file listing resolves. It fades out the moment the app
@@ -76,19 +78,13 @@
     <div id="root"></div>
     <div id="vault-splash"><span class="dot"></span>vault-chat</div>
     <script>
-      // A core swap just loaded this bundle (src/coreSwap.ts): the old screen's picture stays over everything until
-      // the new one has put the chat, the draft and the panes back (restoreAfterSwap removes it; 15 s at most).
+      // A core swap just loaded this bundle (src/coreSwap.ts): no splash, and nothing of the new screen shows until it
+      // has put the chat, its scroll, the draft and the panes back, so the window keeps the old frame up to then
+      // (restoreAfterSwap reveals it; 6 s at most).
       try {
-        var raw = sessionStorage.getItem("vc.coreSwapShot");
-        var shot = raw ? JSON.parse(raw) : null;
-        if (shot && typeof shot.src === "string" && Date.now() - shot.at < 60000) {
-          var img = document.createElement("img");
-          img.id = "vc-swap-shot";
-          img.alt = "";
-          img.src = shot.src;
-          img.setAttribute("style", "position:fixed;inset:0;width:100vw;height:100vh;object-fit:fill;z-index:10000;pointer-events:none");
-          document.body.appendChild(img);
-          setTimeout(function () { if (img.parentNode) img.parentNode.removeChild(img); }, 15000);
+        if (sessionStorage.getItem("vc.coreSwap")) {
+          document.documentElement.classList.add("vc-swapping");
+          setTimeout(function () { document.documentElement.classList.remove("vc-swapping"); }, 6000);
         }
       } catch (e) {}
     </script>

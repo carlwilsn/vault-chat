@@ -1,18 +1,18 @@
 // Carl's screen across a core swap (src/coreBundle.ts; src/coreFollow.ts tryCore / followCoreOnce): the loader serves
 // the new bundle and the window loads it, so what only lived in this page would go. Before the swap the main window
-// keeps, in its sessionStorage (it survives the load, per window):
-//   - a picture of the window (src/screenCapture.ts), which index.html paints over everything from the first frame of
-//     the next load, so the old screen stays up (no blank, no splash) until the new one has put things back;
-//   - the open chat, the chat's scroll (at the bottom, or where he was), the composer's draft (text, mentions,
-//     pictures, files), the panes (files, split, which is active, view or edit, unsaved text), the side panels and
-//     full-screen chat.
-// The new bundle puts them back once its vault and chats are loaded (restoreAfterSwap, main.tsx), then fades the
-// picture out. A swap older than SWAP_MAX_MS is not restored (a crash, a later launch: a fresh start).
+// keeps, in its sessionStorage (it survives the load, per window), the open chat, the chat's scroll (at the bottom, or
+// where he was), the composer's draft (text, mentions, pictures, files), the panes (files, split, which is active, view
+// or edit, unsaved text), the side panels and full-screen chat.
+// On that load index.html shows no splash and keeps the new screen hidden (html.vc-swapping), so nothing new is
+// painted and the webview keeps the old frame up (Chromium's paint holding: a same-origin load shows the old page
+// until the new one first paints content); the new bundle puts everything back once its vault and chats are loaded
+// (restoreAfterSwap, main.tsx) and only then shows itself. A swap older than SWAP_MAX_MS is not restored (a crash, a
+// later launch: a fresh start). A picture of the old screen (src/screenCapture.ts) was tried and dropped: its fonts and
+// layout are close, not the same, so the hand-over showed a jump.
 import { useStore, type Pane, type SplitDirection } from "./store";
 
-export const SWAP_KEY = "vc.coreSwap";
 /** index.html reads this key by name before any script loads: keep the two in step. */
-export const SWAP_SHOT_KEY = "vc.coreSwapShot";
+export const SWAP_KEY = "vc.coreSwap";
 export const SWAP_MAX_MS = 60_000;
 /** Pane text kept as it is (unsaved edits included) up to this much in all; over it the files are read again. */
 const PANE_TEXT_MAX = 1_500_000;
@@ -65,9 +65,8 @@ export function swapStateNow(draft: SwapState["draft"], now = Date.now()): SwapS
   };
 }
 
-/** Before the loader swaps the bundle (main window): keep the screen's state and its picture. Never throws; the
- *  picture is best effort (at most `shotMs`). */
-export async function saveSwapState(o: { shot?: boolean; shotMs?: number } = {}): Promise<SwapState | null> {
+/** Before the loader swaps the bundle (main window): keep the screen's state. Never throws. */
+export async function saveSwapState(): Promise<SwapState | null> {
   const store = ss();
   if (!store) return null;
   let draft: SwapState["draft"] = null;
@@ -79,6 +78,14 @@ export async function saveSwapState(o: { shot?: boolean; shotMs?: number } = {})
     /* no composer here */
   }
   const st = swapStateNow(draft);
+  // The load that follows is on purpose: the window's leave guard (src/linkNav.ts) stands aside for it.
+  if (typeof window !== "undefined") (window as { __vcCoreSwapping?: boolean }).__vcCoreSwapping = true;
+  try {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("vc-core-swapping");
+  } catch {
+    /* no other windows to tell */
+  }
   try {
     store.setItem(SWAP_KEY, JSON.stringify(st));
   } catch {
@@ -87,15 +94,6 @@ export async function saveSwapState(o: { shot?: boolean; shotMs?: number } = {})
       store.setItem(SWAP_KEY, JSON.stringify({ ...st, draft: draft ? { ...draft, images: [], files: [] } : null, panes: st.panes.map((p) => ({ ...p, content: null })), currentContent: null }));
     } catch {
       return null;
-    }
-  }
-  if (o.shot !== false) {
-    try {
-      const { captureWindow } = await import("./screenCapture");
-      const shot = await captureWindow("window", { timeoutMs: o.shotMs ?? 2500 });
-      store.setItem(SWAP_SHOT_KEY, JSON.stringify({ at: st.at, src: `data:${shot.mimeType};base64,${shot.data}` }));
-    } catch {
-      store.removeItem(SWAP_SHOT_KEY); // no picture: the splash covers the load as at launch
     }
   }
   return st;
@@ -113,18 +111,12 @@ export function takeSwapState(now = Date.now()): SwapState | null {
     st = null;
   }
   store.removeItem(SWAP_KEY);
-  return st && typeof st.at === "number" && now - st.at <= SWAP_MAX_MS && now >= st.at - 5_000 ? st : null;
+  return st && typeof st.at === "number" && Math.abs(now - st.at) <= SWAP_MAX_MS ? st : null;
 }
 
-/** Fade the old screen's picture out (index.html put it up) and forget it. */
-export function dropSwapShot(): void {
-  ss()?.removeItem(SWAP_SHOT_KEY);
-  if (typeof document === "undefined") return;
-  const img = document.getElementById("vc-swap-shot");
-  if (!img) return;
-  img.style.transition = "opacity 160ms ease";
-  img.style.opacity = "0";
-  setTimeout(() => img.remove(), 200);
+/** Show the new screen (index.html kept it hidden on a swap's load). */
+export function revealAfterSwap(): void {
+  if (typeof document !== "undefined") document.documentElement.classList.remove("vc-swapping");
 }
 
 export type RestoreDeps = {
@@ -186,13 +178,16 @@ export async function restoreSwapState(st: SwapState, d: RestoreDeps): Promise<s
   return done;
 }
 
-/** Main window, at start: a swap just happened here, so put the screen back, then let the picture go. */
+/** Main window, at start: a swap just happened here, so put the screen back, then show it. */
 export async function restoreAfterSwap(): Promise<void> {
+  const mark = (v: string) => typeof document !== "undefined" && document.documentElement.setAttribute("data-vc-core-swap", v);
   const st = takeSwapState();
   if (!st) {
-    dropSwapShot();
+    mark("none");
+    revealAfterSwap();
     return;
   }
+  mark("restoring");
   const until = (ok: () => boolean, ms: number) =>
     new Promise<void>((resolve) => {
       const end = Date.now() + ms;
@@ -209,9 +204,11 @@ export async function restoreAfterSwap(): Promise<void> {
       frame: () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))),
     });
     console.info(`[core] after the swap, put back: ${done.join(", ") || "nothing"}`);
+    mark(done.join(",") || "nothing");
   } catch (e) {
+    mark(`failed: ${String((e as Error)?.message ?? e).slice(0, 120)}`);
     console.warn("[core] could not put the screen back after the swap:", e);
   } finally {
-    dropSwapShot();
+    revealAfterSwap();
   }
 }

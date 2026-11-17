@@ -4,6 +4,7 @@
 // and the in-memory vault are all in place. No top-level await on purpose:
 // the next module script (main.tsx) must not start before this finishes.
 
+import { applyCoreLook, coreBoot } from "./backend/core";
 import { installIpc } from "./ipc";
 import { installNetworkGuard, refused } from "./net";
 import { installClock, now, advance } from "./clock";
@@ -144,7 +145,10 @@ export function boot(base: Base): void {
   speedTimers(sc.fastTimers);
 
   const vault = vaultPathFor(base);
-  if (!isPopout) seedLocalStorage(vault, sc);
+  // A core swap (backend/core.ts core_use) loads the frame again, as the native loader reloads the window: this
+  // device's storage stays (src/coreSwap.ts finds the screen it kept) and the scenario's steps do not run again.
+  const coreSwap = !isPopout && coreBoot(`${q.get("ns") ?? side}:${sc.id}`);
+  if (!isPopout && !coreSwap) seedLocalStorage(vault, sc);
   // ?try=<plugin>@<version>: a plugin's draft is being tried in this frame (src/changeReady.ts), as Carl's Try does;
   // the draft check (scripts/draft-check.ts) opens the draft's side with it.
   const tried = q.get("try");
@@ -157,6 +161,7 @@ export function boot(base: Base): void {
   setLlmVault(vault);
   setHostConfig(withBoxChats((typeof sc.host === "function" ? sc.host(now()) : sc.host) ?? {}), now);
   setOverrides(sc.overrides);
+  applyCoreLook();
 
   installIpc(isPopout ? "chat-popout" : "main", dispatch, `${side}:${sc.id}`);
   (window as any).__TAURI_INTERNALS__.convertFileSrc = convertFileSrc;
@@ -222,7 +227,7 @@ export function boot(base: Base): void {
   // Steps run once the app has mounted (the splash is gone).
   const startSteps = () => {
     api.ready = true;
-    if (isPopout || tourMode || !sc.open?.length || q.get("steps") === "0") {
+    if (isPopout || tourMode || coreSwap || !sc.open?.length || q.get("steps") === "0") {
       api.stepsDone = true;
       return;
     }

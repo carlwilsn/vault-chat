@@ -332,7 +332,39 @@ function voiceLibraryScenario(): Scenario {
 
 const syncTimers = { 15000: 1500, 30000: 1500 };
 
+/** The hot core (src/coreBundle.ts): the box built a new core from main; the laptop's Change ready card offers it. */
+const CORE_NEW = "c0de2b17";
+const CORE_LOOK = `/* the new core: the composer gets a blue ring, the chat's own rows a bit more air */
+[data-perf-target="composer"] { box-shadow: 0 0 0 2px hsl(212 92% 62% / 0.75) !important; border-radius: 12px !important; }
+[data-el="chat-scroll"] { line-height: 1.62 !important; }`;
+
 export const scenarios: Scenario[] = [
+  // ===== Hot core =====
+  {
+    id: "core-swap",
+    title: "Hot core — a new core is Change ready: Try, Keep, Switch back",
+    group: "Hot core",
+    notes:
+      "The box built the app's frontend from main (" + CORE_NEW + ": the composer gets a blue ring). Carl has a split open, a chat scrolled up and half a question typed. " +
+      "Change ready → Try: the fake loader (preview/runtime/backend/core.ts) swaps the bundle and the frame loads it, as the native loader does; the old screen's picture stays up until the split, the chat, its scroll and the draft are back. " +
+      "Keep: the record (no reload, it runs already). Switch back: the installed app's own core again, the screen kept the same way.",
+    build: (c) => world(c, { extraConvs: (now) => [{ ...W.longChat(now, 60_000, "c-core", 12), kind: "separate", lastActivityAt: now - 2 * MIN }] }),
+    activeConversation: "c-core",
+    host: { core: { bakedCommitTime: 100, bundles: [{ version: CORE_NEW, commitTime: 1_800_000_000, what: "the composer gets a blue ring (main 4f1e0c2ab9d3)", css: CORE_LOOK }] } },
+    open: [
+      ...deskOpen(NOTE, "c-core"),
+      {
+        run: async (api) => {
+          const { placeInPane } = await import("../../src/paneLayout");
+          placeInPane("right", `${api.vault}/notes/spectral-clustering.md`, "# Spectral clustering — why eigenvectors\n\nBuild a similarity graph $W$, its Laplacian $L = D - W$, and take the $k$ smallest eigenvectors.\n");
+        },
+      },
+      { type: "and for problem 4, should I use the normalized Laplacian or", into: COMPOSER },
+      { sleep: 300 },
+      { run: (api) => { const el = api.q('[data-el="chat-scroll"]'); if (el) el.scrollTop = Math.round(el.scrollHeight * 0.35); } },
+    ],
+  },
+
   // ===== Basics =====
   {
     id: "home",

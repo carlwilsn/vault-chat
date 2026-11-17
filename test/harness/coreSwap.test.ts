@@ -1,6 +1,6 @@
 // Carl's screen across a core swap (src/coreSwap.ts): before the loader swaps the bundle, the main window keeps the open
 // chat, its scroll, the composer's draft, the panes (split, active, unsaved text) and the side panels in its
-// sessionStorage; the new bundle puts them back and lets the old screen's picture go. Too old, another vault: nothing.
+// sessionStorage; the new bundle puts them back, then shows itself (index.html kept it hidden). Too old, another vault: nothing.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseHTML } from "linkedom";
@@ -11,7 +11,7 @@ installFakeTauri(vault);
 const G = globalThis as any;
 const mem = new Map<string, string>();
 G.sessionStorage = { getItem: (k: string) => mem.get(k) ?? null, setItem: (k: string, v: string) => void mem.set(k, String(v)), removeItem: (k: string) => void mem.delete(k) };
-const { document } = parseHTML(`<!doctype html><html><body><div data-el="chat-scroll"></div><img id="vc-swap-shot"></body></html>`);
+const { document } = parseHTML(`<!doctype html><html><body><div data-el="chat-scroll"></div></body></html>`);
 G.document = document;
 const scroller = document.querySelector('[data-el="chat-scroll"]') as any;
 let top = 0;
@@ -79,10 +79,8 @@ test("the screen is kept before a swap and put back after it: chat, scroll, draf
   assert.equal(useStore.getState().activeConversationId, "c1");
 });
 
-test("the old screen's picture goes once the screen is back", async () => {
-  mem.set(S.SWAP_SHOT_KEY, "{}");
-  S.dropSwapShot();
-  assert.equal(mem.has(S.SWAP_SHOT_KEY), false);
-  await new Promise((r) => setTimeout(r, 250));
-  assert.equal(document.getElementById("vc-swap-shot"), null);
+test("the new screen shows once it is back", () => {
+  document.documentElement.classList.add("vc-swapping");
+  S.revealAfterSwap();
+  assert.equal(document.documentElement.classList.contains("vc-swapping"), false);
 });

@@ -12,7 +12,7 @@
 //             back run followCoreNow (at once, not at a quiet moment: he asked for it).
 //   trying    while Carl tries a bundle (the Change ready card), following leaves it running; a loader fallback from
 //             the tried bundle discards it (a discard by "auto", the card says why), like a plugin draft failing.
-//   swap      before every swap the screen is kept (src/coreSwap.ts): the old picture stays up until the new bundle
+//   swap      before every swap the screen is kept (src/coreSwap.ts): the old frame stays up until the new bundle
 //             has put back the open chat, its scroll, the composer draft and the panes.
 // Only with a box (never a server this app runs itself), only in the native app's main window.
 import { invoke, isTauri } from "@tauri-apps/api/core";
