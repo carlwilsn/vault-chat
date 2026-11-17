@@ -7,6 +7,7 @@ import { pluginIdOf } from "../src/pluginSupervisor";
 import { vaultPluginId, vaultPluginNamed } from "../src/vaultPlugins";
 import { vaultCodePlugins } from "./pluginCatalog";
 import { appPluginNamed } from "../src/appPlugins";
+import { liveCopyAt, liveCopyId } from "../src/appPluginLive";
 import { withinVault } from "./phoneData";
 import { pluginDesired, setPluginBudget, setPluginDesired, supervisorOf } from "./supervisor";
 
@@ -73,6 +74,9 @@ export function resolvePlugin(vault: string, word: string): { id: string } | { e
   if (!w) return { error: "name the plugin: its vault path or its file name" };
   const app = appPluginNamed(w);
   if (app && app.id === w.toLowerCase()) return { id: app.id };
+  // An app plugin's copy in the vault (src/appPluginLive.ts), by its path: turned off, the next copy runs.
+  const copy = liveCopyAt(w);
+  if (copy) return { id: liveCopyId(copy.folder, copy.kind) };
   if (/\.html?$/i.test(w)) {
     const full = withinVault(vault, w);
     try {

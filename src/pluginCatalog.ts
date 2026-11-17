@@ -7,6 +7,7 @@
 import { LIVE_SERVICES, serviceOfCap } from "./liveServices";
 import { parseLiveMount, parseLiveNeeds, type LiveMount } from "./liveBridge";
 import { APP_PLUGINS } from "./appPlugins";
+import { APP_PLUGIN_LIVE_DIR } from "./appPluginLive";
 import { VAULT_PLUGIN_DIR } from "./vaultPlugins";
 import { parsePinned } from "./pinnedApps";
 
@@ -43,13 +44,20 @@ export type CatalogPlugin = {
 };
 
 /** A part of the app that is a plugin (src/appPlugins.ts): turned off and on like a page, by its id. */
-export type CatalogAppPlugin = { id: string; name: string; mount: string; description: string };
+export type CatalogAppPlugin = {
+  id: string;
+  name: string;
+  mount: string;
+  description: string;
+  /** Its copies in the vault that run instead of the built-in one (src/appPluginLive.ts), by id; absent: none. */
+  copies?: string[];
+};
 
 export type Catalog = { services: CatalogService[]; plugins: CatalogPlugin[]; app?: CatalogAppPlugin[]; truncated?: boolean };
 
 /** The app's own plugins, in registry order. */
-export function catalogAppPlugins(): CatalogAppPlugin[] {
-  return APP_PLUGINS.map((p) => ({ id: p.id, name: p.name, mount: p.mount, description: p.description }));
+export function catalogAppPlugins(copies: Readonly<Record<string, string[]>> = {}): CatalogAppPlugin[] {
+  return APP_PLUGINS.map((p) => ({ id: p.id, name: p.name, mount: p.mount, description: p.description, ...(copies[p.id]?.length ? { copies: copies[p.id] } : {}) }));
 }
 
 export const CATALOG_LIMITS = {
@@ -135,7 +143,8 @@ export function catalogText(c: Catalog): string {
   }
   if (c.app?.length) {
     lines.push("", `Parts of the app that are plugins (${c.app.length}; the Plugins tool turns them off and on by id or name):`);
-    for (const p of c.app) lines.push(`- ${p.id} "${p.name}" (${p.mount}): ${p.description}`);
+    for (const p of c.app) lines.push(`- ${p.id} "${p.name}" (${p.mount}): ${p.description}${p.copies?.length ? ` Runs its copy in the vault: ${p.copies.join(", then ")}.` : ""}`);
+    lines.push(`Their code is live too: \`node --import tsx scripts/app-plugin-live.ts <name> --vault <vault> --draft\` in a vault-chat checkout builds src/plugins/<name> into ${APP_PLUGIN_LIVE_DIR}/<name>.draft.js, which the laptop runs within seconds (the draft, else <name>.js, else the built-in copy; a copy that fails writes <file>.error.txt and the next one runs); --keep makes the draft the live copy, --discard drops it, --remove goes back to the built-in copy. The Plugins tool turns a copy off by its path.`);
   }
   return lines.join("\n");
 }

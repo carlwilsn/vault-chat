@@ -21,7 +21,7 @@ export function ChatsPanel() {
 
 /** Fullscreen chat's (and the popout's) left sidebar. */
 export function ChatsSidebar() {
-  return <AppPluginMount plugin={CHATS_PLUGIN} module={chatsPlugin.sidebar} fallback={(f) => <SidebarFallback info={f} />} />;
+  return <AppPluginMount plugin={CHATS_PLUGIN} module={chatsPlugin.sidebar} fallback={(f) => <SidebarFallback info={f} />} part="sidebar" />;
 }
 
 function OverlayFallback({ info }: { info: PluginFallbackInfo }) {

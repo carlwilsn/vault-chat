@@ -7,10 +7,17 @@
 // same host, and taken down or brought back by the supervisor's records like any page (usePluginDesired). A core part
 // that must always stand (the chat list) passes a `fallback`: turned off, or failing (its mount or render throwing), the
 // fallback renders in its place instead of nothing or the error card, with what happened and a way back.
+//
+// Live copies (src/appPluginLive.ts): an app plugin whose code is also in <vault>/.vault-chat/app-plugins (a draft, a
+// live copy) runs that copy instead of the built-in module, the draft first. A copy turned off (a plugin.desired record
+// for its vault path) is passed over; a copy that fails (load, mount or later) is passed over too, until its file
+// changes, and why is written next to it. The built-in module is the last copy; only its failure shows the fallback.
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Desired } from "./pluginSupervisor";
-import { hostTheme, mountPlugin, type AppPluginSource, type PluginHandle } from "./mountHost";
+import { hostTheme, mountPlugin, type AppPluginSource, type LoadModule, type PluginHandle } from "./mountHost";
 import type { AppPluginInfo } from "./appPlugins";
+import { appPluginFolder, liveCopyId, type LiveCopyKind } from "./appPluginLive";
+import { liveLoader, reportLiveFailure, useLiveCopies } from "./appPluginLiveHost";
 import { appHostBackend } from "./hostBackend";
 import { usePluginDesired } from "./pluginSupervisorApp";
 
@@ -37,7 +44,7 @@ export class PluginBoundary extends Component<{ path: string; children: ReactNod
   }
 }
 
-function Mount({ html, path, className, onFailed }: { html: string | AppPluginSource; path: string; className?: string; onFailed?: (why: string) => void }) {
+function Mount({ html, path, className, onFailed, load, copy }: { html: string | AppPluginSource; path: string; className?: string; onFailed?: (why: string) => void; load?: LoadModule; copy?: LiveCopyKind }) {
   const ref = useRef<HTMLSpanElement | null>(null);
   const handle = useRef<PluginHandle | null>(null);
   const failed = useRef(onFailed);
@@ -46,7 +53,7 @@ function Mount({ html, path, className, onFailed }: { html: string | AppPluginSo
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const h = (handle.current = mountPlugin(el, html, { path, theme: () => hostTheme(), host: appHostBackend, onError: (m) => {
+    const h = (handle.current = mountPlugin(el, html, { path, theme: () => hostTheme(), host: appHostBackend, load, onError: (m) => {
       console.warn(`[plugin] ${path} stopped:`, m);
       failed.current?.(m);
     } }));
@@ -54,7 +61,7 @@ function Mount({ html, path, className, onFailed }: { html: string | AppPluginSo
       h.unmount();
       if (handle.current === h) handle.current = null;
     };
-  }, [html, path]);
+  }, [html, path, load]);
   // The app's theme, live.
   useEffect(() => {
     const mo = new MutationObserver(() => handle.current?.setTheme(hostTheme()));
@@ -62,7 +69,8 @@ function Mount({ html, path, className, onFailed }: { html: string | AppPluginSo
     return () => mo.disconnect();
   }, []);
   // An app plugin adds no box of its own (a panel places itself).
-  if (typeof html !== "string") return <span ref={ref} data-el="plugin-mount" data-vc-plugin={path} style={{ display: "contents" }} />;
+  // A live copy says which it is (data-vc-copy="live" / "draft"); the built-in one says nothing.
+  if (typeof html !== "string") return <span ref={ref} data-el="plugin-mount" data-vc-plugin={path} data-vc-copy={copy} style={{ display: "contents" }} />;
   // A span (shown as a block): inline in a chat it sits inside the message's paragraph, as the iframe did.
   return <span ref={ref} data-el="plugin-mount" data-vc-plugin={path} className={["block", className].filter(Boolean).join(" ")} />;
 }
@@ -80,15 +88,31 @@ export function PluginMount(props: { html: string; path: string; className?: str
 export type PluginFallbackInfo = { off: Desired | null; error: string | null; pending: boolean; retry: () => void };
 
 /** A part of the app that is a plugin: mounted while the supervisor says it runs; stopped, it is gone (nothing left),
- *  or, with a `fallback`, the fallback stands in (also when it fails). */
-export function AppPluginMount({ plugin, module, code, fallback }: { plugin: Pick<AppPluginInfo, "id" | "name">; module?: unknown; code?: string; fallback?: (info: PluginFallbackInfo) => ReactNode }) {
+ *  or, with a `fallback`, the fallback stands in (also when it fails). Its live copy, when the vault has one, runs
+ *  instead of `module` (`part`: the export of the copy that is this mount, as `module` is the built-in one's). */
+export function AppPluginMount({ plugin, module, code, part, fallback }: { plugin: Pick<AppPluginInfo, "id" | "name">; module?: unknown; code?: string; part?: string; fallback?: (info: PluginFallbackInfo) => ReactNode }) {
   // One source object per module / code: a new one is a fresh mount (a changed vault plugin file), a re-render is not.
   const source = useMemo<AppPluginSource>(() => (typeof code === "string" ? { name: plugin.name, code } : { name: plugin.name, module }), [plugin.name, module, code]);
   const desired = usePluginDesired(plugin.id);
   const [failed, setFailed] = useState<string | null>(null);
   const [run, setRun] = useState(0);
+  // The live copies: only for an app plugin's built-in module (a vault plugin's code is already live).
+  const folder = code === undefined ? appPluginFolder(plugin.id) : null;
+  const copies = useLiveCopies(folder ? plugin.id : "");
+  const draftOn = usePluginDesired(folder ? liveCopyId(folder, "draft") : null);
+  const liveOn = usePluginDesired(folder ? liveCopyId(folder, "live") : null);
+  // A copy that failed, by the code that failed: passed over until its file changes (or Reload).
+  const [broken, setBroken] = useState<Partial<Record<LiveCopyKind, string>>>({});
+  const pick = (kind: LiveCopyKind, on: Desired | null): { kind: LiveCopyKind; code: string } | null => {
+    const c = copies[kind];
+    return c !== undefined && on?.state !== "stopped" && broken[kind] !== c ? { kind, code: c } : null;
+  };
+  const copy = folder ? pick("draft", draftOn) ?? pick("live", liveOn) : null;
+  const copySource = useMemo<AppPluginSource | null>(() => (copy ? { name: plugin.name, code: copy.code, ...(part ? { part } : {}) } : null), [plugin.name, copy?.code, part]);
+  const copyLoad = useMemo(() => liveLoader(plugin.id), [plugin.id]);
   const retry = () => {
     setFailed(null);
+    setBroken({});
     setRun((n) => n + 1);
   };
   // Not known yet (the vault's on/off records not in): nothing is mounted, so a plugin turned off never flashes on;
@@ -96,6 +120,19 @@ export function AppPluginMount({ plugin, module, code, fallback }: { plugin: Pic
   if (desired === null) return fallback ? <>{fallback({ off: null, error: null, pending: true, retry })}</> : null;
   if (desired.state === "stopped") return fallback ? <>{fallback({ off: desired, error: null, pending: false, retry })}</> : null;
   if (desired.state !== "running") return null;
+  if (copy && copySource) {
+    const { kind, code: bad } = copy;
+    const onCopyFailed = (why: string) => {
+      console.warn(`[plugin] ${plugin.id}: its ${kind} copy failed, the next copy runs:`, why);
+      setBroken((b) => ({ ...b, [kind]: bad }));
+      void reportLiveFailure(plugin.id, kind, bad, why);
+    };
+    return (
+      <PluginBoundary path={plugin.id} key={`${plugin.id}#${run}#${kind}`} onFailed={onCopyFailed}>
+        <Mount html={copySource} path={plugin.id} onFailed={onCopyFailed} load={copyLoad} copy={kind} />
+      </PluginBoundary>
+    );
+  }
   if (fallback && failed !== null) return <>{fallback({ off: null, error: failed, pending: false, retry })}</>;
   const onFailed = fallback ? setFailed : undefined;
   return (
