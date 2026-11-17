@@ -382,7 +382,10 @@ exit 0
   private async pushBox(): Promise<void> {
     const s = this.status;
     try {
-      const r = await runGit(this.vault, ["push", "-q", this.bare, `refs/heads/${this.BRANCH}:refs/heads/${BOX_BRANCH}`], {
+      // --no-verify: no client hook runs on the box's push to its own hub (the hub's pre-receive still does). A
+      // system-wide git-lfs once took over the filter and left its pre-push hook here; that hook refuses a local
+      // path ("does not support the Git LFS locking API") and stalled every push.
+      const r = await runGit(this.vault, ["push", "-q", "--no-verify", this.bare, `refs/heads/${this.BRANCH}:refs/heads/${BOX_BRANCH}`], {
         env: { VC_PUSHER: "box" },
       });
       if (r.code !== 0) throw new Error(`git push ${this.BRANCH === BOX_BRANCH ? BOX_BRANCH : `${this.BRANCH} → ${BOX_BRANCH}`} (exit ${r.code}): ${r.stderr.trim()}`);

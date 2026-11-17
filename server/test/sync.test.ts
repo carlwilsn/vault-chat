@@ -1,7 +1,7 @@
 // The box sync loop against two local repos: the bare hub and the box's
 // working copy, plus a "laptop" clone playing the other side.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { writeFileSync, readFileSync, existsSync, mkdirSync, openSync, closeSync, ftruncateSync, utimesSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, openSync, closeSync, ftruncateSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { BoxSync } from "../sync";
 import { tmp, cleanup, makeVault, git, sh, waitFor } from "./helpers";
@@ -131,6 +131,33 @@ describe("box sync loop", () => {
     expect(alerts).toEqual([]);
     await sync.runOnce();
     expect(git(box, "status", "--porcelain").trim()).toBe("");
+  });
+
+  it("a system-wide git-lfs (filter.lfs.process) neither takes over the box's filter nor blocks its push", async () => {
+    // git prefers a process filter over clean/smudge: a host-level one that fails must never run here, and a
+    // pre-push hook git-lfs left behind must not stop box reaching the hub.
+    const sys = join(root, "system.gitconfig");
+    writeFileSync(sys, '[filter "lfs"]\n\tprocess = false\n\tclean = false\n\tsmudge = false\n\trequired = true\n');
+    writeFileSync(join(box, ".git", "hooks", "pre-push"), "#!/bin/sh\necho 'old git-lfs hook' >&2\nexit 1\n", { mode: 0o755 });
+    const prev = process.env.GIT_CONFIG_SYSTEM;
+    process.env.GIT_CONFIG_SYSTEM = sys;
+    try {
+      const big = join(box, "big.bin");
+      const fd = openSync(big, "w");
+      ftruncateSync(fd, 50 * 1024 * 1024 + 7);
+      closeSync(fd);
+      await sync.runOnce();
+      expect(sync.status.ok, JSON.stringify(sync.status.steps)).toBe(true);
+      expect(bareRef("refs/heads/box")).toBe(head(box));
+      expect(sh(bare, "git", ["show", "box:big.bin"])).toMatch(/^version https:\/\/git-lfs\.github\.com\/spec\/v1\noid sha256:[0-9a-f]{64}\nsize 52428807\n$/);
+      // The bytes come back on checkout through the box's own process filter.
+      rmSync(big);
+      git(box, "checkout", "-q", "--", "big.bin");
+      expect(readFileSync(big).length).toBe(50 * 1024 * 1024 + 7);
+    } finally {
+      if (prev === undefined) delete process.env.GIT_CONFIG_SYSTEM;
+      else process.env.GIT_CONFIG_SYSTEM = prev;
+    }
   });
 
   it("never commits a new archive: excluded for good, reported, one alert naming the work area", async () => {
