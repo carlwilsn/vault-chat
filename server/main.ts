@@ -20,6 +20,8 @@ import { endOwnProcesses, promote, takeOwnership } from "./owner";
 import type { FileLocalStorage } from "./shims/globals";
 import { legacySource } from "./convlog/importer";
 import { macGitStatus, prepareMacEnv, type GitState } from "./macEnv";
+import { supervisorOf } from "./supervisor";
+import { CORE_PART } from "../src/coreBundle";
 
 function fatal(msg: string, code = 2): never {
   console.error(`[vault-chat-server] FATAL: ${msg}`);
@@ -110,6 +112,21 @@ async function main(): Promise<void> {
   for (const v of vaultRefs()) convLog(v.path);
   // Box plugins (server/boxPlugins.ts): the vault's own server-side modules, loaded live by this server, the owner now.
   (await import("./boxPlugins")).startBoxPlugins(() => vaultRefs().map((v) => v.path));
+  // The laptop app's core is a bundle this box builds from accepted main and serves (server/coreBundles.ts): its records
+  // are app/core plugin.change records in the main vault's log; a new main is built as a job outside this server.
+  {
+    const core = await import("./coreBundles");
+    core.configureCore({ stateDir: cfg.stateDir, vault: cfg.vault });
+    const { setPluginChange } = await import("./supervisor");
+    core.startCorePublisher({
+      stateDir: cfg.stateDir,
+      changes: () => supervisorOf(cfg.vault).changes(CORE_PART),
+      land: (version, reason) => {
+        const w = setPluginChange(cfg.vault, { plugin: CORE_PART, change: "keep", version, by: "gate", reason }, "gate");
+        return "error" in w ? { ok: false, error: w.error } : { ok: true };
+      },
+    });
+  }
   // Carl's settings are records in the main vault's log (server/settings.ts); what the box kept in its localStorage
   // file moves there once, backed up first (outside the vault).
   {
@@ -308,6 +325,8 @@ async function main(): Promise<void> {
         return { runs: agent + voice, agent, voice, workers: engine.workers?.() ?? 0, inputs: Object.keys(input).length, input };
       })(),
       conversations: convLog(cfg.vault).rows().length,
+      // The laptop app's core bundle (server/coreBundles.ts): which one the box offers, and its newest build.
+      core: (await import("./coreBundles")).coreHealth(cfg.stateDir, supervisorOf(cfg.vault).changes(CORE_PART)),
       sync: syncSummary(),
       engine: engine.error ? { error: engine.error } : engine.health(),
     }),

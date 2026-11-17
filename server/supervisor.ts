@@ -20,6 +20,8 @@ import { SETTINGS_DRAFT_ID } from "../src/settingsRecords";
 import { settingsChange } from "./settings";
 import { isMigrationId } from "../src/migrations";
 import { migrationChange } from "./migrations";
+import { CORE_PART } from "../src/coreBundle";
+import { coreLanding, coreStateDir, coreVault } from "./coreBundles";
 
 type Followed = { sup: Supervisor; changed: Set<() => void> };
 const follows = new WeakMap<ConvLog, Followed>();
@@ -104,6 +106,18 @@ export function setPluginChange(vault: string, b: Record<string, unknown> | null
     followed(signalLog(vault));
     if (landed.preset !== undefined && !signal(vault, presetSignal(landed.preset, landed.version, who, Date.now()))) return { status: 500, error: "the log could not be written" };
     const rec = signal(vault, { ...sig, plugin, version: landed.version, ...(landed.from ? { from: landed.from } : {}) });
+    return rec ? { status: 200, seq: rec.seq, text: landed.text } : { status: 500, error: "the log could not be written" };
+  }
+  if (plugin === CORE_PART) {
+    // The app's core bundle (server/coreBundles.ts): nothing moves, the record is the switch; the loaders follow it.
+    // Whatever vault the request names, the records are the main vault's (one core for the box).
+    const dir = coreStateDir();
+    const main = coreVault() ?? vault;
+    if (!dir) return { status: 503, error: "this box keeps no core bundles" };
+    const landed = coreLanding(dir, supervisorOf(main).changes(CORE_PART), sig.change, sig.version);
+    if (!landed.ok) return { status: landed.status, error: landed.error };
+    followed(signalLog(main));
+    const rec = signal(main, { ...sig, plugin, version: landed.version, from: landed.from });
     return rec ? { status: 200, seq: rec.seq, text: landed.text } : { status: 500, error: "the log could not be written" };
   }
   const slot = slotOf(plugin);

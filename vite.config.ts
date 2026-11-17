@@ -23,6 +23,8 @@ try {
   const dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=normal", "--", "src", "src-tauri/src", "src-tauri/defaults", "src-tauri/tauri.conf.json", "src-tauri/Cargo.toml", "package.json", "package-lock.json", "vite.config.ts", "tsconfig.json", "tsconfig.node.json", "index.html", "tailwind.config.js", "postcss.config.js"], options).trim();
   if (!dirty) appRevision = execFileSync("git", ["rev-parse", "HEAD"], options).trim();
 } catch { /* dirty checkout / source archive: release health remains pending */ }
+// The box's core build (scripts/core-publish.ts) builds a source archive of one accepted main commit and names it.
+if (appRevision === "unknown" && /^[0-9a-f]{40}$/.test(process.env.VC_APP_REVISION ?? "")) appRevision = process.env.VC_APP_REVISION!;
 
 // https://vite.dev/config/
 export default defineConfig(async ({ command }) => ({

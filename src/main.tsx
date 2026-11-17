@@ -103,6 +103,13 @@ if (isDriveWindow) {
   // A self-test launch (VC_SELFTEST in the environment, src-tauri/src/self_test.rs): run its steps in this window
   // and exit. Every other launch: the native side says no and nothing happens.
   void import("./selfTest").then((m) => m.startSelfTestIfAsked()).catch((e) => console.warn("[selftest]", e));
+  // The core bundle the box built from accepted main (src/coreFollow.ts): fetched and taken with no installer, once the
+  // first screen is interactive (never on the launch path).
+  void import("./laptopPerf")
+    .then((m) => m.launchTiming(90_000))
+    .then(() => import("./coreFollow"))
+    .then((m) => m.startCoreFollow())
+    .catch(() => {});
   // Reconcile "run in background" (always-on tray daemon) with the Rust
   // close-to-tray gate and the OS login item. Main window only; popouts must
   // never register autostart or hold the app alive on close.
@@ -145,6 +152,12 @@ function reveal(via: string) {
   bootMark("first paint", { via });
   // The Drive window never shows or focuses anything (app_ready brings the main window forward).
   if (!isDriveWindow) invoke("app_ready").catch((e) => console.warn("[boot] app_ready:", e));
+  // The core loader's ready handshake (src-tauri/src/core_loader.rs, src/coreFollow.ts): this bundle came up. A box-built
+  // bundle that never says it within 30 s is replaced by the previous one, then the installed app's own.
+  if (!isDriveWindow) {
+    (window as { __vcCoreReady?: boolean }).__vcCoreReady = true;
+    invoke("core_ready").catch(() => {});
+  }
   setTimeout(() => {
     const splash = document.getElementById("vault-splash");
     if (splash) {

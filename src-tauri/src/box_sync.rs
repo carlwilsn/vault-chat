@@ -2221,5 +2221,21 @@ pub fn get_json(url: &str, token: Option<&str>, timeout_ms: u64) -> Result<(u16,
     Ok((status, text))
 }
 
+/// GET bytes from the box (the core loader's bundle files: src-tauri/src/core_loader.rs).
+pub fn get_bytes(url: &str, token: Option<&str>, timeout_ms: u64) -> Result<(u16, Vec<u8>), String> {
+    let client = box_client()?;
+    let timeout = Duration::from_millis(timeout_ms.clamp(1_000, 120_000));
+    let resp = send_retrying(|| {
+        let mut req = client.get(url).timeout(timeout);
+        if let Some(t) = token.filter(|t| !t.is_empty()) {
+            req = req.header("X-Vault-Token", t);
+        }
+        req
+    })?;
+    let status = resp.status().as_u16();
+    let body = resp.bytes().map_err(|e| e.to_string())?.to_vec();
+    Ok((status, body))
+}
+
 #[cfg(test)]
 mod tests;

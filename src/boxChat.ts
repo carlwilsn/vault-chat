@@ -704,6 +704,10 @@ class BoxChatSession {
         if (e.deleted && typeof e.convId === "string") this.leaveDeleted(e.convId);
         return;
       }
+      case "plugin.change":
+        // The box landed or switched the app's core bundle (src/coreFollow.ts looks at its offer now).
+        if (e.plugin === "app/core" && typeof window !== "undefined" && typeof window.dispatchEvent === "function") window.dispatchEvent(new CustomEvent("vc-core-changed"));
+        return;
       case "vault_changed":
         // The agent on the box edited files and published them: fetch and merge them now.
         void boxSyncNow(this.vault, { pull: true });

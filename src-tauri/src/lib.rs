@@ -9,6 +9,7 @@ mod master;
 mod vault_page;
 mod web_embed;
 mod self_test;
+mod core_loader;
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -6104,6 +6105,18 @@ async fn boot_timing() -> boot_watch::BootTiming {
     boot_watch::timing()
 }
 
+/// Gives the handler closure its type where it is made (it is passed to invoke_handler later).
+fn typed_handler<F: Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static>(f: F) -> F {
+    f
+}
+
+/// The invoke handler and the names of its commands, from one list.
+macro_rules! shell_commands {
+    ($($cmd:path),* $(,)?) => {
+        (typed_handler(tauri::generate_handler![$($cmd),*]), &[$(stringify!($cmd)),*] as &'static [&'static str])
+    };
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     boot_watch::mark_process_start();
@@ -6130,6 +6143,110 @@ pub fn run() {
         }
     }
 
+    // One list of the shell's commands: the invoke handler, and the names a core bundle's needs are checked against
+    // (core_loader.rs: a bundle that invokes a command this shell lacks is refused, and the baked one runs).
+    let (handler, commands) = shell_commands![
+
+            vault_page::vault_page_root,
+            web_embed::web_embed_open,
+            web_embed::web_embed_place,
+            web_embed::web_embed_go,
+            web_embed::web_embed_url,
+            web_embed::web_embed_close,
+            list_markdown_files,
+            read_text_file,
+            read_binary_file,
+            write_text_file,
+            append_debug_log,
+            append_sync_log,
+            machine_host,
+            write_binary_file_unique,
+            cleanup_old_captures,
+            copy_into_vault,
+            delete_file,
+            create_dir,
+            rename_path,
+            prepare_agent_projects,
+            glob_files,
+            list_dir,
+            read_ignore_lines,
+            add_to_ignore,
+            rename_in_ignore,
+            remove_prefix_from_ignore,
+            remove_from_ignore,
+            notes_read,
+            notes_append,
+            client_event_append,
+            notes_write_all,
+            conversation_delete,
+            schedule_tombstone_add,
+            schedules_read,
+            schedules_write_all,
+            open_terminal,
+            open_box_terminal,
+            claude_login::claude_setup_token_cli,
+            claude_cli_ensure,
+            git_init_if_needed,
+            git_commit_all,
+            git_repo_root_for_file,
+            git_log_subdir,
+            git_file_at,
+            vault_sync_status,
+            vault_sync_set_remote,
+            vault_sync_commit_local,
+            vault_commit_local,
+            vault_sync_pull,
+            vault_sync_push,
+            vault_sync_gh_create_repo,
+            path_exists,
+            default_voice_prompt,
+            vault_sync_role,
+            vault_box_sync,
+            vault_box_config,
+            local_server_start,
+            master_repo_init,
+            box_discover,
+            tailscale_check,
+            tailscale_open,
+            vault_box_connect,
+            vault_box_disconnect,
+            box_post_json,
+            box_get_json,
+            keychain_get,
+            keychain_set,
+            keychain_delete,
+            keystore_encrypt,
+            keystore_decrypt,
+            compile_tex,
+            agent_audio_play,
+            agent_audio_stop,
+            voice_server_start,
+            phone_broadcast,
+            phone_set_vapid,
+            phone_push_subs,
+            phone_push_unsub,
+            notification_add,
+            push_post,
+            voice_server_stop,
+            voice_server_status,
+            voice_server_url,
+            voice_tool_respond,
+            set_run_in_background,
+            boot_timing,
+            app_ready,
+            self_test::selftest_config,
+            self_test::selftest_finish,
+            core_loader::core_status,
+            core_loader::core_ready,
+            core_loader::core_boot_error,
+            core_loader::core_install,
+            core_loader::core_use,
+            core_loader::core_events_sent
+    ];
+    let mut context = tauri::generate_context!();
+    // stringify! of a path is `module :: name`: the command's name is its last segment.
+    core_loader::install(&mut context, commands.iter().map(|c| c.rsplit("::").next().unwrap_or(c).trim()).collect());
+
     let builder = tauri::Builder::default();
     // FIRST plugin, per the single-instance docs: a second launch (user
     // double-click while one sits in the tray, updater overlap, etc.)
@@ -6155,6 +6272,8 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        // The core loader (core_loader.rs): which frontend bundle runs, its ready watch and its fallback.
+        .plugin(core_loader::plugin())
         .manage(RunInBackground(AtomicBool::new(false)))
         // A vault HTML page's own files (audio, video, images, fonts, data),
         // relative to its folder, for HtmlView's sandboxed iframe: the open
@@ -6195,6 +6314,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            core_loader::setup(app.handle());
             use tauri::Manager;
 
             // VC_SELFTEST in the environment: load its steps and start its
@@ -6338,98 +6458,8 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            vault_page::vault_page_root,
-            web_embed::web_embed_open,
-            web_embed::web_embed_place,
-            web_embed::web_embed_go,
-            web_embed::web_embed_url,
-            web_embed::web_embed_close,
-            list_markdown_files,
-            read_text_file,
-            read_binary_file,
-            write_text_file,
-            append_debug_log,
-            append_sync_log,
-            machine_host,
-            write_binary_file_unique,
-            cleanup_old_captures,
-            copy_into_vault,
-            delete_file,
-            create_dir,
-            rename_path,
-            prepare_agent_projects,
-            glob_files,
-            list_dir,
-            read_ignore_lines,
-            add_to_ignore,
-            rename_in_ignore,
-            remove_prefix_from_ignore,
-            remove_from_ignore,
-            notes_read,
-            notes_append,
-            client_event_append,
-            notes_write_all,
-            conversation_delete,
-            schedule_tombstone_add,
-            schedules_read,
-            schedules_write_all,
-            open_terminal,
-            open_box_terminal,
-            claude_login::claude_setup_token_cli,
-            claude_cli_ensure,
-            git_init_if_needed,
-            git_commit_all,
-            git_repo_root_for_file,
-            git_log_subdir,
-            git_file_at,
-            vault_sync_status,
-            vault_sync_set_remote,
-            vault_sync_commit_local,
-            vault_commit_local,
-            vault_sync_pull,
-            vault_sync_push,
-            vault_sync_gh_create_repo,
-            path_exists,
-            default_voice_prompt,
-            vault_sync_role,
-            vault_box_sync,
-            vault_box_config,
-            local_server_start,
-            master_repo_init,
-            box_discover,
-            tailscale_check,
-            tailscale_open,
-            vault_box_connect,
-            vault_box_disconnect,
-            box_post_json,
-            box_get_json,
-            keychain_get,
-            keychain_set,
-            keychain_delete,
-            keystore_encrypt,
-            keystore_decrypt,
-            compile_tex,
-            agent_audio_play,
-            agent_audio_stop,
-            voice_server_start,
-            phone_broadcast,
-            phone_set_vapid,
-            phone_push_subs,
-            phone_push_unsub,
-            notification_add,
-            push_post,
-            voice_server_stop,
-            voice_server_status,
-            voice_server_url,
-            voice_tool_respond,
-            set_run_in_background,
-            boot_timing,
-            app_ready,
-            self_test::selftest_config,
-            self_test::selftest_finish
-        ])
-        .build(tauri::generate_context!())
+        .invoke_handler(handler)
+        .build(context)
         .expect("error while running tauri application")
         .run(|_app, event| {
             // A server this app started is this app's to stop: leaving one behind

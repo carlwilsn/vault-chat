@@ -45,6 +45,9 @@ export type HostBuild = {
   localServer?: { url: string; version?: string; rev?: string } | null;
   /** The box the app talks to. */
   box?: string;
+  /** The core bundle the native shell's loader serves (src/coreBundle.ts): a box-built one (its version, the main commit
+   *  it was built from) or the installed app's own ("built-in"), apart from the native shell's version above. */
+  core?: { version: string; commit?: string; fellBack?: string };
 };
 
 const str = (v: unknown, max = 80): string | undefined => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : undefined);
@@ -64,6 +67,10 @@ export function cleanHostBuild(raw: unknown): HostBuild | string {
   }
   if (b.reason === "launch" || b.reason === "ask") out.reason = b.reason;
   if (typeof b.launchMs === "number" && Number.isFinite(b.launchMs) && b.launchMs >= 0 && b.launchMs < 600_000) out.launchMs = Math.round(b.launchMs);
+  const core = b.core as Record<string, unknown> | null | undefined;
+  if (core && typeof core === "object" && typeof core.version === "string" && /^(?:[0-9a-f]{8}|built-in)$/.test(core.version)) {
+    out.core = { version: core.version, ...(typeof core.commit === "string" && /^[0-9a-f]{7,40}$/.test(core.commit) ? { commit: core.commit } : {}), ...(str(core.fellBack, 200) ? { fellBack: str(core.fellBack, 200) } : {}) };
+  }
   const ls = b.localServer as Record<string, unknown> | null | undefined;
   if (ls === null) out.localServer = null;
   else if (ls && typeof ls === "object" && str(ls.url, 200)) out.localServer = { url: str(ls.url, 200)!, ...(str(ls.version, 40) ? { version: str(ls.version, 40) } : {}), ...(str(ls.rev, 64) ? { rev: str(ls.rev, 64) } : {}) };
@@ -178,7 +185,8 @@ export function addWatch(stateDir: string, w: Omit<Watch, "id" | "at">, now = Da
 export const LAPTOP_BUILD_DESCRIPTION =
   "Which build Carl's laptop app runs, so you can tell whether a release has reached it. " +
   "action \"get\" (default): asks the laptop app live (when it is open and connected) for its frontend version and git revision, the installed native app version, its webview runtime, its last launch-to-interactive time and the server it carries if it runs one; shows the last build it reported at launch and the box's own server build next to it. " +
-  "The laptop gets a release only through the app's updater: a push to main that touches the app is built by GitHub Actions (ship.yml: version bump commit vX.Y.Z on a release tag, Windows installer, latest.json) and the app offers \"Install & restart\" (it checks at launch and every 5 min; Carl clicks it unless the app runs in background mode, which installs when idle). The revision the app reports is that version-bump commit, whose parent is the main commit it was built from. " +
+  "Its frontend (the core) comes apart from the native shell: the box builds a core bundle from each accepted main itself and the app's loader takes it with no installer (it falls back to the previous bundle, then the installed app's own, when one does not boot); the answer says which core runs. " +
+  "Native changes (Rust commands, plugins, the installer) still arrive only through the app's updater: " + "a push to main that touches the app is built by GitHub Actions (ship.yml: version bump commit vX.Y.Z on a release tag, Windows installer, latest.json) and the app offers \"Install & restart\" (it checks at launch and every 5 min; Carl clicks it unless the app runs in background mode, which installs when idle). The revision the app reports is that version-bump commit, whose parent is the main commit it was built from. " +
   "action \"wake\": wake this conversation with one short turn the next time the laptop reports a different build at launch (or the given version / revision), instead of polling. Use it after shipping something the laptop must get; then run your checks (Drive, Timing, Screen) in that turn.";
 
 export const LAPTOP_BUILD_SCHEMA = {
@@ -209,6 +217,8 @@ const ago = (iso: string, now: number) => {
 
 function describe(b: HostBuild): string[] {
   const lines = [`build ${buildLine(b)}`];
+  if (b.core) lines.push(b.core.version === "built-in" ? "core: the installed app's own (baked into the installer)" : `core: bundle ${b.core.version} from the box (main ${short(b.core.commit ?? "?")}), native shell v${b.nativeVersion ?? "?"}`);
+  if (b.core?.fellBack) lines.push(`core loader fell back: ${b.core.fellBack}`);
   if (b.launchMs !== undefined) lines.push(`last launch to interactive: ${b.launchMs} ms (${b.launchMethod ?? "method unknown"})${b.startedAt ? `, started ${b.startedAt}` : ""}`);
   if (b.localServer) lines.push(`runs its own server: ${b.localServer.url}${b.localServer.version ? ` v${b.localServer.version}` : ""}${b.localServer.rev ? ` (${short(b.localServer.rev)})` : ""}`);
   else if (b.localServer === null) lines.push(`carries a server but runs none (it uses the box${b.box ? ` at ${b.box}` : ""})`);

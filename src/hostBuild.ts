@@ -29,6 +29,8 @@ export type HostBuildInfo = {
   startedAt: string;
   localServer: { url: string; version?: string; rev?: string } | null;
   box?: string;
+  /** The core bundle the native loader serves (src/coreFollow.ts): box-built or the installed app's own. */
+  core?: { version: string; commit?: string; fellBack?: string };
 };
 
 const session = Math.random().toString(36).slice(2, 10);
@@ -39,6 +41,8 @@ export type HostBuildDeps = {
   /** The build info of the server this app runs itself (default: its /api/v1/health). */
   localServerBuild?: (link: Link) => Promise<{ version?: string; rev?: string }>;
   link?: Link | null;
+  /** The native core loader's state (default: core_status; none in a browser or an app from before the loader). */
+  coreStatus?: () => Promise<import("./coreFollow").CoreStatus | null>;
 };
 
 async function defaultNativeVersion(): Promise<string | undefined> {
@@ -69,6 +73,8 @@ export async function hostBuildInfo(reason: "launch" | "ask", deps: HostBuildDep
   const launch = await launchTiming(0);
   const nativeVersion = await (deps.nativeVersion ?? defaultNativeVersion)();
   const link = deps.link === undefined ? await boxLinkFor(vault).catch(() => null) : deps.link;
+  const core = native ? await (deps.coreStatus ?? (async () => (await import("./coreFollow")).coreStatus()))().catch(() => null) : null;
+  const fell = core?.events[core.events.length - 1];
   const origin = typeof performance !== "undefined" && Number.isFinite(performance.timeOrigin) ? performance.timeOrigin : Date.now();
   return {
     host: "laptop",
@@ -84,6 +90,7 @@ export async function hostBuildInfo(reason: "launch" | "ask", deps: HostBuildDep
     startedAt: new Date(origin).toISOString(),
     localServer: local ? { url: local.url, ...(await (deps.localServerBuild ?? defaultLocalServerBuild)(local)) } : null,
     ...(link && (!local || link.url !== local.url) ? { box: link.url } : {}),
+    ...(core ? { core: { version: core.active, ...(core.activeCommit ? { commit: core.activeCommit } : {}), ...(fell ? { fellBack: `${fell.from} → ${fell.to}: ${fell.reason}`.slice(0, 200) } : {}) } } : {}),
   };
 }
 

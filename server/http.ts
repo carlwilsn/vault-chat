@@ -19,7 +19,9 @@ import { PAGE_LINK_PREFIX, pageLinkDocument, pageLinkId } from "./pageLink";
 import { appCss } from "./appCss";
 import { liveGateway, liveManifest, liveRevoke, liveToken } from "./liveProxy";
 import { devicePlugins, pluginCatalog } from "./pluginCatalog";
-import { offDocument, pluginDesired, supervisorRoute } from "./supervisor";
+import { offDocument, pluginDesired, supervisorOf, supervisorRoute } from "./supervisor";
+import { coreRoute } from "./coreBundles";
+import { CORE_PART } from "../src/coreBundle";
 import { boxPluginRequest, boxPluginsStatus } from "./boxPlugins";
 import { BOX_TRY_HEADER } from "../src/pluginDrafts";
 import { surfaceOff, surfaceOffPage } from "./surfaces";
@@ -781,6 +783,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   if (path === "/api/v2/supervisor" && (method === "GET" || method === "POST")) {
     const out = await supervisorRoute(vault, method, url.searchParams, method === "POST" ? await jsonBody(req) : null);
     return json(res, out.status, out.body);
+  }
+  // The laptop app's core bundle (server/coreBundles.ts): the offer, and each bundle's manifest and files (immutable:
+  // a version is the hash of its manifest, which holds every file's hash). The box's main vault holds the records.
+  if ((path === "/api/v2/core" || path.startsWith("/api/v2/core/")) && method === "GET") {
+    const out = coreRoute(cfg.stateDir, supervisorOf(cfg.vault).changes(CORE_PART), path.slice("/api/v2/core".length));
+    if (out.bytes) return send(res, out.status, out.type ?? "application/octet-stream", out.bytes, { "Cache-Control": "private, max-age=31536000, immutable" });
+    return json(res, out.status, out.json);
   }
   // Box plugins (server/boxPlugins.ts): server-side modules in the vault the box runs live; a draft only for whoever
   // tries it (x-vc-try: <version>, or ?vc-try=).
