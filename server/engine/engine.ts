@@ -66,9 +66,11 @@ import { loadConfig } from "../config";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
 import { proposeEditSpec } from "./proposeEdit";
+import { PLUGIN_WRITE_TOOL, pluginWrite, pluginWriteSpec } from "../pluginWriteTool";
 import { PLUGIN_TOOL, pluginToolAsync, pluginToolSpecs } from "../supervisorTools";
 import { SETTINGS_TOOL, settingsTool, settingsToolSpecs } from "../settingsTool";
 import { capabilitiesOf, capabilityNote } from "./capabilities";
+import { randomUUID } from "node:crypto";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { projectFolderOf, reviveFolder } from "../projectFolders";
 import { deleteFolder, folderOpsWalls } from "../folderOps";
@@ -129,6 +131,8 @@ export type EngineDeps = {
   turnLog?: (line: TurnLine) => void;
   /** The per-command sandbox the vault's own tools run in (server/vaultTools.ts); null: none (not Linux). */
   shell?: () => string[] | null | undefined;
+  /** How long Ctrl+L's Handoff waits for the chat it started before it reports by an alert instead (tests). */
+  handoffWaitMs?: number;
 };
 
 /** What the engine raises: a question (kind "ask") or a line for Carl (kind "info"), with what the
@@ -616,6 +620,26 @@ export const INLINE_DEFAULT_MODEL = "claude-haiku-5-5";
 export function sideToolSpecs(): ToolSpec[] {
   return agentToolSpecs().filter((t) => t.readOnly === true);
 }
+/** Ctrl+K / Ctrl+L's way out for what its own tools can't do (server/engine/engine.ts handoff): a new chat with the
+ *  whole request, whose answer comes back as the tool's result (or, past the wait, as an alert). */
+export const HANDOFF_TOOL = "Handoff";
+export const handoffSpec = {
+  type: "function" as const,
+  name: HANDOFF_TOOL,
+  description:
+    "Hand the request to a full agent (a new chat of Carl's with every tool: files, shell, workers) when your own tools here can't do it, and wait for its answer. " +
+    "Never tell Carl to ask again somewhere else: call this instead. First say one line (\"On it, I'll report here.\"), then call it. The chat does the work; its final reply comes back as this tool's result: tell Carl in a line or two what it did. " +
+    "If it takes longer than a few minutes, Carl gets an alert with its answer when it finishes. request: everything that chat needs, in full (Carl's words, the file he has open, what you already did and found): it has none of this context.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      request: { type: "string", description: "The whole task, self-contained." },
+      title: { type: "string", description: "A short title for the chat (a few words)." },
+    },
+    required: ["request", "title"],
+    additionalProperties: false,
+  },
+};
 /** The agent's tools a side thread can't use: they belong to a turn (its question, plan, background maker, job, wake). */
 const TURN_ONLY_TOOLS = new Set(["AskUser", "SubmitChange", "TodoWrite", "BoardMake", "StartJob", "JobStop", "JobSteer", "ScheduleWake"]);
 /** Voice's Ask (server/voice.ts), a side thread: a question has the read-only tools and Show; an action every tool a
@@ -1797,6 +1821,60 @@ export class Engine {
     this.d.broadcast?.({ type: "project", slug, restored: true, convId });
   }
 
+  /**
+   * Ctrl+K / Ctrl+L's Handoff: what the box can't do with its own tools goes to a new chat (every tool) with the whole
+   * request, as Carl's own ask. The box waits for that chat's answer and says it; past the wait (or when Carl closed the
+   * box) the answer reaches him as an alert. Never "ask me again in Main".
+   */
+  private async handoff(from: string | null, a: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
+    const request = String(a.request ?? "").trim();
+    const title = (String(a.title ?? "").trim() || request.split("\n")[0]!).replace(/\s+/g, " ").slice(0, 60);
+    if (!request) return "Give request (the whole task) and title.";
+    const id = `handoff-${randomUUID().slice(0, 12)}`;
+    await createConv(this.d.vault, { kind: "separate", title } as Partial<EngineConv>, title, id);
+    const text =
+      `[Handed over from Carl's Ctrl+L box${from ? ` (opened from chat ${from})` : ""}: it could not do this with its own tools. Do it fully now with yours; ` +
+      `pick the sensible reading rather than asking. Your final reply is shown to him in that box: one or two plain lines saying what you did.]\n\n${request}`;
+    const t0 = Date.now();
+    const r = await this.message({ convId: id, text, via: "handoff", client: "laptop" });
+    if (r?.error) return `Not handed over: ${String(r.error)}`;
+    const reply = (): string => {
+      const items = this.picture(id)?.items ?? [];
+      const x = [...items].reverse().find((i) => i.kind === "assistant" && i.at >= t0 && (i.text ?? "").trim());
+      return (x?.text ?? "").trim();
+    };
+    const deadline = Date.now() + (this.d.handoffWaitMs ?? 4 * 60_000);
+    const ended = (async () => {
+      // The turn starts a moment after message() answers; then it is the conversation's live turn until it ends.
+      while (Date.now() < deadline + 60 * 60_000) {
+        const l = this.live.get(id);
+        if (l && !l.finished) return void (await this.turnEnd(id));
+        if (!l && reply()) return;
+        await new Promise((res) => setTimeout(res, 200));
+      }
+    })();
+    const left = Math.max(0, deadline - Date.now());
+    const done = await Promise.race([
+      ended.then(() => true),
+      new Promise<false>((res) => {
+        const t = setTimeout(() => res(false), left);
+        signal?.addEventListener("abort", () => (clearTimeout(t), res(false)), { once: true });
+      }),
+    ]);
+    if (done) {
+      const said = reply();
+      return said ? `Done (chat "${title}", ${id}). Its answer:\n\n${said.slice(0, 6000)}` : `The chat "${title}" (${id}) ended without an answer; Carl can open it.`;
+    }
+    // Still working: its answer comes as an alert when it ends (the box may be closed by then).
+    void ended.then(async () => {
+      const said = reply();
+      await this.d
+        .notify({ kind: "info", title: `${said ? "Done" : "Ended"}: ${title}`.slice(0, 90), body: (said || "It ended without an answer: open the chat.").slice(0, 2000), convId: id, why: said ? "finished" : "failed", byCarl: true, trigger: "handoff end" })
+        .catch(() => undefined);
+    });
+    return `Still working in the chat "${title}" (${id}). Carl gets an alert with its answer when it finishes: tell him so in one line.`;
+  }
+
   /** Resolves when the conversation's running turn (if any) has ended. */
   private turnEnd(convId: string): Promise<void> {
     const l = this.live.get(convId);
@@ -2379,7 +2457,7 @@ export class Engine {
 
   /** Ctrl+K / Ctrl+L: the tools a side thread can use (notes, Show …, Carl's own vault tools), and ProposeEdit when the open file can take an edit. */
   private async inlineHostTools(editable: boolean): Promise<ToolSpec[]> {
-    return [...(await this.hostToolCatalog("voiceAct")), ...(editable ? [proposeEditSpec] : [])];
+    return [...(await this.hostToolCatalog("voiceAct")), pluginWriteSpec, handoffSpec, ...(editable ? [proposeEditSpec] : [])] as ToolSpec[];
   }
 
   /** One current host policy for new and resumed sessions; vault tools keep collision checks. */
@@ -2981,6 +3059,13 @@ export class Engine {
         const r = await pluginToolAsync(vault, a, { jobs: this.d.jobEnv, convId, byCarl: !!this.live.get(convId)?.byCarl });
         return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
       }
+      // Ctrl+K / Ctrl+L changing the app (server/pluginWriteTool.ts): the plugin folders only, a live plugin through its
+      // slot's keep (Switch back undoes it). Only a side thread lists it; a turn writes with its own file tools.
+      if (name === PLUGIN_WRITE_TOOL && side) {
+        const r = pluginWrite(vault, a, (abs) => this.d.onFilesWritten?.(abs.map((x) => relative(vault, x).split(sep).join("/"))));
+        return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
+      }
+      if (name === HANDOFF_TOOL && side) return text(await this.handoff(side.convId, a, p.signal));
       // Carl's settings (server/settingsTool.ts): a setting record every open app and the phone follow.
       if (name === SETTINGS_TOOL) {
         const r = settingsTool(a);
