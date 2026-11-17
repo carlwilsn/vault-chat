@@ -8,6 +8,9 @@ import { hit } from "./shortcuts";
 // the same in the chat and in the viewer. No autoplay: Carl's own Play starts
 // video and audio together. Every element is phrasing content (spans), because
 // a video in a chat sits inside a markdown paragraph.
+// In the viewer and in full screen the bar lies over the picture and, while
+// the video plays, fades out with the cursor after VIDEO_IDLE_MS without a
+// mouse move, tap or key (back on the next one), as on YouTube.
 
 /** 75 → "1:15", 3725 → "1:02:05"; a duration not known yet → "0:00". */
 export function videoTime(seconds: number): string {
@@ -23,6 +26,59 @@ export function videoTime(seconds: number): string {
 export function trackFraction(clientX: number, left: number, width: number): number {
   if (!(width > 0)) return 0;
   return Math.min(1, Math.max(0, (clientX - left) / width));
+}
+
+/** How long the pointer may rest on a playing video before its bar and cursor fade away. */
+export const VIDEO_IDLE_MS = 2500;
+
+/**
+ * Like YouTube: the bar hides only while the video plays, the pointer has
+ * rested for VIDEO_IDLE_MS, and it is neither over the bar nor dragging the
+ * seek track. Paused, the bar always shows.
+ */
+export function videoBarHidden(s: { playing: boolean; idle: boolean; overBar: boolean; dragging: boolean }): boolean {
+  return s.playing && s.idle && !s.overBar && !s.dragging;
+}
+
+type Timers = { set: (fn: () => void, ms: number) => unknown; clear: (id: unknown) => void };
+
+/**
+ * The idle clock: poke() on every mouse move, tap or key says "awake" and
+ * restarts the count; after `ms` without a poke it says "idle"; sleep() says
+ * idle at once (the pointer left). onChange hears each change once.
+ */
+export function idleWatch(
+  ms: number,
+  onChange: (idle: boolean) => void,
+  timers: Timers = { set: (fn, t) => setTimeout(fn, t), clear: (id) => clearTimeout(id as ReturnType<typeof setTimeout>) },
+) {
+  let timer: unknown = null;
+  let idle = false;
+  const to = (v: boolean) => {
+    if (idle !== v) {
+      idle = v;
+      onChange(v);
+    }
+  };
+  const cancel = () => {
+    if (timer !== null) timers.clear(timer);
+    timer = null;
+  };
+  return {
+    poke() {
+      to(false);
+      cancel();
+      timer = timers.set(() => {
+        timer = null;
+        to(true);
+      }, ms);
+    },
+    sleep() {
+      cancel();
+      to(true);
+    },
+    stop: cancel,
+  };
 }
 
 const barButton =
@@ -58,6 +114,16 @@ export function VideoPlayer({
   const [muted, setMuted] = useState(false);
   const [full, setFull] = useState(false);
   const dragging = useRef(false);
+  // Auto-hiding bar (the viewer and full screen only: a chat's video keeps its bar).
+  const autoHide = fill || full;
+  const [idle, setIdle] = useState(false);
+  const [overBar, setOverBar] = useState(false);
+  const [seeking, setSeeking] = useState(false);
+  const watch = useRef<ReturnType<typeof idleWatch> | null>(null);
+  if (!watch.current) watch.current = idleWatch(VIDEO_IDLE_MS, setIdle);
+  const wake = useCallback(() => watch.current?.poke(), []);
+  useEffect(() => () => watch.current?.stop(), []);
+  const hidden = autoHide && videoBarHidden({ playing, idle, overBar, dragging: seeking });
 
   useEffect(() => {
     const onFull = () => setFull(document.fullscreenElement === wrap.current);
@@ -89,6 +155,7 @@ export function VideoPlayer({
 
   const onTrackDown = (e: PointerEvent<HTMLSpanElement>) => {
     dragging.current = true;
+    setSeeking(true);
     e.currentTarget.setPointerCapture(e.pointerId);
     seekAt(e.clientX);
   };
@@ -97,6 +164,8 @@ export function VideoPlayer({
   };
   const onTrackUp = (e: PointerEvent<HTMLSpanElement>) => {
     dragging.current = false;
+    setSeeking(false);
+    wake();
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
   };
 
@@ -115,6 +184,7 @@ export function VideoPlayer({
   };
 
   const onKey = (e: KeyboardEvent<HTMLSpanElement>) => {
+    wake();
     const onButton = (e.target as HTMLElement).closest("button");
     if (hit(e, "video.play")) {
       if (onButton) return; // a focused button takes Space itself
@@ -139,9 +209,17 @@ export function VideoPlayer({
       data-el="video-player"
       tabIndex={0}
       onKeyDown={onKey}
+      onPointerMove={wake}
+      onPointerDown={wake}
+      onPointerLeave={(e) => {
+        // A mouse that leaves a playing video takes the bar with it (a touch "leaves" on every lift).
+        if (e.pointerType === "mouse") watch.current?.sleep();
+      }}
+      data-chrome={autoHide ? (hidden ? "hidden" : "shown") : undefined}
       className={cn(
         "flex flex-col overflow-hidden bg-black focus-visible:outline-none",
-        fill || full ? "h-full w-full min-h-0 flex-1" : "inline-flex max-w-full rounded-md border border-border/60 align-top",
+        hidden && "cursor-none",
+        fill || full ? "relative h-full w-full min-h-0 flex-1" : "inline-flex max-w-full rounded-md border border-border/60 align-top",
         className,
       )}
     >
@@ -154,7 +232,10 @@ export function VideoPlayer({
         preload="metadata"
         onClick={toggle}
         onDoubleClick={toggleFull}
-        onPlay={() => setPlaying(true)}
+        onPlay={() => {
+          setPlaying(true);
+          wake();
+        }}
         onPause={() => setPlaying(false)}
         onEnded={() => setPlaying(false)}
         onTimeUpdate={(e) => {
@@ -167,9 +248,19 @@ export function VideoPlayer({
         }}
         onVolumeChange={(e) => setMuted(e.currentTarget.muted)}
         onError={onError}
-        className={cn("block cursor-pointer bg-black", fill || full ? "min-h-0 w-full flex-1 object-contain" : "max-h-[70vh] max-w-full")}
+        className={cn("block bg-black", hidden ? "cursor-none" : "cursor-pointer", fill || full ? "min-h-0 w-full flex-1 object-contain" : "max-h-[70vh] max-w-full")}
       />
-      <span data-el="video-bar" className="flex h-9 shrink-0 items-center gap-1.5 border-t border-border/60 bg-card px-1.5 text-foreground">
+      <span
+        data-el="video-bar"
+        onPointerEnter={() => setOverBar(true)}
+        onPointerLeave={() => setOverBar(false)}
+        className={cn(
+          "flex h-9 shrink-0 items-center gap-1.5 border-t border-border/60 bg-card px-1.5 text-foreground",
+          // Over the picture (so hiding it never resizes the video), fading like YouTube's.
+          autoHide && "absolute inset-x-0 bottom-0 z-10 transition-opacity duration-300",
+          hidden && "pointer-events-none opacity-0",
+        )}
+      >
         <button type="button" className={barButton} onClick={toggle} title={playing ? "Pause" : "Play"} aria-label={playing ? "Pause" : "Play"} data-el="video-play">
           {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
         </button>
