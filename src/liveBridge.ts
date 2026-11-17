@@ -27,12 +27,18 @@
 //          vc.catalog() → Promise<{services, plugins}>   (cap: catalog) every registered service {name, description,
 //                                   supplier, grantable, always, call} and the vault's plugins {id, name, mount, needs,
 //                                   refused} (pages with a vc-capabilities / vc-mount manifest). src/pluginCatalog.ts
+//          vc.offer({name?, state: {n: {description, read}}, actions: {n: {description, args, run}}, events: {n: {description}}})
+//                                   → {emit(event, payload)}   (every live page, no grant) what the page offers the agent:
+//                                   the same contract as a plugin's api.offer (src/pluginOffers.ts). The host registers it
+//                                   under the page's vault path while the frame is open, so PluginRead / PluginAct read and
+//                                   run it and its events show up live; reads and actions run in the page (postMessage).
 //   host:  installLiveBridge(host) once; an iframe takes part by `data-vc-live="<vault path>"`. The host asks the box for
 //          the page's manifest + content hash, asks Carl once (remembered per path + hash; a changed page asks again),
 //          has the box mint the token, and answers only that iframe's window (event.source, origin "null").
 
 import { pageFunctions, readNeed, serviceOfCap, servicesFor, toolAllowed } from "./liveServices";
 import { pluginIdOf } from "./pluginSupervisor";
+import { OFFER_TIMEOUT_MS, declareOffers, markPageMounted, type Offers, type OffersHandle } from "./pluginOffers";
 
 /** Every message either way carries this marker. */
 export const LIVE = "vc-live";
@@ -173,8 +179,18 @@ function apply(m){
 addEventListener("message",function(e){
   var m=e.data;if(e.source!==parent||!m||m[M]!==1)return;
   if(m.ev==="env"){apply(m);return;}
+  if(m.ev==="offer-call"){runOffer(m);return;}
   var f=wait[m.id];if(f)f(m);
 });
+var offerFns=null,offerSeq=0;
+function plainOut(v){try{return v===undefined?null:JSON.parse(JSON.stringify(v));}catch(x){return String(v);}}
+function runOffer(m){
+  var own=function(o,k){return o&&Object.prototype.hasOwnProperty.call(o,k)?o[k]:null;};
+  var e=offerFns?(m.kind==="state"?own(offerFns.state,m.name):own(offerFns.actions,m.name)):null;
+  var f=e&&(m.kind==="state"?e.read:e.run);
+  Promise.resolve().then(function(){if(typeof f!=="function")throw new Error("the page offers no "+m.kind+" "+m.name);return m.kind==="state"?f():f(m.args||{});})
+  .then(function(v){post({op:"offer-result",call:m.call,ok:true,value:plainOut(v)});},function(err){post({op:"offer-result",call:m.call,ok:false,error:String((err&&err.message)||err)});});
+}
 function hello(){post({op:"hello"});if(++tries>40)clearInterval(helloTimer);}
 helloTimer=setInterval(hello,500);hello();
 vc.onTheme=function(f){themeFns.push(f);if(vc.live)f(vc.theme);};
@@ -270,6 +286,15 @@ vc.converse.send=function(convId,text){return jfetch("/api/v2/intent",{method:"P
 vc.converse.list=function(){return jfetch("/api/v2/conversations").then(function(j){return j.rows||[];});};
 vc.converse.read=function(convId,o){var a=Math.max(0,Math.trunc(Number(o&&o.after)||0));return jfetch("/api/v2/conversations/"+encodeURIComponent(String(convId))+"/events?after="+a);};
 vc.catalog=function(){return jfetch("/api/v2/plugin/catalog");};
+vc.offer=function(decl){
+  decl=decl||{};var st=decl.state||{},ac=decl.actions||{},ev=decl.events||{},d={state:{},actions:{},events:{}},k;
+  for(k in st)d.state[k]={description:String((st[k]&&st[k].description)||"")};
+  for(k in ac){d.actions[k]={description:String((ac[k]&&ac[k].description)||"")};if(ac[k]&&ac[k].args)d.actions[k].args=plainOut(ac[k].args);}
+  for(k in ev)d.events[k]={description:String((ev[k]&&ev[k].description)||"")};
+  offerFns={state:st,actions:ac};var mine=++offerSeq;
+  ready.then(function(){if(mine===offerSeq)post({op:"offer",decl:d,name:String(decl.name||document.title||"")});});
+  return {emit:function(e,p){if(mine!==offerSeq)return;var pl=plainOut(p);ready.then(function(){post({op:"offer-emit",event:String(e),payload:pl});});}};
+};
 vc.service=function(name){
   var n=String(name).toLowerCase(),f=FNS[n];
   for(var i=0;i<vc.services.length;i++)if(vc.services[i].name===n)return f&&typeof vc[f]==="function"?vc[f]:null;
@@ -358,6 +383,12 @@ type PageState = {
   active: number;
   mic: { id: number; stop: () => void } | null;
   ro: ResizeObserver | null;
+  /** What the page offers the agent (vc.offer), registered under its vault path while the frame is open. */
+  offer: { undo: () => void; handle: OffersHandle } | null;
+  /** The page's answers the host waits for (a read or an action it runs). */
+  calls: Map<number, (r: { ok?: unknown; value?: unknown; error?: unknown }) => void>;
+  /** Undo the mark that the page is open here (PluginRead's list). */
+  unmark: (() => void) | null;
 };
 
 const isId = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v > 0;
@@ -417,6 +448,19 @@ function askCarl(doc: Document, framesOf: () => HTMLIFrameElement[], page: strin
 /** The event a host's reconciler sends when it stops a plugin (src/pluginSupervisor.ts): detail {plugin}. */
 export const PLUGIN_STOPPED_EVENT = "vc-plugin-stopped";
 
+/** The page's offers and its open mark go (its frame left, it re-declared, or it was stopped). */
+function dropOffers(st: PageState, unmark = true): void {
+  st.offer?.undo();
+  st.offer = null;
+  for (const cb of st.calls.values()) cb({ ok: false, error: "the page closed" });
+  st.calls.clear();
+  if (unmark) {
+    st.unmark?.();
+    st.unmark = null;
+  }
+}
+let offerCalls = 0;
+
 export function installLiveBridge(host: LiveHost, doc: Document = document): () => void {
   const win = doc.defaultView!;
   const pages = new WeakMap<Window, PageState>();
@@ -433,7 +477,7 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
   };
   const stateOf = (w: Window): PageState => {
     let s = pages.get(w);
-    if (!s) pages.set(w, (s = { grant: null, denied: false, askTimes: [], active: 0, mic: null, ro: null }));
+    if (!s) pages.set(w, (s = { grant: null, denied: false, askTimes: [], active: 0, mic: null, ro: null, offer: null, calls: new Map(), unmark: null }));
     return s;
   };
   const env = (f: HTMLIFrameElement, g: NonNullable<Grant>) => {
@@ -519,7 +563,11 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
     if (!page) return;
     const st = stateOf(f.contentWindow);
     held.set(f, st);
-    for (const x of held.keys()) if (x.isConnected === false) held.delete(x);
+    for (const [x, xs] of [...held]) {
+      if (x.isConnected !== false) continue;
+      held.delete(x);
+      dropOffers(xs);
+    }
     const fail = (id: unknown, error: string) => isId(id) && reply(f, { id, ev: "error", error });
 
     switch (d.op) {
@@ -528,6 +576,10 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
         void grantOf(f, st, page).then((g) => {
           if (!g) return;
           reply(f, env(f, g));
+          if (!st.unmark) {
+            const w0 = f.contentWindow;
+            st.unmark = markPageMounted(pluginIdOf(page), () => f.isConnected !== false && f.contentWindow === w0);
+          }
           if (!st.ro && typeof ResizeObserver !== "undefined") {
             let t: ReturnType<typeof setTimeout> | null = null;
             st.ro = new ResizeObserver(() => {
@@ -602,6 +654,55 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
         if (st.mic && st.mic.id === d.id) st.mic.stop();
         return;
       }
+      case "offer": {
+        // vc.offer: the page's offers, registered under its vault path (src/pluginOffers.ts) for PluginRead / PluginAct.
+        const decl = d.decl as Offers | null;
+        const name = typeof d.name === "string" && d.name.trim() ? d.name.trim().slice(0, 120) : (page.split("/").pop() ?? page);
+        void (st.grant ?? grantOf(f, st, page)).then((g) => {
+          if (!g || !decl || typeof decl !== "object") return;
+          dropOffers(st, false);
+          const w0 = f.contentWindow;
+          let mine: PageState["offer"] = null;
+          const alive = () => f.isConnected !== false && f.contentWindow === w0 && !!mine && st.offer === mine;
+          const ask = (kind: "state" | "action", n: string, args?: Record<string, unknown>) =>
+            new Promise<unknown>((resolve, reject) => {
+              const call = ++offerCalls;
+              const t = setTimeout(() => {
+                st.calls.delete(call);
+                reject(new Error("the page did not answer"));
+              }, OFFER_TIMEOUT_MS + 1000);
+              st.calls.set(call, (r) => {
+                clearTimeout(t);
+                if (r.ok === true) resolve(r.value);
+                else reject(new Error(String(r.error ?? "the page refused")));
+              });
+              reply(f, { ev: "offer-call", call, kind, name: n, ...(args ? { args } : {}) });
+            });
+          const offers: Offers = {
+            state: Object.fromEntries(Object.entries(decl.state ?? {}).map(([n, v]) => [n, { description: String(v?.description ?? ""), read: () => ask("state", n) }])),
+            actions: Object.fromEntries(Object.entries(decl.actions ?? {}).map(([n, v]) => [n, { description: String(v?.description ?? ""), ...(v?.args ? { args: v.args } : {}), run: (a: Record<string, unknown>) => ask("action", n, a) }])),
+            events: Object.fromEntries(Object.entries(decl.events ?? {}).map(([n, v]) => [n, { description: String(v?.description ?? "") }])),
+          };
+          try {
+            mine = declareOffers(pluginIdOf(page), name, offers, alive);
+            st.offer = mine;
+          } catch (err) {
+            reply(f, { ev: "offer-refused", error: String((err as Error)?.message ?? err) });
+          }
+        });
+        return;
+      }
+      case "offer-emit": {
+        if (st.offer && typeof d.event === "string") st.offer.handle.emit(d.event, d.payload);
+        return;
+      }
+      case "offer-result": {
+        const cb = typeof d.call === "number" ? st.calls.get(d.call) : undefined;
+        if (!cb) return;
+        st.calls.delete(d.call as number);
+        cb(d);
+        return;
+      }
     }
   };
 
@@ -619,6 +720,7 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
     st.ro = null;
     st.mic?.stop();
     st.grant = null;
+    dropOffers(st);
   };
   const onStopped = (e: Event) => {
     const plugin = pluginIdOf(String((e as CustomEvent<{ plugin?: unknown }>).detail?.plugin ?? ""));

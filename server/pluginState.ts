@@ -3,24 +3,92 @@
 // plugin.state records, read once from the log's signals file and then kept up to date from the log's own records.
 // The gateway (server/liveProxy.ts) calls these with the plugin id from the page's token, never from the page's body.
 import { signal, signalLog, type ConvLog } from "./convlog/log";
-import { foldPluginState, logSignal, stateSignal, type PluginState } from "../src/pluginRecords";
+import { PLUGIN_LOG, foldPluginState, logSignal, stateSignal, type PluginState } from "../src/pluginRecords";
 import type { LogRecord } from "../src/convlog/protocol";
 
-type Folded = { states: Map<string, PluginState>; changed: Set<() => void> };
+/** One plugin.log record as the agent reads it. */
+export type PluginLogEntry = { seq: number; at: number; record: unknown };
+/** What the box knows of one plugin without its page being open: its last record (state or log) and its recent log. */
+export type PluginActivity = { seq: number; at: number; logs: PluginLogEntry[]; logCount: number };
+
+type Folded = { states: Map<string, PluginState>; activity: Map<string, PluginActivity>; changed: Set<() => void> };
 const folds = new WeakMap<ConvLog, Folded>();
+
+/** The most recent plugin.log records kept per plugin for PluginRead. */
+export const RECENT_LOGS = 20;
+
+/** Fold one record into the plugins' activity (their last record and recent log): whether it was a plugin's. */
+function foldActivity(activity: Map<string, PluginActivity>, r: LogRecord): boolean {
+  const s = r.type === "signal" ? ((r as { signal?: unknown }).signal as { type?: unknown; plugin?: unknown; record?: unknown } | undefined) : undefined;
+  if (!s || typeof s.plugin !== "string" || (s.type !== PLUGIN_LOG && s.type !== "plugin.state")) return false;
+  const a = activity.get(s.plugin) ?? { seq: 0, at: 0, logs: [], logCount: 0 };
+  a.seq = r.seq;
+  a.at = typeof r.at === "number" ? r.at : a.at;
+  if (s.type === PLUGIN_LOG) {
+    a.logs.push({ seq: r.seq, at: a.at, record: s.record ?? null });
+    if (a.logs.length > RECENT_LOGS) a.logs.splice(0, a.logs.length - RECENT_LOGS);
+    a.logCount++;
+  }
+  activity.set(s.plugin, a);
+  return true;
+}
 
 function folded(log: ConvLog): Folded {
   let f = folds.get(log);
   if (f) return f;
   const states = new Map<string, PluginState>();
+  const activity = new Map<string, PluginActivity>();
   const changed = new Set<() => void>();
-  f = { states, changed };
+  f = { states, activity, changed };
   folds.set(log, f);
   log.onRecord((r: LogRecord) => {
-    if (r.conv === null && foldPluginState(states, r)) for (const fn of [...changed]) fn();
+    if (r.conv !== null) return;
+    const s = foldPluginState(states, r);
+    if (foldActivity(activity, r) || s) for (const fn of [...changed]) fn();
   });
-  for (const r of log.signals(0)) foldPluginState(states, r);
+  for (const r of log.signals(0)) {
+    foldPluginState(states, r);
+    foldActivity(activity, r);
+  }
   return f;
+}
+
+/** A page's (or any plugin's) records as the box keeps them: its state, its last change and its recent log. */
+export function readPluginRecords(vault: string, plugin: string, log: ConvLog = signalLog(vault)): PluginState & PluginActivity {
+  const f = folded(log);
+  const st = f.states.get(plugin) ?? { seq: 0, state: {} };
+  const a = f.activity.get(plugin) ?? { seq: 0, at: 0, logs: [], logCount: 0 };
+  return { state: st.state, seq: a.seq, at: a.at, logs: [...a.logs], logCount: a.logCount };
+}
+
+/** Every plugin with records in the log (state or log), by id, with its last change; app plugins and note widgets left out. */
+export function pagesWithRecords(vault: string, log: ConvLog = signalLog(vault)): { id: string; seq: number; at: number; keys: string[]; logCount: number }[] {
+  const f = folded(log);
+  return [...f.activity]
+    .filter(([id]) => !APP_PLUGIN_RE.test(id))
+    .map(([id, a]) => ({ id, seq: a.seq, at: a.at, keys: Object.keys(f.states.get(id)?.state ?? {}), logCount: a.logCount }))
+    .sort((x, y) => y.seq - x.seq);
+}
+
+/** A plugin's records once something of it (a state set or a log record) is newer than `after`, or as they are after `waitMs`. */
+export function awaitPluginRecords(vault: string, plugin: string, after: number, waitMs: number, log: ConvLog = signalLog(vault)): Promise<PluginState & PluginActivity> {
+  const f = folded(log);
+  const now = () => readPluginRecords(vault, plugin, log);
+  if (waitMs <= 0 || now().seq > after) return Promise.resolve(now());
+  return new Promise((resolve) => {
+    const done = () => {
+      if (now().seq <= after) return;
+      clearTimeout(t);
+      f.changed.delete(done);
+      resolve(now());
+    };
+    const t = setTimeout(() => {
+      f.changed.delete(done);
+      resolve(now());
+    }, waitMs);
+    t.unref?.();
+    f.changed.add(done);
+  });
 }
 
 /** The plugin's state now (on `log`, default the vault's). */

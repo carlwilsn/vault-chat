@@ -122,6 +122,8 @@ export type EngineDeps = {
   titleWith?: (instructions: string, text: string) => Promise<string>;
   /** The vault's name on this box (the turn log's `vault`); the folder's name when absent. */
   vaultName?: string;
+  /** Every registered vault on the box (name, path): Show and PluginRead take a file in any of them. */
+  vaultList?: () => { name: string; path: string }[];
   /** One structured line per turn (turnLog.ts): the box's turn log and the journal. */
   turnLog?: (line: TurnLine) => void;
   /** The per-command sandbox the vault's own tools run in (server/vaultTools.ts); null: none (not Linux). */
@@ -3090,7 +3092,7 @@ export class Engine {
             return { success: false, contentItems: [{ type: "inputText", text: "Nothing opened: Carl said he is away from his laptop. Keep the visual in the reply or use the destination he explicitly requested." }] };
           }
           delete a.asked;
-          const r = await show({ vault, device: interaction.device, off: (s) => surfaceOff(vault, s), emit: (ev) => this.d.broadcast?.(ev), sendBoard: (b) => sendEntry(vault, b, { conversation: convId, emit: (ev) => this.inboxEvent(ev) }), dev: (port) => this.devUrl(port) }, a);
+          const r = await show({ vault, device: interaction.device, off: (s) => surfaceOff(vault, s), emit: (ev) => this.d.broadcast?.(ev), sendBoard: (b) => sendEntry(vault, b, { conversation: convId, emit: (ev) => this.inboxEvent(ev) }), dev: (port) => this.devUrl(port), vaults: this.d.vaultList }, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "Layout": {
@@ -3099,7 +3101,7 @@ export class Engine {
         }
         case "PluginRead":
         case "PluginAct": {
-          const r = await pluginOfferTool({ vault, emit: (ev) => this.d.broadcast?.(ev) }, name, a);
+          const r = await pluginOfferTool({ vault, emit: (ev) => this.d.broadcast?.(ev), vaults: this.d.vaultList }, name, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "Screen": {

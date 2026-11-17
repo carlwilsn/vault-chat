@@ -18,6 +18,10 @@
 // pane of the split screen instead, turning split on when one other file is
 // open (the store's drop-at-edge). Whenever the screen is split afterwards, the
 // ack says which pane holds what, so the agent can describe and rebuild it.
+//
+// With `vault` (a registered vault's name: Show {path, vault}, or an absolute path inside another vault) the path is in
+// that vault: the laptop opens it as the workspace first (the vault picker's open; conversations never change with it),
+// then the file, and the ack names the vault so the box knows this app understood it.
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "./store";
 import { fileKind, isUnreadableAsText } from "./fileKind";
@@ -27,15 +31,17 @@ import { encodeTarget, hasTarget, type ViewTarget } from "./viewTarget";
 import { layoutLine, placeInPane, PANE_SIDES, type PaneSide } from "./paneLayout";
 
 /** `sha`: the sha256 (hex) of the box's copy of `path`. */
-export type ShowSignal = { type: "show"; id: string; to?: string; path?: string; url?: string; target?: ViewTarget; pane?: string; sha?: string };
+export type ShowSignal = { type: "show"; id: string; to?: string; path?: string; vault?: string; url?: string; target?: ViewTarget; pane?: string; sha?: string };
 /** `pane`: the pane it was put in (only when one was asked for — an older app has none). `layout`: the split afterwards. */
-export type ShowAck = { ok: boolean; landed?: string; error?: string; pane?: PaneSide; layout?: string };
+export type ShowAck = { ok: boolean; landed?: string; error?: string; pane?: PaneSide; layout?: string; vault?: string };
 
 export type ShowDeps = {
   /** Bring the box's latest files here now (a file the agent just made may not have synced yet). */
   sync?: () => Promise<void>;
-  /** The box's copy of a vault-relative file (null: the box did not give it). */
-  boxFile?: (rel: string) => Promise<Uint8Array | null>;
+  /** The box's copy of a vault-relative file (null: the box did not give it); `vault`: another registered vault's. */
+  boxFile?: (rel: string, vault?: string) => Promise<Uint8Array | null>;
+  /** Open the named vault as the workspace (default: the vault-chat folder's vaults/<name>, as the picker does). */
+  openVault?: (name: string) => Promise<{ path: string; switched: boolean } | { error: string }>;
   /** Open a web address outside the app. */
   openUrl?: (url: string) => Promise<void>;
   /** How long the viewer has to say where it landed (a PDF loads first). */
@@ -75,14 +81,34 @@ async function shaOf(path: string): Promise<string | null> {
 }
 
 /** The box's copy, when it can be shown ahead of the disk (text, PDFs, images). */
-async function boxCopy(deps: ShowDeps, rel: string, path: string): Promise<Uint8Array | null> {
+async function boxCopy(deps: ShowDeps, rel: string, path: string, vault?: string): Promise<Uint8Array | null> {
   const kind = fileKind(path).kind;
   if (!deps.boxFile || kind === "video" || kind === "unsupported") return null;
   try {
-    return await deps.boxFile(rel);
+    return await (vault ? deps.boxFile(rel, vault) : deps.boxFile(rel));
   } catch {
     return null;
   }
+}
+
+/** The named vault as the workspace: vaults/<name> under the vault-chat folder, opened unless it already is. */
+export async function openNamedVault(name: string): Promise<{ path: string; switched: boolean } | { error: string }> {
+  // src/master.ts's rules (validRepoName, masterPath, masterLayout), read here without importing it: it brings
+  // @tauri-apps/api/path, which the box's bundle of this module has no shim for.
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(name) || name.startsWith(".") || name.endsWith(".git")) return { error: `"${name}" is not a vault name` };
+  let m: string | null = null;
+  try {
+    m = localStorage.getItem("vault_chat_master_path");
+  } catch {
+    /* no storage */
+  }
+  if (!m) return { error: "the vault-chat folder is not set on this laptop (Settings), so no vault can be opened by name" };
+  const path = `${m.replace(/\\/g, "/").replace(/\/+$/, "")}/vaults/${name}`;
+  const cur = useStore.getState().vaultPath;
+  if (cur && norm(cur) === norm(path)) return { path: cur, switched: false };
+  if (!(await exists(path))) return { error: `there is no vault ${name} on this laptop (${path}); nothing was opened` };
+  await (await import("./openVault")).openVaultAt(path);
+  return { path: useStore.getState().vaultPath ?? path, switched: true };
 }
 
 /** Do what the signal asks; never throws (the answer is the ack). */
@@ -93,8 +119,15 @@ export async function showOnLaptop(sig: ShowSignal, deps: ShowDeps = {}): Promis
       await open(sig.url);
       return { ok: true, landed: `opened ${sig.url} in the browser` };
     }
-    const vault = useStore.getState().vaultPath;
     if (!sig.path) return { ok: false, error: "nothing to show (no path or url)" };
+    // Another registered vault: it becomes the workspace first.
+    let switched = "";
+    if (sig.vault) {
+      const v = await (deps.openVault ?? openNamedVault)(sig.vault);
+      if ("error" in v) return { ok: false, error: v.error };
+      if (v.switched) switched = `opened the vault ${sig.vault}; `;
+    }
+    const vault = useStore.getState().vaultPath;
     if (!vault) return { ok: false, error: "no vault is open in the laptop app" };
     const want = localPath(vault, sig.path);
     const name = nameOf(want);
@@ -110,7 +143,7 @@ export async function showOnLaptop(sig: ShowSignal, deps: ShowDeps = {}): Promis
       const here = await exists(want);
       const stale = here && !!sig.sha && (await shaOf(want)) !== sig.sha;
       if (!here || stale) {
-        ahead = await boxCopy(deps, sig.path, want);
+        ahead = await boxCopy(deps, sig.path, want, sig.vault);
         if (ahead) void deps.sync?.().catch(() => {});
         else if (!here) {
           await deps.sync?.().catch(() => {});
@@ -133,8 +166,8 @@ export async function showOnLaptop(sig: ShowSignal, deps: ShowDeps = {}): Promis
     const split = after.panes.length >= 2;
     const layout = split ? layoutLine(after, vault) : "";
     const where = pane ? (split ? ` in the ${pane} pane` : " (alone: a split needs a second file — Show another one with the other pane)") : "";
-    const tail = (t: string) => `${t}${layout ? `. ${layout}` : ""}`;
-    const extra = { ...(pane ? { pane } : {}), ...(layout ? { layout } : {}) };
+    const tail = (t: string) => `${switched}${t}${layout ? `. ${layout}` : ""}`;
+    const extra = { ...(pane ? { pane } : {}), ...(layout ? { layout } : {}), ...(sig.vault ? { vault: sig.vault } : {}) };
     // The viewer must be on screen: the full-screen chat has none.
     const st = useStore.getState();
     if (st.chatFullscreen) st.toggleChatFullscreen();

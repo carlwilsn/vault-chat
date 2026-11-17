@@ -608,7 +608,7 @@ class BoxChatSession {
         if (e.to !== "laptop" || !id) return;
         const link = this.link;
         void import("./showOnLaptop")
-          .then((m) => m.showOnLaptop(e as unknown as import("./showOnLaptop").ShowSignal, { sync: () => boxSyncNow(this.vault, { pull: true }), boxFile: (rel) => fetchBoxFile(link, rel) }))
+          .then((m) => m.showOnLaptop(e as unknown as import("./showOnLaptop").ShowSignal, { sync: () => boxSyncNow(this.vault, { pull: true }), boxFile: (rel, vault) => fetchBoxFile(vault ? { ...link, vault } : link, rel) }))
           .then((ack) => httpPost(link, `/api/v1/show/${encodeURIComponent(id)}/ack`, ack))
           .catch((err) => console.warn("[box-chat] show failed:", err));
         return;

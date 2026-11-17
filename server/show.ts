@@ -35,6 +35,7 @@ import { matchSection, notFound, type Section } from "../src/scrollTarget";
 import { parsePages, MAX_PARTS } from "../src/inboxFormat";
 import { loopbackUrl } from "./devProxy";
 import type { SendResult } from "./inbox";
+import { vaultFor, type NamedVault } from "./vaultRefs";
 
 export type Device = "laptop" | "board" | "phone";
 const DEVICES: Device[] = ["laptop", "board", "phone"];
@@ -78,7 +79,7 @@ export function resetPresence(): void {
 
 // ---------------------------------------------------------------- acks
 
-export type Ack = { ok: boolean; landed?: string; error?: string; pane?: string; data?: unknown; image?: { data: string; mimeType?: string }; images?: { data: string; mimeType?: string; name?: string }[] };
+export type Ack = { ok: boolean; landed?: string; error?: string; pane?: string; vault?: string; data?: unknown; image?: { data: string; mimeType?: string }; images?: { data: string; mimeType?: string; name?: string }[] };
 const waits = new Map<string, (a: Ack) => void>();
 
 /** POST /api/v1/show/<id>/ack: a client says what happened. False: no one is waiting for it (late, or unknown). */
@@ -87,7 +88,7 @@ export function ackShow(id: string, body: unknown): boolean {
   if (!w) return false;
   waits.delete(id);
   const b = (body ?? {}) as Record<string, unknown>;
-  w({ ok: b.ok === true, ...(typeof b.pane === "string" ? { pane: b.pane.slice(0, 10) } : {}), ...(typeof b.landed === "string" ? { landed: b.landed.slice(0, 600) } : {}), ...(b.data && typeof b.data === "object" && JSON.stringify(b.data).length < 120_000 ? { data: b.data } : {}), ...(typeof b.error === "string" ? { error: b.error.slice(0, 1200) } : {}), ...ackImage(b.image), ...ackImages(b.images) });
+  w({ ok: b.ok === true, ...(typeof b.pane === "string" ? { pane: b.pane.slice(0, 10) } : {}), ...(typeof b.vault === "string" ? { vault: b.vault.slice(0, 200) } : {}), ...(typeof b.landed === "string" ? { landed: b.landed.slice(0, 600) } : {}), ...(b.data && typeof b.data === "object" && JSON.stringify(b.data).length < 120_000 ? { data: b.data } : {}), ...(typeof b.error === "string" ? { error: b.error.slice(0, 1200) } : {}), ...ackImage(b.image), ...ackImages(b.images) });
   return true;
 }
 
@@ -144,11 +145,13 @@ export type ShowDeps = {
   /** A dev server on the box (a loopback port a StartJob job of this vault listens on) → the origin Carl's devices
    *  reach it on (server/devProxy.ts), or why not. Absent: loopback addresses are refused. */
   dev?: (port: number) => Promise<{ origin: string } | { error: string }>;
+  /** The registered vaults (name, box path): a `vault` argument or an absolute path names one. Absent: only `vault`. */
+  vaults?: () => NamedVault[];
 };
 
 export type ShowResult = { ok: boolean; text: string; where?: Device };
 
-const SHOW_KEYS = ["path", "url", "port", "where", "pane", "title", "pages", "page", "line", "endLine", "heading", "text", "anchor", "cell", "label", "asked"];
+const SHOW_KEYS = ["path", "vault", "url", "port", "where", "pane", "title", "pages", "page", "line", "endLine", "heading", "text", "anchor", "cell", "label", "asked"];
 
 export const SHOW_DESCRIPTION =
   "Put something in front of Carl: open a vault file (or a web address) on one of his screens, at a place in it. " +
@@ -157,6 +160,7 @@ export const SHOW_DESCRIPTION =
   '"phone" (the phone app: markdown and images shown, PDFs and pages opened in the phone\'s viewer), ' +
   'or "here"/omitted (the device he is on now, from the "you" layer) — the default: things appear where he is talking. "board" only when he asks for the board or his iPad, or is at the board. ' +
   'The laptop has a split screen: two files side by side, a left pane and a right pane (the turn prefix and the "you" layer say which file is in which, and whether split is on). ' +
+  'A file in another of Carl\'s registered vaults: path (vault-relative) plus vault (its name), or an absolute path inside it; the laptop opens that vault as its workspace first (laptop only). Left out: the vault of this conversation. ' +
   'pane: "left" or "right" (laptop only) puts the file in that pane, turning split on when another file is open; without pane it replaces the file in the active pane. ' +
   'To set up or rebuild a layout (two files side by side), call Show twice: one file with pane "left", the other with pane "right". The result says which pane holds what. Pick where from what he says ("I\'m not near my laptop", "send it to my iPad"); only show what he asked to see, or work you made for him. ' +
   "The place, by file type (one of them): PDF: page (1-based, as PdfRead/PdfPages count) or text (the first page with that phrase); for the board, pages [3,4,5] or \"3-5\" too. " +
@@ -169,7 +173,8 @@ export const SHOW_DESCRIPTION =
 export const SHOW_SCHEMA = {
   type: "object",
   properties: {
-    path: { type: "string", description: "A file in the vault (vault-relative)." },
+    path: { type: "string", description: "A file in the vault (vault-relative), or an absolute path inside any registered vault." },
+    vault: { type: "string", description: "Laptop only: the registered vault the path is in, by name (e.g. \"vault-chat\"); the laptop switches its workspace to it. Left out: this conversation's vault (or the vault an absolute path is inside)." },
     url: { type: "string", description: "A web address (laptop: the browser; phone: a link). Not for the board. http://localhost:<port>/… is a dev server you started with StartJob, opened through the box." },
     port: { type: "number", description: "A dev server's port on the box (one a StartJob job listens on): the same as url http://localhost:<port>/." },
     where: { type: "string", enum: ["laptop", "board", "phone", "here"] },
@@ -258,9 +263,12 @@ async function run(d: ShowDeps, a: Record<string, unknown>): Promise<ShowResult>
     return toClient(d, where, { url }, url, because);
   }
 
-  // A vault file.
-  const f = await vaultFile(d.vault, rawPath);
-  if (typeof f === "string") return fail(`Error: ${f}`);
+  // A vault file: in this conversation's vault, or (vault, or an absolute path) another registered one.
+  const vf = vaultFor(d.vault, d.vaults?.(), a.vault, rawPath);
+  if ("error" in vf) return fail(`Error: ${vf.error}. Nothing was shown.`);
+  if (vf.name && where !== "laptop") return fail(`Error: a file of another vault (${vf.name}) opens on the laptop only (it switches its workspace there); the ${DEVICE_NAME[where]}${because} shows this conversation's vault. Pass where: "laptop".`);
+  const f = await vaultFile(vf.vault, vf.path);
+  if (typeof f === "string") return fail(`Error: ${f}${vf.name ? ` (vault ${vf.name})` : ""}`);
   const kind = fileKind(f.rel).kind;
   const name = basename(f.rel);
   const t: ViewTarget = { ...target };
@@ -272,7 +280,7 @@ async function run(d: ShowDeps, a: Record<string, unknown>): Promise<ShowResult>
   if (where === "board") return toBoard(d, f, kind, target, a);
   // The laptop opens the box's copy whenever its own is missing or not this one (`sha`): a sync lag is never a failure.
   const sha = where === "laptop" ? createHash("sha256").update(readFileSync(f.abs)).digest("hex") : undefined;
-  return toClient(d, where, { path: f.rel, ...(sha ? { sha } : {}), ...(hasTarget(t) ? { target: t } : {}), ...(pane ? { pane } : {}) }, `${name}${pane ? ` in the ${pane} pane` : ""}${hasTarget(t) ? ` at ${spotLabel(t)}` : ""}`, because);
+  return toClient(d, where, { path: f.rel, ...(vf.name ? { vault: vf.name } : {}), ...(sha ? { sha } : {}), ...(hasTarget(t) ? { target: t } : {}), ...(pane ? { pane } : {}) }, `${name}${vf.name ? ` (vault ${vf.name})` : ""}${pane ? ` in the ${pane} pane` : ""}${hasTarget(t) ? ` at ${spotLabel(t)}` : ""}`, because);
 }
 
 function spotTakes(kind: FileKind): string {
@@ -320,6 +328,8 @@ async function toClient(d: ShowDeps, where: Device, payload: Record<string, unkn
   if (!ack.ok) return fail(`On the ${dev}${because}: ${ack.error ?? "it could not be shown"}`, where);
   const phoneNote = where === "phone" && what.includes(" at ") ? " (the phone shows it whole; it can't jump to a place)" : "";
   // An app from before panes opens it in the active pane and does not say a pane: say so, never claim the split.
+  // Another vault: an app from before `vault` opens the path in whatever vault it has open; never claim the switch.
+  if (payload.vault && ack.vault !== payload.vault) return fail(`The ${dev} app is older and cannot switch vaults from Show: it did not confirm opening ${payload.path} in the vault ${payload.vault} (it said: ${ack.landed ?? "nothing"}). Switch its workspace with PluginAct app/vaults open {name: "${payload.vault}"}, then Show the path without vault.`, where);
   const paneNote = payload.pane && ack.pane !== payload.pane ? ` (this laptop app is older and has no pane control: it opened in the active pane, not the ${payload.pane} pane — Carl can drag it to that side, or update the app)` : "";
   return { ok: true, where, text: `Shown on the ${dev}${because}: ${ack.landed ?? what}${phoneNote}${paneNote}.` };
 }

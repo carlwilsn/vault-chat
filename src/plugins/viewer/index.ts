@@ -128,8 +128,8 @@ const targetOf = (a: Record<string, unknown>): ViewTarget => {
 };
 
 /** Open (or scroll) through Show's own path: the same landing and the same answer the agent's Show gets. */
-async function show(path: string, target: ViewTarget, pane?: PaneSide) {
-  const ack = await showOnLaptop({ type: "show", id: "app/viewer", path, target, ...(pane ? { pane } : {}) }, { answerMs: 8000 });
+async function show(path: string, target: ViewTarget, pane?: PaneSide, vault?: string) {
+  const ack = await showOnLaptop({ type: "show", id: "app/viewer", path, target, ...(pane ? { pane } : {}), ...(vault ? { vault } : {}) }, { answerMs: 8000 });
   if (!ack.ok) throw new Error(ack.error ?? "it could not be shown");
   return { landed: ack.landed, ...(ack.pane ? { pane: ack.pane } : {}) };
 }
@@ -178,17 +178,18 @@ export function viewerOffers(): Offers {
     actions: {
       open: {
         description:
-          "Open a vault file in the viewer (pane: left / right puts it in that pane of a split, turning split on when one other file is open), optionally at a place (page, line, heading, text, anchor, cell, as its type takes them), the way Show does; answers where it landed. An open file is only scrolled.",
+          "Open a vault file in the viewer (vault: a file of another vault, by its name, which opens as the workspace first; pane: left / right puts it in that pane of a split, turning split on when one other file is open), optionally at a place (page, line, heading, text, anchor, cell, as its type takes them), the way Show does; answers where it landed. An open file is only scrolled.",
         args: {
           type: "object",
-          properties: { path: { type: "string", description: "Vault-relative." }, pane: { type: "string", enum: ["left", "right"] }, ...TARGET_PROPS },
+          properties: { path: { type: "string", description: "Vault-relative." }, vault: { type: "string", description: "Another vault (its name, e.g. \"vault-chat\"): opened as the workspace first. Left out: the vault open now." }, pane: { type: "string", enum: ["left", "right"] }, ...TARGET_PROPS },
           required: ["path"],
           additionalProperties: false,
         },
         run: async (a) => {
           const path = String(a.path ?? "").trim().replace(/^[\\/]+/, "");
           if (!path) throw new Error("path is needed (vault-relative)");
-          return show(path, targetOf(a), (a.pane as PaneSide | undefined) || undefined);
+          const vault = typeof a.vault === "string" && a.vault.trim() ? a.vault.trim() : undefined;
+          return show(path, targetOf(a), (a.pane as PaneSide | undefined) || undefined, vault);
         },
       },
       scrollTo: {

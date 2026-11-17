@@ -212,6 +212,66 @@ describe("Show's pane: the laptop's split screen", () => {
   });
 });
 
+describe("Show into another registered vault: one call opens X in vault Y", () => {
+  let other: string;
+  const vaults = () => [{ name: "main", path: vault }, { name: "vault-chat", path: other }];
+  beforeAll(() => {
+    other = makeVault(join(home, "vault-chat"));
+    mkdirSync(join(other, "video"), { recursive: true });
+    writeFileSync(join(other, "video", "style-quiz.html"), "<html><head><title>Video style quiz</title></head><body><h1 id=q1>Overall look</h1></body></html>");
+  });
+
+  it("path + vault name: the signal names the vault (the laptop opens it as its workspace first) and the result says so", async () => {
+    const leave = feedOpened(vault, "laptop");
+    const from = emitted.length;
+    const stop = client("laptop", (ev) => ({ ok: true, vault: ev.vault, landed: `opened the vault ${ev.vault}; opened style-quiz.html` }));
+    const r = await show(deps({ vaults }), { path: "video/style-quiz.html", vault: "vault-chat", where: "laptop", anchor: "q1" });
+    stop();
+    const ev = emitted.slice(from).find((e) => e.type === "show");
+    expect(ev).toMatchObject({ to: "laptop", path: "video/style-quiz.html", vault: "vault-chat", target: { anchor: "q1" } });
+    expect(typeof ev!.sha).toBe("string");
+    expect(r.ok).toBe(true);
+    expect(r.text).toBe("Shown on the laptop: opened the vault vault-chat; opened style-quiz.html.");
+    leave();
+  });
+
+  it("an absolute path inside a registered vault needs no vault name; this vault's own files send no vault (the default as before)", async () => {
+    const leave = feedOpened(vault, "laptop");
+    const from = emitted.length;
+    const once = (a: Record<string, unknown>) => {
+      const stop = client("laptop", (ev) => ({ ok: true, ...(ev.vault ? { vault: ev.vault } : {}), landed: "opened" }));
+      return show(deps({ vaults }), a).finally(stop);
+    };
+    const abs = await once({ path: join(other, "video", "style-quiz.html"), where: "laptop" });
+    const own = await once({ path: "hw/hw4.md", where: "laptop" });
+    const ownByName = await once({ path: "hw/hw4.md", vault: "main", where: "laptop" });
+    const evs = emitted.slice(from).filter((e) => e.type === "show");
+    expect(evs[0]).toMatchObject({ path: "video/style-quiz.html", vault: "vault-chat" });
+    expect(evs[1]!.vault).toBeUndefined();
+    expect(evs[2]!.vault).toBeUndefined();
+    expect([abs.ok, own.ok, ownByName.ok]).toEqual([true, true, true]);
+    leave();
+  });
+
+  it("an older laptop app (no vault in its ack) is never claimed to have switched; an unknown vault, a missing file or another device is refused before anything is sent", async () => {
+    const leave = feedOpened(vault, "laptop");
+    const stop = client("laptop", () => ({ ok: true, landed: "opened style-quiz.html" }));
+    const old = await show(deps({ vaults }), { path: "video/style-quiz.html", vault: "vault-chat", where: "laptop" });
+    stop();
+    expect(old.ok).toBe(false);
+    expect(old.text).toMatch(/older and cannot switch vaults from Show.*PluginAct app\/vaults open \{name: "vault-chat"\}/);
+    const from = emitted.length;
+    const unknown = await show(deps({ vaults }), { path: "video/style-quiz.html", vault: "nope", where: "laptop" });
+    expect(unknown.text).toMatch(/no registered vault is named "nope" \(the vaults: main, vault-chat\)/);
+    const missing = await show(deps({ vaults }), { path: "video/none.html", vault: "vault-chat", where: "laptop" });
+    expect(missing.text).toMatch(/does not exist in the vault \(vault vault-chat\)/);
+    const board = await show(deps({ vaults }), { path: "video/style-quiz.html", vault: "vault-chat", where: "board" });
+    expect(board.text).toMatch(/opens on the laptop only/);
+    expect(emitted.length).toBe(from);
+    leave();
+  });
+});
+
 describe("Show on the board: an inbox entry, through the validated send", () => {
   const entryOf = (text: string) => readEntry(vault, /entry (\S+?)\.$/.exec(text)![1]!)!;
 

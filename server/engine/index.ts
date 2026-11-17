@@ -423,6 +423,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       ...(v.main ? {} : { log: (m: string) => console.log(`[engine:${v.name}] ${m}`) }),
       onFilesWritten: (paths) => b.onFilesWritten?.(v.name, paths),
       vaultName: v.name,
+      vaultList: () => vaults().map((x) => ({ name: x.name, path: x.path })),
       // The vault's own tools use the same registered content capabilities as commands.
       // Vault tools served to external MCP clients keep the bubblewrap layer: that is their
       // authority boundary (server/mcp/recordUI.ts), not a bound on Carl's agent.

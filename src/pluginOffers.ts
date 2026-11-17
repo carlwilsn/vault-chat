@@ -279,6 +279,8 @@ export type OfferAnswer = {
   error?: string;
   /** list */
   plugins?: OffersDescription[];
+  /** list: the vault pages open (mounted) here now, by vault path, offers or not (src/liveBridge.ts marks them) */
+  pages?: string[];
   /** read / act: which plugin answered */
   plugin?: { id: string; name: string };
   /** read: each selector's value (or its error); act: the state read back after the action */
@@ -395,7 +397,7 @@ export async function answerPluginSignal(sig: PluginSignal): Promise<PluginAck> 
   let a: OfferAnswer;
   try {
     const op = String(sig.op ?? "");
-    if (op === "list") a = { ok: true, plugins: listOffers() };
+    if (op === "list") a = { ok: true, plugins: listOffers(), pages: mountedPages() };
     else if (op === "read") a = await readOffers(String(sig.plugin ?? ""), typeof sig.state === "string" && sig.state ? sig.state : undefined);
     else if (op === "act") a = await actOffers(String(sig.plugin ?? ""), String(sig.action ?? ""), sig.args && typeof sig.args === "object" ? (sig.args as Record<string, unknown>) : {});
     else a = { ok: false, error: `unknown plugin op "${op}" (list, read, act)` };
@@ -405,8 +407,48 @@ export async function answerPluginSignal(sig: PluginSignal): Promise<PluginAck> 
   return { ok: a.ok, ...(a.error ? { error: a.error.slice(0, 1100) } : {}), data: { answer: packAnswer(a) } };
 }
 
+// ---------------------------------------------------------------- vault pages mounted here
+
+const PAGES_KEY = "__vcMountedPages";
+function pageMarks(): Map<string, Set<() => boolean>> {
+  const g = globalThis as Record<string, unknown>;
+  return ((g[PAGES_KEY] as Map<string, Set<() => boolean>> | undefined) ??= new Map());
+}
+
+/** A vault page is open here (a live page's frame, src/liveBridge.ts) while `alive()`: the agent's list says it is mounted. */
+export function markPageMounted(path: string, alive: () => boolean): () => void {
+  const marks = pageMarks();
+  const set = marks.get(path) ?? new Set();
+  set.add(alive);
+  marks.set(path, set);
+  return () => {
+    set.delete(alive);
+    if (!set.size && marks.get(path) === set) marks.delete(path);
+  };
+}
+
+/** The vault pages open here now, by vault path. */
+export function mountedPages(): string[] {
+  const out: string[] = [];
+  for (const [path, set] of pageMarks()) {
+    for (const f of [...set]) {
+      let ok = false;
+      try {
+        ok = f();
+      } catch {
+        /* a gone frame */
+      }
+      if (!ok) set.delete(f);
+    }
+    if (set.size) out.push(path);
+    else pageMarks().delete(path);
+  }
+  return out.sort();
+}
+
 /** Tests: forget every declaration. */
 export function _resetOffers(): void {
   registry().clear();
   subscriptions().clear();
+  pageMarks().clear();
 }
