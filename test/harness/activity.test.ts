@@ -64,7 +64,7 @@ fake.setHandler("box_get_json", async ({ url }) => {
 const { useStore } = await import("../../src/store.ts");
 const activity = await import("../../src/activity.ts");
 const core = await import("../../src/activityCore.ts");
-const { runInline, buildInlineRequest } = await import("../../src/inlineEdit.ts");
+const { runInline, buildInlineRequest } = await import("../../src/plugins/ask/request.ts");
 const { complete } = await import("../../src/complete.ts");
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 

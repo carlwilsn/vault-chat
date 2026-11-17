@@ -40,7 +40,7 @@ fake.setHandler("box_get_json", async ({ url }) => {
 });
 
 const activity = await import("../../src/activity.ts");
-const { buildInlineRequest } = await import("../../src/inlineEdit.ts");
+const { buildInlineRequest } = await import("../../src/plugins/ask/request.ts");
 
 before(async () => {
   await new Promise<void>((r) => box.listen(0, "127.0.0.1", () => r()));

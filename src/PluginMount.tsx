@@ -12,7 +12,10 @@
 // live copy) runs that copy instead of the built-in module, the draft first. A copy turned off (a plugin.desired record
 // for its vault path) is passed over; a copy that fails (load, mount or later) is passed over too, until its file
 // changes, and why is written next to it. The built-in module is the last copy; only its failure shows the fallback.
-import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+//
+// Props (src/pluginProps.ts): a part mounted with `props` (the Ctrl+K box's request, a viewer pane's pane) reads them as
+// api.props.get() / api.props.on(fn), live: new props reach the mounted part without a remount.
+import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Desired } from "./pluginSupervisor";
 import { hostTheme, mountPlugin, type AppPluginSource, type LoadModule, type PluginHandle } from "./mountHost";
 import type { AppPluginInfo } from "./appPlugins";
@@ -20,6 +23,7 @@ import { appPluginFolder, liveCopyId, type LiveCopyKind } from "./appPluginLive"
 import { liveLoader, reportLiveFailure, useLiveCopies } from "./appPluginLiveHost";
 import { appHostBackend } from "./hostBackend";
 import { usePluginDesired } from "./pluginSupervisorApp";
+import { propsChannel, type PluginProps, type PropsChannel } from "./pluginProps";
 
 export class PluginBoundary extends Component<{ path: string; children: ReactNode; onFailed?: (why: string) => void }, { failed: string | null }> {
   state = { failed: null as string | null };
@@ -44,7 +48,7 @@ export class PluginBoundary extends Component<{ path: string; children: ReactNod
   }
 }
 
-function Mount({ html, path, className, onFailed, load, copy }: { html: string | AppPluginSource; path: string; className?: string; onFailed?: (why: string) => void; load?: LoadModule; copy?: LiveCopyKind }) {
+function Mount({ html, path, className, onFailed, load, copy, props }: { html: string | AppPluginSource; path: string; className?: string; onFailed?: (why: string) => void; load?: LoadModule; copy?: LiveCopyKind; props?: PluginProps<unknown> }) {
   const ref = useRef<HTMLSpanElement | null>(null);
   const handle = useRef<PluginHandle | null>(null);
   const failed = useRef(onFailed);
@@ -53,7 +57,8 @@ function Mount({ html, path, className, onFailed, load, copy }: { html: string |
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const h = (handle.current = mountPlugin(el, html, { path, theme: () => hostTheme(), host: appHostBackend, load, onError: (m) => {
+    const extend = props ? () => ({ props: { get: props.get, on: props.on } }) : undefined;
+    const h = (handle.current = mountPlugin(el, html, { path, theme: () => hostTheme(), host: appHostBackend, load, extend, onError: (m) => {
       console.warn(`[plugin] ${path} stopped:`, m);
       failed.current?.(m);
     } }));
@@ -61,7 +66,7 @@ function Mount({ html, path, className, onFailed, load, copy }: { html: string |
       h.unmount();
       if (handle.current === h) handle.current = null;
     };
-  }, [html, path, load]);
+  }, [html, path, load, props]);
   // The app's theme, live.
   useEffect(() => {
     const mo = new MutationObserver(() => handle.current?.setTheme(hostTheme()));
@@ -90,7 +95,14 @@ export type PluginFallbackInfo = { off: Desired | null; error: string | null; pe
 /** A part of the app that is a plugin: mounted while the supervisor says it runs; stopped, it is gone (nothing left),
  *  or, with a `fallback`, the fallback stands in (also when it fails). Its live copy, when the vault has one, runs
  *  instead of `module` (`part`: the export of the copy that is this mount, as `module` is the built-in one's). */
-export function AppPluginMount({ plugin, module, code, part, fallback }: { plugin: Pick<AppPluginInfo, "id" | "name">; module?: unknown; code?: string; part?: string; fallback?: (info: PluginFallbackInfo) => ReactNode }) {
+export function AppPluginMount({ plugin, module, code, part, props, fallback }: { plugin: Pick<AppPluginInfo, "id" | "name">; module?: unknown; code?: string; part?: string; props?: object; fallback?: (info: PluginFallbackInfo) => ReactNode }) {
+  // The props the place hands the part (api.props): one channel per mount, set after each of the place's renders.
+  const channel = useRef<PropsChannel<unknown> | null>(null);
+  if (props !== undefined && !channel.current) channel.current = propsChannel<unknown>(props);
+  useLayoutEffect(() => {
+    if (props !== undefined) channel.current?.set(props);
+  });
+  const propsApi = channel.current ?? undefined;
   // One source object per module / code: a new one is a fresh mount (a changed vault plugin file), a re-render is not.
   const source = useMemo<AppPluginSource>(() => (typeof code === "string" ? { name: plugin.name, code } : { name: plugin.name, module }), [plugin.name, module, code]);
   const desired = usePluginDesired(plugin.id);
@@ -129,7 +141,7 @@ export function AppPluginMount({ plugin, module, code, part, fallback }: { plugi
     };
     return (
       <PluginBoundary path={plugin.id} key={`${plugin.id}#${run}#${kind}`} onFailed={onCopyFailed}>
-        <Mount html={copySource} path={plugin.id} onFailed={onCopyFailed} load={copyLoad} copy={kind} />
+        <Mount html={copySource} path={plugin.id} onFailed={onCopyFailed} load={copyLoad} copy={kind} props={propsApi} />
       </PluginBoundary>
     );
   }
@@ -137,7 +149,7 @@ export function AppPluginMount({ plugin, module, code, part, fallback }: { plugi
   const onFailed = fallback ? setFailed : undefined;
   return (
     <PluginBoundary path={plugin.id} key={`${plugin.id}#${run}`} onFailed={onFailed}>
-      <Mount html={source} path={plugin.id} onFailed={onFailed} />
+      <Mount html={source} path={plugin.id} onFailed={onFailed} props={propsApi} />
     </PluginBoundary>
   );
 }

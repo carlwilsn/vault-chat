@@ -75,9 +75,11 @@ test("the chat pane is a registered app plugin that loads live, mounted only thr
   assert.match(slot, /<AppPluginMount plugin=\{CHAT_PLUGIN\} module=\{chatPlugin\} fallback=/);
   assert.match(slot, /<AppPluginMount plugin=\{CHAT_PLUGIN\} module=\{chatPlugin\.bar\} part="bar" fallback=/);
   assert.match(fs.readFileSync("src/plugins/chat/Transcript.tsx", "utf8"), /<ChatHeaderSlot \/>/);
-  const fsc = fs.readFileSync("src/FullscreenChat.tsx", "utf8");
-  assert.match(fsc, /<ChatBarSlot \/>/);
-  assert.doesNotMatch(fsc, /<ChatTitle \/>/, "the bar's title is the plugin's");
+  // Fullscreen chat's frame is app/chat's part `frame` (src/plugins/chat/Frame.tsx), whose top bar holds the bar slot.
+  assert.match(fs.readFileSync("src/FullscreenChat.tsx", "utf8"), /<AppPluginMount plugin=\{CHAT_PLUGIN\} module=\{chatPlugin\.frame\} part="frame" fallback=/);
+  const frame = fs.readFileSync("src/plugins/chat/Frame.tsx", "utf8");
+  assert.match(frame, /<ChatBarSlot \/>/);
+  assert.doesNotMatch(frame, /<ChatTitle \/>/, "the bar's title is the plugin's");
   assert.doesNotMatch(fs.readFileSync("src/plugins/chat/Transcript.tsx", "utf8"), /data-el="total-cost"/, "the cost moved into the header");
 });
 
@@ -98,9 +100,9 @@ test("mounted through the host, it draws the header and declares its offers", as
   assert.match(html(host), />Main</);
   const d = listOffers().find((p: any) => p.id === "app/chat")!;
   assert.ok(d, "listed while it runs");
-  assert.deepEqual(d.state.map((s: any) => s.name), ["chat", "view", "scroll", "tasks", "ongoing", "menu", "memory"]);
-  assert.deepEqual(d.actions.map((a: any) => a.name), ["openMenu", "openMemory", "clickItem", "scrollToBottom", "showOlder", "openParent", "openTask", "stopTask", "steerTask", "openBoxSettings"]);
-  assert.deepEqual(d.events.map((e: any) => e.name), ["menuOpened", "memoryOpened", "itemClicked", "itemAdded", "itemRemoved", "scrolled", "olderShown", "jumped", "tasksChanged"]);
+  assert.deepEqual(d.state.map((s: any) => s.name), ["chat", "view", "scroll", "tasks", "ongoing", "frame", "menu", "memory"]);
+  assert.deepEqual(d.actions.map((a: any) => a.name), ["openMenu", "openMemory", "clickItem", "scrollToBottom", "showOlder", "openParent", "openTask", "stopTask", "steerTask", "setFullscreen", "setSidebar", "openBoxSettings"]);
+  assert.deepEqual(d.events.map((e: any) => e.name), ["menuOpened", "memoryOpened", "itemClicked", "itemAdded", "itemRemoved", "scrolled", "olderShown", "jumped", "tasksChanged", "fullscreenChanged", "sidebarChanged"]);
 });
 
 test("read: the open chat, the view, which memory Memory opens (Main's, or the project's)", async () => {

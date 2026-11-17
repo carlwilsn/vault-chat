@@ -68,6 +68,9 @@ export type PluginApi = {
   plugins: PluginReach;
   /** The shared context: the selection, the hovered item, the plugin Carl is in and the open file (src/sharedContext.ts). */
   context: ContextApi;
+  /** An app plugin's part mounted with props by the place it sits in (src/PluginMount.tsx AppPluginMount `props`,
+   *  src/pluginProps.ts): get() the newest, on(fn) when they change. Absent elsewhere. */
+  props?: { get(): any; on(fn: () => void): () => void };
 };
 /** An app plugin's code (src/appPlugins.ts): its module, already loaded with the app. A vault plugin (src/vaultPlugins.ts)
  *  is the same, trusted and in the light DOM, but its module is loaded from `code` (the file's text) on each mount. */

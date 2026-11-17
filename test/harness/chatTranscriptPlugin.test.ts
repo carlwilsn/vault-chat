@@ -124,7 +124,7 @@ test("mounted through the host: the window of messages, the scroll and the offer
   assert.match(html(host), /message 99/);
   assert.doesNotMatch(html(host), /message 39</);
   const d = listOffers().find((p: any) => p.id === "app/chat")!;
-  assert.deepEqual(d.state.map((s: any) => s.name), ["chat", "view", "scroll", "tasks", "ongoing", "menu", "memory"]);
+  assert.deepEqual(d.state.map((s: any) => s.name), ["chat", "view", "scroll", "tasks", "ongoing", "frame", "menu", "memory"]);
   subscribeOffers("app/chat", "*", (e: any) => events.push(e.event));
   let r = await readOffers("app/chat", "scroll");
   assert.equal(r.ok, true, r.error);

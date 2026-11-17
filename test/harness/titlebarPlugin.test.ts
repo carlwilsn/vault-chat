@@ -94,6 +94,7 @@ test("the title bar is a registered app plugin, mounted only through the host; t
   assert.doesNotMatch(slot, /SyncChip|TerminalButton|Hidden files<|AppsLauncher|VoiceCockpit|function WindowControls/, "the bar's parts are the plugin's");
   assert.ok(!fs.existsSync("src/AppsLauncher.tsx"), "the launcher moved into the plugin");
   assert.match(fs.readFileSync("src/FullscreenChat.tsx", "utf8"), /from "\.\/WindowControls"/, "fullscreen chat's window controls are core");
+  assert.match(fs.readFileSync("src/plugins/chat/Frame.tsx", "utf8"), /from "\.\.\/\.\.\/WindowControls"/, "the fullscreen frame draws the core window controls");
   assert.match(fs.readFileSync("src/App.tsx", "utf8"), /<Titlebar \/>/);
 });
 

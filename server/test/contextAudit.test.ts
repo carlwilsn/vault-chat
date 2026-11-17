@@ -323,7 +323,7 @@ describe("what each mode sends", () => {
   });
 
   it("Ctrl+K and Ctrl+L requests (side threads of the chat)", async () => {
-    const inline = await import("../../src/inlineEdit");
+    const inline = await import("../../src/plugins/ask/request");
     // As the box takes them (POST /api/v1/side): the engine forks the chat's thread with the agent's read-only tools.
     const sent = async (req: any) => {
       const r = await engine.sideStart(req);

@@ -15,9 +15,10 @@ import { VoiceSlot } from "./VoiceSlot";
 import { AppPluginMount } from "./PluginMount";
 import { VaultPlugins } from "./VaultPluginHost";
 import { PinnedApps } from "./PinnedAppsHost";
-import { CONTEXT_PLUGIN, NOTES_PLUGIN } from "./appPlugins";
+import { ASK_PLUGIN, CONTEXT_PLUGIN, NOTES_PLUGIN } from "./appPlugins";
 import * as notesPlugin from "./plugins/notes";
 import * as contextPlugin from "./plugins/context";
+import * as askPlugin from "./plugins/ask";
 import { bindContextSource } from "./contextSource";
 import { ChatsPanel } from "./ChatsPanel";
 import { UpdateBanner } from "./UpdateBanner";
@@ -463,6 +464,8 @@ export default function App() {
       <AppPluginMount plugin={NOTES_PLUGIN} module={notesPlugin} />
       {/* The shared context (selection, hover, focused plugin, open file) for the agent and other plugins: draws nothing. */}
       <AppPluginMount plugin={CONTEXT_PLUGIN} module={contextPlugin} />
+      {/* The Ctrl+K / Ctrl+L box's offers (src/plugins/ask, app/ask): draws nothing; each box is its `prompt` part (src/InlineEditPrompt.tsx). */}
+      <AppPluginMount plugin={ASK_PLUGIN} module={askPlugin} />
       {/* Plugins that are code files in .vault-chat/plugins: live as they are added, changed or removed. */}
       <VaultPlugins />
       <PinnedApps />

@@ -1,58 +1,49 @@
-import type { ReactNode } from "react";
-import { PanelLeftOpen } from "lucide-react";
+// The fullscreen chat: the main window on Ctrl+Shift+F (src/App.tsx), and the chat popout window, always
+// (src/ChatWindow.tsx). Its frame (the chats sidebar, the chat's top bar with its name, ⋯ and the window controls, the
+// chat pane) is a part of the chat pane plugin (src/plugins/chat/Frame.tsx, app/chat, part `frame`), mounted through the
+// plugin host and the supervisor's records (src/PluginMount.tsx AppPluginMount), so a live copy of app/chat draws it
+// instead of the built-in one. The chat never just disappears:
+//  - while the records are not known yet, or app/chat is turned off, the same frame is drawn here in the app's own tree;
+//  - failing to mount or render (the built-in copy too), a plain frame stands in: a bar to drag the window with the
+//    window controls, one line that says what happened with Reload, and the chat pane.
+// `children` float over it (the main window's overlays).
+import { memo, type ReactNode } from "react";
+import { CHAT_PLUGIN } from "./appPlugins";
+import { AppPluginMount, type PluginFallbackInfo } from "./PluginMount";
+import * as chatPlugin from "./plugins/chat";
+import { Frame } from "./plugins/chat/Frame";
 import { ChatPane } from "./ChatPane";
-import { ChatsSidebar } from "./ChatsPanel";
-import { ChatBarSlot } from "./ChatHeader";
 import { WindowControls } from "./WindowControls";
-import { useStore } from "./store";
-import { isPopout } from "./windowKind";
 
-/**
- * The fullscreen chat, like Claude Code desktop / Codex: the chats in a
- * collapsible left sidebar (Ctrl+B), the chat beside it with its own top bar
- * (sidebar toggle, the chat's name, the window controls). No titlebar, no
- * viewer. The main window shows it on Ctrl+Shift+F (App.tsx); the chat popout
- * window is always it (ChatWindow.tsx). `children` float over it.
- */
 export function FullscreenChat({ children }: { children?: ReactNode }) {
-  const chatSidebarOpen = useStore((s) => s.chatSidebarOpen);
-  const toggleChatSidebar = useStore((s) => s.toggleChatSidebar);
   return (
     <div data-perf-view="fullscreen" className="h-full w-full bg-background flex flex-col relative">
-      <div className="flex-1 min-h-0 flex relative">
-        {chatSidebarOpen && <ChatsSidebar />}
-        <div className="flex-1 min-w-0 flex flex-col bg-card">
-          {/* The chat's own top bar, in the chat's colour: sidebar toggle (when
-              it's hidden), the chat's name and ⋯ menu (the chat pane plugin, app/chat), the window controls (this window's). */}
-          <div
-            data-tauri-drag-region
-            className="h-9 shrink-0 flex items-center relative select-none"
-            title={isPopout ? "Drag to move window" : "Drag to move window — Ctrl+Shift+F to exit fullscreen chat"}
-          >
-            <div className="px-2 flex items-center relative z-10">
-              {!chatSidebarOpen && (
-                <button
-                  onClick={toggleChatSidebar}
-                  data-el="chats-sidebar-open"
-                  className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
-                  title="Show chats (Ctrl+B)"
-                >
-                  <PanelLeftOpen className="h-3.5 w-3.5" />
-                </button>
-              )}
-            </div>
-            <div data-tauri-drag-region className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <ChatBarSlot />
-            </div>
-            <div data-tauri-drag-region className="flex-1 h-full" />
-            <WindowControls className="relative z-10" />
-          </div>
-          <div className="flex-1 min-h-0">
-            <ChatPane />
-          </div>
-        </div>
-      </div>
+      <FrameSlot />
       {children}
+    </div>
+  );
+}
+
+/** The frame, mounted as app/chat's part `frame`. Memoized: the overlays' redraws never reach it. */
+const FrameSlot = memo(function FrameSlot() {
+  return <AppPluginMount plugin={CHAT_PLUGIN} module={chatPlugin.frame} part="frame" fallback={(f) => (f.error === null ? <Frame /> : <FrameFallback info={f} />)} />;
+});
+
+/** The plain frame: a bar with the window controls, why the frame is not there, and the chat. */
+export function FrameFallback({ info }: { info: PluginFallbackInfo }) {
+  return (
+    <div className="flex-1 min-h-0 flex flex-col bg-card" data-el="chat-frame-fallback">
+      <div data-tauri-drag-region className="h-9 shrink-0 flex items-center gap-2 px-3 select-none text-[11.5px] text-muted-foreground">
+        <span className="truncate" title={info.error ?? ""}>The chat window stopped; a plain frame until it is back.</span>
+        <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
+          Reload
+        </button>
+        <div data-tauri-drag-region className="flex-1 h-full" />
+        <WindowControls />
+      </div>
+      <div className="flex-1 min-h-0">
+        <ChatPane />
+      </div>
     </div>
   );
 }

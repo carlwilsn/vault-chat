@@ -1,4 +1,4 @@
-// The viewer's registry: what draws each type of file in the viewer pane (src/MarkdownView.tsx). Each file has a type
+// The viewer's registry: what draws each type of file in the viewer pane (src/plugins/viewer/Pane.tsx, mounted by src/MarkdownView.tsx). Each file has a type
 // (fileKind: markdown, notebook, pdf, tex, html, image, video, unsupported, code) and an extension; a viewer is keyed
 // by a type ("pdf"), an extension (".csv") or a MIME type ("application/pdf", "image/*": made a type or an extension
 // here). The app's own viewers are the built-in layer (src/plugins/viewer/builtins.tsx: the PDF, markdown, notebook,

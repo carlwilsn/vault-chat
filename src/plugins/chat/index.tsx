@@ -3,7 +3,9 @@
 // screens, the window of messages, jump-to-latest, the background-task strip, the ongoing-work line), mounted through
 // the plugin host under the supervisor's records like the title bar and the composer. src/ChatHeader.tsx mounts the
 // header: docked, as the pane's top row (`mount`); in fullscreen chat and the popout, in the window's top bar (`bar`).
-// src/ChatPane.tsx mounts the transcript (`transcript`), which holds the docked header's slot. Turned off or failing,
+// src/ChatPane.tsx mounts the transcript (`transcript`), which holds the docked header's slot; src/FullscreenChat.tsx
+// mounts fullscreen chat's (and the popout's) frame (`frame`, ./Frame.tsx: the chats sidebar, the top bar, the pane;
+// drawn in the app's tree while the records are unknown or the plugin is off, a plain frame if it fails). Turned off or failing,
 // a plain header stands in (the chat's name and a Memory button, with Turn on / Reload); the transcript is drawn in the
 // app's tree while the records are unknown or the plugin is off, and a plain one stands in if it fails. The
 // transcript's rows are app/chat-rows; the composer is app/composer.
@@ -31,6 +33,7 @@ import { uiChoice } from "../../uiChoices";
 import { boxSubagent } from "../../boxChat";
 import { BarTitle, DockHeader } from "./Header";
 import { Transcript, openBoxSettings } from "./Transcript";
+import { Frame } from "./Frame";
 import { emitChatEvent, memoryTarget, onChatEvent, openChatMemory, paneScroll, setMenuOpen, useChatMenu } from "./model";
 
 const shownItem = (i: ChatMenuItem) => ({ key: i.key, id: i.id, by: i.by, label: i.label, ...(i.title ? { title: i.title } : {}) });
@@ -107,6 +110,13 @@ export function chatOffers() {
           if (!c) return null;
           const o = ongoingWork({ ...c, messages: S().messages, ...(uiChoice("cost") !== "reply" ? { costUsd: undefined } : {}) }, Date.now(), undefined, uiChoice("verdict") === "ongoing");
           return o ? { tone: o.tone, text: ongoingText(o) } : null;
+        },
+      },
+      frame: {
+        description: "The fullscreen chat's frame (Ctrl+Shift+F in the main window; the popout is always it): fullscreen (the main window shows it), popout (this is the popout window, or the chat is popped out), sidebar (its chats sidebar is open, Ctrl+B).",
+        read: () => {
+          const s = S();
+          return { fullscreen: !isPopout && s.chatFullscreen && !s.popoutOpen, popout: isPopout || s.popoutOpen, sidebar: s.chatSidebarOpen };
         },
       },
       menu: {
@@ -200,6 +210,29 @@ export function chatOffers() {
         args: { type: "object", properties: { id: { type: "string", description: "The task's id (tasks: id)." }, text: { type: "string" } }, required: ["id", "text"], additionalProperties: false },
         run: (a: Record<string, unknown>) => control(a.id, "steer", String(a.text ?? "")),
       },
+      setFullscreen: {
+        description: "Enter or leave the fullscreen chat in the main window (as Ctrl+Shift+F); on left out: toggle. Not while the chat is popped out.",
+        args: { type: "object", properties: { on: { type: "boolean" } }, additionalProperties: false },
+        run: (a: Record<string, unknown>) => {
+          const s = S();
+          if (isPopout || s.popoutOpen) throw new Error("the chat is popped out: its window is the fullscreen chat");
+          const want = typeof a.on === "boolean" ? a.on : !s.chatFullscreen;
+          if (want !== s.chatFullscreen) s.toggleChatFullscreen();
+          emitChatEvent("fullscreenChanged", { fullscreen: want });
+          return { fullscreen: want };
+        },
+      },
+      setSidebar: {
+        description: "Open or close the fullscreen chat's chats sidebar (as Ctrl+B there); open left out: toggle. Kept as Carl's chatSidebar setting.",
+        args: OPEN,
+        run: (a: Record<string, unknown>) => {
+          const s = S();
+          const want = typeof a.open === "boolean" ? a.open : !s.chatSidebarOpen;
+          if (want !== s.chatSidebarOpen) s.toggleChatSidebar();
+          emitChatEvent("sidebarChanged", { open: want });
+          return { sidebar: want };
+        },
+      },
       openBoxSettings: {
         description: "Open Settings at its Box section (the no-box screen's button).",
         run: () => {
@@ -218,6 +251,8 @@ export function chatOffers() {
       olderShown: { description: "Carl scrolled up and older messages were drawn above: by, shown." },
       jumped: { description: "Carl clicked 'new messages' to go back to the newest." },
       tasksChanged: { description: "The running background tasks changed: running (how many)." },
+      fullscreenChanged: { description: "setFullscreen entered or left the fullscreen chat: fullscreen." },
+      sidebarChanged: { description: "setSidebar opened or closed the fullscreen chat's sidebar: open." },
     },
   };
 }
@@ -253,6 +288,9 @@ export function mount(el: HTMLElement, api: PluginApi): () => void {
 
 /** Fullscreen chat's (and the popout's) top bar: the chat's name and ⋯. */
 export const bar = { mount: (el: HTMLElement, api: PluginApi) => mountSurface(el, api, () => <BarTitle />) };
+
+/** Fullscreen chat's (and the popout's) frame: the chats sidebar, the top bar, the pane (src/FullscreenChat.tsx mounts it). */
+export const frame = { mount: (el: HTMLElement, api: PluginApi) => mountSurface(el, api, () => <Frame />) };
 
 /** The pane's transcript (src/ChatPane.tsx mounts it in the pane, under its own header slot). */
 export const transcript = { mount: (el: HTMLElement, api: PluginApi) => mountSurface(el, api, () => <Transcript />) };

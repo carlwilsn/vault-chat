@@ -104,7 +104,7 @@ export const VIEWER_PLUGIN: AppPluginInfo = {
   name: "Viewer",
   mount: "panel",
   description:
-    "The viewer: the files open in its panes (type, the viewer drawing each, view or edit mode, where each is scrolled), the viewer of each type of file (PDF, markdown, notebook, TeX, HTML, image, video, code; a vault plugin can draw a type its own way) and which types Ctrl+E edits; open a file, scroll to a page, line or heading, find text, zoom a PDF or image, switch mode, choose, disable or enable a viewer. Off: the agent cannot reach it; files still draw.",
+    "The viewer: the files open in its panes (type, the viewer drawing each, view or edit mode, where each is scrolled), the viewer of each type of file (PDF, markdown, notebook, TeX, HTML, image, video, code; a vault plugin can draw a type its own way) and which types Ctrl+E edits; open a file, scroll to a page, line or heading, find text, zoom a PDF or image, switch mode, choose, disable or enable a viewer; each pane's header (the file's path, \"Changed by the agent\" with Reload / Keep mine, the view / edit toggle, Close pane). Off: the agent cannot reach it; files still draw.",
   words: ["viewer", "the viewer", "file viewer", "viewers", "viewer pane", "pdf viewer", "markdown viewer", "document viewer"],
 };
 
@@ -116,7 +116,7 @@ export const CHAT_PLUGIN: AppPluginInfo = {
   name: "Chat pane",
   mount: "panel",
   description:
-    "The chat pane: its header (the chat's name and project, the cost, the ⋯ menu with Memory, which opens Main's memory or the chat's project memory, and entries vault plugins put there) and the pane around the transcript (which chat, docked or full screen, scrolled to the bottom or up, older messages shown, the way back to a worker's parent).",
+    "The chat pane: its header (the chat's name and project, the cost, the ⋯ menu with Memory, which opens Main's memory or the chat's project memory, and entries vault plugins put there) and the pane around the transcript (which chat, docked or full screen, scrolled to the bottom or up, older messages shown, the way back to a worker's parent), and fullscreen chat's and the popout's frame (the chats sidebar, the top bar; enter or leave fullscreen, open or close the sidebar).",
   words: ["chat", "chat pane", "chat-pane", "chatpane", "the chat", "chat header", "chat menu", "chat's menu", "chat window", "conversation pane"],
 };
 
@@ -155,7 +155,19 @@ export const CONTEXT_PLUGIN: AppPluginInfo = {
   words: ["context", "shared context", "context plugin", "selection context", "app context"],
 };
 
-export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN, FILETREE_PLUGIN, TITLEBAR_PLUGIN, VIEWER_PLUGIN, CHAT_PLUGIN, SETTINGS_PLUGIN, VOICE_PLUGIN, CONTEXT_PLUGIN];
+export const ASK_PLUGIN_ID = "app/ask";
+
+/** The Ctrl+K / Ctrl+L box (src/plugins/ask): one input to the agent from a file, with the selection as context. Off: still drawn, the agent cannot reach it; failing, a plain box says so. */
+export const ASK_PLUGIN: AppPluginInfo = {
+  id: ASK_PLUGIN_ID,
+  name: "Ctrl+K box",
+  mount: "panel",
+  description:
+    "The Ctrl+K / Ctrl+L box: the input that opens over a file (Ctrl+K in an editor, Ctrl+L or a marquee in a viewer) to ask the agent about the selection or have it propose an edit; read the open boxes (what is typed, the answer, the proposed edit), type, send, accept, close, send to the chat or save as a note.",
+  words: ["ctrl+k", "ctrl k", "ctrl-k", "ctrl+l", "ctrl l", "ctrl-l", "ask", "ask box", "inline ask", "inline edit", "edit box", "ctrl+k box", "ctrl+k popup", "ask popup", "inline prompt", "edit prompt"],
+};
+
+export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN, FILETREE_PLUGIN, TITLEBAR_PLUGIN, VIEWER_PLUGIN, CHAT_PLUGIN, SETTINGS_PLUGIN, VOICE_PLUGIN, CONTEXT_PLUGIN, ASK_PLUGIN];
 
 // The surfaces (Track 2: the phone and the iPad are hosts, apps Carl can switch off). A `plugin.desired` record for one
 // turns the whole app off or on live, no release: off, the box serves the one "turned off" line where its app would

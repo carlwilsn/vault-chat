@@ -42,12 +42,12 @@ export type Shortcut = {
 export const SHORTCUTS = [
   // ---- Chat & composer
   { id: "chat.new", keys: ["Mod+T"], label: "Go to Main", group: "Chat & composer", where: "anywhere", files: ["src/App.tsx", "src/ChatWindow.tsx"] },
-  { id: "chat.send", keys: ["Enter"], label: "Send / steer", group: "Chat & composer", where: "the composer, Ctrl+K/L, a note, voice text", files: ["src/plugins/composer/Composer.tsx", "src/ComposerPanel.tsx", "src/InlineEditPrompt.tsx", "src/NotePopup.tsx", "src/plugins/voice/TextPanel.tsx"] },
+  { id: "chat.send", keys: ["Enter"], label: "Send / steer", group: "Chat & composer", where: "the composer, Ctrl+K/L, a note, voice text", files: ["src/plugins/composer/Composer.tsx", "src/ComposerPanel.tsx", "src/plugins/ask/Prompt.tsx", "src/NotePopup.tsx", "src/plugins/voice/TextPanel.tsx"] },
   { id: "chat.newline", keys: ["Shift+Enter"], label: "New line", group: "Chat & composer", where: "the composer", files: ["src/plugins/composer/Composer.tsx"] },
   { id: "chat.queue", keys: ["Tab"], label: "Queue a follow-up", group: "Chat & composer", where: "the composer, while the agent works", files: ["src/plugins/composer/Composer.tsx"] },
-  { id: "chat.stop", keys: ["Esc"], label: "Stop the agent", group: "Chat & composer", where: "the composer, while the agent works", files: ["src/plugins/composer/Composer.tsx", "src/ComposerPanel.tsx", "src/InlineEditPrompt.tsx"] },
-  { id: "chat.menuMove", keys: ["ArrowUp", "ArrowDown"], label: "Move in menus", group: "Chat & composer", where: "@file and /command menus", files: ["src/plugins/composer/Composer.tsx", "src/InlineEditPrompt.tsx", "src/NotePopup.tsx"] },
-  { id: "chat.menuPick", keys: ["Tab", "Enter"], label: "Pick from menu", group: "Chat & composer", where: "@file and /command menus", files: ["src/plugins/composer/Composer.tsx", "src/InlineEditPrompt.tsx", "src/NotePopup.tsx"] },
+  { id: "chat.stop", keys: ["Esc"], label: "Stop the agent", group: "Chat & composer", where: "the composer, while the agent works", files: ["src/plugins/composer/Composer.tsx", "src/ComposerPanel.tsx", "src/plugins/ask/Prompt.tsx"] },
+  { id: "chat.menuMove", keys: ["ArrowUp", "ArrowDown"], label: "Move in menus", group: "Chat & composer", where: "@file and /command menus", files: ["src/plugins/composer/Composer.tsx", "src/plugins/ask/Prompt.tsx", "src/NotePopup.tsx"] },
+  { id: "chat.menuPick", keys: ["Tab", "Enter"], label: "Pick from menu", group: "Chat & composer", where: "@file and /command menus", files: ["src/plugins/composer/Composer.tsx", "src/plugins/ask/Prompt.tsx", "src/NotePopup.tsx"] },
 
   // ---- Voice
   { id: "voice.toggle", keys: ["Ctrl+D"], label: "Voice on / off", group: "Voice", where: "anywhere", files: ["src/App.tsx", "src/ChatWindow.tsx"] },
@@ -82,7 +82,7 @@ export const SHORTCUTS = [
       "src/plugins/titlebar/Bar.tsx",
       "src/plugins/chat/Header.tsx",
       "src/plugins/filetree/Tree.tsx",
-      "src/InlineEditPrompt.tsx",
+      "src/plugins/ask/Prompt.tsx",
       "src/plugins/voice/TextPanel.tsx",
       "src/ProjectChip.tsx",
       "src/plugins/settings/Pane.tsx",
@@ -98,9 +98,9 @@ export const SHORTCUTS = [
 
   // ---- Editing
   { id: "edit.inline", keys: ["Mod+K"], label: "Ask or edit", group: "Editing", where: "an editor", files: ["src/LiveEditor.tsx", "src/MonacoEditor.tsx"] },
-  { id: "edit.ask", keys: ["Mod+L"], label: "Ask or edit", group: "Editing", where: "a file", files: ["src/LiveEditor.tsx", "src/MonacoEditor.tsx", "src/MarkdownView.tsx"] },
+  { id: "edit.ask", keys: ["Mod+L"], label: "Ask or edit", group: "Editing", where: "a file", files: ["src/LiveEditor.tsx", "src/MonacoEditor.tsx", "src/plugins/viewer/Pane.tsx"] },
   { id: "edit.mode", keys: ["Mod+E"], label: "Edit / view", group: "Editing", where: "an open file", files: ["src/App.tsx"] },
-  { id: "edit.marquee", keys: ["Mod+M"], label: "Capture a region", group: "Editing", where: "a PDF, HTML page or image", files: ["src/MarkdownView.tsx"] },
+  { id: "edit.marquee", keys: ["Mod+M"], label: "Capture a region", group: "Editing", where: "a PDF, HTML page or image", files: ["src/plugins/viewer/Pane.tsx"] },
   { id: "edit.confirm", keys: ["Enter"], label: "Confirm a name", group: "Editing", where: "rename, new project, a key", files: ["src/plugins/filetree/Tree.tsx", "src/plugins/chats/ChatsList.tsx", "src/NewProjectForm.tsx", "src/plugins/vaults/Picker.tsx", "src/ProjectChip.tsx", "src/plugins/settings/Pane.tsx", "src/ClaudeCodeSignIn.tsx"] },
 
   // ---- A video (the app's own player, src/VideoPlayer.tsx)

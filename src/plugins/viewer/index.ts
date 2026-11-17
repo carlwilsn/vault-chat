@@ -1,6 +1,6 @@
 // The viewer as a plugin the agent reaches (src/appPlugins.ts VIEWER_PLUGIN, app/viewer): mounted by the viewer area
 // (src/MarkdownArea.tsx), it draws nothing of its own (each file is drawn by the viewer the registry names,
-// src/viewerRegistry.ts, in the pane src/MarkdownView.tsx, with the app's own viewers in ./builtins.tsx) and declares
+// src/viewerRegistry.ts, in the pane ./Pane.tsx (part `pane`, mounted per pane by src/MarkdownView.tsx), with the app's own viewers in ./builtins.tsx) and declares
 // what it offers through api.offer: the files open (pane, type, the viewer drawing each, view / edit mode, where each
 // is scrolled, its zoom), the viewers of each type and which types Ctrl+E edits as state; open, scrollTo, find, zoom,
 // setMode, use, disable, enable and setOption as actions; opened, scrolled, modeChanged and changed as events. Turned off, the agent cannot
@@ -30,7 +30,10 @@ import {
 import { OFF, OPT, USE, keep, viewerPrefs } from "./prefs";
 import { followScroll, onScroll, scrollOf } from "./scroll";
 import { setZoomOf, zoomOf } from "./zoom";
+import { paneOf } from "./panes";
+import { useLiveFiles } from "../../liveReload";
 import "./builtins"; // the app's own viewers register with the registry
+export { pane } from "./mountPane";
 
 followScroll();
 
@@ -58,6 +61,9 @@ function drawnBy(o: Pick<Open, "file" | "mode">): string {
   return top?.id ?? "fallback";
 }
 
+/** The header says "Changed by the agent": the file changed on disk while this pane had typing not saved yet. */
+const changedOnDisk = (file: string) => !!useLiveFiles.getState().diskChanged[file.replace(/\\/g, "/").replace(/\/+$/, "")];
+
 function describeOpen(o: Open) {
   const { type, ext } = fileViewerKeys(o.file);
   const canEdit = editable(type) && !viewerChain(type, ext)[0]?.alwaysEdits;
@@ -81,6 +87,7 @@ function describeOpen(o: Open) {
     mode: canEdit ? o.mode : null,
     editable: canEdit,
     active: o.active,
+    changedOnDisk: changedOnDisk(o.file),
     ...(Object.keys(scroll).length ? { scroll } : {}),
     ...(zoomOf(o.file) !== null ? { zoom: zoomOf(o.file) } : {}),
     targets: TARGET_KEYS[type] ?? [],
@@ -140,6 +147,10 @@ export function findLines(content: string, q: string): { count: number; matches:
   });
   return { count, matches };
 }
+
+const PANE_ARGS = { type: "object", properties: { path: { type: "string" }, pane: { type: "string", enum: ["main", "left", "right"] } }, additionalProperties: false };
+// The pane actions' events, to the mounted offers.
+let paneEvent: (name: string, data: unknown) => void = () => {};
 
 /** The plugin's offers (exported for tests). */
 export function viewerOffers(): Offers {
@@ -253,6 +264,41 @@ export function viewerOffers(): Offers {
           return { path: rel(o.file), pane: o.pane, mode: want };
         },
       },
+      reloadFromDisk: {
+        description: "The header's Reload, when an open file changed on disk while it had typing not saved yet (open: changedOnDisk): show the file as it is on disk, dropping that typing. Only when Carl asks.",
+        args: PANE_ARGS,
+        run: async (a) => {
+          const o = openFor(a);
+          const h = paneOf(o.file, o.paneId);
+          if (!h) throw new Error(`${rel(o.file)} has no pane on screen`);
+          await h.reloadFromDisk();
+          paneEvent("reloaded", { path: rel(o.file), pane: o.pane });
+          return { path: rel(o.file), pane: o.pane, reloaded: true };
+        },
+      },
+      keepMine: {
+        description: "The header's Keep mine, when an open file changed on disk while it had typing not saved yet: save the version on screen over the one on disk. Only when Carl asks.",
+        args: PANE_ARGS,
+        run: async (a) => {
+          const o = openFor(a);
+          const h = paneOf(o.file, o.paneId);
+          if (!h) throw new Error(`${rel(o.file)} has no pane on screen`);
+          await h.keepMine();
+          paneEvent("keptMine", { path: rel(o.file), pane: o.pane });
+          return { path: rel(o.file), pane: o.pane, kept: true };
+        },
+      },
+      closePane: {
+        description: "Close one pane of a split (the header's ×): the other file stays as the one viewer.",
+        args: { type: "object", properties: { pane: { type: "string", enum: ["left", "right"] }, path: { type: "string" } }, additionalProperties: false },
+        run: (a) => {
+          const o = openFor(a);
+          if (!o.paneId) throw new Error("the viewer is not split (only a pane of a split closes)");
+          S().closePane(o.paneId);
+          paneEvent("paneClosed", { path: rel(o.file), pane: o.pane });
+          return { closed: o.pane, path: rel(o.file) };
+        },
+      },
       use: {
         description:
           "Choose which registered viewer draws a type or an extension (type: \"pdf\", \".csv\" or a MIME type; id from viewers, e.g. builtin:pdf over a plugin's, or app:code:highlight; it is turned on too); id omitted: back to the default order (the newest plugin viewer, else the app's own). Kept: every window, after a restart.",
@@ -306,6 +352,9 @@ export function viewerOffers(): Offers {
       opened: { description: "A file was opened in the viewer (or into a pane): path, pane, type, viewer." },
       scrolled: { description: "An open file was scrolled (at most every 400 ms per file): path, ratio?, page?, totalPages?, line?." },
       modeChanged: { description: "An open file switched between view and edit: path, pane, mode." },
+      reloaded: { description: "reloadFromDisk showed a file as it is on disk: path, pane." },
+      keptMine: { description: "keepMine saved the version on screen over the one on disk: path, pane." },
+      paneClosed: { description: "closePane closed a pane of the split: path, pane." },
       changed: { description: "The viewers changed (a plugin's registered or removed, one turned on or off or chosen, an option set): the active viewer of each type after it." },
     },
   };
@@ -316,6 +365,11 @@ const SCROLL_EVERY_MS = 400;
 export function mount(_el: HTMLElement, api: PluginApi): () => void {
   const offers = api.offer(viewerOffers());
   const offs: (() => void)[] = [];
+  const toEvents = (name: string, data: unknown) => offers.emit(name, data);
+  paneEvent = toEvents;
+  offs.push(() => {
+    if (paneEvent === toEvents) paneEvent = () => {};
+  });
 
   // Opened / modeChanged: what is open, per pane, compared on each store change (reference checks first).
   const sig = (o: Open) => `${o.pane}\n${o.file}`;

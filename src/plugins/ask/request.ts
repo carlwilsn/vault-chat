@@ -6,8 +6,8 @@
 // and what Carl did elsewhere come from the box; this module builds what the
 // request itself says. A popover's later requests continue the same side
 // thread, so they carry only what is new.
-import { side, type SideOpts, type SideRequest, type SideResult } from "./complete";
-import { northStarPromptBlock } from "./meta";
+import { side, type SideOpts, type SideRequest, type SideResult } from "../../complete";
+import { northStarPromptBlock } from "../../meta";
 
 function prependNorthStar(base: string, northStar?: string): string {
   const block = northStarPromptBlock(northStar ?? "");

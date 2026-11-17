@@ -111,7 +111,7 @@ test("app/viewer is a registered app plugin mounted by the viewer area; the pane
   assert.ok(APP_PLUGINS.includes(VIEWER_PLUGIN));
   for (const w of ["viewer", "Viewer", "app/viewer", "file viewer", "pdf viewer"]) assert.equal(appPluginNamed(w)?.id, "app/viewer", w);
   assert.match(fs.readFileSync("src/MarkdownArea.tsx", "utf8"), /<AppPluginMount plugin=\{VIEWER_PLUGIN\} module=\{viewerPlugin\} \/>/);
-  const pane = fs.readFileSync("src/MarkdownView.tsx", "utf8");
+  const pane = fs.readFileSync("src/plugins/viewer/Pane.tsx", "utf8");
   assert.doesNotMatch(pane, /<(PdfView|NotebookView|HtmlView|ImageView|VideoView|TexView|UnsupportedView|CodeView|MonacoEditor|LiveEditor)\b/, "the viewers are the registry's");
   assert.match(pane, /<ViewerBody chain=\{editing \? EDITOR_CHAIN : chain\}/);
 });
@@ -140,8 +140,8 @@ test("mounted through the host, app/viewer declares its offers and reads what is
   const d = listOffers().find((p) => p.id === "app/viewer")!;
   assert.ok(d, "listed while it runs");
   assert.deepEqual(d.state.map((s) => s.name), ["open", "viewers", "modes", "kept"]);
-  assert.deepEqual(d.actions.map((a) => a.name), ["open", "scrollTo", "find", "zoom", "setMode", "use", "disable", "enable", "setOption"]);
-  assert.deepEqual(d.events.map((e) => e.name), ["opened", "scrolled", "modeChanged", "changed"]);
+  assert.deepEqual(d.actions.map((a) => a.name), ["open", "scrollTo", "find", "zoom", "setMode", "reloadFromDisk", "keepMine", "closePane", "use", "disable", "enable", "setOption"]);
+  assert.deepEqual(d.events.map((e) => e.name), ["opened", "scrolled", "modeChanged", "reloaded", "keptMine", "paneClosed", "changed"]);
   subscribeOffers("viewer", "*", (e) => events.push({ event: e.event, payload: e.payload }));
   const o = await read("open");
   assert.equal(o.length, 1);

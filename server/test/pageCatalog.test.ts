@@ -83,6 +83,7 @@ describe("the catalog", () => {
       { id: "app/settings", name: "Settings", mount: "panel", description: expect.stringContaining("Settings pane") },
       { id: "app/voice", name: "Voice", mount: "panel", description: expect.stringContaining("mic") },
       { id: "app/context", name: "Context", mount: "panel", description: expect.stringContaining("shared context") },
+      { id: "app/ask", name: "Ctrl+K box", mount: "panel", description: expect.stringContaining("Ctrl+K / Ctrl+L box") },
       { id: "app/phone", name: "Phone app", mount: "surface", description: expect.stringContaining("phone app") },
       { id: "app/board", name: "iPad board", mount: "surface", description: expect.stringContaining("iPad whiteboard") },
     ]);
