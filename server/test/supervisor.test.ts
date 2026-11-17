@@ -233,4 +233,63 @@ describe("the supervisor", () => {
     expect(tools.resolvePlugin(A.path, "app/notes")).toEqual({ id: "app/notes" });
     rmSync(join(A.path, "pages", "notes.html"));
   });
+
+  it("change by asking: Keep / Discard / Switch back on a draft are records, and the box moves the slot's files to match", async () => {
+    const { existsSync, readFileSync } = await import("node:fs");
+    const { versionOf } = await import("../../src/pluginDrafts");
+    const dir = join(A.path, ".vault-chat", "app-plugins");
+    mkdirSync(dir, { recursive: true });
+    const head = (what: string) => `// @vc-app-plugin ${JSON.stringify({ plugin: "app/context", shared: [], what })}\nexport function mount(){}`;
+    writeFileSync(join(dir, "context.js"), head("live"));
+    writeFileSync(join(dir, "context.draft.js"), head("bigger buttons"));
+    const lv = versionOf(head("live"));
+    const dv = versionOf(head("bigger buttons"));
+    const rec = async () => JSON.parse((await get("/api/v2/supervisor")).text).records.at(-1).signal;
+
+    // A stale Keep (the draft changed since Carl saw it) moves nothing and writes nothing.
+    const stale = await post("/api/v2/supervisor", { plugin: "app/context", change: "keep", version: "00000000" });
+    expect(stale.status).toBe(409);
+    expect(existsSync(join(dir, "context.draft.js"))).toBe(true);
+
+    const kept = await post("/api/v2/supervisor", { plugin: "app/context", change: "keep", version: dv });
+    expect(kept.status).toBe(200);
+    expect(kept.json.text).toContain("kept");
+    expect(await rec()).toMatchObject({ type: "plugin.change", plugin: "app/context", change: "keep", version: dv, from: lv, by: "carl" });
+    expect(readFileSync(join(dir, "context.js"), "utf8")).toBe(head("bigger buttons"));
+    expect(readFileSync(join(dir, "context.prev.js"), "utf8")).toBe(head("live"));
+    expect(existsSync(join(dir, "context.draft.js"))).toBe(false);
+    expect(sup.supervisorOf(A.path).changes("app/context").map((c) => c.change)).toEqual(["keep"]);
+
+    // Undo is the switch back (another record), and the switch back again redoes it.
+    const back = await post("/api/v2/supervisor", { plugin: "app/context", change: "switch" });
+    expect(back.status).toBe(200);
+    expect(await rec()).toMatchObject({ change: "switch", version: lv, from: dv });
+    expect(readFileSync(join(dir, "context.js"), "utf8")).toBe(head("live"));
+    expect(readFileSync(join(dir, "context.prev.js"), "utf8")).toBe(head("bigger buttons"));
+    await post("/api/v2/supervisor", { plugin: "app/context", change: "switch" });
+    expect(readFileSync(join(dir, "context.js"), "utf8")).toBe(head("bigger buttons"));
+
+    // Discard (here an auto-discard from a tried draft that broke): the record names why; only that version goes.
+    writeFileSync(join(dir, "context.draft.js"), head("broken"));
+    const d2 = versionOf(head("broken"));
+    const gone = await post("/api/v2/supervisor", { plugin: "app/context", change: "discard", version: d2, by: "auto", reason: "it stopped: boom" });
+    expect(gone.status).toBe(200);
+    expect(await rec()).toMatchObject({ change: "discard", version: d2, by: "auto", reason: "it stopped: boom" });
+    expect(existsSync(join(dir, "context.draft.js"))).toBe(false);
+
+    // A vault plugin's draft is the same: a new plugin kept from nothing, then switched back to nothing.
+    const vp = join(A.path, ".vault-chat", "plugins");
+    mkdirSync(vp, { recursive: true });
+    writeFileSync(join(vp, "pen.draft.js"), "// @vc-change a pen cursor\nexport function mount(){}");
+    const pv = versionOf("// @vc-change a pen cursor\nexport function mount(){}");
+    expect((await post("/api/v2/supervisor", { plugin: ".vault-chat/plugins/pen.js", change: "keep", version: pv })).status).toBe(200);
+    expect(existsSync(join(vp, "pen.js"))).toBe(true);
+    expect(await rec()).toMatchObject({ change: "keep", from: "built-in" });
+    expect((await post("/api/v2/supervisor", { plugin: ".vault-chat/plugins/pen.js", change: "switch" })).status).toBe(200);
+    expect(existsSync(join(vp, "pen.js"))).toBe(false);
+    expect(existsSync(join(vp, "pen.prev.js"))).toBe(true);
+    // Bad words are refused.
+    expect((await post("/api/v2/supervisor", { plugin: "pages/x.html", change: "keep", version: pv })).status).toBe(400);
+    expect((await post("/api/v2/supervisor", { plugin: "app/context", change: "keep", version: "nope" })).status).toBe(400);
+  });
 });

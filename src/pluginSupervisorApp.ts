@@ -12,6 +12,7 @@ import { boxGet, boxLinkFor, boxPost } from "./boxChat";
 import { useStore } from "./store";
 import { PLUGIN_STOPPED_EVENT } from "./liveBridge";
 import { pluginIdOf, Reconciler, Supervisor, type Desired, type SupervisorRecord } from "./pluginSupervisor";
+import type { ChangeRecord } from "./pluginDrafts";
 
 let vault: string | null = null;
 let sup = new Supervisor();
@@ -43,8 +44,14 @@ function keep(): void {
   }
 }
 
+/** Bumped whenever records are folded or another vault's fold starts: what change records' readers follow. */
+let version = 0;
+const recordListeners = new Set<() => void>();
+
 function notifyAll(): void {
+  version++;
   for (const fn of [...listeners]) fn();
+  for (const fn of [...recordListeners]) fn();
 }
 
 /** A fresh fold for another vault, seeded from its cached records. */
@@ -67,6 +74,8 @@ export function foldSupervisorRecords(records: readonly SupervisorRecord[]): voi
   if (!any) return;
   keep();
   rec.changed();
+  version++;
+  for (const fn of [...recordListeners]) fn();
 }
 
 /** Read every record from the box (once per vault, or again with `fresh`). */
@@ -177,4 +186,44 @@ export function _appReconciler(isKnown?: boolean): Reconciler {
     notifyAll();
   }
   return rec;
+}
+
+// ---------------------------------------------------------------- change records (src/pluginDrafts.ts)
+
+function onRecords(fn: () => void): () => void {
+  recordListeners.add(fn);
+  void loadSupervisor();
+  const unStore = useStore.subscribe((s) => {
+    if (s.vaultPath !== vault) void loadSupervisor();
+  });
+  return () => {
+    unStore();
+    recordListeners.delete(fn);
+  };
+}
+const recordVersion = () => version;
+
+/** Follow the change records: re-renders when any supervisor record arrives (cheap: a counter). */
+export function useSupervisorVersion(): number {
+  return useSyncExternalStore(onRecords, recordVersion, recordVersion);
+}
+
+/** The plugin's change records now (keep / discard / switch), oldest first; none until the vault's records are known. */
+export function supervisorChangesNow(plugin: string): readonly ChangeRecord[] {
+  forVault(useStore.getState().vaultPath);
+  return sup.changes(plugin);
+}
+
+/** Carl's word on a draft ({plugin, change, version, reason?, by?}): the box moves the files and writes the record. */
+export async function postPluginChange(body: { plugin: string; change: "keep" | "discard" | "switch"; version?: string; reason?: string; by?: string } & Record<string, unknown>): Promise<{ ok: boolean; text: string }> {
+  const link = await boxLinkFor(useStore.getState().vaultPath).catch(() => null);
+  if (!link) return { ok: false, text: "no box: Keep and Discard are written on the box" };
+  try {
+    const r = await boxPost(link, "/api/v2/supervisor", body);
+    await loadSupervisor(true);
+    const d = (r as { data?: { text?: string; error?: string }; error?: string });
+    return { ok: !!r.ok, text: String(d.data?.text ?? d.data?.error ?? d.error ?? (r.ok ? "done" : "the box refused it")) };
+  } catch (e) {
+    return { ok: false, text: String((e as Error)?.message ?? e) };
+  }
 }

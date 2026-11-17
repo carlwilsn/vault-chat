@@ -4,11 +4,15 @@
 //     is not served (the phone's inline copy, a raw open, its own link /p/<id>/ show the one "turned off" line instead);
 //   - it measures each plugin's gateway calls, and when a budget record says too many, writes `stopped` (by "budget");
 //   - GET /api/v2/supervisor answers the records (a host folds them itself) and waits for the next (?after=seq&wait=ms);
-//     POST /api/v2/supervisor writes Carl's word ({plugin, state, from?, reason?}) or a budget ({plugin, callsPerMinute}).
+//     POST /api/v2/supervisor writes Carl's word ({plugin, state, from?, reason?}) or a budget ({plugin, callsPerMinute}),
+//     or his word on a draft ({plugin, change: keep | discard | switch, version, reason?}: the record, and the files moved
+//     to match, server/pluginDrafts.ts).
 // What is policy (a disable, an end date, a budget) is only ever a record; the hosts reconcile from the same records.
 import { signal, signalLog, type ConvLog } from "./convlog/log";
 import { budgetSignal, desiredSignal, offLine, pluginIdOf, Supervisor, type Desired, type SupervisorRecord } from "../src/pluginSupervisor";
 import type { LogRecord } from "../src/convlog/protocol";
+import { changeSignal } from "../src/pluginDrafts";
+import { landChange, slotOf } from "./pluginDrafts";
 
 type Followed = { sup: Supervisor; changed: Set<() => void> };
 const follows = new WeakMap<ConvLog, Followed>();
@@ -59,6 +63,27 @@ export function setPluginDesired(vault: string, b: Record<string, unknown> | nul
 /** Write a budget ({plugin, callsPerMinute | null}) as `by`. */
 export function setPluginBudget(vault: string, b: Record<string, unknown> | null, by: string): Written {
   return write(vault, budgetSignal(b, by, Date.now()));
+}
+
+/** Who may be named on a change record from Carl's devices (the app's own Keep, the agent through the app's offers, an auto-discard). */
+const CHANGE_BY = new Set(["carl", "agent", "auto"]);
+
+/**
+ * Carl's word on a plugin's draft ({plugin, change, version, reason?}): the slot's files are moved, then the record is
+ * written (nothing moved: no record). `by` from the body when it is one the box allows, else `by`.
+ */
+export function setPluginChange(vault: string, b: Record<string, unknown> | null, by: string): ({ status: 200; seq: number; text: string }) | { status: number; error: string } {
+  const who = typeof b?.by === "string" && CHANGE_BY.has(b.by) ? b.by : by;
+  const sig = changeSignal(b, who, Date.now());
+  if ("error" in sig) return sig;
+  const plugin = pluginIdOf(sig.plugin);
+  const slot = slotOf(plugin);
+  if (!slot) return { status: 400, error: `${plugin} has no drafts (an app plugin with live copies, or a vault plugin's .js)` };
+  const landed = landChange(vault, slot, sig.change, sig.version);
+  if (!landed.ok) return { status: landed.status, error: landed.error };
+  followed(signalLog(vault));
+  const rec = signal(vault, { ...sig, plugin, version: landed.version, ...(landed.from ? { from: landed.from } : {}) });
+  return rec ? { status: 200, seq: rec.seq, text: landed.text } : { status: 500, error: "the files moved but the log could not be written" };
 }
 
 /** Each plugin's gateway calls in the last minute (vault + plugin → times). */
@@ -115,8 +140,10 @@ export async function supervisorRoute(vault: string, method: string, query: URLS
     return { status: 200, body: await supervisorRecords(vault, after, Number.isFinite(w) ? Math.max(0, Math.min(Math.trunc(w), 25_000)) : 0) };
   }
   if (method !== "POST") return { status: 405, body: { error: "GET or POST" } };
-  const w = body && "callsPerMinute" in body ? setPluginBudget(vault, body, "carl") : setPluginDesired(vault, body, "carl");
-  return "error" in w ? { status: w.status, body: { error: w.error } } : { status: 200, body: { ok: true, seq: w.seq } };
+  const w = body && "change" in body ? setPluginChange(vault, body, "carl") : body && "callsPerMinute" in body ? setPluginBudget(vault, body, "carl") : setPluginDesired(vault, body, "carl");
+  if ("error" in w) return { status: w.status, body: { error: w.error } };
+  const text = (w as { text?: string }).text;
+  return { status: 200, body: { ok: true, seq: w.seq, ...(text ? { text } : {}) } };
 }
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

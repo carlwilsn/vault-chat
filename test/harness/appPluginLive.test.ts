@@ -49,7 +49,9 @@ G.ResizeObserver ??= class { observe() {} disconnect() {} };
 
 const { useStore } = await import("../../src/store.ts");
 const { AppPluginMount } = await import("../../src/PluginMount.tsx");
-const { _appReconciler } = await import("../../src/pluginSupervisorApp.ts");
+const { _appReconciler, foldSupervisorRecords } = await import("../../src/pluginSupervisorApp.ts");
+const { pendingChanges, tryChange, stopTrying, triedVersion, lastOutcome, _resetChangeReady } = await import("../../src/changeReady.ts");
+const { versionOf } = await import("../../src/pluginDrafts.ts");
 const { refreshLiveCopies, _resetLiveCopies, _setLiveLoad, liveLoader, scanLiveCopies } = await import("../../src/appPluginLiveHost.ts");
 useStore.setState({ vaultPath: vault } as any);
 
@@ -160,6 +162,11 @@ const desire = (plugin: string, state: "running" | "stopped") => {
   rec.sup.fold({ seq: ++seq, at: seq, type: "signal", signal: { type: "plugin.desired", plugin, state, at: seq, by: "agent" } } as any);
   rec.changed();
 };
+const change = (plugin: string, kind: "keep" | "discard" | "switch", version: string, from?: string) => {
+  const rec = _appReconciler(true);
+  foldSupervisorRecords([{ seq: ++seq, at: seq, type: "signal", signal: { type: "plugin.change", plugin, change: kind, version, ...(from ? { from } : {}), at: seq, by: "carl" } } as any]);
+  void rec;
+};
 const shown = (c: any) => String(c.textContent ?? "");
 const which = (c: any) => c.querySelector('[data-el="plugin-mount"]')?.getAttribute("data-vc-copy") ?? "built-in";
 
@@ -172,8 +179,9 @@ test("scanLiveCopies reads only copies; none, the built-in module runs", async (
   assert.deepEqual(await scanLiveCopies(vault), {});
 });
 
-test("the draft, else the live copy, else the built-in one; off or failing, the next runs; the failure is written next to it", async () => {
+test("the live copy, else the built-in one; a draft runs only while tried or once kept; off or failing, the next runs; the failure is written next to it", async () => {
   _resetLiveCopies();
+  _resetChangeReady();
   _appReconciler(true);
   const c = document.createElement("div") as unknown as HTMLElement;
   const root = createRoot(c);
@@ -191,25 +199,48 @@ test("the draft, else the live copy, else the built-in one; off or failing, the 
   await refreshLiveCopies();
   await waitFor("the edit", () => shown(c) === "ok:live v2");
 
+  // A draft waits for Carl: Change ready lists it, and it runs only while he tries it.
   copy("draft", "ok:draft");
   await refreshLiveCopies();
-  await waitFor("the draft first", () => shown(c) === "ok:draft");
+  await tick(60);
+  assert.equal(shown(c), "ok:live v2", "a draft never runs by itself");
+  const v1 = versionOf(fs.readFileSync(path.join(DIR, "context.draft.js"), "utf8"));
+  assert.deepEqual(pendingChanges().map((p) => [p.plugin, p.version]), [["app/context", v1]]);
+  tryChange("app/context", v1);
+  await waitFor("tried: the draft", () => shown(c) === "ok:draft");
   assert.equal(which(c), "draft");
+  assert.match(globalThis.localStorage.getItem(`vc.tryDraft:${vault}`) ?? "", new RegExp(v1), "every window of the app follows it");
+  stopTrying("app/context");
+  await waitFor("back: the live copy", () => shown(c) === "ok:live v2");
 
+  // Tried and broken: it discards itself, the live copy runs, why is said and written next to it.
   copy("draft", "throw");
   await refreshLiveCopies();
-  await waitFor("a broken draft passes to the live copy", () => shown(c) === "ok:live v2");
+  const v2 = versionOf(fs.readFileSync(path.join(DIR, "context.draft.js"), "utf8"));
+  tryChange("app/context", v2);
+  await waitFor("a broken draft passes to the live copy", () => shown(c) === "ok:live v2" && triedVersion("app/context") === null);
+  assert.match(lastOutcome()?.text ?? "", /Discarded by itself: it stopped: .*copy broke/);
   await waitFor("its error file", () => fs.existsSync(path.join(DIR, "context.draft.js.error.txt")));
   assert.match(fs.readFileSync(path.join(DIR, "context.draft.js.error.txt"), "utf8"), /copy broke/);
 
+  // Kept (the record): the draft runs as the live copy before its file has moved; discarded: never again.
   copy("draft", "ok:draft fixed");
   await refreshLiveCopies();
-  await waitFor("a changed draft is tried again", () => shown(c) === "ok:draft fixed");
+  const v3 = versionOf(fs.readFileSync(path.join(DIR, "context.draft.js"), "utf8"));
+  const lv = versionOf(fs.readFileSync(path.join(DIR, "context.js"), "utf8"));
+  change("app/context", "keep", v3, lv);
+  await waitFor("kept: the draft runs", () => shown(c) === "ok:draft fixed");
+  assert.deepEqual(pendingChanges(), [], "a kept draft is not waiting");
+  change("app/context", "switch", lv, v3);
+  await waitFor("switched back: the live copy", () => shown(c) === "ok:live v2");
+  change("app/context", "discard", v3);
+  tryChange("app/context", v3);
+  await tick(60);
+  assert.equal(shown(c), "ok:live v2", "a discarded version is not tried");
+  stopTrying("app/context");
 
-  desire(liveCopyId("context", "draft"), "stopped");
-  await waitFor("draft off: the live copy", () => shown(c) === "ok:live v2");
   desire(liveCopyId("context", "live"), "stopped");
-  await waitFor("both off: the built-in one", () => shown(c) === "built-in" && which(c) === "built-in");
+  await waitFor("live off: the built-in one", () => shown(c) === "built-in" && which(c) === "built-in");
   desire(liveCopyId("context", "live"), "running");
   await waitFor("live on again", () => shown(c) === "ok:live v2");
 
@@ -220,7 +251,6 @@ test("the draft, else the live copy, else the built-in one; off or failing, the 
 
   copy("live", null);
   copy("draft", null);
-  desire(liveCopyId("context", "draft"), "running");
   await refreshLiveCopies();
   await waitFor("removed: the built-in one", () => shown(c) === "built-in");
   assert.equal(globalThis.localStorage.getItem(`vc.appPluginLive:${vault}`), null);

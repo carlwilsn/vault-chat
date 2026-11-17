@@ -1,0 +1,291 @@
+// The hidden-copy gate for a plugin's draft (change by asking, reports/07 point 4): before the agent raises "Change
+// ready", the draft runs in the box's headless browser on a copy of the data, side by side with what runs now, and the
+// same steps on both are compared: errors, visible text, typing speed. Nothing is written to the vault (it is only
+// read); the copy is the preview harness's in-memory vault (preview/README.md), the same frontend RecordUI drives.
+//
+//   node --import tsx scripts/draft-check.ts <plugin> --vault <vault> [--data <dir>] [--scenario conv-a]
+//        [--steps steps.json] [--keys 24] [--runs 2] [--port 1561] [--out result.json]
+//
+// <plugin>: an app plugin (composer, app/composer) or a vault plugin (pen-cursor, .vault-chat/plugins/pen-cursor.js).
+// --data: a copy of real data to run on (the ship script's secret-filtered real copy tree, or a base built by
+// preview/fixtures/build.mjs); left out, the harness's synthetic vault. The vault's own live copies and the draft are
+// laid over it. --steps: [{click|press|type|wait|waitFor}] (RecordUI's shapes), run on both sides before typing.
+//
+// The verdict (Kayenta's success / marginal / failure):
+//   fail        the draft did not run, threw or logged errors the live side does not, or typing is over the Try limit
+//   borderline  the visible text differs (listed: is it what Carl asked for, and only that?) or typing is slower
+//   pass        no new errors, the same visible text, typing as fast
+// Exit code: 0 pass, 3 borderline, 1 fail, 2 could not run.
+import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createServer } from "node:net";
+import { appPluginFolder } from "../src/appPluginLive.ts";
+import { TRY_SLOW_MS, appSlot, slowMedian, vaultSlot, versionOf, type DraftSlot } from "../src/pluginDrafts.ts";
+// @ts-expect-error a plain .mjs module (no types)
+import { launch, evalIn, stats } from "./typing-bench.mjs";
+
+const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const TEXT = "the quick brown fox jumps over the lazy dog ";
+
+export type Step = { click?: string | { text: string }; press?: string; type?: string; wait?: number; waitFor?: string | { text: string }; timeout?: number };
+export type Side = { errors: string[]; text: string[]; ran: boolean; typingMs: number[] };
+export type Verdict = { verdict: "pass" | "borderline" | "fail"; reasons: string[]; plugin: string; version: string; live: Side; draft: Side; typing: { liveMedianMs: number | null; draftMedianMs: number | null }; textAdded: string[]; textRemoved: string[] };
+
+/** The slot a word names: an app plugin's folder or id, or a vault plugin's name or path. */
+export function slotFor(word: string): DraftSlot {
+  const w = word.replace(/\\/g, "/").replace(/^\.\//, "");
+  const folder = appPluginFolder(w.startsWith("app/") ? w : `app/${w}`);
+  if (folder) return appSlot(folder);
+  const m = /^(?:\.vault-chat\/plugins\/)?([^/]+?)(?:\.draft)?(\.m?js)?$/i.exec(w);
+  if (!m) throw new Error(`${word}: not an app plugin or a vault plugin`);
+  return vaultSlot(m[1]!, m[2] ?? ".js");
+}
+
+const norm = (s: string) => s.replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, "<time>").replace(/\s+/g, " ").trim();
+
+/** Compare the two sides. Pure, for tests. */
+export function judge(plugin: string, version: string, live: Side, draft: Side): Verdict {
+  const reasons: string[] = [];
+  let fail = false;
+  let border = false;
+  if (!draft.ran) {
+    fail = true;
+    reasons.push("the draft did not run on its side (it failed to load or mount: see its .error.txt)");
+  }
+  const seen = new Set(live.errors.map(norm));
+  const fresh = [...new Set(draft.errors.map(norm))].filter((e) => !seen.has(e));
+  if (fresh.length) {
+    fail = true;
+    reasons.push(`errors only with the draft: ${fresh.slice(0, 5).join(" | ")}`);
+  }
+  const lt = new Set(live.text.map(norm).filter(Boolean));
+  const dt = new Set(draft.text.map(norm).filter(Boolean));
+  const textAdded = [...dt].filter((l) => !lt.has(l));
+  const textRemoved = [...lt].filter((l) => !dt.has(l));
+  if (textAdded.length || textRemoved.length) {
+    border = true;
+    reasons.push(`the visible text differs (${textAdded.length} lines new, ${textRemoved.length} gone): check it is what was asked for, and only that`);
+  }
+  const lm = slowMedian(live.typingMs) ?? (live.typingMs.length ? stats(live.typingMs).medianMs : null);
+  const dm = slowMedian(draft.typingMs) ?? (draft.typingMs.length ? stats(draft.typingMs).medianMs : null);
+  if (dm !== null && dm > TRY_SLOW_MS) {
+    fail = true;
+    reasons.push(`typing with the draft: median ${dm.toFixed(1)} ms a key, over the Try limit of ${TRY_SLOW_MS} ms`);
+  } else if (dm !== null && lm !== null && dm > lm * 1.5 + 5) {
+    border = true;
+    reasons.push(`typing is slower with the draft: median ${dm.toFixed(1)} ms against ${lm.toFixed(1)} ms`);
+  }
+  if (!reasons.length) reasons.push("no new errors, the same visible text, typing as fast");
+  return { verdict: fail ? "fail" : border ? "borderline" : "pass", reasons, plugin, version, live, draft, typing: { liveMedianMs: lm, draftMedianMs: dm }, textAdded, textRemoved };
+}
+
+// ---------------------------------------------------------------- running it
+
+function freePort(): Promise<number> {
+  return new Promise((res, rej) => {
+    const s = createServer();
+    s.once("error", rej);
+    s.listen(0, "127.0.0.1", () => {
+      const p = (s.address() as { port: number }).port;
+      s.close(() => res(p));
+    });
+  });
+}
+
+async function waitHttp(url: string, ms: number): Promise<void> {
+  const end = Date.now() + ms;
+  for (;;) {
+    try {
+      const r = await fetch(url);
+      if (r.status < 500) return;
+    } catch {
+      /* not up yet */
+    }
+    if (Date.now() > end) throw new Error(`the preview harness did not answer at ${url}`);
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** In the page: errors, typing samples, visible lines, whether the plugin's copy runs. */
+const INSTALL = `(() => {
+  const w = window;
+  w.__gate = { errors: [], ms: [] };
+  w.addEventListener('error', e => w.__gate.errors.push(String(e.message || e.error || 'error')));
+  w.addEventListener('unhandledrejection', e => w.__gate.errors.push('unhandled: ' + String((e.reason && e.reason.message) || e.reason)));
+  const ce = console.error.bind(console);
+  console.error = (...a) => { w.__gate.errors.push(a.map(x => String((x && x.message) || x)).join(' ').slice(0, 300)); ce(...a); };
+  w.addEventListener('input', e => {
+    const t = e.target; if (!t || !t.closest || !t.closest('[data-perf-target="composer"], [data-el="composer"]')) return;
+    const t0 = performance.now();
+    requestAnimationFrame(() => requestAnimationFrame(() => w.__gate.ms.push(performance.now() - t0)));
+  }, true);
+})()`;
+
+const find = (target: string | { text: string }) =>
+  typeof target === "string"
+    ? `document.querySelector(${JSON.stringify(target)})`
+    : `[...document.querySelectorAll('button,a,[role],[title],[aria-label],span,div')].find(e => (e.getAttribute('aria-label')||e.getAttribute('title')||e.textContent||'').trim() === ${JSON.stringify(target.text)})`;
+
+async function key(cdp: any, sid: string, chord: string): Promise<void> {
+  const parts = chord.split("+");
+  const k = parts.pop()!;
+  const modifiers = (parts.includes("Alt") ? 1 : 0) | (parts.includes("Control") || parts.includes("Ctrl") ? 2 : 0) | (parts.includes("Meta") ? 4 : 0) | (parts.includes("Shift") ? 8 : 0);
+  const text = k.length === 1 && !(modifiers & 7) ? k : undefined;
+  const code = k.length === 1 ? (/[a-z]/i.test(k) ? `Key${k.toUpperCase()}` : undefined) : k;
+  const vk = k.length === 1 ? k.toUpperCase().charCodeAt(0) : ({ Enter: 13, Escape: 27, Tab: 9, Backspace: 8 } as Record<string, number>)[k];
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: k, code, modifiers, windowsVirtualKeyCode: vk, ...(text ? { text } : {}) }, sid);
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, modifiers, windowsVirtualKeyCode: vk }, sid);
+}
+
+async function runSide(cdp: any, url: string, plugin: string, steps: Step[], keys: number): Promise<Side> {
+  const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
+  const { sessionId: sid } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
+  try {
+    await cdp.send("Page.enable", {}, sid);
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false }, sid);
+    await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: INSTALL }, sid);
+    await cdp.send("Page.navigate", { url }, sid);
+    let ready = false;
+    for (let t = Date.now(); !ready && Date.now() - t < 90_000; await sleep(250)) ready = await evalIn(cdp, sid, `!!(window.__preview && __preview.ready && __preview.stepsDone)`).catch(() => false);
+    if (!ready) throw new Error(`${url}: the app did not start within 90 s`);
+    await sleep(2500); // the copies are read and mounted (the folder is looked at every 2 s)
+    for (const s of steps) {
+      if (s.wait !== undefined) await sleep(Math.min(30_000, Number(s.wait) || 0));
+      else if (s.press) await key(cdp, sid, s.press);
+      else if (s.type !== undefined) for (const ch of s.type) await key(cdp, sid, ch);
+      else if (s.click !== undefined) {
+        const ok = await evalIn(cdp, sid, `(() => { const e = ${find(s.click)}; if (!e) return false; e.click(); return true; })()`);
+        if (!ok) throw new Error(`step ${JSON.stringify(s)}: nothing to click`);
+      } else if (s.waitFor !== undefined) {
+        let seen = false;
+        for (let t = Date.now(); !seen && Date.now() - t < (s.timeout ?? 8000); await sleep(150)) seen = await evalIn(cdp, sid, `!!(${find(s.waitFor)})`);
+        if (!seen) throw new Error(`step ${JSON.stringify(s)}: never appeared`);
+      }
+      await sleep(300);
+    }
+    // The page's text without the Change ready notice (only the draft's side has one).
+    const text: string[] = await evalIn(cdp, sid, `(() => { const n = document.querySelector('[data-el="change-ready"]'); if (n) n.style.display = 'none'; const t = document.body.innerText.split('\\n'); if (n) n.style.display = ''; return t; })()`);
+    const ran: boolean = await evalIn(cdp, sid, `!!document.querySelector('[data-vc-plugin=${JSON.stringify(JSON.stringify(plugin)).slice(1, -1)}]')`);
+    const copy: string | null = await evalIn(cdp, sid, `(document.querySelector('[data-vc-plugin=${JSON.stringify(JSON.stringify(plugin)).slice(1, -1)}][data-vc-copy]')||{getAttribute:()=>null}).getAttribute('data-vc-copy')`);
+    // Typing in the composer, as typing-bench does (never sent: cleared after).
+    const has = await evalIn(cdp, sid, `!!(document.querySelector('[data-perf-target="composer"]') || document.querySelector('[data-el="composer"] textarea'))`);
+    if (has && keys > 0) {
+      await evalIn(cdp, sid, `(document.querySelector('[data-perf-target="composer"]') || document.querySelector('[data-el="composer"] textarea')).focus(); __gate.ms.length = 0; true`);
+      for (let i = 0; i < keys + 4; i++) {
+        await key(cdp, sid, TEXT[i % TEXT.length]!);
+        await sleep(40);
+      }
+      await sleep(300);
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "a", code: "KeyA", modifiers: 2, commands: ["selectAll"] }, sid);
+      await key(cdp, sid, "Backspace");
+    }
+    const g = await evalIn(cdp, sid, `({ errors: __gate.errors.slice(0, 50), ms: __gate.ms.slice(4) })`);
+    return { errors: g.errors, text, ran: plugin.startsWith("app/") ? copy !== null || ran : ran, typingMs: g.ms, copy } as Side & { copy: string | null };
+  } finally {
+    await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
+  }
+}
+
+export async function draftCheck(o: { plugin: string; vault: string; data?: string; scenario?: string; steps?: Step[]; keys?: number; runs?: number; port?: number }): Promise<Verdict> {
+  const slot = slotFor(o.plugin);
+  const dir = join(o.vault, slot.dir);
+  const read = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : undefined);
+  const draft = read(slot.draft);
+  if (draft === undefined) throw new Error(`no draft: ${slot.dir}/${slot.draft}`);
+  const live = read(slot.live);
+  const version = versionOf(draft);
+  const scratch = mkdtempSync(join(tmpdir(), "vc-draft-check-"));
+  let serve: ChildProcess | null = null;
+  let browser: { close(): Promise<void> } | null = null;
+  try {
+    // Two copies of the data: the plugin as it runs now, and with the draft beside it (tried on that side only).
+    const lay = (name: string, files: Record<string, string | undefined>) => {
+      const d = join(scratch, name, slot.dir);
+      mkdirSync(d, { recursive: true });
+      for (const [f, c] of Object.entries(files)) if (c !== undefined) writeFileSync(join(d, f), c);
+      return join(scratch, name);
+    };
+    const base = o.data ? [resolve(o.data)] : [join(REPO, "demo-vault"), join(REPO, "preview/fixtures/synthetic/vault")].filter(existsSync);
+    const bases = {
+      "gate-live": { vaultName: "gate", dirs: [...base, lay("live", { [slot.live]: live })] },
+      "gate-draft": { vaultName: "gate", dirs: [...base, lay("draft", { [slot.live]: live, [slot.draft]: draft })] },
+    };
+    const port = o.port ?? (await freePort());
+    const [bp, ap] = [await freePort(), await freePort()];
+    serve = spawn(process.execPath, [join(REPO, "preview/serve.mjs"), "--port", String(port), "--before-port", String(bp), "--after-port", String(ap)], { cwd: REPO, env: { ...process.env, VC_PREVIEW_BASES: JSON.stringify(bases) }, stdio: ["ignore", "ignore", "pipe"], detached: true });
+    let stderr = "";
+    serve.stderr?.on("data", (d) => (stderr = (stderr + d).slice(-4000)));
+    await waitHttp(`http://127.0.0.1:${port}/before/`, 120_000).catch((e) => {
+      throw new Error(`${e.message}\n${stderr}`);
+    });
+    const b = await launch();
+    browser = b;
+    const sc = o.scenario ?? "conv-a";
+    const url = (base: string, ns: string, extra = "") => `http://127.0.0.1:${port}/before/?scenario=${encodeURIComponent(sc)}&base=${base}&narrate=0&ns=${ns}${extra}`;
+    const runs = Math.max(1, o.runs ?? 2);
+    const sides: { live: Side[]; draft: Side[] } = { live: [], draft: [] };
+    for (let r = 0; r < runs; r++) {
+      sides.live.push(await runSide(b.cdp, url("gate-live", "gate-a"), slot.plugin, o.steps ?? [], o.keys ?? 24));
+      sides.draft.push(await runSide(b.cdp, url("gate-draft", "gate-b", `&try=${encodeURIComponent(`${slot.plugin}@${version}`)}`), slot.plugin, o.steps ?? [], o.keys ?? 24));
+    }
+    const merge = (l: Side[]): Side => ({ errors: l.flatMap((s) => s.errors), text: l[l.length - 1]!.text, ran: l.every((s) => s.ran), typingMs: l.flatMap((s) => s.typingMs) });
+    const v = judge(slot.plugin, version, merge(sides.live), merge(sides.draft));
+    if (slot.plugin.startsWith("app/") && !sides.draft.every((s) => (s as Side & { copy?: string | null }).copy === "draft")) {
+      v.verdict = "fail";
+      v.reasons = v.reasons.filter((r) => !r.startsWith("no new errors"));
+      v.reasons.unshift("the draft's side did not run the draft (its mount says another copy): it failed to load or mount");
+    }
+    return v;
+  } finally {
+    await browser?.close().catch(() => {});
+    if (serve?.pid) {
+      try {
+        process.kill(-serve.pid);
+      } catch {
+        serve.kill();
+      }
+    }
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+async function main(argv: string[]): Promise<number> {
+  const value = (f: string) => {
+    const i = argv.indexOf(f);
+    return i >= 0 ? argv[i + 1] : undefined;
+  };
+  const takes = new Set(["--vault", "--data", "--scenario", "--steps", "--keys", "--runs", "--port", "--out"]);
+  const plugin = argv.find((a, i) => !a.startsWith("--") && !takes.has(argv[i - 1] ?? ""));
+  const vault = value("--vault");
+  if (!plugin || !vault) {
+    console.error("usage: draft-check.ts <plugin> --vault <vault> [--data <dir>] [--scenario conv-a] [--steps steps.json] [--keys 24] [--runs 2] [--out result.json]");
+    return 2;
+  }
+  const steps = value("--steps") ? (JSON.parse(readFileSync(value("--steps")!, "utf8")) as Step[]) : undefined;
+  const num = (f: string) => (value(f) !== undefined ? Number(value(f)) : undefined);
+  const v = await draftCheck({ plugin, vault, data: value("--data"), scenario: value("--scenario"), steps, keys: num("--keys"), runs: num("--runs"), port: num("--port") });
+  const out = value("--out");
+  if (out) writeFileSync(out, JSON.stringify(v, null, 1) + "\n");
+  const f = (n: number | null) => (n === null ? "n/a" : `${n.toFixed(1)} ms`);
+  console.log(`${v.verdict.toUpperCase()}: ${v.plugin} draft ${v.version}`);
+  for (const r of v.reasons) console.log(`- ${r}`);
+  console.log(`typing (composer, median a key): live ${f(v.typing.liveMedianMs)}, draft ${f(v.typing.draftMedianMs)}`);
+  if (v.textAdded.length) console.log(`text only with the draft:\n${v.textAdded.slice(0, 20).map((l) => `  + ${l}`).join("\n")}`);
+  if (v.textRemoved.length) console.log(`text gone with the draft:\n${v.textRemoved.slice(0, 20).map((l) => `  - ${l}`).join("\n")}`);
+  return v.verdict === "pass" ? 0 : v.verdict === "borderline" ? 3 : 1;
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main(process.argv.slice(2)).then(
+    (code) => process.exit(code),
+    (e) => {
+      console.error(String(e?.message ?? e));
+      process.exit(2);
+    },
+  );
+}

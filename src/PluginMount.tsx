@@ -8,10 +8,12 @@
 // that must always stand (the chat list) passes a `fallback`: turned off, or failing (its mount or render throwing), the
 // fallback renders in its place instead of nothing or the error card, with what happened and a way back.
 //
-// Live copies (src/appPluginLive.ts): an app plugin whose code is also in <vault>/.vault-chat/app-plugins (a draft, a
-// live copy) runs that copy instead of the built-in module, the draft first. A copy turned off (a plugin.desired record
-// for its vault path) is passed over; a copy that fails (load, mount or later) is passed over too, until its file
-// changes, and why is written next to it. The built-in module is the last copy; only its failure shows the fallback.
+// Live copies (src/appPluginLive.ts): an app plugin whose code is also in <vault>/.vault-chat/app-plugins runs that copy
+// instead of the built-in module. Which copy is the records' fold (src/pluginDrafts.ts chooseCopy): a draft runs only
+// while Carl tries it (Change ready, src/changeReady.ts) or once kept; else the version the last keep / switch landed;
+// else the live copy. A copy turned off (a plugin.desired record for its vault path) is passed over; a copy that fails
+// (load, mount or later) is passed over too, until its file changes, and why is written next to it; a draft that fails
+// while tried discards itself. The built-in module is the last copy; only its failure shows the fallback.
 //
 // Props (src/pluginProps.ts): a part mounted with `props` (the Ctrl+K box's request, a viewer pane's pane) reads them as
 // api.props.get() / api.props.on(fn), live: new props reach the mounted part without a remount.
@@ -22,7 +24,9 @@ import type { AppPluginInfo } from "./appPlugins";
 import { appPluginFolder, liveCopyId, type LiveCopyKind } from "./appPluginLive";
 import { liveLoader, reportLiveFailure, useLiveCopies } from "./appPluginLiveHost";
 import { appHostBackend } from "./hostBackend";
-import { usePluginDesired } from "./pluginSupervisorApp";
+import { supervisorChangesNow, usePluginDesired, useSupervisorVersion } from "./pluginSupervisorApp";
+import { chooseCopy } from "./pluginDrafts";
+import { autoDiscard, useTried } from "./changeReady";
 import { propsChannel, type PluginProps, type PropsChannel } from "./pluginProps";
 
 export class PluginBoundary extends Component<{ path: string; children: ReactNode; onFailed?: (why: string) => void }, { failed: string | null }> {
@@ -113,13 +117,18 @@ export function AppPluginMount({ plugin, module, code, part, props, fallback }: 
   const copies = useLiveCopies(folder ? plugin.id : "");
   const draftOn = usePluginDesired(folder ? liveCopyId(folder, "draft") : null);
   const liveOn = usePluginDesired(folder ? liveCopyId(folder, "live") : null);
+  const prevOn = usePluginDesired(folder ? liveCopyId(folder, "prev") : null);
+  const tried = useTried(folder ? plugin.id : null);
+  useSupervisorVersion();
   // A copy that failed, by the code that failed: passed over until its file changes (or Reload).
   const [broken, setBroken] = useState<Partial<Record<LiveCopyKind, string>>>({});
-  const pick = (kind: LiveCopyKind, on: Desired | null): { kind: LiveCopyKind; code: string } | null => {
-    const c = copies[kind];
-    return c !== undefined && on?.state !== "stopped" && broken[kind] !== c ? { kind, code: c } : null;
-  };
-  const copy = folder ? pick("draft", draftOn) ?? pick("live", liveOn) : null;
+  const choice = folder ? chooseCopy(copies, supervisorChangesNow(plugin.id), tried) : null;
+  const on: Record<LiveCopyKind, Desired | null> = { draft: draftOn, live: liveOn, prev: prevOn };
+  const usable = (kind: LiveCopyKind | null | undefined): kind is LiveCopyKind => !!kind && copies[kind] !== undefined && on[kind]?.state !== "stopped" && broken[kind] !== copies[kind];
+  let kind: LiveCopyKind | null = choice?.kind ?? null;
+  if (kind && !usable(kind)) kind = kind !== "live" && choice?.why !== "landed" && usable("live") ? "live" : null;
+  const copy = kind ? { kind, code: copies[kind]! } : null;
+  const isTried = kind === "draft" && choice?.why === "tried";
   const copySource = useMemo<AppPluginSource | null>(() => (copy ? { name: plugin.name, code: copy.code, ...(part ? { part } : {}) } : null), [plugin.name, copy?.code, part]);
   const copyLoad = useMemo(() => liveLoader(plugin.id), [plugin.id]);
   const retry = () => {
@@ -138,6 +147,8 @@ export function AppPluginMount({ plugin, module, code, part, props, fallback }: 
       console.warn(`[plugin] ${plugin.id}: its ${kind} copy failed, the next copy runs:`, why);
       setBroken((b) => ({ ...b, [kind]: bad }));
       void reportLiveFailure(plugin.id, kind, bad, why);
+      // Tried and failed: the draft discards itself (Carl's windows fall back, the notice says why).
+      if (tried && isTried) autoDiscard(plugin.id, tried, `it stopped: ${why}`);
     };
     return (
       <PluginBoundary path={plugin.id} key={`${plugin.id}#${run}#${kind}`} onFailed={onCopyFailed}>

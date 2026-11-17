@@ -26,7 +26,9 @@ export const APP_PLUGIN_LIVE_MAX_BYTES = 4 * 1024 * 1024;
 /** The app plugins that can run a live copy (their code is under src/plugins/<name>/, with an index module). */
 export const LIVE_APP_PLUGINS: readonly string[] = ["app/notes", "app/chats", "app/composer", "app/chat-rows", "app/vaults", "app/filetree", "app/titlebar", "app/viewer", "app/chat", "app/settings", "app/voice", "app/context", "app/ask"];
 
-export type LiveCopyKind = "draft" | "live";
+/** live: the copy that runs; draft: a change waiting for Carl (Change ready: it runs only while he tries it, or once
+ *  kept); prev: the copy the last Keep replaced (Switch back swaps it with live; src/pluginDrafts.ts). */
+export type LiveCopyKind = "draft" | "live" | "prev";
 
 /** The plugin's folder under src/plugins (its id without "app/"), or null when it has no live copy. */
 export function appPluginFolder(id: string): string | null {
@@ -34,16 +36,16 @@ export function appPluginFolder(id: string): string | null {
 }
 
 /** The copy's file name in the folder: filetree.js, filetree.draft.js. */
-export const liveCopyFile = (folder: string, kind: LiveCopyKind): string => `${folder}${kind === "draft" ? ".draft" : ""}.js`;
+export const liveCopyFile = (folder: string, kind: LiveCopyKind): string => `${folder}${kind === "live" ? "" : `.${kind}`}.js`;
 
 /** The copy's id (its vault path): what the supervisor's records and the Plugins tool name. */
 export const liveCopyId = (folder: string, kind: LiveCopyKind): string => `${APP_PLUGIN_LIVE_DIR}/${liveCopyFile(folder, kind)}`;
 
 /** Which app plugin's copy a file name in the folder is, or null (an error report, anything else). */
 export function liveCopyOf(file: string): { plugin: string; folder: string; kind: LiveCopyKind } | null {
-  const m = /^([a-z][a-z0-9-]*)(\.draft)?\.js$/.exec(String(file ?? ""));
+  const m = /^([a-z][a-z0-9-]*)(\.draft|\.prev)?\.js$/.exec(String(file ?? ""));
   if (!m || !appPluginFolder(`app/${m[1]}`)) return null;
-  return { plugin: `app/${m[1]}`, folder: m[1]!, kind: m[2] ? "draft" : "live" };
+  return { plugin: `app/${m[1]}`, folder: m[1]!, kind: m[2] === ".draft" ? "draft" : m[2] === ".prev" ? "prev" : "live" };
 }
 
 /** Which app plugin's copy a vault path (an id) names, or null. */
@@ -57,7 +59,8 @@ export const liveErrorFile = (file: string): string => `${file}.error.txt`;
 
 /** The first line of a live copy: what it is and what it takes from the app. */
 export const LIVE_HEADER = "// @vc-app-plugin ";
-export type LiveHeader = { plugin: string; shared: string[]; built?: string };
+/** `what`: one line saying what the draft changes (shown in Change ready). */
+export type LiveHeader = { plugin: string; shared: string[]; built?: string; what?: string };
 
 export function liveHeaderLine(h: LiveHeader): string {
   return LIVE_HEADER + JSON.stringify(h);
@@ -70,7 +73,7 @@ export function parseLiveHeader(code: string): LiveHeader | null {
   try {
     const h = JSON.parse(first.slice(LIVE_HEADER.length));
     if (typeof h?.plugin !== "string" || !Array.isArray(h.shared) || !h.shared.every((s: unknown) => typeof s === "string")) return null;
-    return { plugin: h.plugin, shared: h.shared, ...(typeof h.built === "string" ? { built: h.built } : {}) };
+    return { plugin: h.plugin, shared: h.shared, ...(typeof h.built === "string" ? { built: h.built } : {}), ...(typeof h.what === "string" ? { what: h.what } : {}) };
   } catch {
     return null;
   }

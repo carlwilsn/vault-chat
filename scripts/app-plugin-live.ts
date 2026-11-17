@@ -2,16 +2,22 @@
 // shares with the running app (React, the app's modules outside the folder, the folder's state files) left out and taken
 // from the app at load by name. No app build, no release: the app picks the file up from the vault within seconds.
 //
-//   node --import tsx scripts/app-plugin-live.ts <name> --vault <vault> [--draft]   build and write the copy (a draft)
+//   node --import tsx scripts/app-plugin-live.ts <name> --vault <vault> [--draft --what "<one line>"]   build and write the copy (a draft)
 //   node --import tsx scripts/app-plugin-live.ts <name> --vault <vault> --keep      the draft becomes the live copy
 //   node --import tsx scripts/app-plugin-live.ts <name> --vault <vault> --discard   the draft is dropped
+//   node --import tsx scripts/app-plugin-live.ts <name> --vault <vault> --back      live and the copy the last keep replaced swap
 //   node --import tsx scripts/app-plugin-live.ts <name> --vault <vault> --remove    the live copy is dropped (built-in runs)
+//
+// A draft runs nowhere by itself: the laptop shows "Change ready: <what>" and Carl tries it, then keeps or discards it
+// (src/changeReady.ts; his Keep / Discard are records on the box, which moves the files: server/pluginDrafts.ts). Check
+// it first in a hidden copy: scripts/draft-check.ts. --keep / --discard / --back here move the same files the same way,
+// without a record (the agent's own, outside Change ready).
 //   node --import tsx scripts/app-plugin-live.ts --shared                           every shared name, by plugin (JSON)
 //
 // <name> is the plugin's folder (filetree, chats, vaults, composer, titlebar, notes, chat-rows, viewer, chat, settings, voice, context) or its id.
 import { build, type Plugin } from "esbuild";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -25,6 +31,8 @@ import {
   liveHeaderLine,
   liveStateFiles,
 } from "../src/appPluginLive.ts";
+import { appSlot, versionOf } from "../src/pluginDrafts.ts";
+import { landChange } from "../server/pluginDrafts.ts";
 
 export const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -44,7 +52,7 @@ module.exports = o;
 }
 
 /** Bundle the plugin in src/plugins/<folder>: its code (header line first) and the shared names it takes from the app. */
-export async function buildLiveCopy(folder: string, opts: { root?: string; built?: string } = {}): Promise<{ code: string; shared: string[] }> {
+export async function buildLiveCopy(folder: string, opts: { root?: string; built?: string; what?: string } = {}): Promise<{ code: string; shared: string[] }> {
   const root = opts.root ?? REPO;
   const plugin = `app/${folder}`;
   if (!appPluginFolder(plugin)) throw new Error(`${folder} is not an app plugin with a live copy (${LIVE_APP_PLUGINS.join(", ")})`);
@@ -93,7 +101,7 @@ export async function buildLiveCopy(folder: string, opts: { root?: string; built
     plugins: [share],
   });
   const list = [...shared].sort();
-  const header = liveHeaderLine({ plugin, shared: list, ...(opts.built ? { built: opts.built } : {}) });
+  const header = liveHeaderLine({ plugin, shared: list, ...(opts.built ? { built: opts.built } : {}), ...(opts.what ? { what: opts.what.trim().slice(0, 160) } : {}) });
   return { code: `${header}\n${out.outputFiles[0]!.text}`, shared: list };
 }
 
@@ -119,9 +127,9 @@ async function main(argv: string[]): Promise<void> {
     console.log(JSON.stringify(all, null, 2));
     return;
   }
-  const name = argv.find((a, i) => !a.startsWith("--") && argv[i - 1] !== "--vault");
+  const name = argv.find((a, i) => !a.startsWith("--") && argv[i - 1] !== "--vault" && argv[i - 1] !== "--what");
   const vault = value("--vault");
-  if (!name || !vault) throw new Error("usage: app-plugin-live.ts <name> --vault <vault> [--draft | --keep | --discard | --remove]");
+  if (!name || !vault) throw new Error("usage: app-plugin-live.ts <name> --vault <vault> [--draft [--what <line>] | --keep | --discard | --back | --remove]");
   const folder = name.replace(/^app\//, "");
   if (!appPluginFolder(`app/${folder}`)) throw new Error(`${name} is not an app plugin with a live copy (${LIVE_APP_PLUGINS.join(", ")})`);
   const dir = join(vault, APP_PLUGIN_LIVE_DIR);
@@ -131,30 +139,27 @@ async function main(argv: string[]): Promise<void> {
     rmSync(f, { force: true });
     rmSync(join(dir, liveErrorFile(basename(f))), { force: true });
   };
-  if (flag("--keep")) {
-    if (!existsSync(draft)) throw new Error(`no draft: ${relative(vault, draft)}`);
-    drop(live);
-    renameSync(draft, live);
-    rmSync(join(dir, liveErrorFile(basename(draft))), { force: true });
-    console.log(`kept: ${relative(vault, live)} is the live copy`);
-    return;
-  }
-  if (flag("--discard")) {
-    drop(draft);
-    console.log(`discarded the draft of app/${folder}`);
-    return;
-  }
+  const land = (change: "keep" | "discard" | "switch") => {
+    const version = existsSync(draft) ? versionOf(readFileSync(draft, "utf8")) : "";
+    if (change !== "switch" && !version) throw new Error(`no draft: ${relative(vault, draft)}`);
+    const r = landChange(vault, appSlot(folder), change, version);
+    if (!r.ok) throw new Error(r.error);
+    console.log(r.text);
+  };
+  if (flag("--keep")) return land("keep");
+  if (flag("--discard")) return land("discard");
+  if (flag("--back")) return land("switch");
   if (flag("--remove")) {
     drop(live);
     console.log(`removed the live copy of app/${folder}: the built-in copy runs${existsSync(draft) ? " (a draft is still there)" : ""}`);
     return;
   }
-  const { code, shared } = await buildLiveCopy(folder, { built: revision(REPO) });
+  const { code, shared } = await buildLiveCopy(folder, { built: revision(REPO), what: value("--what") });
   const to = flag("--draft") ? draft : live;
   mkdirSync(dir, { recursive: true });
   drop(to);
   writeFileSync(to, code);
-  console.log(`wrote ${relative(vault, to)} (${Math.round(code.length / 1024)} KB; takes ${shared.length} modules from the app)`);
+  console.log(`wrote ${relative(vault, to)} (${Math.round(code.length / 1024)} KB; takes ${shared.length} modules from the app; version ${versionOf(code)})${flag("--draft") ? "\nCarl sees it as Change ready on the laptop; check it first: node --import tsx scripts/draft-check.ts " + folder + " --vault " + vault : ""}`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

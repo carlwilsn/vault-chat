@@ -11,8 +11,9 @@
 export const VAULT_PLUGIN_DIR = ".vault-chat/plugins";
 export const VAULT_PLUGIN_MAX_BYTES = 1024 * 1024;
 
-/** Whether a file name in the folder is a plugin: a .js or .mjs file, not hidden. */
-export const isVaultPluginFile = (name: string): boolean => /^[^.\/\\][^\/\\]*\.m?js$/i.test(name);
+/** Whether a file name in the folder is a plugin: a .js or .mjs file, not hidden, not a draft or the copy a Keep
+ *  replaced (<name>.draft.js, <name>.prev.js: src/pluginDrafts.ts; Change ready offers the draft, it never mounts by itself). */
+export const isVaultPluginFile = (name: string): boolean => /^[^.\/\\][^\/\\]*\.m?js$/i.test(name) && !/\.(?:draft|prev)\.m?js$/i.test(name);
 
 /** The plugin's id: its vault path. */
 export const vaultPluginId = (file: string): string => `${VAULT_PLUGIN_DIR}/${file}`;

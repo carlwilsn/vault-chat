@@ -33,6 +33,14 @@ export function baseDirs() {
       ],
     },
   };
+  // Bases a caller names (the draft check, scripts/draft-check.ts: a copy of real data with a plugin's copies laid
+  // over it): VC_PREVIEW_BASES='{"name": {"vaultName": "v", "dirs": ["/abs/dir", ...]}}', later dirs over earlier.
+  try {
+    const extra = JSON.parse(process.env.VC_PREVIEW_BASES || "{}");
+    for (const [n, b] of Object.entries(extra)) if (b && Array.isArray(b.dirs)) out[n] = { vaultName: String(b.vaultName || n), dirs: b.dirs.map((dir) => ({ dir: String(dir), prefix: "" })) };
+  } catch {
+    /* not JSON: no extra bases */
+  }
   const priv = join(HERE, "fixtures", "private");
   if (existsSync(priv))
     for (const n of readdirSync(priv)) {

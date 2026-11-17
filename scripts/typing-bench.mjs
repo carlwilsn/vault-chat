@@ -47,7 +47,7 @@ class Cdp {
   }
 }
 
-async function launch() {
+export async function launch() {
   const dir = mkdtempSync(join(tmpdir(), "vc-typing-bench-"));
   const proc = spawn(CHROMIUM, ["--headless=old", "--no-sandbox", "--disable-gpu", `--user-data-dir=${dir}`, "--remote-debugging-port=0", "--window-size=1440,960", "--mute-audio", "about:blank"], { detached: true, stdio: ["ignore", "ignore", process.env.TYPING_BENCH_DEBUG ? "inherit" : "ignore"] });
   const portFile = join(dir, "DevToolsActivePort");
@@ -67,7 +67,7 @@ async function launch() {
   return { cdp, close };
 }
 
-const evalIn = async (cdp, sid, expression) => {
+export const evalIn = async (cdp, sid, expression) => {
   const r = await cdp.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sid);
   if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
   return r.result.value;

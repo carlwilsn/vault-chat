@@ -130,14 +130,31 @@ function snapshot(): LiveCopies {
   return copies;
 }
 
-/** The plugin's copies in the vault now: its draft and its live copy (code), each absent when there is none. */
-export function useLiveCopies(pluginId: string): { draft?: string; live?: string } {
+/** The plugin's copies in the vault now: its draft, its live copy and the copy the last Keep replaced (code), each
+ *  absent when there is none. */
+export function useLiveCopies(pluginId: string): { draft?: string; live?: string; prev?: string } {
   const folder = appPluginFolder(pluginId);
   const all = useSyncExternalStore(folder ? subscribe : quiet, folder ? snapshot : none, folder ? snapshot : none);
-  if (!folder) return {};
-  const draft = all[liveCopyFile(folder, "draft")];
-  const live = all[liveCopyFile(folder, "live")];
-  return { ...(draft !== undefined ? { draft } : {}), ...(live !== undefined ? { live } : {}) };
+  return folder ? copiesOf(all, folder) : {};
+}
+
+function copiesOf(all: LiveCopies, folder: string): { draft?: string; live?: string; prev?: string } {
+  const out: { draft?: string; live?: string; prev?: string } = {};
+  for (const k of ["draft", "live", "prev"] as const) {
+    const c = all[liveCopyFile(folder, k)];
+    if (c !== undefined) out[k] = c;
+  }
+  return out;
+}
+
+/** Every app plugin's copies now (Change ready lists the drafts), and a way to follow them. */
+export function useAllLiveCopies(): LiveCopies {
+  return useSyncExternalStore(subscribe, snapshot, snapshot);
+}
+
+/** The app plugins' copies now, outside React. */
+export function liveCopiesNow(): LiveCopies {
+  return snapshot();
 }
 
 let baseLoad: LoadModule = blobLoad;

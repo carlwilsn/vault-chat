@@ -96,6 +96,10 @@ export const SHORTCUTS = [
     ],
   },
 
+  { id: "change.try", keys: ["Mod+Alt+T"], label: "Try a change", group: "Views & windows", where: "while a Change ready notice shows", files: ["src/ChangeReady.tsx"] },
+  { id: "change.keep", keys: ["Mod+Alt+K"], label: "Keep the change", group: "Views & windows", where: "while trying a change", files: ["src/ChangeReady.tsx"] },
+  { id: "change.discard", keys: ["Mod+Alt+D"], label: "Discard the change", group: "Views & windows", where: "while a Change ready notice shows", files: ["src/ChangeReady.tsx"] },
+
   // ---- Editing
   { id: "edit.inline", keys: ["Mod+K"], label: "Ask or edit", group: "Editing", where: "an editor", files: ["src/LiveEditor.tsx", "src/MonacoEditor.tsx"] },
   { id: "edit.ask", keys: ["Mod+L"], label: "Ask or edit", group: "Editing", where: "a file", files: ["src/LiveEditor.tsx", "src/MonacoEditor.tsx", "src/plugins/viewer/Pane.tsx"] },

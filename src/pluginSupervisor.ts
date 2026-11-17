@@ -1,7 +1,7 @@
 // The supervisor (base spec change 1.6, section 4): a plugin's desired state is records in the one log, every host runs a
 // reconciler that makes what it shows match them, and what a plugin did to a host is undone, in reverse order, when it
 // stops. Shared by the box (server/supervisor.ts), the app (src/pluginSupervisorApp.ts), the phone, a page's own link
-// (src/pageLinkHost.ts) and the preview harness's fake box: no imports.
+// (src/pageLinkHost.ts) and the preview harness's fake box: no imports but src/pluginDrafts.ts (none either).
 //
 // Records (vault-level signals in the box's feed, as plugin.state is: src/pluginRecords.ts):
 //
@@ -13,10 +13,15 @@
 //       A budget: when the plugin makes more box calls than this in a minute, the box writes `stopped` (by "budget").
 //       callsPerMinute null removes it.
 //
+//   {type: "plugin.change", plugin, change: "keep" | "discard" | "switch", version, from?, at, by?, reason?}
+//       Carl's word on a draft (change by asking: src/pluginDrafts.ts): which copy of the plugin is in effect.
+//
 // No record: running. The core holds no policy of its own: disable, an end date and a budget are each only records,
 // and whatever writes them (Carl, the agent's Plugins tool, the budget check) is named in `by`.
 //
 // Plugin id: the page's vault path, "/"-separated (the id its state is kept under).
+
+import { PLUGIN_CHANGE, changeOf, type ChangeRecord } from "./pluginDrafts";
 
 export const PLUGIN_DESIRED = "plugin.desired";
 export const PLUGIN_BUDGET = "plugin.budget";
@@ -40,6 +45,7 @@ export type Desired = {
   next: number | null;
 };
 
+const NO_CHANGES: readonly ChangeRecord[] = Object.freeze([]);
 const RUNNING: Desired = { state: "running", by: null, reason: null, seq: 0, next: null };
 
 /** A plugin's id, spelled one way whichever host names it (a Windows path, a leading ./). */
@@ -82,6 +88,7 @@ type Word = { seq: number; at: number; from: number | null; state: PluginRun; by
 export class Supervisor {
   private words = new Map<string, Word[]>();
   private budgets = new Map<string, { seq: number; callsPerMinute: number | null }>();
+  private changeList = new Map<string, ChangeRecord[]>();
   private raw = new Map<number, SupervisorRecord>();
   /** The highest seq folded. */
   seq = 0;
@@ -89,9 +96,18 @@ export class Supervisor {
   /** Fold one record of the log (anything else is ignored): whether it was a supervisor record not seen before. */
   fold(rec: SupervisorRecord): boolean {
     const s = rec.type === "signal" ? (rec.signal as Record<string, unknown> | undefined) : undefined;
-    if (!s || (s.type !== PLUGIN_DESIRED && s.type !== PLUGIN_BUDGET) || typeof s.plugin !== "string" || !Number.isFinite(rec.seq)) return false;
+    if (!s || (s.type !== PLUGIN_DESIRED && s.type !== PLUGIN_BUDGET && s.type !== PLUGIN_CHANGE) || typeof s.plugin !== "string" || !Number.isFinite(rec.seq)) return false;
     if (this.raw.has(rec.seq)) return false;
     const plugin = pluginIdOf(s.plugin);
+    if (s.type === PLUGIN_CHANGE) {
+      const c = changeOf(rec);
+      if (!c) return false;
+      const list = [...(this.changeList.get(plugin) ?? []), { ...c, plugin }].sort((a, b) => a.seq - b.seq);
+      this.changeList.set(plugin, list);
+      this.raw.set(rec.seq, { seq: rec.seq, at: rec.at, type: "signal", signal: s });
+      this.seq = Math.max(this.seq, rec.seq);
+      return true;
+    }
     const at = Number(s.at ?? rec.at) || 0;
     if (s.type === PLUGIN_DESIRED) {
       if (s.state !== "running" && s.state !== "stopped") return false;
@@ -123,6 +139,11 @@ export class Supervisor {
   /** The plugin's budget (calls a minute), or null. */
   budget(plugin: string): number | null {
     return this.budgets.get(pluginIdOf(plugin))?.callsPerMinute ?? null;
+  }
+
+  /** The plugin's change records (keep / discard / switch), oldest first. */
+  changes(plugin: string): readonly ChangeRecord[] {
+    return this.changeList.get(pluginIdOf(plugin)) ?? NO_CHANGES;
   }
 
   /** Every plugin a record names. */

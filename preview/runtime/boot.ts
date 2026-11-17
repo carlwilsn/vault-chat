@@ -145,6 +145,13 @@ export function boot(base: Base): void {
 
   const vault = vaultPathFor(base);
   if (!isPopout) seedLocalStorage(vault, sc);
+  // ?try=<plugin>@<version>: a plugin's draft is being tried in this frame (src/changeReady.ts), as Carl's Try does;
+  // the draft check (scripts/draft-check.ts) opens the draft's side with it.
+  const tried = q.get("try");
+  if (tried && !isPopout && tried.includes("@")) {
+    const at = tried.lastIndexOf("@");
+    localStorage.setItem(`vc.tryDraft:${vault}`, JSON.stringify({ [tried.slice(0, at)]: tried.slice(at + 1) }));
+  }
   seedVault(vault, base, sc, now());
   setLlmConfig(sc.llm ?? {});
   setLlmVault(vault);

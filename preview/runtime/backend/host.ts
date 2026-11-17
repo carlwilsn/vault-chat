@@ -10,6 +10,7 @@ import { answerComplete } from "../llm";
 import { parseLiveNeeds } from "../../../src/liveBridge";
 import { foldPluginState, logSignal, stateQuery, stateSignal, type PluginState } from "../../../src/pluginRecords";
 import { budgetSignal, desiredSignal, Supervisor } from "../../../src/pluginSupervisor";
+import { changeSignal } from "../../../src/pluginDrafts";
 import { converseAfter, converseIntent } from "../../../src/pluginConverse";
 import { catalogAppPlugins, catalogPlugin, catalogReads, catalogServices } from "../../../src/pluginCatalog";
 
@@ -601,7 +602,8 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     }
     if (path === "/api/v2/supervisor") {
       // Carl's word on a plugin (server/supervisor.ts): a record in the fake box's log, on /poll like the box's.
-      const sig = b && "callsPerMinute" in b ? budgetSignal(b, "carl", Date.now()) : desiredSignal(b, "carl", Date.now());
+      // Carl's word on a draft (change by asking): only the record here; the app runs a kept draft from the record.
+      const sig = b && "change" in b ? changeSignal(b, typeof b.by === "string" ? b.by : "carl", Date.now()) : b && "callsPerMinute" in b ? budgetSignal(b, "carl", Date.now()) : desiredSignal(b, "carl", Date.now());
       if ("error" in sig) return { status: sig.status, body: JSON.stringify({ error: sig.error }) };
       const rec = box.emit(null, { type: "signal", signal: sig } as any);
       return { status: 200, body: JSON.stringify({ ok: true, seq: rec.seq }) };
