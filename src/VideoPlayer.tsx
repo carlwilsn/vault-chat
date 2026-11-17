@@ -165,12 +165,16 @@ export function VideoPlayer({
     const w = wrap.current;
     const doc = w?.ownerDocument;
     if (!w || !doc) return;
+    // Over the bar by where the pointer is when the bar is laid out: a scrub keeps its events on the seek track
+    // (pointer capture) while the pointer is over the picture, and judging by the target left the bar shown for good
+    // once the scrub was let go there. By the target only when there is no point or no layout to judge by.
     const onBar = (e: Event) => {
       const b = bar.current;
       if (!b) return false;
-      if (b.contains(e.target as Node)) return true;
       const m = e as MouseEvent;
-      return typeof m.clientX === "number" && inBox(m.clientX, m.clientY, b.getBoundingClientRect?.());
+      const r = b.getBoundingClientRect?.();
+      if (typeof m.clientX === "number" && typeof m.clientY === "number" && r && r.width > 0 && r.height > 0) return inBox(m.clientX, m.clientY, r);
+      return b.contains(e.target as Node);
     };
     const onMove = (e: Event) => {
       const where = pointerPlace(e as MouseEvent, w);

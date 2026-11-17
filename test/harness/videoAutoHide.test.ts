@@ -167,6 +167,21 @@ test("paused, the bar stays; resting on the bar keeps it; a mouse leaving the vi
   await p.unmount();
 });
 
+test("a scrub let go over the picture, then a rest: the bar hides (the drag's moves stay on the seek track, the pointer does not)", async () => {
+  const p = await mountViewer();
+  (p.wrap as any).getBoundingClientRect = () => ({ left: 0, top: 0, right: 800, bottom: 700, width: 800, height: 700 });
+  (p.bar as any).getBoundingClientRect = () => ({ left: 0, top: 664, right: 800, bottom: 700, width: 800, height: 36 });
+  const seek = p.bar.querySelector('[data-el="video-seek"]') as unknown as Element;
+  await p.play();
+  // Pointer capture: every move of a drag on the track goes to the track, wherever the pointer is. (This harness's
+  // stopping layer keeps them from React's own handlers, so the drag itself is not seen as a seek here.)
+  await fire(seek, "pointermove", { clientX: 260, clientY: 682, pointerType: "mouse" });
+  await fire(seek, "pointermove", { clientX: 400, clientY: 300, pointerType: "mouse" });
+  await tick(IDLE * 2.5);
+  assert.equal(p.chrome(), "hidden", "over the picture and still: hidden (judged by the target, it stayed for good)");
+  await p.unmount();
+});
+
 test("pointerPlace judges by the target first, then by the player's box", () => {
   const inside = {};
   const player = { contains: (n: unknown) => n === inside, getBoundingClientRect: () => ({ left: 10, top: 10, right: 110, bottom: 60, width: 100, height: 50 }) };
