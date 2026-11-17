@@ -447,12 +447,14 @@ class Readiness(unittest.TestCase):
         # comes down) held every update until systemd killed the pass at 3 h, from 05:58 on. The wait is bounded:
         # past VC_UPDATE_BUSY_MAX_S it says so once and updates, well inside the unit's timeout.
         start = time.monotonic()
-        out, polls = self.busy_update("stuck", [{"runs": 0, "workers": 3, "inputs": 0}], max_s="1")
+        # 2 s, not 1: the script's deadline is whole seconds (date +%s), so a 1 s limit can expire after a fraction of
+        # a second when its start-up crosses a second boundary, leaving a single poll (a flaky failure on main).
+        out, polls = self.busy_update("stuck", [{"runs": 0, "workers": 3, "inputs": 0}], max_s="2")
         self.assertLess(time.monotonic() - start, 8)
         self.assertGreaterEqual(polls, 2)
-        self.assertIn("server busy (0 runs, 3 background workers, 0 surfaces in use) — waiting for it to go idle (at most 1s)", out)
+        self.assertIn("server busy (0 runs, 3 background workers, 0 surfaces in use) — waiting for it to go idle (at most 2s)", out)
         self.assertEqual(out.count("updating anyway"), 1)
-        self.assertIn("still busy after 1s (0 runs, 3 background workers, 0 surfaces in use): updating anyway", out)
+        self.assertIn("still busy after 2s (0 runs, 3 background workers, 0 surfaces in use): updating anyway", out)
         # A run (or a voice call) is bounded the same way.
         out, _ = self.busy_update("stuck-run", [{"runs": 1, "workers": 0, "inputs": 0}], max_s="1")
         self.assertIn("still busy after 1s (1 runs, 0 background workers, 0 surfaces in use): updating anyway", out)
