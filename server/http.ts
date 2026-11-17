@@ -25,6 +25,7 @@ import { BOX_TRY_HEADER } from "../src/pluginDrafts";
 import { surfaceOff, surfaceOffPage } from "./surfaces";
 import { changesRoute } from "./changesPending";
 import { appPluginStateRoute } from "./pluginState";
+import { tryMigration } from "./migrations";
 import { APP_STYLES_HREF, HTML_CSP, embedRelativeImages, inlineHtmlDocument, isHtmlSrc, joinPagePath, relativeImageRefs } from "../src/inlineHtml";
 import { createExternalMcpHandler, type ExternalContext } from "./mcp/external";
 import { externalMcpHosts } from "./mcp/hosts";
@@ -769,6 +770,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // Change ready on the phone and the board (server/changesPending.ts): the drafts waiting for Carl, read from the box.
   if (path === "/api/v2/changes" && method === "GET") {
     const out = changesRoute(vault, url.searchParams);
+    return json(res, out.status, out.body);
+  }
+  // A migration draft's Try (server/migrations.ts): migrate on a copy of the plugin's real state; nothing is written.
+  if (path === "/api/v2/migrations/try" && method === "GET") {
+    const out = await tryMigration(vault, q("plugin") ?? "", q("version") || null);
     return json(res, out.status, out.body);
   }
   // The supervisor (server/supervisor.ts): the plugins' desired-state records, and Carl's word on one.

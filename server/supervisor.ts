@@ -7,7 +7,8 @@
 //     POST /api/v2/supervisor writes Carl's word ({plugin, state, from?, reason?}) or a budget ({plugin, callsPerMinute}),
 //     or his word on a draft ({plugin, change: keep | discard | switch, version, reason?}: the record, and the files moved
 //     to match, server/pluginDrafts.ts), for app/preset: the app.preset record a kept draft preset becomes, src/appPreset.ts;
-//     for app/settings-values: the settings draft's word, written with the settings, server/settings.ts).
+//     for app/settings-values: the settings draft's word, written with the settings, server/settings.ts; for
+//     migrate/<name>: a migration draft's word, server/migrations.ts).
 // What is policy (a disable, an end date, a budget) is only ever a record; the hosts reconcile from the same records.
 import { signal, signalLog, type ConvLog } from "./convlog/log";
 import { budgetSignal, desiredSignal, offLine, pluginIdOf, Supervisor, type Desired, type SupervisorRecord } from "../src/pluginSupervisor";
@@ -17,6 +18,8 @@ import { landChange, landPreset, slotOf } from "./pluginDrafts";
 import { PRESET_PLUGIN_ID, presetSignal, type PresetInEffect } from "../src/appPreset";
 import { SETTINGS_DRAFT_ID } from "../src/settingsRecords";
 import { settingsChange } from "./settings";
+import { isMigrationId } from "../src/migrations";
+import { migrationChange } from "./migrations";
 
 type Followed = { sup: Supervisor; changed: Set<() => void> };
 const follows = new WeakMap<ConvLog, Followed>();
@@ -87,6 +90,7 @@ export function setPluginChange(vault: string, b: Record<string, unknown> | null
   const sig = changeSignal(b, who, Date.now());
   if ("error" in sig) return sig;
   const plugin = pluginIdOf(sig.plugin);
+  if (isMigrationId(plugin)) return { status: 400, error: `${plugin} is a migration: its word goes through POST /api/v2/supervisor or app/changes (it runs migrate)` };
   if (plugin === SETTINGS_DRAFT_ID) {
     // Carl's settings (server/settings.ts): their draft and his word on it live with the settings, in the main log.
     const c = settingsChange(sig.change, sig.version, who, sig.reason);
@@ -165,6 +169,12 @@ export async function supervisorRoute(vault: string, method: string, query: URLS
     return { status: 200, body: await supervisorRecords(vault, after, Number.isFinite(w) ? Math.max(0, Math.min(Math.trunc(w), 25_000)) : 0) };
   }
   if (method !== "POST") return { status: 405, body: { error: "GET or POST" } };
+  if (body && "change" in body && typeof body.plugin === "string" && isMigrationId(pluginIdOf(body.plugin))) {
+    // A migration draft (server/migrations.ts): Keep runs migrate (in its own thread), so it answers later.
+    const who = typeof body.by === "string" && CHANGE_BY.has(body.by) ? body.by : "carl";
+    const m = await migrationChange(vault, body, who);
+    return "error" in m ? { status: m.status, body: { error: m.error } } : { status: 200, body: { ok: true, seq: m.seq, text: m.text, ...(m.summary ? { summary: m.summary } : {}) } };
+  }
   const w = body && "change" in body ? setPluginChange(vault, body, "carl") : body && "callsPerMinute" in body ? setPluginBudget(vault, body, "carl") : setPluginDesired(vault, body, "carl");
   if ("error" in w) return { status: w.status, body: { error: w.error } };
   const text = (w as { text?: string }).text;

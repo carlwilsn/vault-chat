@@ -54,6 +54,10 @@ fake.setHandler("box_get_json", async ({ url }: any) => {
     const out = changesRoute(vault, u.searchParams);
     return { status: out.status, body: JSON.stringify(out.body) };
   }
+  if (u.pathname === "/api/v2/migrations/try") {
+    const out = await (await import("../../server/migrations.ts")).tryMigration(vault, u.searchParams.get("plugin") ?? "", u.searchParams.get("version"));
+    return { status: out.status, body: JSON.stringify(out.body) };
+  }
   if (u.pathname !== "/api/v2/supervisor") return { status: 404, body: "{}" };
   const out = await supervisorRoute(vault, "GET", u.searchParams, null);
   return { status: out.status, body: JSON.stringify(out.body) };
@@ -451,4 +455,63 @@ test("box plugins: the box lists their drafts, Try sends the tried version with 
   assert.deepEqual(CR.boxTries(), {});
   assert.match(String(CR.lastOutcome()?.text), /^Discarded by itself: GET \/hi threw: nope$/);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("migration drafts: the box lists one as Change ready, Try runs it on a copy of the real state and the notice shows before / after, Keep migrates (old records stay), Switch back reads the old shape again", async () => {
+  CR._resetChangeReady();
+  await loadSupervisor(true);
+  const backups = fs.mkdtempSync(path.join(fs.realpathSync(path.dirname(vault)), "vc-mig-backup-"));
+  process.env.VC_MIGRATION_BACKUP_DIR = backups;
+  const { appPluginStateRoute, readPluginState } = await import("../../server/pluginState.ts");
+  const P = "app/chat-rows";
+  const set = (key: string, value: unknown) => assert.equal(appPluginStateRoute(vault, "POST", new URLSearchParams(), { plugin: P, key, value }).status, 200);
+  set("opt:plan:placement", "pinned");
+  set("off:x", true);
+  const before = readPluginState(vault, P).state;
+  const dir = path.join(vault, ".vault-chat", "migrations");
+  fs.mkdirSync(dir, { recursive: true });
+  const draft = `// @vc-change the plan placement becomes {where}
+export const plugin = "${P}";
+export function migrate(old) {
+  const out = { ...old };
+  if (typeof old["opt:plan:placement"] === "string") out["opt:plan:placement"] = { where: old["opt:plan:placement"] };
+  return out;
+}
+`;
+  fs.writeFileSync(path.join(dir, "plan-shape.draft.js"), draft);
+  const v = versionOf(draft);
+  await CR.refreshBoxDrafts();
+  const p = CR.pendingChanges().find((c) => c.plugin === "migrate/plan-shape");
+  assert.deepEqual(p, { plugin: "migrate/plan-shape", name: "Data: app/chat-rows", what: "the plan placement becomes {where}", version: v, added: false, triable: true, migration: { target: P } });
+
+  const notice = document.createElement("div") as unknown as HTMLElement;
+  const root = createRoot(notice);
+  await act(async () => root.render(createElement(ChangeReady)));
+  await waitFor("the notice", () => /plan placement/.test(text(notice.querySelector('[data-el="change-ready-title"]'))));
+  const posted = posts.length;
+  await click(notice, "change-try");
+  await waitFor("the summary", () => !!notice.querySelector('[data-el="change-migration-summary"]'));
+  assert.equal(text(notice.querySelector('[data-el="change-migration-summary"]')), "2 keys -> 2 keys (1 changed, 1 the same)");
+  assert.match(text(notice.querySelector('[data-el="change-migration"]')), /opt:plan:placement: "pinned" -> \{"where":"pinned"\}/);
+  assert.equal(posts.length, posted, "Try writes nothing");
+  assert.deepEqual(readPluginState(vault, P).state, before, "Try ran on a copy");
+  const read = (await pluginReach(() => true).read("app/changes", "trying")) as any;
+  assert.match(JSON.stringify(read), /"migration":\{"target":"app\/chat-rows","tried":\{"state":"done","line":"2 keys -> 2 keys/);
+
+  await click(notice, "change-keep");
+  await waitFor("kept", () => readPluginState(vault, P).epoch !== undefined);
+  assert.deepEqual(posts.at(-1), { plugin: "migrate/plan-shape", change: "keep", version: v, by: "carl" });
+  assert.deepEqual(readPluginState(vault, P).state, { "opt:plan:placement": { where: "pinned" }, "off:x": true });
+  assert.ok(fs.existsSync(path.join(dir, `plan-shape.kept-${v}.js`)) && !fs.existsSync(path.join(dir, "plan-shape.draft.js")));
+  assert.equal(fs.readdirSync(backups).length, 1, "the backup was written before the records");
+  await loadSupervisor(true);
+  assert.equal(CR.pendingChanges().some((c) => c.plugin === "migrate/plan-shape"), false);
+  assert.equal(CR.canSwitchBack("migrate/plan-shape"), true);
+  const back = await CR.switchBack("migrate/plan-shape");
+  assert.equal(back.ok, true, back.text);
+  assert.deepEqual(readPluginState(vault, P).state, before, "the old records are read again");
+  await act(async () => root.unmount());
+  delete process.env.VC_MIGRATION_BACKUP_DIR;
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(backups, { recursive: true, force: true });
 });

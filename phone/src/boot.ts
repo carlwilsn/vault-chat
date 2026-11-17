@@ -1323,7 +1323,7 @@ export function boot(): void {
         // Change ready reads the box's list again on a record that can move it (a draft decided anywhere, a new one).
         phoneChanges?.record(rec);
         // The plugin host follows the supervisor's records and app/chat-rows' kept choices.
-        if (phoneHost && (s.type === "plugin.desired" || s.type === "plugin.state")) phoneHost.fold([rec]);
+        if (phoneHost && (s.type === "plugin.desired" || s.type === "plugin.state" || s.type === "plugin.epoch" || s.type === "plugin.epoch.state")) phoneHost.fold([rec]);
         // The phone app itself switched off (server/surfaces.ts): the box's /phone now says so; go there.
         if (s.type === "plugin.desired" && s.plugin === "app/phone" && s.state === "stopped" && !MOCK) {
           fetch("/phone", { cache: "no-store" }).then((r) => r.text()).then((t) => { if (t.includes('data-el="surface-off"')) location.reload(); }).catch(() => {});

@@ -66,7 +66,7 @@ import { loadConfig } from "../config";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
 import { proposeEditSpec } from "./proposeEdit";
-import { PLUGIN_TOOL, pluginTool, pluginToolSpecs } from "../supervisorTools";
+import { PLUGIN_TOOL, pluginToolAsync, pluginToolSpecs } from "../supervisorTools";
 import { SETTINGS_TOOL, settingsTool, settingsToolSpecs } from "../settingsTool";
 import { capabilitiesOf, capabilityNote } from "./capabilities";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -2978,7 +2978,7 @@ export class Engine {
       }
       // A plugin turned off or on, or its draft kept / dropped / gated (server/supervisorTools.ts): a record in the log every view follows.
       if (name === PLUGIN_TOOL) {
-        const r = pluginTool(vault, a, { jobs: this.d.jobEnv, convId, byCarl: !!this.live.get(convId)?.byCarl });
+        const r = await pluginToolAsync(vault, a, { jobs: this.d.jobEnv, convId, byCarl: !!this.live.get(convId)?.byCarl });
         return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
       }
       // Carl's settings (server/settingsTool.ts): a setting record every open app and the phone follow.

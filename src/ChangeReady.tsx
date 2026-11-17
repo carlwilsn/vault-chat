@@ -18,6 +18,8 @@ import {
   stopTrying,
   switchBack,
   tryChange,
+  tryMigration,
+  useMigrationTry,
   useOutcome,
   usePendingChanges,
   useTries,
@@ -38,9 +40,16 @@ export function ChangeReady() {
   const trying = !!shown && tries[shown.plugin] === shown.version;
   // A draft Try can't run (settings only the box applies): Keep / Discard straight away.
   const direct = !!shown && !shown.triable;
+  // A migration draft (src/migrations.ts): Try ran it on a copy of the real state; its summary.
+  const mt = useMigrationTry();
+  const mig = shown?.migration && mt && mt.plugin === shown.plugin && mt.version === shown.version ? mt : null;
   const [busy, setBusy] = useState(false);
 
   useEffect(() => startChangeReady(), []);
+  // A migration tried before a restart (or in another window): run it on the copy again for this notice's summary.
+  useEffect(() => {
+    if (trying && shown?.migration && !mig) void tryMigration(shown.plugin, shown.version);
+  }, [trying, shown?.plugin, shown?.version, !!mig]);
   // The box plugins' drafts live on the box: read again when the records change, and every minute.
   useEffect(() => {
     const t = setInterval(() => void refreshBoxDrafts(), 60_000);
@@ -74,7 +83,7 @@ export function ChangeReady() {
     if (!shown) return;
     const onKey = (e: KeyboardEvent) => {
       if (hit(e, "change.try")) doTry();
-      else if (hit(e, "change.keep") && (trying || direct)) doKeep();
+      else if (hit(e, "change.keep") && (trying || direct) && (!shown.migration || mig?.state === "done")) doKeep();
       else if (hit(e, "change.discard")) doDiscard();
       else return;
       e.preventDefault();
@@ -111,12 +120,33 @@ export function ChangeReady() {
             )}
           </div>
           <div className="p-3 space-y-2.5">
-            {trying && <div className="text-[11.5px] text-muted-foreground/90 leading-relaxed">Trying it on this laptop's windows. Nothing on the box changes until you keep it.</div>}
+            {trying && !shown.migration && <div className="text-[11.5px] text-muted-foreground/90 leading-relaxed">Trying it on this laptop's windows. Nothing on the box changes until you keep it.</div>}
+            {trying && shown.migration && (
+              <div data-el="change-migration" data-vc-state={mig?.state ?? "running"} className="text-[11.5px] text-muted-foreground/90 leading-relaxed space-y-1">
+                <div>
+                  Ran on a copy of {shown.migration.target ?? "the plugin"}'s real data; nothing changed. Keep backs it up, then writes the new shape as new records (the old ones stay; Switch back reads them again).
+                </div>
+                {!mig || mig.state === "running" ? (
+                  <div>Running...</div>
+                ) : mig.state === "failed" ? (
+                  <div className="text-destructive" data-el="change-migration-error">It failed: {mig.error}</div>
+                ) : (
+                  <>
+                    <div className="font-mono text-foreground/90" data-el="change-migration-summary">{mig.line}</div>
+                    {mig.summary?.samples.map((x) => (
+                      <div key={x.key} className="font-mono text-[10.5px] break-all">
+                        {x.key}: {x.before ?? "(none)"} {"->"} {x.after ?? "(none)"}
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
             {direct && <div data-el="change-direct" className="text-[11.5px] text-muted-foreground/90 leading-relaxed">The box applies this, so it can't be tried on your windows only. Keep sets it; Switch back undoes it.</div>}
             <div className="flex gap-2">
               {trying || direct ? (
                 <>
-                  <Button size="sm" data-el="change-keep" disabled={busy} onClick={doKeep} title={tip("Keep", "change.keep")} className="bg-primary text-primary-foreground hover:bg-primary/90 flex-1">
+                  <Button size="sm" data-el="change-keep" disabled={busy || (!!shown.migration && mig?.state !== "done")} onClick={doKeep} title={tip("Keep", "change.keep")} className="bg-primary text-primary-foreground hover:bg-primary/90 flex-1">
                     <Check className="h-3 w-3 mr-1.5" />
                     Keep
                   </Button>

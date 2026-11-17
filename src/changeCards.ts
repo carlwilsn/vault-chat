@@ -22,6 +22,8 @@ export type BoxPendingChange = {
   tryOn: ChangeSurface[];
   /** Only for the phone, when it can try it: the draft's code (its plugin host mounts it in place of the live copy). */
   code?: string;
+  /** A migration draft (src/migrations.ts): whose state it reshapes. Try runs it on a copy and shows a summary. */
+  migration?: { target: string | null };
 };
 
 export type ChangeWord = "keep" | "discard" | "switch";
@@ -34,7 +36,7 @@ export function changesMayMove(ev: unknown): boolean {
   const t = s?.type;
   if (t === "plugin.change" || t === "setting.draft" || t === "setting.change") return true;
   if (t === "plugin.desired" && (s?.plugin === "app/phone" || s?.plugin === "app/board")) return true;
-  return t === "file_changed" && typeof s?.path === "string" && /^\.vault-chat\/(?:app-)?plugins\//.test(s.path.replace(/\\/g, "/"));
+  return t === "file_changed" && typeof s?.path === "string" && /^\.vault-chat\/(?:(?:app-|box-)?plugins|migrations)\//.test(s.path.replace(/\\/g, "/"));
 }
 
 /** The card's title line, as the laptop says it. */

@@ -18,6 +18,9 @@
 //   "app/settings-values": Try lays their window settings (theme, sidebar) over the records on his windows only
 //   (src/settings.ts setSettingsTry); a draft of settings only the box applies (model, voice …) has no Try, only
 //   Keep / Discard. Keep, Discard and Switch back post the same change to the box, which writes the settings.
+// - A migration draft (src/migrations.ts, id migrate/<name>: a plugin's state reshaped) comes from the box's list like a
+//   box plugin's. Its Try changes nothing anywhere: the box runs migrate on a copy of the real state and the notice
+//   shows the before / after summary (migrationTryOf); Keep has the box back up, migrate and switch the epoch.
 import { useMemo, useSyncExternalStore } from "react";
 import { useStore } from "./store";
 import { appPluginFolder, LIVE_APP_PLUGINS } from "./appPluginLive";
@@ -29,6 +32,7 @@ import { APP_PLUGINS } from "./appPlugins";
 import { PRESET_DRAFT_FILE, PRESET_PLUGIN_ID, parseDraft } from "./appPreset";
 import { SETTINGS_DRAFT_ID, SETTINGS_DRAFT_NAME, describeValues, pendingSettingsDraft, triable as settingsTriable, windowValues } from "./settingsRecords";
 import { onPickWhileTrying, onSettingsDrafts, refreshBoxSettings, setSettingsTry, settingsDraftsNow, settingsDraftsVersion } from "./settings";
+import { isMigrationId, summaryLine, type MigrationSummary } from "./migrations";
 import { BUILT_IN, KEEP_WATCH_MS, TRY_SLOW_MS, draftPending, draftWhat, landing, slowMedian, watchedKeep, type ChangeRecord, type SlotCode } from "./pluginDrafts";
 
 export const CHANGES_PLUGIN = { id: "app/changes", name: "Change ready" } as const;
@@ -190,10 +194,18 @@ export async function refreshBoxDrafts(): Promise<void> {
   if (useStore.getState().vaultPath !== v || !Array.isArray(r?.changes)) return;
   const list: PendingChange[] = [];
   for (const c of r.changes as Record<string, unknown>[])
-    if (typeof c?.plugin === "string" && c.plugin.startsWith("box/") && typeof c.version === "string")
-      list.push({ plugin: c.plugin, name: String(c.name ?? c.plugin), what: String(c.what ?? ""), version: c.version, added: !!c.added, triable: true });
+    if (typeof c?.plugin === "string" && (c.plugin.startsWith("box/") || isMigrationId(c.plugin)) && typeof c.version === "string")
+      list.push({
+        plugin: c.plugin,
+        name: String(c.name ?? c.plugin),
+        what: String(c.what ?? ""),
+        version: c.version,
+        added: !!c.added,
+        triable: true,
+        ...(isMigrationId(c.plugin) ? { migration: { target: typeof (c.migration as { target?: unknown } | undefined)?.target === "string" ? String((c.migration as { target: string }).target) : null } } : {}),
+      });
   for (const [plugin, version] of Object.entries(followTries())) {
-    if (!plugin.startsWith("box/") || list.some((p) => p.plugin === plugin && p.version === version)) continue;
+    if (!(plugin.startsWith("box/") || isMigrationId(plugin)) || list.some((p) => p.plugin === plugin && p.version === version)) continue;
     setTried(plugin, null);
     const d = changesOf(plugin).filter((c) => c.change === "discard" && c.version === version).pop();
     if (d?.by === "auto") say({ plugin, name: list.find((p) => p.plugin === plugin)?.name ?? boxPending.find((p) => p.plugin === plugin)?.name ?? plugin, text: `Discarded by itself: ${d.reason ?? "it failed while tried"}`, ok: false, at: Date.now() });
@@ -214,6 +226,8 @@ export type PendingChange = {
   added: boolean;
   /** Whether Try can run it on Carl's windows (a settings draft of only the box's settings can't: Keep sets it). */
   triable: boolean;
+  /** A migration draft: whose state it reshapes (Try runs it on a copy of the real state and shows the summary). */
+  migration?: { target: string | null };
 };
 
 const appName = (id: string) => APP_PLUGINS.find((p) => p.id === id)?.name ?? id.replace(/^app\//, "");
@@ -297,15 +311,57 @@ export const clearOutcome = () => {
 };
 export const lastOutcome = () => outcome;
 
-const nameOf = (plugin: string) => (plugin === SETTINGS_DRAFT_ID ? SETTINGS_DRAFT_NAME : plugin === PRESET_PLUGIN_ID ? PRESET_NAME : plugin.startsWith("app/") ? appName(plugin) : plugin.startsWith("box/") ? boxPending.find((p) => p.plugin === plugin)?.name ?? `Box: ${plugin.slice(4)}` : vaultSlots.find((s) => s.id === plugin)?.name ?? plugin.split("/").pop() ?? plugin);
+const nameOf = (plugin: string) => (plugin === SETTINGS_DRAFT_ID ? SETTINGS_DRAFT_NAME : plugin === PRESET_PLUGIN_ID ? PRESET_NAME : plugin.startsWith("app/") ? appName(plugin) : plugin.startsWith("box/") || isMigrationId(plugin) ? boxPending.find((p) => p.plugin === plugin)?.name ?? (isMigrationId(plugin) ? `Data: ${plugin.slice(8)}` : `Box: ${plugin.slice(4)}`) : vaultSlots.find((s) => s.id === plugin)?.name ?? plugin.split("/").pop() ?? plugin);
 
 // ---------------------------------------------------------------- the actions
 
-/** Try a draft (Carl's windows only). A settings draft of only the box's settings can't be tried: nothing happens. */
-export function tryChange(plugin: string, version: string): void {
-  if (plugin === SETTINGS_DRAFT_ID && !pendingChanges().some((p) => p.plugin === plugin && p.version === version && p.triable)) return;
+// ---------------------------------------------------------------- a migration's Try: on a copy, on the box
+
+export type MigrationTry = { plugin: string; version: string; state: "running" | "done" | "failed"; summary?: MigrationSummary; line?: string; error?: string };
+let migrationTry: MigrationTry | null = null;
+const migrationListeners = new Set<() => void>();
+function setMigrationTry(t: MigrationTry | null): void {
+  migrationTry = t;
+  for (const fn of [...migrationListeners]) fn();
+}
+const migrationTryNow = () => migrationTry;
+/** What the last migration Try found (the before / after summary), following it. */
+export function useMigrationTry(): MigrationTry | null {
+  return useSyncExternalStore((fn) => (migrationListeners.add(fn), () => migrationListeners.delete(fn)), migrationTryNow, migrationTryNow);
+}
+export const migrationTryOf = (plugin: string, version: string): MigrationTry | null => (migrationTry?.plugin === plugin && migrationTry.version === version ? migrationTry : null);
+
+/** Run a migration draft on a copy of the real state (the box's route; nothing is written) and keep its summary. */
+export async function tryMigration(plugin: string, version: string): Promise<MigrationTry> {
+  setMigrationTry({ plugin, version, state: "running" });
+  const link = await boxLinkFor(useStore.getState().vaultPath).catch(() => null);
+  let out: MigrationTry;
+  if (!link) out = { plugin, version, state: "failed", error: "no box: a migration is tried on the box" };
+  else
+    try {
+      const r = (await boxGet(link, `/api/v2/migrations/try?plugin=${encodeURIComponent(plugin)}&version=${encodeURIComponent(version)}`, 20_000)) as { summary?: MigrationSummary; line?: string };
+      out = r?.summary ? { plugin, version, state: "done", summary: r.summary, line: r.line ?? summaryLine(r.summary) } : { plugin, version, state: "failed", error: "the box gave no summary" };
+    } catch (e) {
+      const m = /HTTP \d+: (\{.*)$/s.exec(String((e as Error)?.message ?? e));
+      let why = String((e as Error)?.message ?? e);
+      try {
+        if (m) why = String(JSON.parse(m[1]!).error ?? why);
+      } catch {
+        /* the message as it is */
+      }
+      out = { plugin, version, state: "failed", error: why };
+    }
+  if (triedVersion(plugin) === version || migrationTry?.plugin === plugin) setMigrationTry(out);
+  return out;
+}
+
+/** Try a draft (Carl's windows only). A settings draft of only the box's settings can't be tried: nothing happens. A
+ *  migration's Try runs it on a copy of the real state on the box and shows the summary. */
+export function tryChange(plugin: string, version: string): Promise<MigrationTry> | null {
+  if (plugin === SETTINGS_DRAFT_ID && !pendingChanges().some((p) => p.plugin === plugin && p.version === version && p.triable)) return null;
   say(null);
   setTried(plugin, version);
+  return isMigrationId(plugin) ? tryMigration(plugin, version) : null;
 }
 
 /** Carl's word on a draft: the box's route (for the settings too: it hands theirs to them); the settings then read
@@ -319,12 +375,14 @@ async function post(body: Parameters<typeof postPluginChange>[0]): Promise<{ ok:
 /** Stop trying: the copy in effect runs again. */
 export function stopTrying(plugin: string): void {
   setTried(plugin, null);
+  if (migrationTry?.plugin === plugin) setMigrationTry(null);
 }
 
 /** Keep a draft: the record (the box moves the files); this window stops "trying", the kept copy runs as live. */
 export async function keepChange(plugin: string, version: string, by = "carl"): Promise<{ ok: boolean; text: string }> {
   const r = await post({ plugin, change: "keep", version, by });
   if (r.ok) setTried(plugin, null);
+  if (r.ok && migrationTry?.plugin === plugin) setMigrationTry(null);
   say({ plugin, name: nameOf(plugin), text: r.ok ? "Kept. Switch back undoes it." : `Not kept: ${r.text}`, ok: r.ok, at: Date.now() });
   return r;
 }
@@ -332,6 +390,7 @@ export async function keepChange(plugin: string, version: string, by = "carl"): 
 /** Discard a draft: this window falls back at once, then the record (the box removes the file). */
 export async function discardChange(plugin: string, version: string, opts: { by?: string; reason?: string } = {}): Promise<{ ok: boolean; text: string }> {
   setTried(plugin, null);
+  if (migrationTry?.plugin === plugin) setMigrationTry(null);
   const r = await post({ plugin, change: "discard", version, by: opts.by ?? "carl", ...(opts.reason ? { reason: opts.reason } : {}) });
   if (!opts.reason) say({ plugin, name: nameOf(plugin), text: r.ok ? "Discarded." : `Discard not written: ${r.text}`, ok: r.ok, at: Date.now() });
   return r;
@@ -494,7 +553,10 @@ export function startChangeReady(): void {
 
 // ---------------------------------------------------------------- the offers (PluginRead / PluginAct)
 
-const describe = (p: PendingChange) => ({ plugin: p.plugin, name: p.name, what: p.what || null, version: p.version, added: p.added, trying: triedVersion(p.plugin) === p.version, triable: p.triable });
+const describe = (p: PendingChange) => {
+  const m = p.migration ? migrationTryOf(p.plugin, p.version) : null;
+  return { plugin: p.plugin, name: p.name, what: p.what || null, version: p.version, added: p.added, trying: triedVersion(p.plugin) === p.version, triable: p.triable, ...(p.migration ? { migration: { target: p.migration.target, tried: m ? { state: m.state, line: m.line ?? null, error: m.error ?? null, summary: m.summary ?? null } : null } } : {}) };
+};
 
 export function changeOffers() {
   const need = (args: Record<string, unknown>) => {
@@ -517,8 +579,8 @@ export function changeOffers() {
         run: (a: Record<string, unknown>) => {
           const p = need(a);
           if (!p.triable) throw new Error(`${p.name}: ${p.what} is the box's, so it can't be tried on Carl's windows; Keep sets it`);
-          tryChange(p.plugin, p.version);
-          return describe(p);
+          const m = tryChange(p.plugin, p.version);
+          return m ? m.then(() => describe(p)) : describe(p);
         },
       },
       stop: { description: "Stop trying a draft: the copy in effect runs again.", args: pluginArg, run: (a: Record<string, unknown>) => { const p = need(a); stopTrying(p.plugin); return describe(p); } },
@@ -542,6 +604,7 @@ export function _resetChangeReady(): void {
   vaultSlots = [];
   boxPending = [];
   boxKnown.clear();
+  migrationTry = null;
   outcome = null;
   autoDone.clear();
   revertDone.clear();

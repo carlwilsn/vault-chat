@@ -126,10 +126,10 @@ export function startPhoneHost(d: PhoneHostDeps): PhoneHost {
     try {
       const r = await d.api("/api/v2/plugin/app-state?plugin=" + encodeURIComponent(CHAT_ROWS_PLUGIN_ID));
       if (!r.ok) return;
-      const b = (await r.json()) as { states?: Record<string, PluginState>; seq?: number; state?: Record<string, unknown> };
-      const s = b.states?.[CHAT_ROWS_PLUGIN_ID] ?? (b.state && typeof b.state === "object" ? { seq: Number(b.seq) || 0, state: b.state } : null);
+      const b = (await r.json()) as { states?: Record<string, PluginState>; seq?: number; state?: Record<string, unknown>; epoch?: string };
+      const s: PluginState | null = b.states?.[CHAT_ROWS_PLUGIN_ID] ?? (b.state && typeof b.state === "object" ? { seq: Number(b.seq) || 0, state: b.state, ...(b.epoch ? { epoch: b.epoch } : {}) } : null);
       if (!s || (states.get(CHAT_ROWS_PLUGIN_ID)?.seq ?? -1) >= s.seq) return;
-      states.set(CHAT_ROWS_PLUGIN_ID, { seq: s.seq, state: { ...s.state } });
+      states.set(CHAT_ROWS_PLUGIN_ID, { seq: s.seq, state: { ...s.state }, ...(typeof s.epoch === "string" && s.epoch ? { epoch: s.epoch } : {}) });
       applyPrefs();
     } catch {
       /* an older box, or offline: the phone's own rows */

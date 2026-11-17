@@ -5,6 +5,7 @@
 //   - an app plugin's draft (.vault-chat/app-plugins/<name>.draft.js) and the app's preset draft (preset.draft.json),
 //   - a vault plugin's draft (.vault-chat/plugins/<name>.draft.js; `added` when no live file is there yet),
 //   - a box plugin's draft (.vault-chat/box-plugins/<name>.draft.js, server/boxPlugins.ts; the laptop also reads these),
+//   - a migration draft (.vault-chat/migrations/<name>.draft.js, server/migrations.ts: a plugin's state reshaped),
 //   - the agent's draft of Carl's settings (setting.draft in the main log).
 // Carl's word goes through the same POST /api/v2/supervisor as the laptop's (a plugin.change / setting.change record),
 // so a decision on any surface clears the card on every one.
@@ -22,6 +23,7 @@ import { BOX_PLUGIN_DIR, appSlot, boxPluginName, boxSlot, draftPending, draftWha
 import { SETTINGS_DRAFT_ID, SETTINGS_DRAFT_NAME, describeValues, pendingSettingsDraft, triable as settingsTriable, type SettingsState } from "../src/settingsRecords";
 import { VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES, parseVaultPluginMeta, vaultPluginDevices } from "../src/vaultPlugins";
 import { slotCode } from "./pluginDrafts";
+import { pendingMigrations } from "./migrations";
 import { supervisorOf } from "./supervisor";
 import { surfaceOff, type Surface } from "./surfaces";
 import { readSettings } from "./settings";
@@ -99,6 +101,8 @@ export function pendingOnBox(vault: string, surface: ChangeSurface = "laptop", s
     const v = code.draft !== undefined ? draftPending(code, sup.changes(slot.plugin)) : null;
     if (v) out.push({ plugin: slot.plugin, name: `Box: ${name}`, what: draftWhat(code.draft!), version: v, added: code.live === undefined, tryOn: ["laptop"] });
   }
+  // Migration drafts (src/migrations.ts): a plugin's state reshaped; Try runs it on a copy of real data (the laptop).
+  out.push(...pendingMigrations(vault));
   const sd = settings ? pendingSettingsDraft(settings) : null;
   if (sd) out.push({ plugin: SETTINGS_DRAFT_ID, name: SETTINGS_DRAFT_NAME, what: sd.what || describeValues(sd.values), version: sd.version, added: false, tryOn: settingsTriable(sd.values) ? ["laptop"] : [] });
   return out;

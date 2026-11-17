@@ -8,9 +8,23 @@
 //
 // A plugin's state is a fold of its plugin.state records, newest last. Shared by the box (server/pluginState.ts) and
 // the preview harness's fake box: no imports.
+//
+// A migration (src/migrations.ts, change by asking for data) reshapes a plugin's state without touching what is there:
+// expand / contract. Keep writes one record that switches the plugin to a new epoch with the migrated state, and from
+// then on the box writes that plugin's sets as epoch records; Switch back is another switch record naming the epoch it
+// left (its state as the box last had it). The old plugin.state records stay in the log and are never rewritten, so a
+// reader that knows no epochs (an older app or phone) keeps reading the old shape, and switching back reads it again.
+//
+//   {type: "plugin.epoch",       plugin, epoch, from, state, migration?, version?, by?}   the epoch in effect from here
+//   {type: "plugin.epoch.state", plugin, epoch, key, value}                               one key set within an epoch
+//
+// "" is the epoch of every plain plugin.state record (no migration ever). A fold applies a record only to the epoch in
+// effect; the box also keeps the other epochs (`others`) so it can switch back to one.
 
 export const PLUGIN_STATE = "plugin.state";
 export const PLUGIN_LOG = "plugin.log";
+export const PLUGIN_EPOCH = "plugin.epoch";
+export const PLUGIN_EPOCH_STATE = "plugin.epoch.state";
 
 export const PLUGIN_LIMITS = {
   /** A state key: 1..200 characters. */
@@ -25,8 +39,16 @@ export const PLUGIN_LIMITS = {
 
 export type PluginStateSignal = { type: typeof PLUGIN_STATE; plugin: string; key: string; value: unknown };
 export type PluginLogSignal = { type: typeof PLUGIN_LOG; plugin: string; record: unknown };
-/** A plugin's state as its views see it: the keys and the seq of the last record that changed them (0: none yet). */
-export type PluginState = { seq: number; state: Record<string, unknown> };
+export type PluginEpochSignal = { type: typeof PLUGIN_EPOCH; plugin: string; epoch: string; from: string; state: Record<string, unknown>; migration?: string; version?: string; by?: string; /** written by a Keep (not a switch) */ kept?: boolean };
+export type PluginEpochStateSignal = { type: typeof PLUGIN_EPOCH_STATE; plugin: string; epoch: string; key: string; value: unknown };
+/** A plugin's state as its views see it: the keys and the seq of the last record that changed them (0: none yet);
+ *  `epoch`: the migration epoch in effect (absent: none, the plain plugin.state records). */
+export type PluginState = { seq: number; state: Record<string, unknown>; epoch?: string };
+/** The epochs not in effect, kept by the box to switch back to (key: plugin + "\u0000" + epoch). */
+export type OtherEpochs = Map<string, PluginState>;
+export const epochKey = (plugin: string, epoch: string): string => `${plugin}\u0000${epoch}`;
+/** Whether a vault-level signal is one of a plugin's state records (plain, epoch, or an epoch switch). */
+export const isStateSignalType = (t: unknown): boolean => t === PLUGIN_STATE || t === PLUGIN_EPOCH_STATE || t === PLUGIN_EPOCH;
 
 type Bad = { error: string; status: number };
 
@@ -62,15 +84,42 @@ export function logSignal(plugin: string, body: string): PluginLogSignal | Bad {
   return { type: PLUGIN_LOG, plugin, record: p.value };
 }
 
-/** Fold one record of the log into the plugins' states (only plugin.state signals change anything): whether it did. */
-export function foldPluginState(states: Map<string, PluginState>, rec: { seq: number; type?: unknown; signal?: unknown }): boolean {
-  const s = rec.type === "signal" ? (rec.signal as Partial<PluginStateSignal> | undefined) : undefined;
-  if (!s || s.type !== PLUGIN_STATE || typeof s.plugin !== "string" || typeof s.key !== "string") return false;
-  const cur = states.get(s.plugin) ?? { seq: 0, state: {} };
-  const state = { ...cur.state };
-  if (s.value === null || s.value === undefined) delete state[s.key];
-  else state[s.key] = s.value;
-  states.set(s.plugin, { seq: rec.seq, state });
+/** Fold one record of the log into the plugins' states (only plugin.state / plugin.epoch.state / plugin.epoch signals
+ *  change anything): whether the state in effect changed. `others` (the box's): the epochs not in effect, kept so a
+ *  switch back has them; without it (a window, the phone) a record of another epoch is ignored and a switch takes the
+ *  state its record carries. */
+export function foldPluginState(states: Map<string, PluginState>, rec: { seq: number; type?: unknown; signal?: unknown }, others?: OtherEpochs): boolean {
+  const s = rec.type === "signal" ? (rec.signal as Record<string, unknown> | undefined) : undefined;
+  if (!s || typeof s.plugin !== "string") return false;
+  const plugin = s.plugin;
+  const cur = states.get(plugin) ?? { seq: 0, state: {} };
+  const active = cur.epoch ?? "";
+  if (s.type === PLUGIN_EPOCH) {
+    if (typeof s.epoch !== "string" || !s.state || typeof s.state !== "object" || Array.isArray(s.state)) return false;
+    if (others) {
+      if (s.epoch !== active) others.set(epochKey(plugin, active), { ...cur, state: { ...cur.state } });
+      others.delete(epochKey(plugin, s.epoch));
+    }
+    states.set(plugin, { seq: rec.seq, state: { ...(s.state as Record<string, unknown>) }, ...(s.epoch ? { epoch: s.epoch } : {}) });
+    return true;
+  }
+  let epoch: string;
+  if (s.type === PLUGIN_STATE) epoch = "";
+  else if (s.type === PLUGIN_EPOCH_STATE && typeof s.epoch === "string" && s.epoch) epoch = s.epoch;
+  else return false;
+  if (typeof s.key !== "string") return false;
+  const set = (into: PluginState): PluginState => {
+    const state = { ...into.state };
+    if (s.value === null || s.value === undefined) delete state[s.key as string];
+    else state[s.key as string] = s.value;
+    return { ...into, seq: rec.seq, state };
+  };
+  if (epoch !== active) {
+    // Another epoch's record: the box keeps it (a switch back reads it); a window has no use for it.
+    if (others) others.set(epochKey(plugin, epoch), set(others.get(epochKey(plugin, epoch)) ?? { seq: 0, state: {}, ...(epoch ? { epoch } : {}) }));
+    return false;
+  }
+  states.set(plugin, set(cur));
   return true;
 }
 

@@ -3,7 +3,7 @@
 // plugin.state records, read once from the log's signals file and then kept up to date from the log's own records.
 // The gateway (server/liveProxy.ts) calls these with the plugin id from the page's token, never from the page's body.
 import { signal, signalLog, type ConvLog } from "./convlog/log";
-import { PLUGIN_LOG, foldPluginState, logSignal, stateSignal, type PluginState } from "../src/pluginRecords";
+import { PLUGIN_EPOCH_STATE, PLUGIN_LOG, epochKey, foldPluginState, isStateSignalType, logSignal, stateSignal, type OtherEpochs, type PluginEpochSignal, type PluginState, type PluginStateSignal } from "../src/pluginRecords";
 import type { LogRecord } from "../src/convlog/protocol";
 
 /** One plugin.log record as the agent reads it. */
@@ -11,7 +11,7 @@ export type PluginLogEntry = { seq: number; at: number; record: unknown };
 /** What the box knows of one plugin without its page being open: its last record (state or log) and its recent log. */
 export type PluginActivity = { seq: number; at: number; logs: PluginLogEntry[]; logCount: number };
 
-type Folded = { states: Map<string, PluginState>; activity: Map<string, PluginActivity>; changed: Set<() => void> };
+type Folded = { states: Map<string, PluginState>; others: OtherEpochs; activity: Map<string, PluginActivity>; changed: Set<() => void> };
 const folds = new WeakMap<ConvLog, Folded>();
 
 /** The most recent plugin.log records kept per plugin for PluginRead. */
@@ -20,7 +20,7 @@ export const RECENT_LOGS = 20;
 /** Fold one record into the plugins' activity (their last record and recent log): whether it was a plugin's. */
 function foldActivity(activity: Map<string, PluginActivity>, r: LogRecord): boolean {
   const s = r.type === "signal" ? ((r as { signal?: unknown }).signal as { type?: unknown; plugin?: unknown; record?: unknown } | undefined) : undefined;
-  if (!s || typeof s.plugin !== "string" || (s.type !== PLUGIN_LOG && s.type !== "plugin.state")) return false;
+  if (!s || typeof s.plugin !== "string" || (s.type !== PLUGIN_LOG && !isStateSignalType(s.type))) return false;
   const a = activity.get(s.plugin) ?? { seq: 0, at: 0, logs: [], logCount: 0 };
   a.seq = r.seq;
   a.at = typeof r.at === "number" ? r.at : a.at;
@@ -38,16 +38,17 @@ function folded(log: ConvLog): Folded {
   if (f) return f;
   const states = new Map<string, PluginState>();
   const activity = new Map<string, PluginActivity>();
+  const others: OtherEpochs = new Map();
   const changed = new Set<() => void>();
-  f = { states, activity, changed };
+  f = { states, others, activity, changed };
   folds.set(log, f);
   log.onRecord((r: LogRecord) => {
     if (r.conv !== null) return;
-    const s = foldPluginState(states, r);
+    const s = foldPluginState(states, r, others);
     if (foldActivity(activity, r) || s) for (const fn of [...changed]) fn();
   });
   for (const r of log.signals(0)) {
-    foldPluginState(states, r);
+    foldPluginState(states, r, others);
     foldActivity(activity, r);
   }
   return f;
@@ -117,10 +118,27 @@ export function awaitPluginState(vault: string, plugin: string, after: number | 
   });
 }
 
+/** The state of `plugin` in an epoch not in effect (as the box last had it), or null when the box has none. */
+export function otherEpochState(vault: string, plugin: string, epoch: string, log: ConvLog = signalLog(vault)): PluginState | null {
+  const f = folded(log);
+  if ((f.states.get(plugin)?.epoch ?? "") === epoch) return f.states.get(plugin) ?? { seq: 0, state: {} };
+  return f.others.get(epochKey(plugin, epoch)) ?? (epoch === "" ? { seq: 0, state: {} } : null);
+}
+
+/** Write an epoch switch (server/migrations.ts): the plugin's state in effect becomes the record's. */
+export function writeEpoch(vault: string, sig: PluginEpochSignal, log?: ConvLog): Written {
+  return write(vault, sig, log);
+}
+
 type Written = { status: 200; seq: number } | { status: number; error: string };
 
-function write(vault: string, sig: ReturnType<typeof stateSignal> | ReturnType<typeof logSignal>, log?: ConvLog): Written {
+function write(vault: string, sig: ReturnType<typeof stateSignal> | ReturnType<typeof logSignal> | PluginEpochSignal, log?: ConvLog): Written {
   if ("error" in sig) return sig;
+  // A set of a plugin whose state was migrated goes to the epoch in effect; the plain records stay as they were.
+  if (sig.type === "plugin.state") {
+    const ep = folded(log ?? signalLog(vault)).states.get(sig.plugin)?.epoch;
+    if (ep) sig = { type: PLUGIN_EPOCH_STATE, plugin: sig.plugin, epoch: ep, key: (sig as PluginStateSignal).key, value: (sig as PluginStateSignal).value } as unknown as PluginStateSignal;
+  }
   if (!log) {
     folded(signalLog(vault)); // the fold follows the log before this record is written
     const rec = signal(vault, sig);

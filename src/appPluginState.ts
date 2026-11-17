@@ -7,6 +7,8 @@
 //
 // What the first paint needs before the box answers comes from a copy in localStorage per vault, written only from the
 // fold (a cache, never a second truth; log seqs never go back, so the box's records fold on top of it).
+// A migrated plugin (src/migrations.ts) is in an epoch: the box's answer says which, and the fold takes only that
+// epoch's records (a switch record carries the whole state it switches to).
 import { boxGet, boxLinkFor, boxPost, type Link } from "./boxChat";
 import { useStore } from "./store";
 import { foldPluginState, type PluginState } from "./pluginRecords";
@@ -29,7 +31,7 @@ function forVault(): void {
   try {
     const raw = v ? globalThis.localStorage?.getItem(CACHE + v) : null;
     const o = raw ? JSON.parse(raw) : null;
-    if (o && typeof o === "object") for (const [k, s] of Object.entries(o as Record<string, PluginState>)) if (isApp(k) && s && typeof s === "object") states.set(k, { seq: Number(s.seq) || 0, state: { ...(s.state ?? {}) } });
+    if (o && typeof o === "object") for (const [k, s] of Object.entries(o as Record<string, PluginState>)) if (isApp(k) && s && typeof s === "object") states.set(k, { seq: Number(s.seq) || 0, state: { ...(s.state ?? {}) }, ...(typeof s.epoch === "string" && s.epoch ? { epoch: s.epoch } : {}) });
   } catch {
     /* no copy: the box's answer */
   }
@@ -94,7 +96,7 @@ export async function loadAppPluginStates(link: Link): Promise<void> {
     for (const [plugin, s] of Object.entries(r.states)) {
       if (!isApp(plugin) || !s || typeof s.seq !== "number" || !s.state || typeof s.state !== "object") continue;
       if ((states.get(plugin)?.seq ?? -1) >= s.seq) continue; // this window has it, or newer
-      states.set(plugin, { seq: s.seq, state: { ...s.state } });
+      states.set(plugin, { seq: s.seq, state: { ...s.state }, ...(typeof s.epoch === "string" && s.epoch ? { epoch: s.epoch } : {}) });
       touched.push(plugin);
     }
     if (!touched.length) return;

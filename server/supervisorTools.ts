@@ -26,6 +26,8 @@ import { loadConfig } from "./config";
 import { killTree } from "./commands/proc";
 import { SETTINGS_DRAFT_ID, pendingSettingsDraft } from "../src/settingsRecords";
 import { readSettings } from "./settings";
+import { isMigrationId } from "../src/migrations";
+import { migrationChange, migrationDraft } from "./migrations";
 
 export const PLUGIN_TOOL = "Plugins";
 
@@ -37,6 +39,7 @@ export const pluginToolSpecs = [
       "Turn a plugin (a vault .html page, or a part of the app that is a plugin: the Notes panel, \"notes\"; or a whole surface: the phone app, \"phone\", the iPad board, \"board\") off or on everywhere it shows (the viewer, chats, the phone, its own link, the app's window), or from a later time (an end date), set its budget, or list what each plugin is. " +
       "Off: it is taken down in every view and the box gives it nothing; on: it comes back. action: status | disable | enable | budget. plugin: its vault path or its file name (\"html-lab\"), or the app part's name (\"notes\"). " +
       "A plugin's draft (<name>.draft.js next to it): submit hands it to the draft gate (a side-by-side check on a copy of real data, in the background; asked: false, the default, for a fix Carl did not ask for: a clear pass lands it, a clear fail drops it, borderline waits for him as Change ready; asked: true: only a fail drops it, otherwise he tries it). keep / discard / back write the record Carl's Change ready buttons do (back: switch to the copy the last keep replaced); plugin \"settings-values\": the settings draft (Settings with draft: true). Never move the draft's files yourself. " +
+      "Migration drafts (migrate/<name>): when a change needs a plugin's state in a new shape, write .vault-chat/migrations/<name>.draft.js (an ES module: a `// @vc-change <what>` line, export const plugin = \"app/<name>\" | \"box/<name>\" | a page's vault path, export function migrate(oldState) { return newState } over the whole state object). It waits for Carl as Change ready: Try runs it on a copy of the real state and shows before/after; Keep backs up and writes the new state as new records (old ones stay; Switch back reads them again). You may discard or back it; keep is Carl's. Never rewrite plugin.state records yourself. " +
       "Box plugins (box/<name>): the box's own behaviour, server-side modules .vault-chat/box-plugins/<name>.js exporting activate(box) (box.route(method, path, handler) at /api/v2/box/<name><path>, box.onRecord, box.every, box.readFile, box.state, box.reply, box.log; box.tool({name, description, inputSchema, handler(args, {tried, conv})}) gives you a tool, joining your tools at your next step; box.prompt(text) (at most 1500 characters) is said to you with your turns under the plugin's id; box.hideTool(name) takes one of your vault-chat tools away while it runs (never Plugins); cleanups undone on unload), loaded live by the running box, no release. Write <name>.draft.js: it waits for Carl as Change ready; Try runs it only for his laptop's requests (header x-vc-try: <version> for your own checks over loopback) and a chat he starts while trying it (only there are its tools, prompt and hidden tools in force), a tried draft cannot write state, and one that throws, fails to load, answers slower than 2 s or whose tool throws or runs over 10 s discards itself; a kept one that does so within 24 h switches back by itself.",
     inputSchema: {
       type: "object",
@@ -208,6 +211,31 @@ function draftAction(vault: string, action: string, a: Record<string, unknown>, 
   const r = startServiceJob(ctx.jobs, { name: "draft-gate", command: `Draft check of ${slot.plugin} ${version} (${asked ? "asked for" : "not asked for"})`, conv: ctx.convId, byCarl: ctx.byCarl, timeout: "30m" }, (signal, log) => runGate(repo, args, signal, log));
   if (!r.job) return { ok: false, text: r.text };
   return { ok: true, text: `Checking ${slot.plugin} draft ${version} side by side on a copy of real data (job ${r.job.id}; JobStatus follows it). ${asked ? "A fail drops it; otherwise Carl sees it as Change ready." : "A clear pass lands it (a keep record by gate), a clear fail drops it, borderline waits for Carl as Change ready."}` };
+}
+
+/** A migration draft (server/migrations.ts, migrate/<name>): the agent may discard it or switch it back; Keep is Carl's
+ *  (Change ready, or app/changes keep on his word), since it reshapes his data. */
+async function migrationAction(vault: string, action: string, a: Record<string, unknown>): Promise<{ ok: boolean; text: string }> {
+  const id = pluginIdOf(String(a.plugin ?? "").trim());
+  if (action === "submit") return { ok: false, text: `${id}: a migration has no gate; it waits for Carl as Change ready (Try runs it on a copy of real data)` };
+  if (action === "keep") return { ok: false, text: `${id}: Carl keeps a migration himself (Change ready), or PluginAct app/changes keep when he said so` };
+  const d = migrationDraft(vault, id);
+  if (action === "discard" && !d) return { ok: false, text: `${id} has no draft` };
+  const m = await migrationChange(vault, { plugin: id, change: action === "back" ? "switch" : action, ...(action === "discard" ? { version: d!.version } : {}), ...(a.reason ? { reason: a.reason } : {}) }, "agent");
+  return "error" in m ? { ok: false, text: m.error } : { ok: true, text: m.text };
+}
+
+/** The Plugins tool, with migration drafts (whose words answer later). Never throws. */
+export async function pluginToolAsync(vault: string, a: Record<string, unknown>, ctx?: PluginToolCtx): Promise<{ ok: boolean; text: string }> {
+  const action = String(a.action ?? "");
+  if ((action === "submit" || action === "keep" || action === "discard" || action === "back") && isMigrationId(pluginIdOf(String(a.plugin ?? "").trim()))) {
+    try {
+      return await migrationAction(vault, action, a);
+    } catch (e) {
+      return { ok: false, text: (e as Error).message };
+    }
+  }
+  return pluginTool(vault, a, ctx);
 }
 
 /** Run the Plugins tool on `vault`. Never throws. */
