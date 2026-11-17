@@ -102,7 +102,8 @@ test("the file tree is a registered app plugin, mounted by the left panel only t
   assert.ok(APP_PLUGINS.includes(FILETREE_PLUGIN));
   for (const w of ["file tree", "File tree", "app/filetree", "files", "left panel"]) assert.equal(appPluginNamed(w)?.id, "app/filetree", w);
   const slot = fs.readFileSync("src/FileTree.tsx", "utf8");
-  assert.match(slot, /<AppPluginMount plugin=\{FILETREE_PLUGIN\} module=\{fileTreePlugin\} fallback=/);
+  assert.match(slot, /<PlaceMount place="left\.tree" fallback=/);
+  assert.match(slot, /placeModule\(FILETREE_PLUGIN, \(\) => fileTreePlugin\)/);
   assert.doesNotMatch(slot, /onRowPointerDown|DragGhost|rename_path|delete_file|add_to_ignore/, "the tree's code is the plugin's, not the shell's");
   assert.match(fs.readFileSync("src/App.tsx", "utf8"), /<FileTree \/>/);
 });

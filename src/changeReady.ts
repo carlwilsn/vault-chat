@@ -16,9 +16,12 @@ import { appPluginFolder, LIVE_APP_PLUGINS } from "./appPluginLive";
 import { liveCopiesNow, useAllLiveCopies, type LiveCopies } from "./appPluginLiveHost";
 import { postPluginChange, supervisorChangesNow, useSupervisorVersion } from "./pluginSupervisorApp";
 import { APP_PLUGINS } from "./appPlugins";
+import { PRESET_DRAFT_FILE, PRESET_PLUGIN_ID, parseDraft } from "./appPreset";
 import { BUILT_IN, TRY_SLOW_MS, draftPending, draftWhat, landing, slowMedian, type SlotCode } from "./pluginDrafts";
 
 export const CHANGES_PLUGIN = { id: "app/changes", name: "Change ready" } as const;
+/** What Carl calls the app's preset in the notice. */
+export const PRESET_NAME = "App preset";
 
 // ---------------------------------------------------------------- what Carl tries (this app's windows)
 
@@ -157,6 +160,15 @@ export function pendingChanges(all: LiveCopies = liveCopiesNow(), slots: readonl
     const v = draftPending(code, supervisorChangesNow(id));
     if (v) out.push({ plugin: id, name: appName(id), what: draftWhat(code.draft!), version: v, added: false });
   }
+  // The app's preset (src/appPreset.ts): its draft file waits the same way.
+  const preset = all[PRESET_DRAFT_FILE];
+  if (preset !== undefined) {
+    const v = draftPending({ draft: preset }, supervisorChangesNow(PRESET_PLUGIN_ID));
+    if (v) {
+      const d = parseDraft(preset);
+      out.push({ plugin: PRESET_PLUGIN_ID, name: PRESET_NAME, what: "preset" in d ? d.what || `the app's preset "${d.preset.name}"` : "", version: v, added: false });
+    }
+  }
   for (const s of slots) {
     const v = draftPending(s, supervisorChangesNow(s.id));
     if (v) out.push({ plugin: s.id, name: s.name, what: draftWhat(s.draft!), version: v, added: s.live === undefined });
@@ -199,7 +211,7 @@ export function useOutcome(): Outcome | null {
 export const clearOutcome = () => say(null);
 export const lastOutcome = () => outcome;
 
-const nameOf = (plugin: string) => (plugin.startsWith("app/") ? appName(plugin) : vaultSlots.find((s) => s.id === plugin)?.name ?? plugin.split("/").pop() ?? plugin);
+const nameOf = (plugin: string) => (plugin === PRESET_PLUGIN_ID ? PRESET_NAME : plugin.startsWith("app/") ? appName(plugin) : vaultSlots.find((s) => s.id === plugin)?.name ?? plugin.split("/").pop() ?? plugin);
 
 // ---------------------------------------------------------------- the actions
 

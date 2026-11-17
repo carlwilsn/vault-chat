@@ -96,7 +96,8 @@ test("the composer is a registered app plugin, named by 'composer' / 'chat input
   for (const w of ["composer", "Composer", "app/composer", "chat input", "chat composer"]) assert.equal(appPluginNamed(w)?.id, "app/composer", w);
   // The chat pane mounts it only through the plugin host, with a fallback; the old inline composer is gone from it.
   const slot = fs.readFileSync("src/ComposerPanel.tsx", "utf8");
-  assert.match(slot, /<AppPluginMount plugin=\{COMPOSER_PLUGIN\} module=\{composerPlugin\} fallback=/);
+  assert.match(slot, /<PlaceMount place="chat\.composer" fallback=/);
+  assert.match(slot, /placeModule\(COMPOSER_PLUGIN, \(\) => composerPlugin\)/);
   const pane = fs.readFileSync("src/ChatPane.tsx", "utf8");
   assert.match(pane, /<ComposerSlot \/>/);
   assert.doesNotMatch(pane, /data-perf-target="composer"|composer-plus|ChatModelPicker|onPaste/);

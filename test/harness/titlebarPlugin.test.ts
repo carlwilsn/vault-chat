@@ -90,7 +90,8 @@ test("the title bar is a registered app plugin, mounted only through the host; t
   assert.ok(APP_PLUGINS.includes(TITLEBAR_PLUGIN));
   for (const w of ["title bar", "titlebar", "app/titlebar", "Title bar", "top bar"]) assert.equal(appPluginNamed(w)?.id, "app/titlebar", w);
   const slot = fs.readFileSync("src/Titlebar.tsx", "utf8");
-  assert.match(slot, /<AppPluginMount plugin=\{TITLEBAR_PLUGIN\} module=\{titlebarPlugin\} fallback=/);
+  assert.match(slot, /<PlaceMount place="titlebar" fallback=/);
+  assert.match(slot, /placeModule\(TITLEBAR_PLUGIN, \(\) => titlebarPlugin\)/);
   assert.doesNotMatch(slot, /SyncChip|TerminalButton|Hidden files<|AppsLauncher|VoiceCockpit|function WindowControls/, "the bar's parts are the plugin's");
   assert.ok(!fs.existsSync("src/AppsLauncher.tsx"), "the launcher moved into the plugin");
   assert.match(fs.readFileSync("src/FullscreenChat.tsx", "utf8"), /from "\.\/WindowControls"/, "fullscreen chat's window controls are core");

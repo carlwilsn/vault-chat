@@ -8,21 +8,26 @@
 import { memo } from "react";
 import { BookOpen } from "lucide-react";
 import { CHAT_PLUGIN } from "./appPlugins";
-import { AppPluginMount, type PluginFallbackInfo } from "./PluginMount";
+import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
+import { placeModule } from "./presetApp";
 import { PluginOff } from "./PluginOff";
 import { ChatTitle } from "./ProjectChip";
 import * as chatPlugin from "./plugins/chat";
 import { BarTitle, DockHeader } from "./plugins/chat/Header";
 import { openChatMemory } from "./plugins/chat/model";
 
+// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+placeModule(CHAT_PLUGIN, () => chatPlugin);
+placeModule(CHAT_PLUGIN, () => chatPlugin.bar, "bar");
+
 /** The docked chat pane's header row. Memoized: the pane's own redraws (a streaming reply) never reach it. */
 export const ChatHeaderSlot = memo(function ChatHeaderSlot() {
-  return <AppPluginMount plugin={CHAT_PLUGIN} module={chatPlugin} fallback={(f) => (f.pending ? <DockHeader /> : <ChatHeaderFallback info={f} />)} />;
+  return <PlaceMount place="chat.header" fallback={(f) => (f.pending ? <DockHeader /> : <ChatHeaderFallback info={f} />)} />;
 });
 
 /** Fullscreen chat's (and the popout's) title in its top bar. */
 export const ChatBarSlot = memo(function ChatBarSlot() {
-  return <AppPluginMount plugin={CHAT_PLUGIN} module={chatPlugin.bar} part="bar" fallback={(f) => (f.pending ? <BarTitle /> : <ChatHeaderFallback info={f} bar />)} />;
+  return <PlaceMount place="chat.bar" fallback={(f) => (f.pending ? <BarTitle /> : <ChatHeaderFallback info={f} bar />)} />;
 });
 
 function MemoryButton() {

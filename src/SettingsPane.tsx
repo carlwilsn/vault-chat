@@ -9,7 +9,8 @@
 import { ArrowLeft } from "lucide-react";
 import { useStore } from "./store";
 import { SETTINGS_PLUGIN } from "./appPlugins";
-import { AppPluginMount, type PluginFallbackInfo } from "./PluginMount";
+import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
+import { placeModule } from "./presetApp";
 import { PluginOff } from "./PluginOff";
 import { Button } from "./ui";
 import { openShortcutSheet } from "./ShortcutSheet";
@@ -17,9 +18,12 @@ import { chordText } from "./shortcuts";
 import * as settingsPlugin from "./plugins/settings";
 import { Pane } from "./plugins/settings/Pane";
 
+// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+placeModule(SETTINGS_PLUGIN, () => settingsPlugin);
+
 /** The Settings pane. */
 export function SettingsPane() {
-  return <AppPluginMount plugin={SETTINGS_PLUGIN} module={settingsPlugin} fallback={(f) => (f.pending ? <Pane /> : <SettingsFallback info={f} />)} />;
+  return <PlaceMount place="settings" fallback={(f) => (f.pending ? <Pane /> : <SettingsFallback info={f} />)} />;
 }
 
 /** The plain pane: back, Keyboard shortcuts, and why the plugin's pane is not there. */

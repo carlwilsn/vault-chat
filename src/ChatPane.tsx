@@ -17,8 +17,13 @@ import * as chatRowsPlugin from "./plugins/chat-rows";
 import * as chatPlugin from "./plugins/chat";
 import { Transcript } from "./plugins/chat/Transcript";
 import { MessageBubble } from "./plugins/chat-rows/rows";
-import { AppPluginMount, type PluginFallbackInfo } from "./PluginMount";
+import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
+import { placeModule } from "./presetApp";
 import { ComposerSlot } from "./ComposerPanel";
+
+// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+placeModule(CHAT_ROWS_PLUGIN, () => chatRowsPlugin);
+placeModule(CHAT_PLUGIN, () => chatPlugin.transcript, "transcript");
 
 /** The transcript's row (src/plugins/chat-rows/rows.tsx); exported here as it always was. */
 export { MessageBubble };
@@ -40,7 +45,7 @@ export function ChatPane() {
   return (
     <>
       {/* The transcript's rows as a plugin the agent reaches (offers only; it draws nothing of its own). */}
-      <AppPluginMount plugin={CHAT_ROWS_PLUGIN} module={chatRowsPlugin} />
+      <PlaceMount place="chat.rows" />
       <TranscriptSlot />
     </>
   );
@@ -49,10 +54,8 @@ export function ChatPane() {
 /** The transcript, mounted as app/chat's part `transcript`. Memoized: it reads the store itself. */
 export const TranscriptSlot = memo(function TranscriptSlot() {
   return (
-    <AppPluginMount
-      plugin={CHAT_PLUGIN}
-      module={chatPlugin.transcript}
-      part="transcript"
+    <PlaceMount
+      place="chat.transcript"
       fallback={(f) => (f.error === null ? <Transcript /> : <TranscriptFallback info={f} />)}
     />
   );

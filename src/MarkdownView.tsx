@@ -8,19 +8,21 @@
 //    line that says what happened and Reload.
 import { memo } from "react";
 import { VIEWER_PLUGIN } from "./appPlugins";
-import { AppPluginMount, type PluginFallbackInfo } from "./PluginMount";
+import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
+import { placeModule } from "./presetApp";
 import * as viewerPlugin from "./plugins/viewer";
 import { Pane } from "./plugins/viewer/Pane";
 import { useStore } from "./store";
+
+// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+placeModule(VIEWER_PLUGIN, () => viewerPlugin.pane, "pane");
 
 type Props = { paneId?: string };
 
 export const MarkdownView = memo(function MarkdownView({ paneId }: Props) {
   return (
-    <AppPluginMount
-      plugin={VIEWER_PLUGIN}
-      module={viewerPlugin.pane}
-      part="pane"
+    <PlaceMount
+      place="viewer.pane"
       props={paneId === undefined ? {} : { paneId }}
       fallback={(f) => (f.error === null ? <Pane paneId={paneId} /> : <PaneFallback info={f} paneId={paneId} />)}
     />

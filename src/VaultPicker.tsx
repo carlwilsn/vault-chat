@@ -10,15 +10,19 @@ import { useEffect, useRef } from "react";
 import { Check, FolderOpen } from "lucide-react";
 import { useStore } from "./store";
 import { VAULTS_PLUGIN } from "./appPlugins";
-import { AppPluginMount, type PluginFallbackInfo } from "./PluginMount";
+import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
+import { placeModule } from "./presetApp";
 import { PluginOff } from "./PluginOff";
 import * as vaultsPlugin from "./plugins/vaults";
 import { Picker } from "./plugins/vaults/Picker";
 import { isOpenRow, loadRows, setPickerOpen, switchTo, usePicker } from "./plugins/vaults/model";
 
+// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+placeModule(VAULTS_PLUGIN, () => vaultsPlugin);
+
 /** The picker, in the title bar. */
 export function VaultPicker() {
-  return <AppPluginMount plugin={VAULTS_PLUGIN} module={vaultsPlugin} fallback={(f) => (f.pending ? <Picker /> : <VaultPickerFallback info={f} />)} />;
+  return <PlaceMount place="titlebar.vaults" fallback={(f) => (f.pending ? <Picker /> : <VaultPickerFallback info={f} />)} />;
 }
 
 /** The minimal built-in picker: the open vault, and its vaults to open one. */

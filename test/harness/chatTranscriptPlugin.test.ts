@@ -70,7 +70,8 @@ const desire = (state: "running" | "stopped") => {
 
 test("the pane mounts the transcript as app/chat's part; the transcript's code lives in the plugin", () => {
   const pane = fs.readFileSync("src/ChatPane.tsx", "utf8");
-  assert.match(pane, /<AppPluginMount\s+plugin=\{CHAT_PLUGIN\}\s+module=\{chatPlugin\.transcript\}\s+part="transcript"/);
+  assert.match(pane, /<PlaceMount\s+place="chat\.transcript"/);
+  assert.match(pane, /placeModule\(CHAT_PLUGIN, \(\) => chatPlugin\.transcript, "transcript"\)/);
   for (const moved of [/CHAT_WINDOW/, /HistoryList/, /box-starting/, /no-box/, /showJumpToLatest/, /<Subagents\b/, /<OngoingLine\b/]) assert.doesNotMatch(pane, moved, String(moved));
   const t = fs.readFileSync("src/plugins/chat/Transcript.tsx", "utf8");
   for (const here of [/const CHAT_WINDOW = 60/, /const HistoryList = memo\(/, /data-el="box-starting"/, /data-el="no-box"/, /<Subagents list=\{runningTasks\} variant="strip"/, /<OngoingLine\b/, /<ComposerSlot \/>/]) assert.match(t, here, String(here));

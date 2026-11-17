@@ -10,7 +10,8 @@ import { memo, useEffect, useRef } from "react";
 import { ArrowUp, Square } from "lucide-react";
 import { useStore } from "./store";
 import { COMPOSER_PLUGIN } from "./appPlugins";
-import { AppPluginMount, type PluginFallbackInfo } from "./PluginMount";
+import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
+import { placeModule } from "./presetApp";
 import { PluginOff } from "./PluginOff";
 import { Button, Textarea } from "./ui";
 import { useChatGate } from "./chatGate";
@@ -20,9 +21,12 @@ import * as composerPlugin from "./plugins/composer";
 import { Composer } from "./plugins/composer/Composer";
 import { sendDraft, setInput, stopAgent, useDraft } from "./plugins/composer/draft";
 
+// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+placeModule(COMPOSER_PLUGIN, () => composerPlugin);
+
 /** The composer, in the chat pane under the thread. Memoized: the pane's own redraws (a streaming reply) never reach it. */
 export const ComposerSlot = memo(function ComposerSlot() {
-  return <AppPluginMount plugin={COMPOSER_PLUGIN} module={composerPlugin} fallback={(f) => (f.pending ? <Composer /> : <ComposerFallback info={f} />)} />;
+  return <PlaceMount place="chat.composer" fallback={(f) => (f.pending ? <Composer /> : <ComposerFallback info={f} />)} />;
 });
 
 /** The minimal built-in composer: the same draft's text, Enter or Send to send, Stop while the agent works. */

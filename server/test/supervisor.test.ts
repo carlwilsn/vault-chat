@@ -292,4 +292,46 @@ describe("the supervisor", () => {
     expect((await post("/api/v2/supervisor", { plugin: "pages/x.html", change: "keep", version: pv })).status).toBe(400);
     expect((await post("/api/v2/supervisor", { plugin: "app/context", change: "keep", version: "nope" })).status).toBe(400);
   });
+  it("the app's preset (app/preset): Keep of its draft writes an app.preset record, a bad draft is refused, Switch back returns to the built-in daily one", async () => {
+    const { existsSync } = await import("node:fs");
+    const { versionOf } = await import("../../src/pluginDrafts");
+    const { DAILY_PRESET } = await import("../../src/appPreset");
+    const dir = join(A.path, ".vault-chat", "app-plugins");
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, "preset.draft.json");
+    const signals = async () => JSON.parse((await get("/api/v2/supervisor")).text).records.map((r: { signal: Record<string, unknown> }) => r.signal);
+    expect(sup.presetInEffect(A.path)).toMatchObject({ builtIn: true, version: "built-in", preset: DAILY_PRESET });
+
+    // Not a preset: refused, nothing written, the draft stays (Change ready discards it when tried).
+    const bad = JSON.stringify({ name: "bad", mounts: [{ place: "nowhere", plugin: "app/notes" }] });
+    writeFileSync(file, bad);
+    const before = (await signals()).length;
+    const refused = await post("/api/v2/supervisor", { plugin: "app/preset", change: "keep", version: versionOf(bad) });
+    expect(refused.status).toBe(400);
+    expect(refused.json.error).toMatch(/not a preset.*place/);
+    expect((await signals()).length).toBe(before);
+
+    // A preset without the Notes panel: Keep writes the preset record and the change record; the draft goes.
+    const lean = { name: "lean", what: "no Notes panel", mounts: DAILY_PRESET.mounts.filter((m) => m.plugin !== "app/notes"), settings: { "app/titlebar": { compact: true } } };
+    const text = JSON.stringify(lean);
+    writeFileSync(file, text);
+    const v = versionOf(text);
+    expect((await post("/api/v2/supervisor", { plugin: "app/preset", change: "keep", version: "00000000" })).status).toBe(409);
+    const kept = await post("/api/v2/supervisor", { plugin: "app/preset", change: "keep", version: v });
+    expect(kept.status).toBe(200);
+    const [presetRec, changeRec] = (await signals()).slice(-2);
+    expect(presetRec).toMatchObject({ type: "app.preset", version: v, by: "carl", preset: { name: "lean", settings: { "app/titlebar": { compact: true } } } });
+    expect(presetRec.preset).not.toHaveProperty("what");
+    expect(changeRec).toMatchObject({ type: "plugin.change", plugin: "app/preset", change: "keep", version: v, from: "built-in" });
+    expect(existsSync(file)).toBe(false);
+    expect(sup.presetInEffect(A.path)).toMatchObject({ builtIn: false, version: v, by: "carl" });
+    expect(sup.presetInEffect(A.path).preset.mounts.some((m) => m.plugin === "app/notes")).toBe(false);
+
+    // Switch back: the built-in daily preset again (a null preset record); again: the kept one.
+    expect((await post("/api/v2/supervisor", { plugin: "app/preset", change: "switch" })).status).toBe(200);
+    expect((await signals()).slice(-2)[0]).toMatchObject({ type: "app.preset", preset: null, version: "built-in" });
+    expect(sup.presetInEffect(A.path)).toMatchObject({ builtIn: true, preset: DAILY_PRESET });
+    expect((await post("/api/v2/supervisor", { plugin: "app/preset", change: "switch" })).status).toBe(200);
+    expect(sup.presetInEffect(A.path)).toMatchObject({ builtIn: false, preset: { name: "lean" } });
+  });
 });

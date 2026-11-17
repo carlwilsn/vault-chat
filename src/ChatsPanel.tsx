@@ -10,18 +10,23 @@ import { useProjects } from "./ProjectChip";
 import { openThread } from "./projects";
 import { panelModel } from "./threads";
 import { CHATS_PLUGIN } from "./appPlugins";
-import { AppPluginMount, type PluginFallbackInfo } from "./PluginMount";
+import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
+import { placeModule } from "./presetApp";
 import { PluginOff } from "./PluginOff";
 import * as chatsPlugin from "./plugins/chats";
 
+// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+placeModule(CHATS_PLUGIN, () => chatsPlugin);
+placeModule(CHATS_PLUGIN, () => chatsPlugin.sidebar, "sidebar");
+
 /** The overlay (the docked layout), shown while the chat pane's chats button has it open. */
 export function ChatsPanel() {
-  return <AppPluginMount plugin={CHATS_PLUGIN} module={chatsPlugin} fallback={(f) => <OverlayFallback info={f} />} />;
+  return <PlaceMount place="chats.overlay" fallback={(f) => <OverlayFallback info={f} />} />;
 }
 
 /** Fullscreen chat's (and the popout's) left sidebar. */
 export function ChatsSidebar() {
-  return <AppPluginMount plugin={CHATS_PLUGIN} module={chatsPlugin.sidebar} fallback={(f) => <SidebarFallback info={f} />} part="sidebar" />;
+  return <PlaceMount place="chats.sidebar" fallback={(f) => <SidebarFallback info={f} />} />;
 }
 
 function OverlayFallback({ info }: { info: PluginFallbackInfo }) {

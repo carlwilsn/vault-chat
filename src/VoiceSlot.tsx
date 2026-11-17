@@ -4,13 +4,17 @@
 // call is core and still works by the mic and Ctrl+D.
 import { useEffect } from "react";
 import { VOICE_PLUGIN } from "./appPlugins";
-import { AppPluginMount, type PluginFallbackInfo } from "./PluginMount";
+import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
+import { placeModule } from "./presetApp";
 import { setVoicePartsFailed } from "./voiceParts";
 import * as voicePlugin from "./plugins/voice";
 import { VoiceTextPanel } from "./plugins/voice/TextPanel";
 
+// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+placeModule(VOICE_PLUGIN, () => voicePlugin);
+
 export function VoiceSlot() {
-  return <AppPluginMount plugin={VOICE_PLUGIN} module={voicePlugin} fallback={(f) => (f.pending ? <VoiceTextPanel /> : <VoiceFallback info={f} />)} />;
+  return <PlaceMount place="voice" fallback={(f) => (f.pending ? <VoiceTextPanel /> : <VoiceFallback info={f} />)} />;
 }
 
 /** Off or failed: tell the controls to draw plain (until the plugin runs again); nothing of its own. */

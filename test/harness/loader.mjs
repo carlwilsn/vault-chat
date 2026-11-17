@@ -24,7 +24,7 @@ export async function resolve(specifier, context, next) {
 // minimal one (production-like) so `import.meta.env.DEV` reads false.
 export async function load(url, context, next) {
   const out = await next(url, context);
-  if (url.includes("/src/") && !url.includes("/node_modules/") && out.source != null) {
+  if (url.includes("/src/") && !url.includes("/node_modules/") && !/\.json(?:$|\?)/.test(url) && out.source != null) {
     const src = typeof out.source === "string" ? out.source : new TextDecoder().decode(out.source);
     return {
       ...out,

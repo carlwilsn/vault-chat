@@ -6,13 +6,14 @@
 //   - GET /api/v2/supervisor answers the records (a host folds them itself) and waits for the next (?after=seq&wait=ms);
 //     POST /api/v2/supervisor writes Carl's word ({plugin, state, from?, reason?}) or a budget ({plugin, callsPerMinute}),
 //     or his word on a draft ({plugin, change: keep | discard | switch, version, reason?}: the record, and the files moved
-//     to match, server/pluginDrafts.ts).
+//     to match, server/pluginDrafts.ts), for app/preset: the app.preset record a kept draft preset becomes, src/appPreset.ts).
 // What is policy (a disable, an end date, a budget) is only ever a record; the hosts reconcile from the same records.
 import { signal, signalLog, type ConvLog } from "./convlog/log";
 import { budgetSignal, desiredSignal, offLine, pluginIdOf, Supervisor, type Desired, type SupervisorRecord } from "../src/pluginSupervisor";
 import type { LogRecord } from "../src/convlog/protocol";
 import { changeSignal } from "../src/pluginDrafts";
-import { landChange, slotOf } from "./pluginDrafts";
+import { landChange, landPreset, slotOf } from "./pluginDrafts";
+import { PRESET_PLUGIN_ID, presetSignal, type PresetInEffect } from "../src/appPreset";
 
 type Followed = { sup: Supervisor; changed: Set<() => void> };
 const follows = new WeakMap<ConvLog, Followed>();
@@ -65,6 +66,11 @@ export function setPluginBudget(vault: string, b: Record<string, unknown> | null
   return write(vault, budgetSignal(b, by, Date.now()));
 }
 
+/** The app's preset in effect (src/appPreset.ts): which plugins mount where, plus their settings. */
+export function presetInEffect(vault: string): PresetInEffect {
+  return supervisorOf(vault).preset();
+}
+
 /** Who may be named on a change record from Carl's devices (the app's own Keep, the agent through the app's offers, an auto-discard). */
 const CHANGE_BY = new Set(["carl", "agent", "auto"]);
 
@@ -77,6 +83,16 @@ export function setPluginChange(vault: string, b: Record<string, unknown> | null
   const sig = changeSignal(b, who, Date.now());
   if ("error" in sig) return sig;
   const plugin = pluginIdOf(sig.plugin);
+  if (plugin === PRESET_PLUGIN_ID) {
+    // The app's preset: its draft file is checked and removed, and the preset it lands is its own record.
+    const sup = supervisorOf(vault);
+    const landed = landPreset(vault, sig.change, sig.version, sup.preset(), sup.presetBefore());
+    if (!landed.ok) return { status: landed.status, error: landed.error };
+    followed(signalLog(vault));
+    if (landed.preset !== undefined && !signal(vault, presetSignal(landed.preset, landed.version, who, Date.now()))) return { status: 500, error: "the log could not be written" };
+    const rec = signal(vault, { ...sig, plugin, version: landed.version, ...(landed.from ? { from: landed.from } : {}) });
+    return rec ? { status: 200, seq: rec.seq, text: landed.text } : { status: 500, error: "the log could not be written" };
+  }
   const slot = slotOf(plugin);
   if (!slot) return { status: 400, error: `${plugin} has no drafts (an app plugin with live copies, or a vault plugin's .js)` };
   const landed = landChange(vault, slot, sig.change, sig.version);

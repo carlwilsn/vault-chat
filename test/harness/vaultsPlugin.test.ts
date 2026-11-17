@@ -55,7 +55,8 @@ test("the vault picker is a registered app plugin, mounted by the title bar only
   assert.ok(APP_PLUGINS.includes(VAULTS_PLUGIN));
   for (const w of ["vaults", "vault picker", "app/vaults", "Vault picker", "vault dropdown"]) assert.equal(appPluginNamed(w)?.id, "app/vaults", w);
   const slot = fs.readFileSync("src/VaultPicker.tsx", "utf8");
-  assert.match(slot, /<AppPluginMount plugin=\{VAULTS_PLUGIN\} module=\{vaultsPlugin\} fallback=/);
+  assert.match(slot, /<PlaceMount place="titlebar\.vaults" fallback=/);
+  assert.match(slot, /placeModule\(VAULTS_PLUGIN, \(\) => vaultsPlugin\)/);
   assert.doesNotMatch(slot, /picker-rename|picker-delete|MoreHorizontal/, "rename / delete are the plugin's, not the shell's");
   assert.match(fs.readFileSync("src/plugins/titlebar/Bar.tsx", "utf8"), /<VaultPicker \/>/);
   assert.match(fs.readFileSync("src/Titlebar.tsx", "utf8"), /<VaultPicker \/>/, "the title bar's fallback keeps the picker");

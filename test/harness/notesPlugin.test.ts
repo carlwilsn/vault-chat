@@ -97,7 +97,8 @@ test("the app mounts the Notes panel only through the plugin host; the old direc
   const app = src("src/App.tsx");
   assert.doesNotMatch(app, /<NotesPanel\b/);
   assert.doesNotMatch(app, /from "\.\/NotesPanel"/);
-  assert.match(app, /<AppPluginMount plugin=\{NOTES_PLUGIN\} module=\{notesPlugin\} \/>/);
+  assert.match(app, /<PlaceMount place="overlay" \/>/);
+  assert.match(app, /placeModule\(NOTES_PLUGIN, \(\) => notesPlugin\)/);
   assert.match(app, /import \* as notesPlugin from "\.\/plugins\/notes";/);
   // Nothing else in the app reaches into the plugin's view.
   for (const f of fs.readdirSync(path.join(root, "src"))) {

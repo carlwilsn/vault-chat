@@ -12,7 +12,8 @@ import { Titlebar } from "./Titlebar";
 import { FullscreenChat } from "./FullscreenChat";
 import { NotePopup } from "./NotePopup";
 import { VoiceSlot } from "./VoiceSlot";
-import { AppPluginMount } from "./PluginMount";
+import { PlaceMount } from "./PluginMount";
+import { placeModule } from "./presetApp";
 import { VaultPlugins } from "./VaultPluginHost";
 import { PinnedApps } from "./PinnedAppsHost";
 import { ASK_PLUGIN, CONTEXT_PLUGIN, NOTES_PLUGIN } from "./appPlugins";
@@ -45,6 +46,11 @@ import { startActivityWatch } from "./activity";
 import { clearSavedLayouts } from "./paneLayout";
 import { afterVaultReady, bootMark } from "./bootTiming";
 import "./App.css";
+
+// The built-in modules the preset can mount over either layout (src/appPreset.ts place "overlay").
+placeModule(NOTES_PLUGIN, () => notesPlugin);
+placeModule(CONTEXT_PLUGIN, () => contextPlugin);
+placeModule(ASK_PLUGIN, () => askPlugin);
 
 export default function App() {
   const toggleMode = useStore((s) => s.toggleMode);
@@ -461,12 +467,10 @@ export default function App() {
         initialTurns={noteComposer.initialTurns}
         onClose={closeNoteComposer}
       />
-      {/* The Notes panel: a plugin (src/plugins/notes), mounted through the plugin host while the supervisor says it runs. */}
-      <AppPluginMount plugin={NOTES_PLUGIN} module={notesPlugin} />
-      {/* The shared context (selection, hover, focused plugin, open file) for the agent and other plugins: draws nothing. */}
-      <AppPluginMount plugin={CONTEXT_PLUGIN} module={contextPlugin} />
-      {/* The Ctrl+K / Ctrl+L box's offers (src/plugins/ask, app/ask): draws nothing; each box is its `prompt` part (src/InlineEditPrompt.tsx). */}
-      <AppPluginMount plugin={ASK_PLUGIN} module={askPlugin} />
+      {/* What the app's preset (src/appPreset.ts) mounts over either layout: in the daily one, the Notes panel
+          (src/plugins/notes), the shared context (src/plugins/context: draws nothing) and the Ctrl+K / Ctrl+L box's
+          offers (src/plugins/ask: draws nothing; each box is its `prompt` part, src/InlineEditPrompt.tsx). */}
+      <PlaceMount place="overlay" />
       {/* Plugins that are code files in .vault-chat/plugins: live as they are added, changed or removed. */}
       <VaultPlugins />
       <PinnedApps />

@@ -9,7 +9,8 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BUILT_IN, appSlot, versionOf, vaultSlot, type ChangeKind, type DraftSlot } from "../src/pluginDrafts";
-import { appPluginFolder } from "../src/appPluginLive";
+import { APP_PLUGIN_LIVE_DIR, appPluginFolder } from "../src/appPluginLive";
+import { PRESET_DRAFT_FILE, parseDraft, type Preset, type PresetInEffect } from "../src/appPreset";
 import { isVaultPluginFile, vaultPluginFile } from "../src/vaultPlugins";
 
 /** The slot of a plugin id: an app plugin with live copies, or a vault plugin (its .js path). */
@@ -88,5 +89,36 @@ export function landChange(vault: string, slot: DraftSlot, change: ChangeKind, v
     return { ok: true, version: pv, from: lv, text: `switched ${slot.plugin} back: ${pv === BUILT_IN ? "the built-in copy" : `version ${pv}`} runs (${lv} is kept as ${slot.dir}/${slot.prev})` };
   } catch (e) {
     return { ok: false, status: 500, error: `the files could not be moved: ${(e as Error).message}` };
+  }
+}
+
+/**
+ * The app's preset (src/appPreset.ts) through the same three words, with its draft in the app plugins' folder
+ * (.vault-chat/app-plugins/preset.draft.json) and the preset itself a record, not a file:
+ *   keep     the draft (checked: a preset, the version Carl saw) is the preset to write; the draft removed
+ *   discard  the draft removed (only the version Carl saw)
+ *   switch   the preset the newest record replaced is the one to write
+ * `preset`: what the caller writes as the app.preset record (null: the built-in one); absent on a discard.
+ */
+export function landPreset(vault: string, change: ChangeKind, version: string, now: PresetInEffect, before: PresetInEffect): (Landed & { ok: true; preset?: Preset | null }) | (Landed & { ok: false }) {
+  const file = join(vault, APP_PLUGIN_LIVE_DIR, PRESET_DRAFT_FILE);
+  const text = read(file);
+  try {
+    if (change === "keep") {
+      if (text === undefined) return { ok: false, status: 409, error: `the preset has no draft (${APP_PLUGIN_LIVE_DIR}/${PRESET_DRAFT_FILE}; already kept or discarded?)` };
+      if (versionOf(text) !== version) return { ok: false, status: 409, error: `the preset's draft changed since it was shown (now ${versionOf(text)}); look again` };
+      const d = parseDraft(text);
+      if ("problems" in d) return { ok: false, status: 400, error: `the draft is not a preset: ${d.problems.join("; ")}` };
+      rmSync(file, { force: true });
+      return { ok: true, version, from: now.version, preset: d.preset, text: `kept: the app's preset is "${d.preset.name}" (${version}); Switch back returns to "${now.preset.name}"` };
+    }
+    if (change === "discard") {
+      if (text !== undefined && versionOf(text) === version) rmSync(file, { force: true });
+      return { ok: true, version, text: `discarded the preset's draft ${version}` };
+    }
+    if (before.seq === now.seq || (now.builtIn && before.builtIn)) return { ok: false, status: 409, error: "the preset has nothing to switch back to" };
+    return { ok: true, version: before.version, from: now.version, preset: before.builtIn ? null : before.preset, text: `switched the app's preset back to "${before.preset.name}"${before.builtIn ? " (built-in)" : ""}` };
+  } catch (e) {
+    return { ok: false, status: 500, error: `the draft could not be removed: ${(e as Error).message}` };
   }
 }

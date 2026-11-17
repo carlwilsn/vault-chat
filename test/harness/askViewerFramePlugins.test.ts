@@ -115,16 +115,23 @@ test("the three are registered app plugins with live copies, each mounted throug
   assert.ok(liveStateFiles("app/viewer").includes("panes"), "the panes on screen are the app's");
   assert.ok(liveStateFiles("app/ask").includes("view"), "the open boxes are the app's");
   const wrap = fs.readFileSync("src/InlineEditPrompt.tsx", "utf8");
-  assert.match(wrap, /<AppPluginMount\s+plugin=\{ASK_PLUGIN\}\s+module=\{askPlugin\.prompt\}\s+part="prompt"\s+props=\{props\}/);
+  assert.match(wrap, /<PlaceMount\s+place="ask\.prompt"\s+props=\{props\}/);
+  assert.match(wrap, /placeModule\(ASK_PLUGIN, \(\) => askPlugin\.prompt, "prompt"\)/);
   assert.ok(!fs.existsSync("src/inlineEdit.ts"), "the request the box sends moved into the plugin");
-  assert.match(fs.readFileSync("src/App.tsx", "utf8"), /<AppPluginMount plugin=\{ASK_PLUGIN\} module=\{askPlugin\} \/>/);
+  {
+    const src = fs.readFileSync("src/App.tsx", "utf8");
+    assert.match(src, /<PlaceMount place="overlay" \/>/);
+    assert.match(src, /placeModule\(ASK_PLUGIN, \(\) => askPlugin\)/);
+  }
   const mv = fs.readFileSync("src/MarkdownView.tsx", "utf8");
-  assert.match(mv, /<AppPluginMount\s+plugin=\{VIEWER_PLUGIN\}\s+module=\{viewerPlugin\.pane\}\s+part="pane"/);
+  assert.match(mv, /<PlaceMount\s+place="viewer\.pane"/);
+  assert.match(mv, /placeModule\(VIEWER_PLUGIN, \(\) => viewerPlugin\.pane, "pane"\)/);
   assert.doesNotMatch(mv, /editorWrites|registerDirty|Keep mine/, "the pane's code is the plugin's");
   const pane = fs.readFileSync("src/plugins/viewer/Pane.tsx", "utf8");
   for (const here of [/editorWrites\.queue/, /registerDirty/, /Keep mine/, /<ViewerBody chain=/, /hit\(e, "edit\.ask"\)/]) assert.match(pane, here, String(here));
   const fsc = fs.readFileSync("src/FullscreenChat.tsx", "utf8");
-  assert.match(fsc, /<AppPluginMount plugin=\{CHAT_PLUGIN\} module=\{chatPlugin\.frame\} part="frame"/);
+  assert.match(fsc, /<PlaceMount place="chat\.frame"/);
+  assert.match(fsc, /placeModule\(CHAT_PLUGIN, \(\) => chatPlugin\.frame, "frame"\)/);
   assert.match(fsc, /data-perf-view="fullscreen"/, "the timed view stays the core's");
   assert.doesNotMatch(fsc, /<ChatsSidebar/, "the frame's code is the plugin's");
   assert.equal(typeof ask.prompt.mount, "function");

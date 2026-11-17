@@ -7,18 +7,20 @@
 //  - failing to mount or render (the built-in copy too), a plain box says so, with Reload and Close.
 import { createPortal } from "react-dom";
 import { ASK_PLUGIN } from "./appPlugins";
-import { AppPluginMount, type PluginFallbackInfo } from "./PluginMount";
+import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
+import { placeModule } from "./presetApp";
 import * as askPlugin from "./plugins/ask";
 import { AskPrompt, type AskPromptProps } from "./plugins/ask/Prompt";
+
+// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+placeModule(ASK_PLUGIN, () => askPlugin.prompt, "prompt");
 
 export type { InlineEditAnchor, InlineEditRequest, PdfContext } from "./plugins/ask/view";
 
 export function InlineEditPrompt(props: AskPromptProps) {
   return (
-    <AppPluginMount
-      plugin={ASK_PLUGIN}
-      module={askPlugin.prompt}
-      part="prompt"
+    <PlaceMount
+      place="ask.prompt"
       props={props}
       fallback={(f) => (f.error === null ? <AskPrompt {...props} /> : <AskFallback info={f} props={props} />)}
     />

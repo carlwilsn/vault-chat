@@ -84,8 +84,10 @@ test("the chat list is a registered app plugin, named by 'chats' / 'chat list'",
   for (const w of ["chats", "Chats", "app/chats", "chat list", "chats panel"]) assert.equal(appPluginNamed(w)?.id, "app/chats", w);
   // The app mounts it only through the plugin host, with a fallback; the old direct list is gone from the shell.
   const shell = fs.readFileSync("src/ChatsPanel.tsx", "utf8");
-  assert.match(shell, /<AppPluginMount plugin=\{CHATS_PLUGIN\} module=\{chatsPlugin\} fallback=/);
-  assert.match(shell, /<AppPluginMount plugin=\{CHATS_PLUGIN\} module=\{chatsPlugin\.sidebar\} fallback=/);
+  assert.match(shell, /<PlaceMount place="chats\.overlay" fallback=/);
+  assert.match(shell, /placeModule\(CHATS_PLUGIN, \(\) => chatsPlugin\)/);
+  assert.match(shell, /<PlaceMount place="chats\.sidebar" fallback=/);
+  assert.match(shell, /placeModule\(CHATS_PLUGIN, \(\) => chatsPlugin\.sidebar, "sidebar"\)/);
   assert.doesNotMatch(shell, /ThreadRow|ThreadsList|place-show-more|chat-menu/);
   assert.match(fs.readFileSync("src/App.tsx", "utf8"), /<ChatsPanel \/>/);
 });

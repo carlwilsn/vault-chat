@@ -72,11 +72,17 @@ test("the chat pane is a registered app plugin that loads live, mounted only thr
   for (const w of ["chat pane", "app/chat", "Chat pane", "chat menu", "chat header"]) assert.equal(appPluginNamed(w)?.id, "app/chat", w);
   assert.equal(appPluginNamed("chats")?.id, "app/chats", "the chat list keeps its words");
   const slot = fs.readFileSync("src/ChatHeader.tsx", "utf8");
-  assert.match(slot, /<AppPluginMount plugin=\{CHAT_PLUGIN\} module=\{chatPlugin\} fallback=/);
-  assert.match(slot, /<AppPluginMount plugin=\{CHAT_PLUGIN\} module=\{chatPlugin\.bar\} part="bar" fallback=/);
+  assert.match(slot, /<PlaceMount place="chat\.header" fallback=/);
+  assert.match(slot, /placeModule\(CHAT_PLUGIN, \(\) => chatPlugin\)/);
+  assert.match(slot, /<PlaceMount place="chat\.bar" fallback=/);
+  assert.match(slot, /placeModule\(CHAT_PLUGIN, \(\) => chatPlugin\.bar, "bar"\)/);
   assert.match(fs.readFileSync("src/plugins/chat/Transcript.tsx", "utf8"), /<ChatHeaderSlot \/>/);
   // Fullscreen chat's frame is app/chat's part `frame` (src/plugins/chat/Frame.tsx), whose top bar holds the bar slot.
-  assert.match(fs.readFileSync("src/FullscreenChat.tsx", "utf8"), /<AppPluginMount plugin=\{CHAT_PLUGIN\} module=\{chatPlugin\.frame\} part="frame" fallback=/);
+  {
+    const src = fs.readFileSync("src/FullscreenChat.tsx", "utf8");
+    assert.match(src, /<PlaceMount place="chat\.frame" fallback=/);
+    assert.match(src, /placeModule\(CHAT_PLUGIN, \(\) => chatPlugin\.frame, "frame"\)/);
+  }
   const frame = fs.readFileSync("src/plugins/chat/Frame.tsx", "utf8");
   assert.match(frame, /<ChatBarSlot \/>/);
   assert.doesNotMatch(frame, /<ChatTitle \/>/, "the bar's title is the plugin's");

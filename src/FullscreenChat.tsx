@@ -9,11 +9,15 @@
 // `children` float over it (the main window's overlays).
 import { memo, type ReactNode } from "react";
 import { CHAT_PLUGIN } from "./appPlugins";
-import { AppPluginMount, type PluginFallbackInfo } from "./PluginMount";
+import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
+import { placeModule } from "./presetApp";
 import * as chatPlugin from "./plugins/chat";
 import { Frame } from "./plugins/chat/Frame";
 import { ChatPane } from "./ChatPane";
 import { WindowControls } from "./WindowControls";
+
+// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+placeModule(CHAT_PLUGIN, () => chatPlugin.frame, "frame");
 
 export function FullscreenChat({ children }: { children?: ReactNode }) {
   return (
@@ -26,7 +30,7 @@ export function FullscreenChat({ children }: { children?: ReactNode }) {
 
 /** The frame, mounted as app/chat's part `frame`. Memoized: the overlays' redraws never reach it. */
 const FrameSlot = memo(function FrameSlot() {
-  return <AppPluginMount plugin={CHAT_PLUGIN} module={chatPlugin.frame} part="frame" fallback={(f) => (f.error === null ? <Frame /> : <FrameFallback info={f} />)} />;
+  return <PlaceMount place="chat.frame" fallback={(f) => (f.error === null ? <Frame /> : <FrameFallback info={f} />)} />;
 });
 
 /** The plain frame: a bar with the window controls, why the frame is not there, and the chat. */

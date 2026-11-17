@@ -11,6 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { blobLoad, type LoadModule } from "./mountHost";
 import { provideShared } from "./appPluginShared";
 import { useStore } from "./store";
+import { PRESET_DRAFT_FILE } from "./appPreset";
 import { APP_PLUGIN_LIVE_DIR, APP_PLUGIN_LIVE_MAX_BYTES, appPluginFolder, liveCopyFile, liveCopyOf, liveErrorFile, parseLiveHeader, type LiveCopyKind } from "./appPluginLive";
 
 type Invoke = <T>(cmd: string, args: Record<string, unknown>) => Promise<T>;
@@ -20,6 +21,9 @@ export type LiveCopies = Readonly<Record<string, string>>;
 const CACHE = "vc.appPluginLive:";
 const EVERY_MS = 2000;
 const NONE: LiveCopies = Object.freeze({});
+
+/** A file of the folder the app reads: an app plugin's copy, or the app's preset draft (src/appPreset.ts). */
+const isRead = (name: string) => !!liveCopyOf(name) || name === PRESET_DRAFT_FILE;
 
 const dirOf = (vault: string) => `${vault.replace(/\\/g, "/").replace(/\/+$/, "")}/${APP_PLUGIN_LIVE_DIR}`;
 
@@ -33,7 +37,7 @@ export async function scanLiveCopies(vault: string, call: Invoke = invoke as Inv
   }
   const out: Record<string, string> = {};
   for (const e of [...entries].sort((a, b) => (a.name < b.name ? -1 : 1))) {
-    if (e.is_dir || !liveCopyOf(e.name)) continue;
+    if (e.is_dir || !isRead(e.name)) continue;
     try {
       const code = await call<string>("read_text_file", { path: e.path });
       if (code.length <= APP_PLUGIN_LIVE_MAX_BYTES) out[e.name] = code;
@@ -61,7 +65,7 @@ function kept(v: string): LiveCopies {
     const o = raw ? JSON.parse(raw) : null;
     if (!o || typeof o !== "object") return NONE;
     const out: Record<string, string> = {};
-    for (const [k, c] of Object.entries(o)) if (liveCopyOf(k) && typeof c === "string") out[k] = c;
+    for (const [k, c] of Object.entries(o)) if (isRead(k) && typeof c === "string") out[k] = c;
     return out;
   } catch {
     return NONE;

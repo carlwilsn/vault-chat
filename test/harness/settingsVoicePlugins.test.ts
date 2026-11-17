@@ -82,8 +82,16 @@ test("Settings and voice are registered app plugins that load live, mounted only
     assert.ok(LIVE_APP_PLUGINS.includes(id), `${id}: its live copy runs instead of the built-in one`);
     for (const w of words) assert.equal(appPluginNamed(w)?.id, id, w);
   }
-  assert.match(fs.readFileSync("src/SettingsPane.tsx", "utf8"), /<AppPluginMount plugin=\{SETTINGS_PLUGIN\} module=\{settingsPlugin\} fallback=/);
-  assert.match(fs.readFileSync("src/VoiceSlot.tsx", "utf8"), /<AppPluginMount plugin=\{VOICE_PLUGIN\} module=\{voicePlugin\} fallback=/);
+  {
+    const src = fs.readFileSync("src/SettingsPane.tsx", "utf8");
+    assert.match(src, /<PlaceMount place="settings" fallback=/);
+    assert.match(src, /placeModule\(SETTINGS_PLUGIN, \(\) => settingsPlugin\)/);
+  }
+  {
+    const src = fs.readFileSync("src/VoiceSlot.tsx", "utf8");
+    assert.match(src, /<PlaceMount place="voice" fallback=/);
+    assert.match(src, /placeModule\(VOICE_PLUGIN, \(\) => voicePlugin\)/);
+  }
   assert.match(fs.readFileSync("src/App.tsx", "utf8"), /<VoiceSlot \/>/);
   assert.ok(!fs.existsSync("src/VoiceCockpit.tsx") && !fs.existsSync("src/VoiceTextPanel.tsx"), "the voice controls moved into the plugin");
   for (const f of ["src/plugins/titlebar/Bar.tsx", "src/plugins/composer/Composer.tsx"]) {

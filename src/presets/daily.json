@@ -1,0 +1,25 @@
+{
+  "name": "daily",
+  "mounts": [
+    { "place": "titlebar", "plugin": "app/titlebar" },
+    { "place": "titlebar.vaults", "plugin": "app/vaults" },
+    { "place": "left.tree", "plugin": "app/filetree" },
+    { "place": "overlay", "plugin": "app/notes" },
+    { "place": "overlay", "plugin": "app/context" },
+    { "place": "overlay", "plugin": "app/ask" },
+    { "place": "chats.overlay", "plugin": "app/chats" },
+    { "place": "chats.sidebar", "plugin": "app/chats", "part": "sidebar" },
+    { "place": "chat.header", "plugin": "app/chat" },
+    { "place": "chat.bar", "plugin": "app/chat", "part": "bar" },
+    { "place": "chat.frame", "plugin": "app/chat", "part": "frame" },
+    { "place": "chat.rows", "plugin": "app/chat-rows" },
+    { "place": "chat.transcript", "plugin": "app/chat", "part": "transcript" },
+    { "place": "chat.composer", "plugin": "app/composer" },
+    { "place": "settings", "plugin": "app/settings" },
+    { "place": "voice", "plugin": "app/voice" },
+    { "place": "viewer", "plugin": "app/viewer" },
+    { "place": "viewer.pane", "plugin": "app/viewer", "part": "pane" },
+    { "place": "ask.prompt", "plugin": "app/ask", "part": "prompt" }
+  ],
+  "settings": {}
+}

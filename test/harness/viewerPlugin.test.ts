@@ -110,7 +110,11 @@ test("app/viewer is a registered app plugin mounted by the viewer area; the pane
   assert.equal(VIEWER_PLUGIN_ID, "app/viewer");
   assert.ok(APP_PLUGINS.includes(VIEWER_PLUGIN));
   for (const w of ["viewer", "Viewer", "app/viewer", "file viewer", "pdf viewer"]) assert.equal(appPluginNamed(w)?.id, "app/viewer", w);
-  assert.match(fs.readFileSync("src/MarkdownArea.tsx", "utf8"), /<AppPluginMount plugin=\{VIEWER_PLUGIN\} module=\{viewerPlugin\} \/>/);
+  {
+    const src = fs.readFileSync("src/MarkdownArea.tsx", "utf8");
+    assert.match(src, /<PlaceMount place="viewer" \/>/);
+    assert.match(src, /placeModule\(VIEWER_PLUGIN, \(\) => viewerPlugin\)/);
+  }
   const pane = fs.readFileSync("src/plugins/viewer/Pane.tsx", "utf8");
   assert.doesNotMatch(pane, /<(PdfView|NotebookView|HtmlView|ImageView|VideoView|TexView|UnsupportedView|CodeView|MonacoEditor|LiveEditor)\b/, "the viewers are the registry's");
   assert.match(pane, /<ViewerBody chain=\{editing \? EDITOR_CHAIN : chain\}/);
