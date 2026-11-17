@@ -1,0 +1,31 @@
+{
+  "app": {
+    "windows": [
+      {
+        "title": "vault-chat",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 800,
+        "minHeight": 500,
+        "theme": "Dark",
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 14, "y": 16 },
+        "backgroundColor": "#1f1f23",
+        "dragDropEnabled": false,
+        "visible": false
+      }
+    ]
+  },
+  "bundle": {
+    "resources": [
+      "binaries/tectonic",
+      "binaries/node",
+      "binaries/vault-chat-server.mjs"
+    ],
+    "macOS": {
+      "signingIdentity": "-"
+    }
+  }
+}

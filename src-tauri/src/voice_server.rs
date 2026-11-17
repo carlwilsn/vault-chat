@@ -104,8 +104,16 @@ pub fn is_running() -> bool {
 /// The `tailscale` CLI, without a console window: from a GUI process each run
 /// otherwise flashes one on Windows (two per launch, via `voice_server_url`).
 fn tailscale_cmd() -> std::process::Command {
+    // Tailscale.app on macOS puts no CLI on PATH; its own binary is the CLI.
+    #[cfg(target_os = "macos")]
+    let exe = {
+        let app = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+        if std::path::Path::new(app).is_file() { app } else { "tailscale" }
+    };
+    #[cfg(not(target_os = "macos"))]
+    let exe = "tailscale";
     #[allow(unused_mut)]
-    let mut c = std::process::Command::new("tailscale");
+    let mut c = std::process::Command::new(exe);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

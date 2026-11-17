@@ -218,3 +218,43 @@ Artifacts (PNGs, self-test JSON, app logs) are uploaded so the box agent can fet
   https://www.scaleway.com/en/docs/apple-silicon/faq/
 - AWS M2/M4 hourly figures are third-party (runs-on.com, computingforgeeks) seen only in search excerpts; Appium Mac2
   WKWebView limits from appium XCUITest troubleshooting docs seen only in search excerpts — treat as leads.
+
+## Findings from mac-1
+
+Done in mac-1 (step 1 of the build steps, plus the CI check): `src-tauri/tauri.macos.conf.json` (decorations on,
+Overlay title bar, hidden title, traffic lights at x 14 / y 16 so they end at ~68 px, inside the bars' 76 px inset;
+ad-hoc signature; macOS resources), `src-tauri/Info.plist` (microphone usage string), the downloaders fetch
+the darwin Node/Tectonic for the build machine's arch instead of the Linux ones, and `ship.yml` `build_macos`
+(macos-15, arm64): builds .app + .dmg with no updater artifacts, launches it with a fresh HOME, checks the window
+and its close/minimize/zoom buttons over Accessibility, uploads a screenshot, a launch video and the logs as the
+`macos-launch-proof` artifact. continue-on-error, in nobody's `needs`, uploads nothing to the release, no darwin
+entry in latest.json. Intel (`macos-15-intel`) left out for now: free, but a second long job in the ship run.
+
+Fixed here (trivial):
+- `src-tauri/src/lib.rs` `run_gh` and `vault_sync_gh_create_repo` ran bare `gh`; a Finder/Dock launch has
+  PATH=/usr/bin:/bin:…, so Homebrew's gh was never found. They now use `find_gh()` (already knows /opt/homebrew).
+- `src-tauri/src/voice_server.rs` `tailscale_cmd` ran bare `tailscale`; Tailscale.app has no CLI on PATH. It now
+  uses `/Applications/Tailscale.app/Contents/MacOS/Tailscale` when present (as box_sync.rs already did).
+- No `NSMicrophoneUsageDescription`: voice mode's mic would be denied. Added `src-tauri/Info.plist`.
+
+Later changes (not trivial):
+1. **Blocks local mode** — `server/convlog/maintenance.ts:12` spawns `flock(1)`, which macOS (and Windows) lack;
+   every event-log writer goes through it, so the app-carried server fails as soon as it opens a vault's events.
+   Needs a portable lock (lockfile or no-op off Linux, as `owner.ts` does) — a design choice.
+2. **GUI PATH on macOS** — nothing prepends `/opt/homebrew/bin:/usr/local/bin:~/.local/bin` (or reads the login
+   shell's PATH) before `local_server.rs` starts the server, so npm/npx/python3/uv/user tools are missing and
+   `git` hits the `/usr/bin/git` Command-Line-Tools stub.
+3. **Keychain after each update** — ad-hoc signatures change every build, so keychain ACLs/TCC grants are lost
+   per update (prompts or failed reads). Needs Developer ID (build step 10).
+4. `server/projectFolders.ts:46` `SYSTEM_DIRS` misses `/System`, `/Library`, `/Applications`, `/opt`, `/private`
+   (realpath of /etc, /var, /tmp is /private/…): the "not a system folder" guard is mostly off on macOS.
+5. `server/projectFolders.ts:78-81` `under()` compares case-sensitively; APFS is case-insensitive, so `.GIT` /
+   `.Vault-Chat` can pass the protected-path check (try `realpathSync.native`).
+6. `server/config.ts:34-39` `secretDir` uses `~/.config/vault-chat` while Rust uses `~/Library/Application
+   Support/vault-chat` on macOS; `local_server.rs` doesn't pass `VC_SECRETS_DIR` (fallback store only; rare).
+7. `server/config.ts:30-31` `APP_CONFIG` → a stray `~/.config/com.vault-chat.app/` (push subs) on macOS.
+8. `src-tauri/src/lib.rs` `machine_host_name` returns "unknown" on macOS (no HOSTNAME, no /etc/hostname).
+9. `server/context/builder.ts:191-228` tells the agent it has systemctl/sudo/journal on any non-Windows machine and
+   suggests `timeout`/chromium on PATH; wrong on a Mac.
+10. Fullscreen chat (`src/plugins/chat/Frame.tsx`, `FrameFallback` in src/FullscreenChat.tsx, the chats sidebar)
+    has no left inset on macOS: its first button sits under the traffic lights.

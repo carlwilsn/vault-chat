@@ -6,7 +6,7 @@
 // Windows or Linux machine has no Node — so without this the app can only say
 // "connect a box instead", which is the one thing Carl should not have to do.
 //
-// Runs on Windows (x64) and Linux (x64), from the Tauri prebuild hook, like
+// Runs on Windows (x64), Linux (x64) and macOS (arm64/x64), from the Tauri prebuild hook, like
 // download-tectonic.mjs beside it. No-op when the right version is already here.
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
@@ -19,11 +19,15 @@ import { createHash } from "node:crypto";
 const NODE_VERSION = "22.23.2";
 
 const IS_WINDOWS = process.platform === "win32";
-const ARCHIVE = IS_WINDOWS ? `node-v${NODE_VERSION}-win-x64.zip` : `node-v${NODE_VERSION}-linux-x64.tar.xz`;
+// macOS gets its own build for the machine's arch (arm64 or x64), never Linux's.
+const UNIX_DIST = process.platform === "darwin"
+  ? `darwin-${process.arch === "arm64" ? "arm64" : "x64"}`
+  : "linux-x64";
+const ARCHIVE = IS_WINDOWS ? `node-v${NODE_VERSION}-win-x64.zip` : `node-v${NODE_VERSION}-${UNIX_DIST}.tar.xz`;
 const BASE = `https://nodejs.org/dist/v${NODE_VERSION}`;
 const BIN_NAME = IS_WINDOWS ? "node.exe" : "node";
 // Where it sits inside the archive.
-const INNER = IS_WINDOWS ? `node-v${NODE_VERSION}-win-x64/node.exe` : `node-v${NODE_VERSION}-linux-x64/bin/node`;
+const INNER = IS_WINDOWS ? `node-v${NODE_VERSION}-win-x64/node.exe` : `node-v${NODE_VERSION}-${UNIX_DIST}/bin/node`;
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");

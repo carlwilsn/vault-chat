@@ -1973,8 +1973,9 @@ fn run_gh(cwd: &str, args: &[&str]) -> Result<(String, String, i32), String> {
         c.creation_flags(0x08000000);
         c
     };
+    // A Finder/Dock launch on macOS gets PATH=/usr/bin:/bin:…, so a Homebrew gh is found by its path.
     #[cfg(not(windows))]
-    let mut cmd = Command::new("gh");
+    let mut cmd = Command::new(find_gh().unwrap_or_else(|| PathBuf::from("gh")));
     cmd.current_dir(cwd);
     cmd.args(args);
     cmd.stdout(std::process::Stdio::piped());
@@ -4738,7 +4739,7 @@ async fn vault_sync_gh_create_repo(
             c
         };
         #[cfg(not(windows))]
-        let mut cmd = Command::new("gh");
+        let mut cmd = Command::new(find_gh().unwrap_or_else(|| PathBuf::from("gh")));
         cmd.current_dir(&vault);
         cmd.args(["repo", "create", n, visibility, "--source", ".", "--remote", "origin", "--push"]);
         cmd.stdout(std::process::Stdio::piped());

@@ -1,6 +1,6 @@
 // Downloads the Tectonic LaTeX engine binary into src-tauri/binaries/ so the
-// Tauri bundle can ship it as a resource.  Runs on Windows (x86_64) and Linux
-// (x86_64).  No-op when the binary is already up-to-date.
+// Tauri bundle can ship it as a resource.  Runs on Windows (x86_64), Linux
+// (x86_64) and macOS (aarch64/x86_64).  No-op when the binary is already up-to-date.
 // Called from package.json prebuild / Tauri beforeDev + beforeBuild hooks,
 // and from ship.yml on CI.
 
@@ -16,7 +16,9 @@ const TECTONIC_VERSION = "0.16.9";
 const IS_WINDOWS = process.platform === "win32";
 const TARGET     = IS_WINDOWS
   ? "x86_64-pc-windows-msvc"
-  : "x86_64-unknown-linux-gnu";
+  : process.platform === "darwin"
+    ? `${process.arch === "arm64" ? "aarch64" : "x86_64"}-apple-darwin`
+    : "x86_64-unknown-linux-gnu";
 const ARCHIVE_EXT = IS_WINDOWS ? "zip" : "tar.gz";
 const ARCHIVE_URL = `https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40${TECTONIC_VERSION}/tectonic-${TECTONIC_VERSION}-${TARGET}.${ARCHIVE_EXT}`;
 const BIN_NAME    = IS_WINDOWS ? "tectonic.exe" : "tectonic";

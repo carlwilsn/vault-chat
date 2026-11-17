@@ -367,6 +367,131 @@ jobs:
           gh release upload "v${{ needs.prepare.outputs.version }}" \
             --repo "${{ github.repository }}" --clobber release-server/*
 
+  # macOS: build the .app/.dmg and prove it launches on a real Mac with its
+  # native window buttons. A check only, nothing more, for now:
+  # - it publishes NOTHING: no upload to the release, no darwin entry in
+  #   latest.json, no signing keys (createUpdaterArtifacts is off here);
+  # - it is in nobody's `needs` (the manifest job never waits for it), and
+  #   continue-on-error keeps a Mac failure to this job alone, so Windows/Linux
+  #   ship exactly as before;
+  # - its proof (screenshot, launch video, logs) is a workflow artifact.
+  build_macos:
+    needs: prepare
+    if: needs.prepare.outputs.has_changes == 'true'
+    continue-on-error: true
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    runs-on: macos-15
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Download Tectonic LaTeX engine
+        run: node scripts/download-tectonic.mjs
+
+      - name: Download the Node runtime the app carries
+        run: node scripts/download-node.mjs
+
+      - name: Pack the server the app carries
+        run: node scripts/pack-server-into-app.mjs
+
+      # src-tauri/tauri.macos.conf.json is merged in by itself (native traffic
+      # lights over the app's own title bar, ad-hoc signature). No updater
+      # artifacts, so no signing key is read.
+      - name: Build the .app (local only, uploaded nowhere)
+        run: npx tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Launch it with a fresh HOME and check its window
+        shell: bash
+        run: |
+          set -u
+          OUT="$RUNNER_TEMP/mac-proof"; mkdir -p "$OUT"
+          APP=$(ls -d src-tauri/target/release/bundle/macos/*.app | head -1)
+          ls -la "$APP" | tee "$OUT/bundles.txt"
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          codesign -dv "$APP" >> "$OUT/bundles.txt" 2>&1 || true
+          sw_vers > "$OUT/system.txt"; uname -m >> "$OUT/system.txt"
+          REAL_HOME="$HOME"
+          FRESH="$RUNNER_TEMP/fresh-home"; mkdir -p "$FRESH"
+          # The launch on video (best effort: a recording failure is noted, not fatal).
+          screencapture -v -V 25 -x "$OUT/launch.mov" > "$OUT/video.log" 2>&1 &
+          REC=$!
+          ( sleep 45; kill "$REC" 2>/dev/null ) &   # never let the recorder hold the job
+          sleep 2
+          HOME="$FRESH" "$APP/Contents/MacOS/$EXE" > "$OUT/app.log" 2>&1 &
+          PID=$!
+          echo "launched $EXE pid $PID"
+          ax() { osascript -e "tell application \"System Events\" to tell (first process whose unix id is $PID) to $1" 2>>"$OUT/osascript.log"; }
+          n=0
+          for i in $(seq 1 60); do
+            kill -0 "$PID" 2>/dev/null || { echo "::error::the app exited during launch"; break; }
+            n=$(ax "count windows" || echo 0)
+            [ "${n:-0}" -gt 0 ] && break
+            sleep 1
+          done
+          echo "windows: $n after ${i}s" | tee "$OUT/checks.txt"
+          sleep 8   # let the first screen paint
+          screencapture -x "$OUT/screen.png" || true
+          BOUNDS=$(ax 'get {position, size} of window 1' || true)   # "x, y, w, h"
+          echo "window bounds: $BOUNDS" | tee -a "$OUT/checks.txt"
+          [ -n "$BOUNDS" ] && screencapture -x -R"$(echo "$BOUNDS" | tr -d ' ')" "$OUT/window.png" || true
+          BUTTONS=$(ax 'get subrole of buttons of window 1' || true)
+          echo "window buttons: $BUTTONS" | tee -a "$OUT/checks.txt"
+          wait "$REC" 2>/dev/null || true
+          ok=1
+          [ "${n:-0}" -gt 0 ] || { echo "::error::no window"; ok=0; }
+          grep -q AXCloseButton <<<"$BUTTONS" || { echo "::error::no close button"; ok=0; }
+          grep -q AXMinimizeButton <<<"$BUTTONS" || { echo "::error::no minimize button"; ok=0; }
+          grep -Eq 'AXZoomButton|AXFullScreenButton' <<<"$BUTTONS" || { echo "::error::no zoom button"; ok=0; }
+          kill -0 "$PID" 2>/dev/null || { echo "::error::the app is not running after launch"; ok=0; }
+          # A blank capture compresses to almost nothing.
+          size=$(stat -f %z "$OUT/screen.png" 2>/dev/null || echo 0)
+          echo "screenshot bytes: $size" | tee -a "$OUT/checks.txt"
+          [ "$size" -gt 20000 ] || { echo "::error::the screenshot is blank or missing"; ok=0; }
+          [ -s "$OUT/launch.mov" ] && echo "video: ok" >> "$OUT/checks.txt" || echo "video: not recorded (see video.log)" >> "$OUT/checks.txt"
+          kill "$PID" 2>/dev/null || true; sleep 2
+          # What the app wrote under the fresh HOME, and any crash report.
+          mkdir -p "$OUT/home"
+          find "$FRESH" -maxdepth 6 -type f \( -name '*.log' -o -name '*.jsonl' -o -name '*.json' \) -size -5M -print0 2>/dev/null \
+            | xargs -0 -I{} sh -c 'mkdir -p "$1/home/$(dirname "${2#$3/}")" && cp "$2" "$1/home/${2#$3/}"' _ "$OUT" {} "$FRESH" || true
+          find "$FRESH" -maxdepth 5 > "$OUT/home-tree.txt" 2>/dev/null || true
+          cp "$REAL_HOME"/Library/Logs/DiagnosticReports/*"$EXE"* "$OUT/" 2>/dev/null || true
+          cat "$OUT/checks.txt"
+          [ "$ok" = 1 ]
+
+      # After the launch check, so a Finder-scripting hiccup in the DMG layout
+      # never hides whether the app itself runs.
+      - name: Package the .dmg (local only, uploaded nowhere)
+        run: |
+          npx tauri bundle --bundles dmg --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          ls -la src-tauri/target/release/bundle/dmg/ | tee -a "$RUNNER_TEMP/mac-proof/bundles.txt"
+
+      - name: Upload the proof (screenshot, video, logs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-launch-proof
+          path: ${{ runner.temp }}/mac-proof
+          if-no-files-found: warn
+          retention-days: 30
+
   # ── Phase 3: one complete updater manifest, then publish ─────────────────
   # Every build is done and its files are on the draft. Assemble a SINGLE
   # latest.json covering every platform (replacing the per-job race that kept
