@@ -1,4 +1,4 @@
-// Change ready on the iPad board (reports/07 corrected model point 4; the laptop's is src/ChangeReady.tsx, the
+// Change ready on the iPad board (reports/07 corrected model point 4; the laptop's is src/ChangeReadyNotice.tsx, the
 // phone's phone/src/changes.ts). The drafts waiting for Carl come from the box (src/changeCards.ts); his word goes
 // through the same supervisor route, so a Keep or Discard here clears the card on the laptop and the phone too.
 //

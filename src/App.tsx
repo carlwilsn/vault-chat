@@ -23,7 +23,7 @@ import * as askPlugin from "./plugins/ask";
 import { bindContextSource } from "./contextSource";
 import { ChatsPanel } from "./ChatsPanel";
 import { UpdateBanner } from "./UpdateBanner";
-import { ChangeReady } from "./ChangeReady";
+import { ChangeReady } from "./ChangeReadyNotice";
 import { isDriveWindow } from "./windowKind";
 import { ShortcutSheet } from "./ShortcutSheet";
 import { hit } from "./shortcuts";

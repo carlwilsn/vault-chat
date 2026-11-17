@@ -1,4 +1,4 @@
-// Change by asking (reports/07 point 4; src/pluginDrafts.ts, src/changeReady.ts, src/ChangeReady.tsx): a plugin's draft
+// Change by asking (reports/07 point 4; src/pluginDrafts.ts, src/changeReady.ts, src/ChangeReadyNotice.tsx): a plugin's draft
 // never runs by itself. The laptop shows "Change ready: <what>" in the core; Try runs it on Carl's windows only (no box
 // data changes), Keep / Discard are plugin.change records written by the box's real route (server/supervisor.ts), which
 // moves the files; undo is Switch back. A draft that fails or slows typing while tried discards itself and says why.
@@ -72,7 +72,7 @@ fake.setHandler("box_post_json", async ({ url, body }: any) => {
 
 const { useStore } = await import("../../src/store.ts");
 useStore.setState({ vaultPath: vault } as any);
-const { ChangeReady } = await import("../../src/ChangeReady.tsx");
+const { ChangeReady } = await import("../../src/ChangeReadyNotice.tsx");
 const { AppPluginMount } = await import("../../src/PluginMount.tsx");
 const { loadSupervisor, _appReconciler } = await import("../../src/pluginSupervisorApp.ts");
 const { refreshLiveCopies, _resetLiveCopies, _setLiveLoad } = await import("../../src/appPluginLiveHost.ts");

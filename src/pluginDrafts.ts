@@ -1,5 +1,5 @@
 // Change by asking (reports/07 corrected model, point 4): a plugin edit is a draft first. While Carl has not decided,
-// a draft runs nowhere on its own; the laptop shows "Change ready" (src/ChangeReady.tsx) and he can Try it (on his
+// a draft runs nowhere on its own; the laptop shows "Change ready" (src/ChangeReadyNotice.tsx) and he can Try it (on his
 // windows only), then Keep or Discard it. What he decides is one record in the log, so the copy in effect is a fold
 // of records, and undo is the switch back.
 //
