@@ -640,6 +640,23 @@ export const scenarios: Scenario[] = [
     phone: { clicks: ["#convBtn", "text:Why eigenvectors in spectral clustering?"] },
   },
   {
+    id: "phone-change-ready",
+    title: "Phone — Change ready",
+    group: "Phone",
+    notes: "Two drafts wait for Carl (phone/src/changes.ts): a vault plugin that runs on the phone (Try mounts the draft here only), then an app plugin's (Keep / Discard; tried on the laptop).",
+    build: (c) => world(c),
+    surfaces: ["phone"],
+    phone: {
+      db: (db: any) => {
+        db.phonePlugins = [{ id: ".vault-chat/plugins/rows.js", name: "Rows", code: 'export const meta = { name: "Rows", devices: "laptop, phone" };\nexport function mount(){}' }];
+        db.changes = [
+          { plugin: ".vault-chat/plugins/rows.js", name: "Rows", what: "a rounder chat row", version: "5f3a91c2", added: false, tryOn: ["laptop", "phone"], code: '// @vc-change a rounder chat row\nexport const meta = { name: "Rows", devices: "laptop, phone" };\nexport function mount(){}' },
+          { plugin: "app/notes", name: "Notes", what: "bigger note text", version: "0b7e44d1", added: false, tryOn: ["laptop"] },
+        ];
+      },
+    },
+  },
+  {
     id: "phone-mission",
     title: "Phone — the mission sheet",
     group: "Phone",

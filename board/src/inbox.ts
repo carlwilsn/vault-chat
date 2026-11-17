@@ -150,12 +150,28 @@ function show(ev: { id?: unknown; target?: { label?: unknown } }): void {
   void api.ackShow(id, ack).catch(() => {});
 }
 
+const feedListeners = new Set<(rec: any) => void>();
+/** Every /poll record of the board's one feed (Change ready, board/src/changes.ts, reads its list again on some);
+ *  null after a resync (the feed started over: read everything again). Starts the feed. */
+export function onFeed(fn: (rec: any) => void): () => void {
+  feedListeners.add(fn);
+  start();
+  return () => feedListeners.delete(fn);
+}
+
 /** The /poll feed, once per page: an inbox event (the box's vault log wraps it as a signal) refreshes the list. */
 function start(): void {
   if (started) return;
   started = true;
   void refresh();
   api.watch((rec) => {
+    for (const fn of feedListeners) {
+      try {
+        fn(rec);
+      } catch {
+        /* a listener's own problem */
+      }
+    }
     // The box's /poll carries vault-log records: an inbox change is {type:"signal", signal:{type:"inbox", …}}.
     const ev = rec?.type === "signal" ? rec.signal : rec;
     if (ev?.type === "show" && ev.to === "board") return show(ev);
@@ -164,7 +180,16 @@ function start(): void {
     eventAt ??= { t: performance.now(), id: String((ev as { id?: unknown }).id ?? "") };
     soon(40);
     for (const fn of eventListeners) fn(ev);
-  }, () => soon());
+  }, () => {
+    soon();
+    for (const fn of feedListeners) {
+      try {
+        fn(null);
+      } catch {
+        /* a listener's own problem */
+      }
+    }
+  });
   document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && soon());
 }
 

@@ -21,6 +21,7 @@ import { liveGateway, liveManifest, liveRevoke, liveToken } from "./liveProxy";
 import { devicePlugins, pluginCatalog } from "./pluginCatalog";
 import { offDocument, pluginDesired, supervisorRoute } from "./supervisor";
 import { surfaceOff, surfaceOffPage } from "./surfaces";
+import { changesRoute } from "./changesPending";
 import { appPluginStateRoute } from "./pluginState";
 import { APP_STYLES_HREF, HTML_CSP, embedRelativeImages, inlineHtmlDocument, isHtmlSrc, joinPagePath, relativeImageRefs } from "../src/inlineHtml";
 import { createExternalMcpHandler, type ExternalContext } from "./mcp/external";
@@ -761,6 +762,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // Carl's settings (server/settings.ts): every setting, or one set (from the app's Settings, the composer, the phone).
   if (path === "/api/v2/settings" && (method === "GET" || method === "POST")) {
     const out = settingsRoute(method, method === "POST" ? await jsonBody(req) : null, "carl");
+    return json(res, out.status, out.body);
+  }
+  // Change ready on the phone and the board (server/changesPending.ts): the drafts waiting for Carl, read from the box.
+  if (path === "/api/v2/changes" && method === "GET") {
+    const out = changesRoute(vault, url.searchParams);
     return json(res, out.status, out.body);
   }
   // The supervisor (server/supervisor.ts): the plugins' desired-state records, and Carl's word on one.

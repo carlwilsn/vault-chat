@@ -8,6 +8,7 @@ import { createRoot } from "react-dom/client";
 // that React renders (App.tsx) through element ids, exactly as before.
 import { installMock } from "./mock";
 import { startPhoneHost, type PhoneHost } from "./plugins";
+import { startPhoneChanges, type PhoneChanges } from "./changes";
 import { kindOf } from "../../src/chatRows";
 import * as X from "./extras";
 import { createPhoneMarkdown, domToHtml } from "./markdown";
@@ -64,6 +65,8 @@ export function boot(): void {
   installPhoneLiveBridge(api);
   // The phone as a plugin host (./plugins.ts): started once the app has booted; null until then.
   let phoneHost: PhoneHost | null = null;
+  // Change ready (./changes.ts): the drafts waiting for Carl; started with the plugin host, after the first paint.
+  let phoneChanges: PhoneChanges | null = null;
   /** Where the plan card shows: app/chat-rows' kept option (every device), else this phone's old switch. */
   const planPlace = (): string => {
     const v = phoneHost?.option("plan", "placement");
@@ -1317,6 +1320,8 @@ export function boot(): void {
     for (const rec of recs) {
       if (rec.conv === null) {
         const s: any = rec.type === "signal" ? rec.signal : {};
+        // Change ready reads the box's list again on a record that can move it (a draft decided anywhere, a new one).
+        phoneChanges?.record(rec);
         // The plugin host follows the supervisor's records and app/chat-rows' kept choices.
         if (phoneHost && (s.type === "plugin.desired" || s.type === "plugin.state")) phoneHost.fold([rec]);
         // The phone app itself switched off (server/surfaces.ts): the box's /phone now says so; go there.
@@ -2631,6 +2636,7 @@ export function boot(): void {
         if (convId) scheduleRender();
       },
     });
+    phoneChanges = startPhoneChanges({ api, host: () => phoneHost });
   };
   if (typeof (window as any).requestIdleCallback === "function") (window as any).requestIdleCallback(startPlugins, { timeout: 1500 });
   else setTimeout(startPlugins, 200);

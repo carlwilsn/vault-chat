@@ -48,7 +48,8 @@ export type PhoneHostDeps = {
 
 export const PHONE_PLUGIN_ID = "app/phone";
 
-type Mounted = { p: PhonePlugin; el: HTMLElement; handle: PluginHandle; error: string | null };
+type Mounted = { p: PhonePlugin; el: HTMLElement; handle: PluginHandle; error: string | null; draft?: string };
+type Tried = { id: string; name: string; version: string; code: string; fail: (why: string) => void; kept?: boolean };
 
 export type PhoneHost = {
   /** Vault-level records of the feed (supervisor and plugin.state ones are folded; the rest ignored). */
@@ -65,8 +66,16 @@ export type PhoneHost = {
   option(kind: string, key: string): unknown;
   /** Run a row element's cleanup (the row left the screen or was redrawn). */
   release(el: Element): void;
-  /** What is mounted now (tests, the agent). */
-  mounted(): { id: string; name: string; error: string | null }[];
+  /** What is mounted now (tests, the agent). `draft`: the version of a draft tried here in place of the live copy. */
+  mounted(): { id: string; name: string; error: string | null; draft?: string }[];
+  /**
+   * Try a plugin's draft on this phone only (Change ready, phone/src/changes.ts): its code mounts in place of the live
+   * copy (or as a new plugin) until Keep, Discard or Back; null stops trying. `fail` runs once when the draft throws or
+   * does not load (the phone falls back to the live copy at once).
+   */
+  tryDraft(t: { id: string; name: string; version: string; code: string; fail: (why: string) => void } | null): void;
+  /** The draft tried here was kept: it stays mounted (no flash back to the old copy) until the box lists it as live. */
+  keptDraft(): void;
   stop(): void;
 };
 
@@ -83,6 +92,7 @@ export function startPhoneHost(d: PhoneHostDeps): PhoneHost {
   let reading = false;
   let again = false;
   let redrawQueued = false;
+  let tried: Tried | null = null;
 
   const queueRedraw = () => {
     if (redrawQueued) return;
@@ -179,13 +189,13 @@ export function startPhoneHost(d: PhoneHostDeps): PhoneHost {
     registerChatRow: (kind, render, by, opts) => registerRow(kind, render, by, opts),
     registerChatTranslator: (type, fn, by) => registerTranslator(type, fn as Translator, by),
   };
-  function mountOne(p: PhonePlugin): Mounted {
+  function mountOne(p: PhonePlugin, draft?: Tried): Mounted {
     const el = document.createElement("span");
     el.setAttribute("data-el", "plugin-mount");
     el.setAttribute("data-vc-plugin", p.id);
     el.style.display = "contents";
     root().appendChild(el);
-    const m: Mounted = { p, el, handle: null as unknown as PluginHandle, error: null };
+    const m: Mounted = { p, el, handle: null as unknown as PluginHandle, error: null, ...(draft ? { draft: draft.version } : {}) };
     m.handle = mountPlugin(el, { name: p.name, code: p.code }, {
       path: p.id,
       theme: () => (d.theme ?? hostTheme)(),
@@ -196,6 +206,18 @@ export function startPhoneHost(d: PhoneHostDeps): PhoneHost {
       onError: (msg) => {
         m.error = msg;
         console.warn(`[plugin] ${p.id} stopped on the phone:`, msg);
+        // A draft tried here that throws or does not load: back to the live copy now, and Change ready says why.
+        if (draft && tried === draft) {
+          tried = null;
+          queueMicrotask(() => {
+            reconcile();
+            try {
+              draft.fail(msg);
+            } catch {
+              /* the card's own problem */
+            }
+          });
+        }
       },
     });
     return m;
@@ -211,14 +233,19 @@ export function startPhoneHost(d: PhoneHostDeps): PhoneHost {
   function reconcile() {
     if (stopped || !known || !listed) return;
     const want = new Map(list.filter((p) => running(p.id)).map((p) => [p.id, p]));
+    // A draft Carl tries here runs in place of the live copy (a plugin turned off stays off).
+    // A kept draft is the live copy once the box lists it so.
+    if (tried?.kept && want.get(tried.id)?.code === tried.code) tried = null;
+    const t = tried && running(tried.id) ? tried : null;
+    if (t) want.set(t.id, { id: t.id, name: t.name, code: t.code });
     for (const [id, m] of [...mounted]) {
       const w = want.get(id);
       if (!w || w.code !== m.p.code || w.name !== m.p.name) {
         unmountOne(m);
         mounted.delete(id);
-      }
+      } else if (t?.id !== id) delete m.draft;
     }
-    for (const [id, p] of want) if (!mounted.has(id)) mounted.set(id, mountOne(p));
+    for (const [id, p] of want) if (!mounted.has(id)) mounted.set(id, mountOne(p, t?.id === id ? t : undefined));
   }
   async function readList() {
     if (reading) return void (again = true);
@@ -351,7 +378,17 @@ export function startPhoneHost(d: PhoneHostDeps): PhoneHost {
         }
       }
     },
-    mounted: () => [...mounted.values()].map((m) => ({ id: m.p.id, name: m.p.name, error: m.handle.error ?? m.error })),
+    mounted: () => [...mounted.values()].map((m) => ({ id: m.p.id, name: m.p.name, error: m.handle.error ?? m.error, ...(m.draft ? { draft: m.draft } : {}) })),
+    tryDraft(t) {
+      if ((tried?.id ?? null) === (t?.id ?? null) && (tried?.version ?? null) === (t?.version ?? null)) return;
+      tried = t ? { ...t } : null;
+      reconcile();
+    },
+    keptDraft() {
+      if (!tried) return;
+      tried.kept = true;
+      void readList();
+    },
     stop() {
       stopped = true;
       clearInterval(timer);

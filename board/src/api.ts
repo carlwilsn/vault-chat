@@ -46,6 +46,13 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body as T;
 }
 
+/** A raw call to the box with the board's auth and vault (Change ready reads its own answers: src/changeCards.ts). */
+export function fetchBox(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers: Record<string, string> = { ...((init.headers as Record<string, string>) ?? {}) };
+  if (TOKEN) headers["X-Vault-Token"] = TOKEN;
+  return fetch(inVault(path), { ...init, headers });
+}
+
 const enc = encodeURIComponent;
 
 /** The board's log batch (board/src/log.ts → the box's board.jsonl). `keepalive`: sent as the page hides. */

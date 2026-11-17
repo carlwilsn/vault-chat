@@ -9,6 +9,8 @@ import { blog, flushBoardLog, installBoardLog } from "./log";
 import { ackLocal, getLocal, localKey, putLocal, type LocalRec } from "./local";
 import type { Board, BoardHistory } from "../../src/boardFormat";
 import { startAttentionBeat } from "../../src/attentionBeat";
+import { startBoardChanges } from "./changes";
+import { onFeed } from "./inbox";
 
 installBoardLog();
 // On screen = Carl is at the iPad: the box keeps his phone quiet meanwhile (src/attentionBeat.ts).
@@ -132,3 +134,5 @@ function within<T>(p: Promise<T>, ms: number): Promise<T> {
 
 window.addEventListener("hashchange", () => void route());
 void route();
+// Change ready (./changes.ts): a draft waiting for Carl floats over the list or a board; started after the first paint.
+setTimeout(() => startBoardChanges({ api: api.fetchBox, onFeed, blog }), 300);
