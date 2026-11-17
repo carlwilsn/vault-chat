@@ -1,7 +1,7 @@
 // Track 1: the title bar is a plugin (src/plugins/titlebar, app/titlebar). It mounts through the plugin host
 // (src/mountHost.ts) under the supervisor's records like the chat list, the composer, the vault picker and the file
 // tree; it offers the plugins' items, the window, the open vault and file, the panels and its indicators as state, and
-// the panel toggles, Settings, refresh, Hidden files, the apps launcher, the terminal, a plugin item's click, minimize
+// the panel toggles, Settings, refresh, Hidden files, the terminal, a plugin item's click, minimize
 // and maximize as actions (no close). A vault plugin puts an item in the bar live with api.host.titlebar.item(...),
 // gone when that plugin stops. Turned off or failing, a minimal built-in bar stands in (src/Titlebar.tsx
 // TitlebarFallback) whose window controls (core, src/WindowControls.tsx) always work; while the records are unknown
@@ -92,8 +92,7 @@ test("the title bar is a registered app plugin, mounted only through the host; t
   const slot = fs.readFileSync("src/Titlebar.tsx", "utf8");
   assert.match(slot, /<PlaceMount place="titlebar" fallback=/);
   assert.match(slot, /placeModule\(TITLEBAR_PLUGIN, \(\) => titlebarPlugin\)/);
-  assert.doesNotMatch(slot, /SyncChip|TerminalButton|Hidden files<|AppsLauncher|VoiceCockpit|function WindowControls/, "the bar's parts are the plugin's");
-  assert.ok(!fs.existsSync("src/AppsLauncher.tsx"), "the launcher moved into the plugin");
+  assert.doesNotMatch(slot, /SyncChip|TerminalButton|Hidden files<|VoiceCockpit|function WindowControls/, "the bar's parts are the plugin's");
   assert.match(fs.readFileSync("src/FullscreenChat.tsx", "utf8"), /from "\.\/WindowControls"/, "fullscreen chat's window controls are core");
   assert.match(fs.readFileSync("src/plugins/chat/Frame.tsx", "utf8"), /from "\.\.\/\.\.\/WindowControls"/, "the fullscreen frame draws the core window controls");
   assert.match(fs.readFileSync("src/App.tsx", "utf8"), /<Titlebar \/>/);
@@ -119,9 +118,9 @@ test("mounted through the host, it draws the bar and declares its offers", async
   const d = listOffers().find((p: any) => p.id === "app/titlebar")!;
   assert.ok(d, "listed while it runs");
   assert.deepEqual(d.state.map((s: any) => s.name), ["items", "window", "vault", "panels", "status"]);
-  assert.deepEqual(d.actions.map((a: any) => a.name), ["toggleLeftPanel", "toggleChatPanel", "toggleNotes", "toggleSettings", "popOutChat", "refreshTree", "openHiddenFiles", "closeHiddenFiles", "unhide", "openAppsLauncher", "openApp", "openTerminal", "clickItem", "minimize", "toggleMaximize"]);
+  assert.deepEqual(d.actions.map((a: any) => a.name), ["toggleLeftPanel", "toggleChatPanel", "toggleNotes", "toggleSettings", "popOutChat", "refreshTree", "openHiddenFiles", "closeHiddenFiles", "unhide", "openTerminal", "clickItem", "minimize", "toggleMaximize"]);
   assert.ok(!d.actions.some((a: any) => /close$/i.test(a.name) && a.name !== "closeHiddenFiles"), "no window close for the agent");
-  assert.deepEqual(d.events.map((e: any) => e.name), ["itemAdded", "itemRemoved", "itemClicked", "refreshed", "unhidden", "appOpened", "windowChanged"]);
+  assert.deepEqual(d.events.map((e: any) => e.name), ["itemAdded", "itemRemoved", "itemClicked", "refreshed", "unhidden", "windowChanged"]);
 });
 
 test("read: the window, the vault and file, the panels, no items yet", async () => {
@@ -185,9 +184,6 @@ test("act: refresh re-lists the files; Hidden files opens on screen and unhide r
   assert.doesNotMatch(html(host), /Select entries to unhide/);
   const evs = recentOfferEvents ? recentOfferEvents("app/titlebar") : null;
   if (evs) assert.ok(evs.some((e: any) => e.event === "unhidden"));
-  r = await actOffers("titlebar", "openAppsLauncher", {});
-  assert.equal(r.ok, false);
-  assert.match(r.error ?? "", /no pinned apps/);
   r = await actOffers("titlebar", "clickItem", { item: "nope" });
   assert.equal(r.ok, false);
   assert.match(r.error ?? "", /no title bar item "nope" \(no plugin has put one there\)/);
@@ -195,19 +191,19 @@ test("act: refresh re-lists the files; Hidden files opens on screen and unhide r
 
 // ---------------------------------------------------------------- the slot: a vault plugin's item, live
 
-const PIN_CODE = `
+const ITEM_CODE = `
 export function mount(el, api) {
-  api.host.titlebar.item({ id: "launch", label: "Apps", title: "My apps", onClick: () => { globalThis.__pinClicks = (globalThis.__pinClicks || 0) + 1; } });
+  api.host.titlebar.item({ id: "launch", label: "Apps", title: "My apps", onClick: () => { globalThis.__itemClicks = (globalThis.__itemClicks || 0) + 1; } });
   api.host.titlebar.item({ id: "light", side: "right", render: (e) => { e.textContent = "●"; e.setAttribute("data-light", "on"); return () => { globalThis.__lightGone = true; }; } });
 }`;
-const dataLoad = async (code: string) => ({ module: await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`), url: "data:pin", dispose() {} });
+const dataLoad = async (code: string) => ({ module: await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`), url: "data:items", dispose() {} });
 
 test("a vault plugin puts items in the bar live; the agent sees and clicks them; they go when it stops", async () => {
-  const pin = mountPlugin(el(), { name: "pin", code: PIN_CODE }, { path: ".vault-chat/plugins/pin.js", theme: () => THEME, host: appHostBackend, load: dataLoad });
-  await pin.ready;
-  assert.equal(pin.error, null);
+  const itemPlugin = mountPlugin(el(), { name: "items", code: ITEM_CODE }, { path: ".vault-chat/plugins/items.js", theme: () => THEME, host: appHostBackend, load: dataLoad });
+  await itemPlugin.ready;
+  assert.equal(itemPlugin.error, null);
   await tick();
-  assert.deepEqual(titlebarItems().map((i) => i.key), [".vault-chat/plugins/pin.js#launch", ".vault-chat/plugins/pin.js#light"]);
+  assert.deepEqual(titlebarItems().map((i) => i.key), [".vault-chat/plugins/items.js#launch", ".vault-chat/plugins/items.js#light"]);
   const out = html(host);
   const left = (host as any).querySelector('[data-el="titlebar-items"][data-side="left"]');
   assert.ok(left, "the left slot");
@@ -217,18 +213,18 @@ test("a vault plugin puts items in the bar live; the agent sees and clicks them;
   assert.match(out, /data-light="on"/, "the drawn item drew itself");
   const r1 = await readOffers("titlebar", "items");
   assert.deepEqual(r1.state.items, [
-    { key: ".vault-chat/plugins/pin.js#launch", id: "launch", by: ".vault-chat/plugins/pin.js", side: "left", label: "Apps", title: "My apps", clickable: true, drawn: false },
-    { key: ".vault-chat/plugins/pin.js#light", id: "light", by: ".vault-chat/plugins/pin.js", side: "right", clickable: false, drawn: true },
+    { key: ".vault-chat/plugins/items.js#launch", id: "launch", by: ".vault-chat/plugins/items.js", side: "left", label: "Apps", title: "My apps", clickable: true, drawn: false },
+    { key: ".vault-chat/plugins/items.js#light", id: "light", by: ".vault-chat/plugins/items.js", side: "right", clickable: false, drawn: true },
   ]);
   let r = await actOffers("titlebar", "clickItem", { item: "Apps" });
   assert.equal(r.ok, true, r.error);
-  assert.equal(G.__pinClicks, 1);
-  click((host as any).querySelector('[data-item=".vault-chat/plugins/pin.js#launch"]'));
-  assert.equal(G.__pinClicks, 2, "Carl's click runs the same");
+  assert.equal(G.__itemClicks, 1);
+  click((host as any).querySelector('[data-item=".vault-chat/plugins/items.js#launch"]'));
+  assert.equal(G.__itemClicks, 2, "Carl's click runs the same");
   r = await actOffers("titlebar", "clickItem", { item: "light" });
   assert.equal(r.ok, false);
   assert.match(r.error ?? "", /draws itself/);
-  pin.unmount();
+  itemPlugin.unmount();
   await tick();
   assert.deepEqual(titlebarItems(), [], "stopped: its items are gone");
   assert.equal(G.__lightGone, true, "the drawn item's cleanup ran");

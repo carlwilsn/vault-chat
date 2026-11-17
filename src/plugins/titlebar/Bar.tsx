@@ -1,5 +1,5 @@
 // The title bar (src/plugins/titlebar, app/titlebar): the panel toggles, the vault picker (its own plugin, app/vaults),
-// the tree's refresh and Hidden files, Notes, the pinned apps launcher, the mic, plugins' items (src/titlebarItems.ts),
+// the tree's refresh and Hidden files, Notes, the mic, plugins' items (src/titlebarItems.ts),
 // the sync chip, background tasks, the chat toggle and pop-out, the terminal, Settings and the window controls (core,
 // src/WindowControls.tsx). Mounted through the plugin host by src/Titlebar.tsx; off or failing, a minimal built-in bar
 // stands in there. Ctrl+B / Ctrl+Shift+B are App.tsx's (they work with the bar off too).
@@ -16,7 +16,6 @@ import { WindowControls } from "../../WindowControls";
 import { subscribeBoxSync, openTailscale, boxSyncNow, type BoxSyncState } from "../../vaultSync";
 import { openTerminal, subscribeTerminalNote, terminalBoxName, terminalTitle } from "../../terminal";
 import { subscribeTitlebarItems, titlebarItems, type TitlebarItem, type TitlebarSide } from "../../titlebarItems";
-import { AppsLauncher } from "./AppsLauncher";
 import { closeHidden, openHidden, refreshTree, toggleSelected, unhide, useBar } from "./model";
 
 /** With the chat closed: "1 running" while the agent's background tasks work; a click opens the chat. */
@@ -118,7 +117,6 @@ export function Bar() {
                 <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-primary" />
               )}
             </button>}
-            <AppsLauncher />
             <VoiceMicGroup />
           </>
         )}

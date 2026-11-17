@@ -5,7 +5,7 @@
 //  - turned off, or failing to mount or render, a minimal built-in bar stands in (TitlebarFallback): the window drags
 //    by it, the file panel and chat toggles, the vault picker (its own plugin, with its own fallback), Settings and the
 //    window controls (core, src/WindowControls.tsx), with one line that says what happened and Turn on / Reload.
-//    Refresh, Hidden files, Notes, the apps launcher, the mic, plugins' items, the sync chip, the terminal and
+//    Refresh, Hidden files, Notes, the mic, plugins' items, the sync chip, the terminal and
 //    pop-out are the plugin's.
 import { PanelLeft, PanelRight, Settings } from "lucide-react";
 import { useStore } from "./store";

@@ -1,4 +1,4 @@
-// The title bar's slot for plugins' items (a pinned-apps launcher, a plugin menu, a status light): a vault plugin adds
+// The title bar's slot for plugins' items (a launcher, a plugin menu, a status light): a vault plugin adds
 // one live with api.host.titlebar.item({...}) (src/hostApi.ts), and it is gone when the plugin stops (an effect of its
 // run) or when it calls the returned off. The title bar plugin (src/plugins/titlebar, app/titlebar) draws them, left
 // (after the app's own buttons) or right (before the sync chip), and offers them to the agent (state items, action

@@ -55,10 +55,10 @@ afterAll(async () => {
 });
 
 const expected = [
-  { id: ".vault-chat/visuals/html-lab.html", name: "HTML lab", mount: "iframe", needs: ["ask", "mic", "voice-lab"], refused: [], pinned: false },
-  { id: "Apps/browser.html", name: "Plugin browser", mount: "iframe", needs: ["catalog"], refused: [], pinned: false },
-  { id: "Apps/clock.html", name: "clock.html", mount: "in-process", needs: [], refused: [], pinned: false },
-  { id: "Apps/counter.html", name: "counter.html", mount: "iframe", needs: ["state"], refused: [], pinned: false },
+  { id: ".vault-chat/visuals/html-lab.html", name: "HTML lab", mount: "iframe", needs: ["ask", "mic", "voice-lab"], refused: [] },
+  { id: "Apps/browser.html", name: "Plugin browser", mount: "iframe", needs: ["catalog"], refused: [] },
+  { id: "Apps/clock.html", name: "clock.html", mount: "in-process", needs: [], refused: [] },
+  { id: "Apps/counter.html", name: "counter.html", mount: "iframe", needs: ["state"], refused: [] },
 ];
 
 describe("the catalog", () => {
@@ -91,7 +91,7 @@ describe("the catalog", () => {
     // A page added now is in the next answer: the vault is read each time.
     put("late.html", '<meta name="vc-capabilities" content="log, fs">');
     const again = (await (await fetch(srv.base + "/api/v2/plugin/catalog")).json()) as any;
-    expect(again.plugins.at(-1)).toEqual({ id: "late.html", name: "late.html", mount: "iframe", needs: ["log"], refused: ["fs"], pinned: false });
+    expect(again.plugins.at(-1)).toEqual({ id: "late.html", name: "late.html", mount: "iframe", needs: ["log"], refused: ["fs"] });
     expect((await fetch(srv.base + "/api/v2/plugin/catalog", { method: "POST" })).status).not.toBe(200);
   });
 

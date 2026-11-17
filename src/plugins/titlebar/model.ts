@@ -1,5 +1,5 @@
-// The title bar's own state and actions (src/plugins/titlebar): the Hidden files list, the tree's refresh spin and
-// the apps launcher's menu, plus the window's state. Shared by the bar (./Bar.tsx), its offers (./index.tsx) and the
+// The title bar's own state and actions (src/plugins/titlebar): the Hidden files list, the tree's refresh spin,
+// plus the window's state. Shared by the bar (./Bar.tsx), its offers (./index.tsx) and the
 // built-in fallback (src/Titlebar.tsx), so what the agent does through PluginAct is what a click does, on screen.
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
@@ -11,14 +11,13 @@ type BarState = {
   hiddenLines: string[];
   selected: Set<string>;
   refreshing: boolean;
-  appsOpen: boolean;
 };
 
-export const useBar = create<BarState>(() => ({ hiddenOpen: false, hiddenLines: [], selected: new Set(), refreshing: false, appsOpen: false }));
+export const useBar = create<BarState>(() => ({ hiddenOpen: false, hiddenLines: [], selected: new Set(), refreshing: false }));
 
 type Listener = (event: string, data?: unknown) => void;
 const listeners = new Set<Listener>();
-/** What the bar did (refreshed, unhidden, appOpened, ...), for the offers' events; the off. */
+/** What the bar did (refreshed, unhidden, ...), for the offers' events; the off. */
 export function onBarEvent(fn: Listener): () => void {
   listeners.add(fn);
   return () => void listeners.delete(fn);
@@ -90,10 +89,6 @@ export async function unhide(lines?: readonly string[]): Promise<string[]> {
     closeHidden();
   }
   return want;
-}
-
-export function setAppsOpen(open: boolean): void {
-  useBar.setState({ appsOpen: open });
 }
 
 export type WindowState = { maximized: boolean; minimized: boolean; fullscreen: boolean; focused: boolean };

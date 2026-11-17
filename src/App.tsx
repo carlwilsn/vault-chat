@@ -15,7 +15,6 @@ import { VoiceSlot } from "./VoiceSlot";
 import { PlaceMount } from "./PluginMount";
 import { placeModule } from "./presetApp";
 import { VaultPlugins } from "./VaultPluginHost";
-import { PinnedApps } from "./PinnedAppsHost";
 import { ASK_PLUGIN, CONTEXT_PLUGIN, NOTES_PLUGIN } from "./appPlugins";
 import * as notesPlugin from "./plugins/notes";
 import * as contextPlugin from "./plugins/context";
@@ -473,7 +472,6 @@ export default function App() {
       <PlaceMount place="overlay" />
       {/* Plugins that are code files in .vault-chat/plugins: live as they are added, changed or removed. */}
       <VaultPlugins />
-      <PinnedApps />
       {/* Voice: a plugin (src/plugins/voice): its text box here, its controls in the title bar and the composer. */}
       <VoiceSlot />
       {!isDriveWindow && <UpdateBanner />}

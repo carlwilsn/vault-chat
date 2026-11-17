@@ -92,7 +92,7 @@ export const TITLEBAR_PLUGIN: AppPluginInfo = {
   id: TITLEBAR_PLUGIN_ID,
   name: "Title bar",
   mount: "panel",
-  description: "The title bar across the top of the window: the panel toggles, the vault picker, refresh and Hidden files, Notes, the pinned apps launcher, items vault plugins put there, the sync chip, background tasks, the chat toggle and pop-out, the terminal, Settings and the window controls.",
+  description: "The title bar across the top of the window: the panel toggles, the vault picker, refresh and Hidden files, Notes, items vault plugins put there, the sync chip, background tasks, the chat toggle and pop-out, the terminal, Settings and the window controls.",
   words: ["title bar", "titlebar", "title-bar", "top bar", "topbar", "toolbar", "tool bar", "header bar", "window bar", "menu bar"],
 };
 

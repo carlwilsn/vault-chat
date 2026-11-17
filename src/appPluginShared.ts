@@ -27,7 +27,6 @@ export const APP_SHARED: Readonly<Record<string, () => Promise<unknown>>> = {
   "src/NewProjectForm": () => import("./NewProjectForm"),
   "src/NoteWidget": () => import("./NoteWidget"),
   "src/OngoingLine": () => import("./OngoingLine"),
-  "src/PinnedAppsHost": () => import("./PinnedAppsHost"),
   "src/ProjectChip": () => import("./ProjectChip"),
   "src/ShortcutSheet": () => import("./ShortcutSheet"),
   "src/VaultPicker": () => import("./VaultPicker"),

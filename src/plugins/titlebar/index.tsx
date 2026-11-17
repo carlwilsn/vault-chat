@@ -9,7 +9,7 @@
 //
 // It declares what it offers (api.offer, src/pluginOffers.ts): the plugins' items, the window (maximized, minimized,
 // fullscreen, focused), the open vault and file, the panels and the bar's status as state; the panel toggles, Settings,
-// pop out the chat, the tree's refresh, Hidden files, the apps launcher, the terminal, a plugin item's click, minimize
+// pop out the chat, the tree's refresh, Hidden files, the terminal, a plugin item's click, minimize
 // and maximize / restore as actions (no close: closing the window is Carl's); what it did as events.
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
@@ -22,10 +22,9 @@ import { runningTaskCount } from "../../backgroundTasks";
 import { openChatPopout } from "../../sync";
 import { openTerminal } from "../../terminal";
 import { subscribeBoxSync, type BoxSyncState } from "../../vaultSync";
-import { pinnedAppsNow, showPinnedApp } from "../../PinnedAppsHost";
 import { subscribeTitlebarItems, titlebarItemNamed, titlebarItems, type TitlebarItem } from "../../titlebarItems";
 import { Bar } from "./Bar";
-import { closeHidden, emitBarEvent, onBarEvent, openHidden, refreshTree, setAppsOpen, unhide, useBar, windowState } from "./model";
+import { closeHidden, emitBarEvent, onBarEvent, openHidden, refreshTree, unhide, useBar, windowState } from "./model";
 
 const shownItem = (i: TitlebarItem) => ({
   key: i.key,
@@ -83,17 +82,15 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
         read: panels,
       },
       status: {
-        description: "The bar's indicators: runningTasks (the agent's background tasks), sync (the attention chip's text and level, or null), hiddenFiles (the Hidden files list open, and its lines), appsLauncher (its menu open, the pinned apps and the one in front), refreshing.",
+        description: "The bar's indicators: runningTasks (the agent's background tasks), sync (the attention chip's text and level, or null), hiddenFiles (the Hidden files list open, and its lines), refreshing.",
         read: () => {
           const s = useStore.getState();
           const b = useBar.getState();
-          const pins = pinnedAppsNow();
           const att = sync()?.attention ?? null;
           return {
             runningTasks: runningTaskCount(s.conversations),
             sync: att ? { kind: att.kind, level: att.level, text: att.text } : null,
             hiddenFiles: { open: b.hiddenOpen, lines: b.hiddenOpen ? b.hiddenLines : undefined },
-            appsLauncher: { open: b.appsOpen, apps: pins.apps.map((a) => ({ name: a.name, path: a.path, failed: a.html === null })), front: pins.apps.find((a) => a.id === pins.front)?.name ?? null },
             refreshing: b.refreshing,
           };
         },
@@ -172,33 +169,6 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
           return { unhidden: await unhide(lines) };
         },
       },
-      openAppsLauncher: {
-        description: "Open (or close) the pinned apps launcher's menu on screen. There is a launcher only while the vault has pinned apps.",
-        args: OPEN,
-        run: (a: Record<string, unknown>) => {
-          if (!pinnedAppsNow().apps.length) throw new Error("no pinned apps in this vault (pin a page first)");
-          setAppsOpen(want(a, useBar.getState().appsOpen));
-          return { open: useBar.getState().appsOpen };
-        },
-      },
-      openApp: {
-        description: "Bring a pinned app to the front (as picking it in the launcher); name null puts it back in the background.",
-        args: { type: "object", properties: { name: { type: ["string", "null"], description: "The app's name or path, as status.appsLauncher lists it." } }, required: ["name"], additionalProperties: false },
-        run: (a: Record<string, unknown>) => {
-          if (a.name === null) {
-            showPinnedApp(null);
-            return { front: null };
-          }
-          const w = String(a.name ?? "").trim().toLowerCase();
-          const apps = pinnedAppsNow().apps;
-          const hit = apps.find((x) => x.name.toLowerCase() === w || x.path.toLowerCase() === w || x.path.toLowerCase().endsWith(`/${w}`));
-          if (!hit) throw new Error(`no pinned app "${String(a.name)}"${apps.length ? ` (apps: ${apps.map((x) => x.name).join(", ")})` : ""}`);
-          showPinnedApp(hit.id);
-          setAppsOpen(false);
-          emitBarEvent("appOpened", { name: hit.name, path: hit.path });
-          return { front: hit.name };
-        },
-      },
       openTerminal: {
         description: "Open the terminal where the chat runs (the bar's terminal button): the box's for a box vault; laptop true: this laptop's.",
         args: { type: "object", properties: { laptop: { type: "boolean" } }, additionalProperties: false },
@@ -240,7 +210,6 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
       itemClicked: { description: "The agent clicked a plugin's item: key, by." },
       refreshed: { description: "The file list was re-read: files." },
       unhidden: { description: "Lines left the hide list: lines." },
-      appOpened: { description: "A pinned app came to the front: name, path." },
       windowChanged: { description: "The window was maximized or restored: maximized." },
     },
   };
