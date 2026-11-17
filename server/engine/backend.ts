@@ -90,7 +90,8 @@ export type SideToolHandler = (convId: string | null, name: string, args: any, s
 /** Host policy identifiers, not persisted schema snapshots. */
 export type HostLoadout = "conversation" | "readOnly" | "voiceRead" | "voiceAct";
 export type Handlers = {
-  toolCatalog: (loadout: HostLoadout) => Promise<ToolSpec[]>;
+  /** `threadId`: the session asking, so a conversation's own catalog (a box plugin draft it tries) can differ. */
+  toolCatalog: (loadout: HostLoadout, threadId?: string) => Promise<ToolSpec[]>;
   toolCall: ToolCallHandler;
   /** Host-only snapshot of the original ask at worker creation, never tool arguments. */
   notifyScope?: (threadId: string) => NotifyScope | null;

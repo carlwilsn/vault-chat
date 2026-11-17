@@ -45,6 +45,16 @@ test('workspace switch preserves global project messages, running state and sess
  await openVaultAt(school); await bc.startBoxChat(school);
  assert.strictEqual(bc._boxChatSession(),session);
  assert.equal(useStore.getState().activeConversationId,conv);
+ // A new chat started while Carl tries a box plugin's draft carries the tries; a message into a chat the box has never does.
+ bc.provideNewChatTries(()=>({'box/hello':'1a2b3c4d'}));
+ try {
+  await bc.boxSend({text:'try it here',convId:'newchat-try-1'});
+  assert.deepEqual(box.intents.at(-1).tries,{'box/hello':'1a2b3c4d'});
+  assert.equal(box.intents.at(-1).text,'try it here');
+  await bc.boxSend({text:'not here',convId:'project-physics'});
+  assert.equal(box.intents.at(-1).text,'not here');
+  assert.equal(box.intents.at(-1).tries,undefined);
+ } finally { bc.provideNewChatTries(()=>({})); }
  } finally { bc.stopBoxChat(); await box.close(); }
 });
 

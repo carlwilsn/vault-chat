@@ -821,7 +821,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
    */
   private async bindTools(threadId: string, t: ThreadState, w?: { workers: true; boardMake?: NotifyScope["boardMake"] }): Promise<{ servers: Record<string, unknown>; allowed: string[]; revoke: () => Promise<void>; refresh: () => Promise<boolean> } | null> {
     if (!this.o.mcp || !this.h) return null;
-    const catalog = async () => (await this.h!.toolCatalog("conversation")).filter((s) => !w || !NOT_FOR_WORKERS.has(s.name));
+    const catalog = async () => (await this.h!.toolCatalog("conversation", threadId)).filter((s) => !w || !NOT_FOR_WORKERS.has(s.name));
     const specs = await catalog();
     // A worker acts for the conversation that started it; a board maker for its own inbox entry.
     const notify = (): NotifyScope | null => {

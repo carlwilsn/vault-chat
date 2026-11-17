@@ -359,6 +359,102 @@ describe("a conversation on Claude Code", () => {
     expect(String(echo?.result ?? "")).toContain("echoed hi");
   }, 180_000);
 
+  it("a box plugin's tool, prompt and hidden tool reach the session live; its draft's only a chat started while trying it", async () => {
+    const dir = join(vault, ".vault-chat", "box-plugins");
+    mkdirSync(dir, { recursive: true });
+    const plugin = (tag: string, extra = "") => `// @vc-change ${tag}
+export function activate(box) {
+  box.tool({ name: "${tag}Echo", description: "Say a word back", inputSchema: { type: "object", properties: { word: { type: "string" } }, required: ["word"] },
+    handler: (a, ctx) => "${tag} said " + a.word + (ctx.tried ? " (tried)" : "") });
+  box.prompt("PROMPT-${tag}: answer ping with pong.");
+  box.tool({ name: "${tag}Unused", description: "Never called", handler: () => "unused" });
+  box.hideTool("SearchHistory");
+  ${extra}
+}
+`;
+    /** Each step: what was offered and said; the script calls `call` once, then answers. */
+    const seen: { offered: string[]; said: string }[] = [];
+    const script = (call: { name: string; args: Record<string, unknown> } | null) => {
+      seen.length = 0;
+      api.respond = (body) => {
+        const offered: string[] = (body.tools ?? []).map((t: any) => t.name);
+        seen.push({ offered, said: sentText() });
+        const results = (body.messages ?? []).flatMap((m: any) => (Array.isArray(m.content) ? m.content : []).filter((b: any) => b?.type === "tool_result"));
+        if (call && seen.length === 1) return { call };
+        return { text: `done after ${results.length} results` };
+      };
+    };
+    const { _resetBoxPlugins } = await import("../boxPlugins");
+    const { supervisorOf } = await import("../supervisor");
+    const { versionOf } = await import("../../src/pluginDrafts");
+    try {
+      // A live box plugin, made between messages: the next chat has its tool and its prompt, not the tool it hides.
+      writeFileSync(join(dir, "hello.js"), plugin("Live"));
+      script({ name: "LiveEcho", args: { word: "hi" } });
+      await engine.message({ text: "use the box tool", convId: "cc-conv-box" });
+      await answered("cc-conv-box", "use the box tool");
+      expect(seen[0]!.offered).toContain("mcp__vault_chat__LiveEcho");
+      expect(seen[0]!.offered).not.toContain("mcp__vault_chat__SearchHistory");
+      expect(seen[0]!.offered).toContain("mcp__vault_chat__JobList");
+      expect(seen[0]!.said).toContain("## box/hello\nPROMPT-Live: answer ping with pong.");
+      const row = engine.picture("cc-conv-box").items.find((i: any) => i.kind === "tool" && i.name === "LiveEcho");
+      expect(row?.status).toBe("done");
+      expect(String(row?.result ?? "")).toContain("Live said hi");
+
+      // Its draft waits for Carl: normal turns never see it.
+      const draft = plugin("Draft", 'box.tool({ name: "Breaks", description: "always throws", handler: () => { throw new Error("draft tool broke"); } });');
+      writeFileSync(join(dir, "hello.draft.js"), draft);
+      const v = versionOf(draft);
+      script(null);
+      await engine.message({ text: "still live?", convId: "cc-conv-box" });
+      await answered("cc-conv-box", "still live?");
+      expect(seen[0]!.offered).toContain("mcp__vault_chat__LiveEcho");
+      expect(seen[0]!.offered.some((n) => /DraftEcho|Breaks/.test(n))).toBe(false);
+
+      // A chat Carl starts while trying it: the draft's tools and prompt, in place of the live copy's.
+      script({ name: "DraftEcho", args: { word: "yo" } });
+      await engine.message({ text: "try the draft", convId: "cc-conv-box-try", tries: { "box/hello": v, "app/chat": "1234abcd" } });
+      await answered("cc-conv-box-try", "try the draft");
+      expect((await readConv(vault, "cc-conv-box-try")).tries).toEqual({ "box/hello": v });
+      expect(seen[0]!.offered).toContain("mcp__vault_chat__DraftEcho");
+      expect(seen[0]!.offered).not.toContain("mcp__vault_chat__LiveEcho");
+      expect(seen[0]!.said).toContain("## box/hello (draft Carl is trying)\nPROMPT-Draft");
+      expect(seen[0]!.said).not.toContain("PROMPT-Live");
+      expect(String(engine.picture("cc-conv-box-try").items.find((i: any) => i.kind === "tool" && i.name === "DraftEcho")?.result ?? "")).toContain("Draft said yo (tried)");
+
+      // Its tool throws: an error result for the agent, and the draft discards itself.
+      script({ name: "Breaks", args: {} });
+      await engine.message({ text: "break it", convId: "cc-conv-box-try" });
+      await answered("cc-conv-box-try", "break it");
+      const broke = engine.picture("cc-conv-box-try").items.find((i: any) => i.kind === "tool" && i.name === "Breaks");
+      expect(String(broke?.result ?? "")).toMatch(/draft tool broke/);
+      expect(supervisorOf(vault).changes("box/hello").at(-1)).toMatchObject({ change: "discard", version: v, by: "auto" });
+      expect(existsSync(join(dir, "hello.draft.js"))).toBe(false);
+
+      // Unloaded (the file gone): the prompt is withdrawn at the next turn, the hidden tool is back, and its tool no
+      // longer runs. (Claude Code keeps offering a tool a session was once given, even resumed: the call is refused.)
+      rmSync(join(dir, "hello.js"));
+      script({ name: "LiveEcho", args: { word: "gone" } });
+      await engine.message({ text: "after unload", convId: "cc-conv-box" });
+      await answered("cc-conv-box", "after unload");
+      expect(seen[0]!.offered).toContain("mcp__vault_chat__SearchHistory");
+      expect(seen[0]!.said).toContain("<box-plugins>(none now");
+      const gone = engine.picture("cc-conv-box").items.filter((i: any) => i.kind === "tool" && i.name === "LiveEcho").at(-1);
+      expect(String(gone?.result ?? "")).not.toContain("Live said gone");
+      expect(gone?.status).toBe("error");
+      // A new chat never sees it.
+      script(null);
+      await engine.message({ text: "fresh chat", convId: "cc-conv-box-new" });
+      await answered("cc-conv-box-new", "fresh chat");
+      expect(seen[0]!.offered).not.toContain("mcp__vault_chat__LiveEcho");
+    } finally {
+      api.respond = null;
+      api.reply = null;
+      rmSync(dir, { recursive: true, force: true });
+      _resetBoxPlugins();
+    }
+  }, 240_000);
+
   it("a tool written with the runtime's own Bash, or between messages, is there for the very next step", async () => {
     const convId = "cc-conv-mktool-bash";
     await engine.message({ text: "hello bash", convId });

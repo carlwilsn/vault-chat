@@ -429,6 +429,7 @@ test("box plugins: the box lists their drafts, Try sends the tried version with 
   assert.deepEqual(CR.boxTries(), {}, "nothing tried yet");
   CR.tryChange("box/hello", v);
   assert.deepEqual(CR.boxTries(), { "box/hello": v }, "the page host sends this with calls to /api/v2/box/…");
+  assert.deepEqual((await import("../../src/boxChat.ts")).newChatTriesNow(), { "box/hello": v }, "a chat started now tries it (its tools and prompt)");
   // Keep on another surface (the record): the card goes at once, before the box is read again.
   const keep = await supervisorRoute(vault, "POST", new URLSearchParams(), { plugin: "box/hello", change: "keep", version: v });
   assert.equal(keep.status, 200);

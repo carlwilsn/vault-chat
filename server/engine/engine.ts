@@ -90,6 +90,7 @@ import { READ_ONLY_TOOLS, type ModelChoice, type SideLog, type SideState } from 
 import { TurnRecorder, type TurnLine } from "./turnLog";
 import { SERVER_VERSION } from "../config";
 import { runVaultTool, vaultToolSpecsFor } from "../vaultTools";
+import { boxAgentCall, boxAgentPrompt, boxAgentTools, boxHiddenTools, cleanTries, type BoxTries } from "../boxPlugins";
 import { submitChangeJob, SUBMIT_CHANGE_SCHEMA } from "../submitChange";
 import { isClaudeModel, isEffort, type Effort } from "./claude/models";
 import { SIGN_IN_AGAIN } from "./claude/auth";
@@ -625,6 +626,8 @@ export function voiceSideToolSpecs(act: boolean): ToolSpec[] {
 }
 
 const text = (t: string) => ({ success: true, contentItems: [{ type: "inputText", text: t }] });
+/** The box plugin drafts a conversation tries (its `tries`, set when Carl started it while trying one). */
+const triesOf = (conv: unknown): BoxTries => cleanTries((conv as { tries?: unknown } | null)?.tries);
 
 /** A tool's answer for pi: its text, and the images it attaches (BoardLook's board pictures) as pi's image blocks. */
 export function toolAnswer(r: any): import("./backend").ToolAnswer {
@@ -809,7 +812,7 @@ export class Engine {
     b.on("up", () => this.scoped(() => void this.onUp()));
     setNoteWriter(this.d.vault, (convId, notes) => this.scoped(() => this.noteViaPi(convId, notes)));
     b.setHandlers({
-      toolCatalog: (loadout) => this.scoped(() => this.hostToolCatalog(loadout)),
+      toolCatalog: (loadout, threadId) => this.scoped(() => this.hostToolCatalog(loadout, threadId ? this.byThread.get(threadId) ?? this.childOf.get(threadId) : undefined)),
       // Its session was summarised: everything the thread had been told, again,
       // for a runtime that can put it back into the compacted session.
       afterCompact: (threadId) => this.scoped(async () => {
@@ -817,7 +820,7 @@ export class Engine {
         const conv = convId ? await readConv(this.d.vault, convId) : null;
         if (!conv) return "";
         this.sectionsSent.delete(threadId);
-        return this.changedSections(threadId, conv);
+        return await this.changedSections(threadId, conv);
       }),
       workerCwd: (threadId, cwd) => this.scoped(async () => {
         const conv = await readConv(this.d.vault, this.byThread.get(threadId) ?? "");
@@ -1179,6 +1182,8 @@ export class Engine {
     via?: string;
     /** The rest of his previous line (a pause on a call cut it in two): it steers the running turn. */
     continues?: boolean;
+    /** A new chat started while Carl tries box plugin drafts ({"box/<name>": version}): it tries them (server/boxPlugins.ts). */
+    tries?: unknown;
   }, viewerRoot = this.d.vault): Promise<Record<string, unknown> | null> {
     const clientId = typeof body.clientMsgId === "string" && body.clientMsgId.trim() ? body.clientMsgId.trim().slice(0, 80) : newMessageId();
     if (typeof body?.unqueue === "string" && body.convId) return this.takeBack(body.convId, body.unqueue);
@@ -1191,7 +1196,10 @@ export class Engine {
     const projectAsked = !body.convId && typeof body.project === "string" && body.project.trim() ? body.project.trim() : undefined;
     let conv: EngineConv | null;
     try {
-      conv = await this.target(body.convId, projectAsked, body.source === "voice" ? { source: "voice" } : {}, textIn || "Image");
+      // A chat Carl starts while he tries a box plugin's draft keeps trying it (its tools, its prompt): `tries`, set
+      // only when the chat is made (server/boxPlugins.ts).
+      const tries = cleanTries(body.tries);
+      conv = await this.target(body.convId, projectAsked, { ...(body.source === "voice" ? { source: "voice" } : {}), ...(tries ? { tries } : {}) } as Partial<EngineConv>, textIn || "Image");
     } catch (e) {
       return { error: (e as Error).message };
     }
@@ -2227,7 +2235,7 @@ export class Engine {
         }
         // What the thread already has (rules, memory, its project.md, the project list, its folder) is not sent
         // again: only a section that changed goes in front of the turn (the rules mechanism, for all of them).
-        rules = this.changedSections(threadId, conv);
+        rules = await this.changedSections(threadId, conv);
         // Something Carl did that the agent must hear once (a project he deleted): in front of this turn, then gone.
         const tell = this.picture(convId)?.meta.tellAgent as string[] | undefined;
         if (tell?.length) {
@@ -2345,7 +2353,7 @@ export class Engine {
   }
 
   /** The turn sections that changed since this thread last got them (all of them for a thread that has none yet). */
-  private changedSections(threadId: string, conv: EngineConv): string {
+  private async changedSections(threadId: string, conv: EngineConv): Promise<string> {
     const sent = this.sectionsSent.get(threadId) ?? new Map<string, string>();
     this.sectionsSent.set(threadId, sent);
     const out: string[] = [];
@@ -2356,7 +2364,11 @@ export class Engine {
     // A runtime that is given the vault's memory by its own means (Claude Code
     // imports it in the session) must not be told it again in front of the turn.
     const ownMemory = !!this.d.backend.carriesMemory?.(threadId);
-    for (const x of [...turnSections(conv as any, { folder: this.folderOf(conv) }), files]) {
+    // The box plugins' prompt fragments (server/boxPlugins.ts box.prompt): sent when they change, and once more when
+    // the last one is gone, so a running session drops what no longer applies.
+    const boxText = await boxAgentPrompt(this.d.vault, triesOf(conv)).catch(() => "");
+    const box = { key: "box-plugins", text: boxText || (sent.get("box-plugins") ? "<box-plugins>(none now: what the box plugins said before no longer applies)</box-plugins>" : "") };
+    for (const x of [...turnSections(conv as any, { folder: this.folderOf(conv) }), files, ...(box.text ? [box] : [])]) {
       if (ownMemory && x.key === "memory") continue;
       if (sent.get(x.key) === x.text) continue;
       sent.set(x.key, x.text);
@@ -2371,12 +2383,17 @@ export class Engine {
   }
 
   /** One current host policy for new and resumed sessions; vault tools keep collision checks. */
-  private async hostToolCatalog(loadout: HostLoadout): Promise<ToolSpec[]> {
+  private async hostToolCatalog(loadout: HostLoadout, convId?: string): Promise<ToolSpec[]> {
     if (loadout === "readOnly") return sideToolSpecs();
     const builtin = agentToolSpecs();
     const own = await vaultToolSpecsFor(this.d.vault, [...builtin.map((t) => t.name), ...PI_BUILTIN_TOOLS]);
     const selected = loadout === "conversation" ? builtin : voiceSideToolSpecs(loadout === "voiceAct");
-    return [...selected, ...own] as ToolSpec[];
+    // The box plugins' (server/boxPlugins.ts): their tools join, the tools they hide leave; a draft only for the
+    // conversation Carl started while trying it.
+    const tries = convId ? triesOf(await readConv(this.d.vault, convId)) : null;
+    const hidden = await boxHiddenTools(this.d.vault, tries).catch(() => new Set<string>());
+    const box = await boxAgentTools(this.d.vault, tries, [...builtin.map((t) => t.name), ...own.map((t) => t.name), ...PI_BUILTIN_TOOLS]).catch(() => []);
+    return [...selected.filter((t) => !hidden.has(t.name)), ...own, ...box] as ToolSpec[];
   }
 
   /**
@@ -2418,7 +2435,7 @@ export class Engine {
       model,
       effort,
       instructions,
-      tools: await this.hostToolCatalog("conversation"),
+      tools: await this.hostToolCatalog("conversation", conv.id),
       subagents,
       conv: conv.id,
     });
@@ -2949,6 +2966,9 @@ export class Engine {
     const interaction: Interaction = p.interaction ?? p.notifyScope?.interaction ?? this.interaction(convId);
     try {
       p.signal?.throwIfAborted();
+      // A tool a box plugin hides (server/boxPlugins.ts box.hideTool): refused even from a session that listed it before.
+      if (agentToolSpecs().some((t) => t.name === name) && (await boxHiddenTools(vault, triesOf(conv)).catch(() => new Set<string>())).has(name))
+        return { success: false, contentItems: [{ type: "inputText", text: `${name} is turned off by a box plugin (.vault-chat/box-plugins/; the Plugins tool's status says which).` }] };
       // ListProjects only reads. A project is made only by Carl: in the app, or by asking for it (OpenProject below).
       if (isContextTool(name)) return await handleContextTool(name, a, { conv: conv as any, convs: (await this.convsEverywhere(vault)) as any });
       // The notes tools: the same code voice runs (server/notesTools.ts), every result read back from the file.
@@ -3266,6 +3286,9 @@ export class Engine {
           // One of Carl's own vault tools (.vault-chat/tools), run in the command sandbox.
           const out = await runVaultTool(vault, this.d.shell?.(), name, a);
           if (out !== null) return { success: !/^(Error|exit \d|\(timed out\))/.test(out), contentItems: [{ type: "inputText", text: out }] };
+          // A box plugin's tool (server/boxPlugins.ts box.tool): the draft's in a conversation that tries it.
+          const boxed = await boxAgentCall(vault, name, a, { tries: triesOf(conv), conv: conv.id || null, signal: p.signal });
+          if (boxed) return { success: boxed.ok, contentItems: [{ type: "inputText", text: boxed.text }] };
           return { success: false, contentItems: [{ type: "inputText", text: `Unknown tool ${name}.` }] };
         }
       }

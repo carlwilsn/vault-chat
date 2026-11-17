@@ -23,7 +23,7 @@ import { useStore } from "./store";
 import { appPluginFolder, LIVE_APP_PLUGINS } from "./appPluginLive";
 import { liveCopiesNow, useAllLiveCopies, type LiveCopies } from "./appPluginLiveHost";
 import { postPluginChange, supervisorChangesNow, useSupervisorVersion } from "./pluginSupervisorApp";
-import { boxGet, boxLinkFor } from "./boxChat";
+import { boxGet, boxLinkFor, provideNewChatTries } from "./boxChat";
 import { provideBoxTries } from "./liveBridge";
 import { APP_PLUGINS } from "./appPlugins";
 import { PRESET_DRAFT_FILE, PRESET_PLUGIN_ID, parseDraft } from "./appPreset";
@@ -174,6 +174,7 @@ export function boxTries(): Record<string, string> {
   return out;
 }
 provideBoxTries(boxTries);
+provideNewChatTries(boxTries);
 
 /** Read the box plugins' drafts from the box. A tried one that is gone stops being tried (discarded by itself: said). */
 export async function refreshBoxDrafts(): Promise<void> {

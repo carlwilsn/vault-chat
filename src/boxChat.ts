@@ -1148,6 +1148,14 @@ function logRecord(r: LogRecord): void {
  * outside the vault — their bytes go to the box first (boxUploadFile), and the
  * message names them by their path there.
  */
+/** The box plugin drafts this app's windows try now ({"box/<name>": version}); src/changeReady.ts provides it. */
+let newChatTries: () => Record<string, string> = () => ({});
+export function provideNewChatTries(fn: () => Record<string, string>): void {
+  newChatTries = fn;
+}
+/** What a new chat sent now would try (tests). */
+export const newChatTriesNow = () => newChatTries();
+
 export async function boxSend(opts: { text: string; contextPreamble?: string; attachments?: ChatAttachment[]; uploads?: FileUpload[]; convId?: string | null }): Promise<boolean> {
   if (!boxChatOn() || !session) return false;
   const sess = session;
@@ -1218,6 +1226,12 @@ export async function boxSend(opts: { text: string; contextPreamble?: string; at
     ...(ctx ? { context: ctx } : {}),
   };
   if (kind === "send" && conv?.project && !row) base.project = projectForSend(conv.project);
+  // A chat started while Carl tries a box plugin's draft keeps trying it: its tools and prompt reach that chat's
+  // session only, never another turn (server/boxPlugins.ts). Only a chat the box has not made yet takes it.
+  if (kind === "send" && !row && convId !== MAIN_ID) {
+    const tries = newChatTries();
+    if (Object.keys(tries).length) base.tries = tries;
+  }
   const r = await intent(sess, { ...base, type: kind }, requestLink);
   if (!r.ok) {
     sess.failOutgoing(convId, clientId, refused(r, kind === "answer" ? "answer" : "message"));
