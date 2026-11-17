@@ -11,6 +11,11 @@ import { hit } from "./shortcuts";
 // In the viewer and in full screen the bar lies over the picture and, while
 // the video plays, fades out with the cursor after VIDEO_IDLE_MS without a
 // mouse move, tap or key (back on the next one), as on YouTube.
+// The moves are heard on the document itself (capture phase) and placed by
+// where they land, not by handlers on the player's own elements: an element
+// that stops a move on its way up, a layer laid over the pane, the bar turning
+// pointer-events:none under the cursor, or the full-screen element changing
+// can then never keep the bar from coming back.
 
 /** 75 → "1:15", 3725 → "1:02:05"; a duration not known yet → "0:00". */
 export function videoTime(seconds: number): string {
@@ -38,6 +43,31 @@ export const VIDEO_IDLE_MS = 2500;
  */
 export function videoBarHidden(s: { playing: boolean; idle: boolean; overBar: boolean; dragging: boolean }): boolean {
   return s.playing && s.idle && !s.overBar && !s.dragging;
+}
+
+type Box = { left: number; top: number; right: number; bottom: number; width: number; height: number };
+
+/** A point inside a box laid out on screen (an unlaid box, 0 × 0, holds nothing). */
+export function inBox(x: number, y: number, r: Box | null | undefined): boolean {
+  return !!r && r.width > 0 && r.height > 0 && x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+}
+
+/**
+ * Where a pointer event lands for the auto-hiding bar: "in" the player (wake
+ * the bar), "out" of it (a mouse that left a playing video hides the bar), or
+ * "none" (no place to judge by). Its target inside the player counts first;
+ * otherwise its point against the player's box (a layer laid over the player
+ * still has the pointer "in" it).
+ */
+export function pointerPlace(
+  e: { target: unknown; clientX?: number; clientY?: number },
+  player: { contains(n: unknown): boolean; getBoundingClientRect?(): Box },
+): "in" | "out" | "none" {
+  if (e.target && player.contains(e.target)) return "in";
+  if (typeof e.clientX !== "number" || typeof e.clientY !== "number") return "none";
+  const r = player.getBoundingClientRect?.();
+  if (!r || !(r.width > 0)) return "none";
+  return inBox(e.clientX, e.clientY, r) ? "in" : "out";
 }
 
 type Timers = { set: (fn: () => void, ms: number) => unknown; clear: (id: unknown) => void };
@@ -92,6 +122,7 @@ export function VideoPlayer({
   dataEl,
   onError,
   extra,
+  idleMs = VIDEO_IDLE_MS,
 }: {
   src: string;
   title?: string;
@@ -103,10 +134,13 @@ export function VideoPlayer({
   onError?: () => void;
   /** More controls at the right of the bar (the viewer's "system player"). */
   extra?: ReactNode;
+  /** How long a resting pointer keeps the bar (tests shorten it). */
+  idleMs?: number;
 }) {
   const wrap = useRef<HTMLSpanElement>(null);
   const video = useRef<HTMLVideoElement>(null);
   const track = useRef<HTMLSpanElement>(null);
+  const bar = useRef<HTMLSpanElement>(null);
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -120,10 +154,58 @@ export function VideoPlayer({
   const [overBar, setOverBar] = useState(false);
   const [seeking, setSeeking] = useState(false);
   const watch = useRef<ReturnType<typeof idleWatch> | null>(null);
-  if (!watch.current) watch.current = idleWatch(VIDEO_IDLE_MS, setIdle);
+  if (!watch.current) watch.current = idleWatch(idleMs, setIdle);
   const wake = useCallback(() => watch.current?.poke(), []);
   useEffect(() => () => watch.current?.stop(), []);
   const hidden = autoHide && videoBarHidden({ playing, idle, overBar, dragging: seeking });
+
+  // Every move, tap, wheel or touch anywhere in the document, heard first (capture) and placed by where it lands.
+  useEffect(() => {
+    if (!autoHide) return;
+    const w = wrap.current;
+    const doc = w?.ownerDocument;
+    if (!w || !doc) return;
+    const onBar = (e: Event) => {
+      const b = bar.current;
+      if (!b) return false;
+      if (b.contains(e.target as Node)) return true;
+      const m = e as MouseEvent;
+      return typeof m.clientX === "number" && inBox(m.clientX, m.clientY, b.getBoundingClientRect?.());
+    };
+    const onMove = (e: Event) => {
+      const where = pointerPlace(e as MouseEvent, w);
+      if (where === "in") {
+        wake();
+        setOverBar(onBar(e));
+      } else if (where === "out" && (e as Event & { pointerType?: string }).pointerType !== "touch") {
+        // A mouse that left a playing video takes the bar with it at once.
+        setOverBar(false);
+        watch.current?.sleep();
+      }
+    };
+    const onTouch = (e: Event) => {
+      if (pointerPlace(e as MouseEvent, w) === "in") wake();
+    };
+    const onOut = (e: Event) => {
+      // The mouse left the window itself.
+      const p = e as Event & { pointerType?: string; relatedTarget?: unknown };
+      if (!p.relatedTarget && p.pointerType === "mouse" && w.contains(p.target as Node)) {
+        setOverBar(false);
+        watch.current?.sleep();
+      }
+    };
+    const opts = { capture: true, passive: true } as const;
+    const moves = ["pointermove", "mousemove"] as const;
+    const taps = ["pointerdown", "mousedown", "touchstart", "wheel"] as const;
+    for (const t of moves) doc.addEventListener(t, onMove, opts);
+    for (const t of taps) doc.addEventListener(t, onTouch, opts);
+    doc.addEventListener("pointerout", onOut, opts);
+    return () => {
+      for (const t of moves) doc.removeEventListener(t, onMove, opts);
+      for (const t of taps) doc.removeEventListener(t, onTouch, opts);
+      doc.removeEventListener("pointerout", onOut, opts);
+    };
+  }, [autoHide, wake]);
 
   useEffect(() => {
     const onFull = () => setFull(document.fullscreenElement === wrap.current);
@@ -209,12 +291,8 @@ export function VideoPlayer({
       data-el="video-player"
       tabIndex={0}
       onKeyDown={onKey}
-      onPointerMove={wake}
-      onPointerDown={wake}
-      onPointerLeave={(e) => {
-        // A mouse that leaves a playing video takes the bar with it (a touch "leaves" on every lift).
-        if (e.pointerType === "mouse") watch.current?.sleep();
-      }}
+      // Keyboard focus on the player or any of its buttons brings the bar back.
+      onFocus={wake}
       data-chrome={autoHide ? (hidden ? "hidden" : "shown") : undefined}
       className={cn(
         "flex flex-col overflow-hidden bg-black focus-visible:outline-none",
@@ -251,13 +329,13 @@ export function VideoPlayer({
         className={cn("block bg-black", hidden ? "cursor-none" : "cursor-pointer", fill || full ? "min-h-0 w-full flex-1 object-contain" : "max-h-[70vh] max-w-full")}
       />
       <span
+        ref={bar}
         data-el="video-bar"
-        onPointerEnter={() => setOverBar(true)}
-        onPointerLeave={() => setOverBar(false)}
         className={cn(
           "flex h-9 shrink-0 items-center gap-1.5 border-t border-border/60 bg-card px-1.5 text-foreground",
           // Over the picture (so hiding it never resizes the video), fading like YouTube's.
-          autoHide && "absolute inset-x-0 bottom-0 z-10 transition-opacity duration-300",
+          // Its own compositor layer ([will-change:opacity]): coming back is an opacity change over the playing video only.
+          autoHide && "absolute inset-x-0 bottom-0 z-10 transition-opacity duration-300 [will-change:opacity]",
           hidden && "pointer-events-none opacity-0",
         )}
       >
@@ -280,6 +358,12 @@ export function VideoPlayer({
           onPointerMove={onTrackMove}
           onPointerUp={onTrackUp}
           onPointerCancel={onTrackUp}
+          onLostPointerCapture={() => {
+            if (!dragging.current) return;
+            dragging.current = false;
+            setSeeking(false);
+            wake();
+          }}
           className="group/seek relative mx-1 flex h-7 min-w-[48px] flex-1 cursor-pointer touch-none items-center"
         >
           <span className="relative block h-1 w-full overflow-hidden rounded-full bg-muted">
