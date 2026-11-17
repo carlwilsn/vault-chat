@@ -35,13 +35,21 @@
 // tries it, src/liveBridge.ts), never for anyone else, and it cannot write: its state.set refuses ("Try never changes
 // box data until Keep"). A tried draft that fails to load, throws, or answers slower than BOX_SLOW_MS discards itself (a
 // discard record by "auto"); a kept copy that does so within KEEP_WATCH_MS switches back by itself (a switch by "auto").
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+//
+// Apart from the box: each loaded copy runs in its own worker_thread (server/boxPluginWorker.ts), never on the box's
+// event loop, so it cannot hang or crash the box. A watchdog pings the thread; one that does not answer for BOX_STUCK_MS
+// (an endless loop at load, in a handler, a hook or a timer) is terminated. Its heap is capped (BOX_MEM_MB,
+// resourceLimits; VC_BOX_PLUGIN_MEM_MB), and process.exit ends only its thread. Each is a failure like a throw: a tried
+// draft discards itself, a watched keep switches back, an older live copy stops with its error in its status (the next
+// change or a restart loads it again). The box goes on answering meanwhile.
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { MessageChannel, Worker } from "node:worker_threads";
+import { BOX_WORKER_SOURCE } from "./boxPluginWorker";
 import { BOX_PLUGIN_DIR, boxSlot, chooseCopy, draftPending, draftWhat, slotFileOf, versionOf, watchedKeep, type CopyKind } from "../src/pluginDrafts";
 import { signalLog } from "./convlog/log";
-import type { LogRecord } from "../src/convlog/protocol";
 import { slotCode } from "./pluginDrafts";
 import { pluginDesired, setPluginChange, supervisorOf } from "./supervisor";
 import { readPluginState, setPluginState } from "./pluginState";
@@ -60,24 +68,38 @@ export function _setBoxToolMs(ms: number): void {
 export const BOX_PROMPT_MAX = 1_500;
 /** vault-chat's tools a box plugin may never hide: the way to turn it off again. */
 const UNHIDEABLE = new Set(["Plugins"]);
-/** activate() must finish within this. */
+/** activate() must finish within this (from when its thread runs). */
 const ACTIVATE_MS = 5_000;
+/** A copy's thread must start within this. */
+const START_MS = 30_000;
+/** A copy's cleanup (Keep, Discard, Switch back, turned off) must finish within this, else its thread is terminated. */
+const STOP_MS = 1_000;
+/** box.state.get / set wait at most this for the box. */
+const SYNC_MS = 5_000;
+/** The watchdog: a copy whose thread does not answer for this long runs code that never yields and is terminated. */
+export let BOX_STUCK_MS = 5_000;
+/** A copy's thread may use this much heap (resourceLimits); over it, it is terminated. */
+export let BOX_MEM_MB = Math.max(16, Number(process.env.VC_BOX_PLUGIN_MEM_MB) || 128);
+/** Tests: a shorter watchdog, a smaller heap. */
+export function _setBoxLimits(o: { stuckMs?: number; memMb?: number }): void {
+  if (o.stuckMs) BOX_STUCK_MS = o.stuckMs;
+  if (o.memMb) BOX_MEM_MB = o.memMb;
+}
 /** A box plugin's code at most this big. */
 const MAX_BYTES = 512 * 1024;
 
 export type BoxRequest = { method: "GET" | "POST"; path: string; query: Record<string, string>; body: unknown; tried: boolean };
-type Handler = (req: BoxRequest) => unknown;
 export type BoxToolSpec = { type: "function"; name: string; description: string; inputSchema: Record<string, unknown> };
-type BoxTool = { spec: BoxToolSpec; handler: (args: Record<string, unknown>, ctx: { tried: boolean; conv: string | null }) => unknown };
-const REPLY = Symbol.for("vc.box.reply");
-type Reply = { [REPLY]: true; status: number; body: unknown };
+/** A tool as the box knows it: its spec (the handler stays in the copy's thread). */
+type BoxTool = { spec: BoxToolSpec };
 
 type Instance = {
   name: string;
   version: string;
   kind: CopyKind;
   draft: boolean;
-  routes: Map<string, Handler>;
+  /** Its routes ("GET /x"), its tools, prompt and hidden tools: as its thread registered them. */
+  routes: Set<string>;
   tools: Map<string, BoxTool>;
   prompt: string | null;
   hidden: Set<string>;
@@ -88,6 +110,15 @@ type Instance = {
   lines: string[];
   ready: Promise<void>;
   stopped: boolean;
+  /** The thread its code runs in (null once it ended). */
+  worker: Worker | null;
+  /** Its handlers' calls in flight. */
+  calls: Map<number, { ok: (v: CallOut) => void; no: (e: Error) => void }>;
+  /** Settles when its thread has ended. */
+  unloaded: Promise<void>;
+  /** Ask its thread to run its cleanup and end; terminate it (a failure). Set once its thread exists. */
+  stop?: () => void;
+  kill?: (why: string | null) => void;
 };
 
 type Plugin = { live: Instance | null; draft: Instance | null };
@@ -101,14 +132,6 @@ function runtimeOf(vault: string): Runtime {
 }
 
 const msg = (e: unknown) => String((e as Error)?.message ?? e).split("\n")[0]!.slice(0, 300);
-
-function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
-  return new Promise<T>((ok, no) => {
-    const t = setTimeout(() => no(new Error(`${what} took over ${ms} ms`)), ms);
-    t.unref?.();
-    p.then((v) => (clearTimeout(t), ok(v)), (e) => (clearTimeout(t), no(e)));
-  });
-}
 
 // ---------------------------------------------------------------- failures
 
@@ -142,148 +165,279 @@ function moduleFile(vault: string, name: string, version: string, code: string):
   return f;
 }
 
-function apiFor(vault: string, inst: Instance) {
-  const id = `box/${inst.name}`;
-  const guard = <A extends unknown[]>(what: string, fn: (...a: A) => unknown) => (...a: A) => {
-    if (inst.stopped) return;
-    const t0 = Date.now();
-    try {
-      const out = fn(...a);
-      if (out && typeof (out as Promise<unknown>).catch === "function") (out as Promise<unknown>).catch((e) => failed(vault, inst, `${what} threw: ${msg(e)}`));
-    } catch (e) {
-      return failed(vault, inst, `${what} threw: ${msg(e)}`);
-    }
-    const ms = Date.now() - t0;
-    if (ms > BOX_SLOW_MS) failed(vault, inst, `${what} took ${ms} ms (the limit is ${BOX_SLOW_MS} ms)`);
-  };
-  const vaultRoot = resolve(vault);
-  const apiLog = (line: string) => {
-    inst.lines.push(line.slice(0, 500));
-    if (inst.lines.length > 20) inst.lines.shift();
-    console.log(`[box-plugin] ${id}${inst.draft ? " (draft)" : ""}: ${line.slice(0, 500)}`);
-  };
-  return {
-    name: inst.name,
-    version: inst.version,
-    tried: inst.draft,
-    route(method: string, path: string, handler: Handler) {
-      const m = String(method).toUpperCase();
-      if (m !== "GET" && m !== "POST") throw new Error("box.route: GET or POST");
-      const p = "/" + String(path ?? "").replace(/^\/+/, "");
-      if (typeof handler !== "function") throw new Error("box.route: a handler function");
-      const key = `${m} ${p}`;
-      inst.routes.set(key, handler);
-      const off = () => void (inst.routes.get(key) === handler && inst.routes.delete(key));
-      inst.undo.push(off);
-      return off;
-    },
-    onRecord(fn: (r: LogRecord) => void) {
-      const off = signalLog(vault).onRecord(guard("onRecord", fn));
-      inst.undo.push(off);
-      return off;
-    },
-    every(ms: number, fn: () => void) {
-      const t = setInterval(guard("every", fn), Math.max(1000, Number(ms) || 0));
-      t.unref?.();
-      const off = () => clearInterval(t);
-      inst.undo.push(off);
-      return off;
-    },
-    readFile(rel: string): string | null {
-      const full = resolve(vaultRoot, String(rel ?? ""));
-      if (full !== vaultRoot && !full.startsWith(vaultRoot + sep)) return null;
-      try {
-        return readFileSync(full, "utf8");
-      } catch {
-        return null;
-      }
-    },
-    state: {
-      get(key?: string) {
-        const s = readPluginState(vault, id).state;
-        return key == null ? s : s[String(key)];
-      },
-      set(key: string, value: unknown) {
-        // Try never changes the box's data: a tried draft's write is said, not done.
-        if (inst.draft) return void apiLog(`not written while tried: ${String(key)}`);
-        const w = setPluginState(vault, id, JSON.stringify({ key: String(key), value: value === undefined ? null : value }));
-        if ("error" in w) throw new Error(w.error);
-        return w.seq;
-      },
-    },
-    tool(def: { name?: unknown; description?: unknown; inputSchema?: unknown; input_schema?: unknown; handler?: unknown }) {
-      const name = String(def?.name ?? "");
-      if (!/^[A-Za-z][A-Za-z0-9_-]{0,47}$/.test(name)) throw new Error("box.tool: a name of letters, digits, _ or - (at most 48)");
-      if (typeof def.handler !== "function") throw new Error("box.tool: a handler function");
-      const description = String(def.description ?? "").trim().slice(0, 1_000);
-      if (!description) throw new Error("box.tool: a description");
-      const schema = (def.inputSchema ?? def.input_schema ?? { type: "object", properties: {} }) as Record<string, unknown>;
-      if (!schema || typeof schema !== "object" || schema.type !== "object") throw new Error("box.tool: inputSchema must be a JSON Schema with type \"object\"");
-      if (JSON.stringify(schema).length > 8_000) throw new Error("box.tool: inputSchema over 8000 characters");
-      const t: BoxTool = { spec: { type: "function", name, description: `${description} (box plugin ${id}.)`, inputSchema: structuredClone(schema) }, handler: def.handler as BoxTool["handler"] };
-      inst.tools.set(name, t);
-      const off = () => void (inst.tools.get(name) === t && inst.tools.delete(name));
-      inst.undo.push(off);
-      return off;
-    },
-    prompt(text: unknown) {
-      const s = String(text ?? "").trim();
-      if (s.length > BOX_PROMPT_MAX) throw new Error(`box.prompt: at most ${BOX_PROMPT_MAX} characters (this is ${s.length})`);
-      inst.prompt = s || null;
-      const off = () => void (inst.prompt === (s || null) && (inst.prompt = null));
-      inst.undo.push(off);
-      return off;
-    },
-    hideTool(name: unknown) {
-      const n = String(name ?? "");
-      if (UNHIDEABLE.has(n)) throw new Error(`box.hideTool: ${n} cannot be hidden (it is how a box plugin is turned off)`);
-      inst.hidden.add(n);
-      const off = () => void inst.hidden.delete(n);
-      inst.undo.push(off);
-      return off;
-    },
-    reply(status: number, body: unknown): Reply {
-      return { [REPLY]: true, status: Math.trunc(Number(status)) || 200, body };
-    },
-    log(...a: unknown[]) {
-      apiLog(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "));
-    },
-  };
-}
+let seq = 0;
 
+/** The box's side of a copy's thread: what it registered (as messages), its calls in flight, the watchdog. */
 function load(vault: string, name: string, kind: CopyKind, code: string, draft: boolean): Instance {
-  const inst: Instance = { name, version: versionOf(code), kind, draft, routes: new Map(), tools: new Map(), prompt: null, hidden: new Set(), undo: [], error: null, failedOnce: false, lines: [], ready: Promise.resolve(), stopped: false };
-  inst.ready = (async () => {
+  const inst: Instance = { name, version: versionOf(code), kind, draft, routes: new Set(), tools: new Map(), prompt: null, hidden: new Set(), undo: [], error: null, failedOnce: false, lines: [], ready: Promise.resolve(), stopped: false, worker: null, calls: new Map(), unloaded: Promise.resolve() };
+  const id = `box/${name}`;
+  let settle: (() => void) | null = null;
+  inst.ready = new Promise<void>((ok) => (settle = ok));
+  const loaded = () => {
+    const s = settle;
+    settle = null;
+    s?.();
+  };
+  /** A load that went wrong: the copy is unloaded and it is a failure (a tried draft discards itself). */
+  const loadFailed = (why: string) => {
+    if (!settle) return;
+    unload(inst);
+    failed(vault, inst, `it did not load: ${why}`);
+    loaded();
+  };
+  if (code.length > MAX_BYTES) {
+    loadFailed(`over ${MAX_BYTES} bytes`);
+    return inst;
+  }
+  let file: string;
+  try {
+    file = moduleFile(vault, name, inst.version, code);
+  } catch (e) {
+    loadFailed(msg(e));
+    return inst;
+  }
+
+  const sab = new SharedArrayBuffer(4);
+  const flag = new Int32Array(sab);
+  const { port1, port2 } = new MessageChannel();
+  let worker: Worker;
+  try {
+    worker = new Worker(BOX_WORKER_SOURCE, {
+      eval: true,
+      name: id,
+      workerData: { url: pathToFileURL(file).href, vault, name, version: inst.version, draft, sab, port: port2, syncMs: SYNC_MS, slowMs: BOX_SLOW_MS, promptMax: BOX_PROMPT_MAX, unhideable: [...UNHIDEABLE], mirror: !!process.env.VITEST },
+      transferList: [port2],
+      resourceLimits: { maxOldGenerationSizeMb: BOX_MEM_MB, maxYoungGenerationSizeMb: Math.max(4, Math.min(32, Math.round(BOX_MEM_MB / 4))) },
+    });
+  } catch (e) {
+    port1.close();
+    loadFailed(msg(e));
+    return inst;
+  }
+  worker.unref();
+  inst.worker = worker;
+
+  // box.state.get / set: answered at once, the thread waits on the flag.
+  port1.on("message", (m: { n: number; op: string; args: unknown }) => {
+    let out: { n: number; value?: unknown; error?: string };
     try {
-      if (code.length > MAX_BYTES) throw new Error(`over ${MAX_BYTES} bytes`);
-      const mod = await import(/* @vite-ignore */ pathToFileURL(moduleFile(vault, name, inst.version, code)).href);
-      const activate = typeof mod.activate === "function" ? mod.activate : typeof mod.default === "function" ? mod.default : null;
-      if (!activate) throw new Error("it exports no activate(box)");
-      const out = await withTimeout(Promise.resolve(activate(apiFor(vault, inst))), ACTIVATE_MS, "activate");
-      if (typeof out === "function") inst.undo.push(out as () => void);
-      if (inst.stopped) unload(inst);
+      if (m.op === "get") {
+        const s = readPluginState(vault, id).state;
+        out = { n: m.n, value: m.args == null ? s : s[String(m.args)] };
+      } else if (m.op === "set") {
+        const w = setPluginState(vault, id, String(m.args));
+        out = "error" in w ? { n: m.n, error: w.error } : { n: m.n, value: w.seq };
+      } else out = { n: m.n, error: `no ${m.op}` };
     } catch (e) {
-      unload(inst);
-      failed(vault, inst, `it did not load: ${msg(e)}`);
+      out = { n: m.n, error: msg(e) };
     }
-  })();
+    try {
+      port1.postMessage(out);
+    } catch (e) {
+      port1.postMessage({ n: m.n, error: msg(e) });
+    }
+    Atomics.store(flag, 0, 1);
+    Atomics.notify(flag, 0);
+  });
+  port1.unref();
+
+  // The log hook: only while it has one.
+  let offRecords: (() => void) | null = null;
+  const hooks = (n: number) => {
+    if (n > 0 && !offRecords && !inst.stopped)
+      offRecords = signalLog(vault).onRecord((r) => {
+        if (!inst.stopped) inst.worker?.postMessage({ t: "record", r });
+      });
+    else if (n === 0 && offRecords) (offRecords(), (offRecords = null));
+  };
+
+  // The watchdog: a thread that has not answered a ping for BOX_STUCK_MS runs code that never yields (an endless
+  // loop) and is terminated. A stall of the box's own loop gives no verdict.
+  let pingSent: number | null = null;
+  let lastTick = Date.now();
+  const every = Math.max(50, Math.min(500, Math.floor(BOX_STUCK_MS / 4)));
+  let dog: ReturnType<typeof setInterval> | null = null;
+  const startDog = () => {
+    dog = setInterval(() => {
+      const now = Date.now();
+      if (now - lastTick > every * 3) pingSent = null;
+      lastTick = now;
+      if (pingSent !== null && now - pingSent > BOX_STUCK_MS) return kill(`its code ran over ${BOX_STUCK_MS} ms without yielding (an endless loop?), so it was stopped`);
+      if (pingSent === null) {
+        pingSent = now;
+        worker.postMessage({ t: "ping" });
+      }
+    }, every);
+    dog.unref?.();
+  };
+  // No hello at all (a box too loaded to start a thread), or activate() too long once it started.
+  let loadTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => kill(`it did not start within ${START_MS} ms`), START_MS);
+  loadTimer.unref?.();
+
+  let gone = false;
+  let stopping: (() => void) | null = null;
+  inst.unloaded = new Promise<void>((ok) => (stopping = ok));
+  /** The thread is gone: everything it had in flight fails; unexpected, it is a failure of the copy. */
+  const ended = (why: string | null) => {
+    if (gone) return;
+    gone = true;
+    if (dog) clearInterval(dog);
+    if (loadTimer) clearTimeout(loadTimer);
+    hooks(0);
+    port1.close();
+    inst.worker = null;
+    for (const c of inst.calls.values()) c.no(new Error(why ?? "it was unloaded"));
+    inst.calls.clear();
+    if (why !== null) {
+      if (settle) loadFailed(why);
+      else if (!inst.stopped) {
+        unload(inst);
+        failed(vault, inst, why);
+      }
+    }
+    loaded();
+    stopping?.();
+  };
+  const kill = (why: string | null) => {
+    if (gone) return;
+    void worker.terminate();
+    ended(why);
+  };
+  inst.kill = kill;
+  inst.stop = () => {
+    if (gone) return;
+    // Its cleanup runs in its thread; a thread that does not finish it soon is terminated.
+    const t = setTimeout(() => (void worker.terminate(), ended(null)), STOP_MS);
+    t.unref?.();
+    try {
+      worker.postMessage({ t: "stop" });
+    } catch {
+      void worker.terminate();
+      ended(null);
+    }
+  };
+
+  let oom = false;
+  worker.on("error", (e: Error & { code?: string }) => {
+    if (e?.code === "ERR_WORKER_OUT_OF_MEMORY") oom = true;
+    else console.warn(`[box-plugin] ${id}: its thread failed: ${msg(e)}`);
+  });
+  worker.on("exit", (code) => ended(inst.stopped && !oom ? null : oom ? `it used over ${BOX_MEM_MB} MB of memory, so it was stopped` : `its thread ended (exit code ${code})`));
+
+  const mine = (m: { t: string }) => m.t === "done" || m.t === "stopped" || m.t === "pong" || !inst.stopped;
+  worker.on("message", (m: any) => {
+    if (!mine(m)) return;
+    switch (m.t) {
+      case "hello":
+        if (loadTimer) clearTimeout(loadTimer);
+        loadTimer = setTimeout(() => kill(`activate took over ${ACTIVATE_MS} ms`), ACTIVATE_MS);
+        loadTimer.unref?.();
+        startDog();
+        return;
+      case "pong":
+        pingSent = null;
+        return;
+      case "active":
+        if (loadTimer) clearTimeout(loadTimer);
+        loadTimer = null;
+        loaded();
+        return;
+      case "loadFailed":
+        if (loadTimer) clearTimeout(loadTimer);
+        loadTimer = null;
+        loadFailed(m.why);
+        if (!gone) void worker.terminate();
+        return;
+      case "reg":
+        if (m.what === "route") inst.routes.add(m.key);
+        else if (m.what === "tool") inst.tools.set(m.spec.name, { spec: m.spec });
+        else if (m.what === "hide") inst.hidden.add(m.key);
+        return;
+      case "unreg":
+        if (m.what === "route") inst.routes.delete(m.key);
+        else if (m.what === "tool") inst.tools.delete(m.key);
+        else if (m.what === "hide") inst.hidden.delete(m.key);
+        return;
+      case "prompt":
+        if (m.set) inst.prompt = m.text;
+        else if (inst.prompt === m.text) inst.prompt = null;
+        return;
+      case "hooks":
+        hooks(m.n);
+        return;
+      case "log":
+        inst.lines.push(m.line);
+        if (inst.lines.length > 20) inst.lines.shift();
+        console.log(`[box-plugin] ${id}${draft ? " (draft)" : ""}: ${m.line}`);
+        return;
+      case "warn":
+        console.warn(`[box-plugin] ${id}: ${m.line}`);
+        return;
+      case "fail":
+        failed(vault, inst, m.why);
+        return;
+      case "done": {
+        const c = inst.calls.get(m.id);
+        if (!c) return;
+        inst.calls.delete(m.id);
+        if (m.ok) c.ok(m.reply ? { reply: m.reply } : { value: m.value });
+        else c.no(new Error(m.error));
+        return;
+      }
+      case "stopped":
+        mirrorGlobals(m.globals);
+        void worker.terminate();
+        ended(null);
+        return;
+    }
+  });
   return inst;
 }
 
-function unload(inst: Instance | null): void {
-  if (!inst) return;
+/** Tests (VITEST): a thread's __box* globals, as its cleanup left them, reach the box's own globalThis. */
+function mirrorGlobals(g: Record<string, unknown> | undefined): void {
+  const G = globalThis as Record<string, unknown>;
+  for (const [k, v] of Object.entries(g ?? {})) {
+    if (Array.isArray(v) && Array.isArray(G[k])) for (const x of v) (G[k] as unknown[]).includes(x) || (G[k] as unknown[]).push(x);
+    else G[k] = v;
+  }
+}
+
+type CallOut = { reply: { status: number; body: unknown } } | { value: unknown };
+
+/** Call a handler in the copy's thread: a route's (arg: the request) or a tool's (arg: its args, ctx). */
+function callIn(inst: Instance, kind: "route" | "tool", key: string, arg: unknown, ctx: unknown, ms: number, what: string): Promise<CallOut> {
+  const w = inst.worker;
+  if (!w || inst.stopped) return Promise.reject(new Error(`it is not running: ${inst.error ?? "unloaded"}`));
+  const id = ++seq;
+  return new Promise<CallOut>((ok, no) => {
+    const t = setTimeout(() => {
+      inst.calls.delete(id);
+      no(new Error(`${what} took over ${ms} ms`));
+    }, ms);
+    t.unref?.();
+    inst.calls.set(id, { ok: (v) => (clearTimeout(t), ok(v)), no: (e) => (clearTimeout(t), no(e)) });
+    try {
+      w.postMessage({ t: "call", id, kind, key, arg, ctx });
+    } catch (e) {
+      inst.calls.delete(id);
+      clearTimeout(t);
+      no(e);
+    }
+  });
+}
+
+/** Unload a copy: what it registered leaves at once; its cleanup runs in its thread, then the thread ends. */
+function unload(inst: Instance | null): Promise<void> {
+  if (!inst) return Promise.resolve();
+  const first = !inst.stopped;
   inst.stopped = true;
   inst.routes.clear();
   inst.tools.clear();
   inst.prompt = null;
   inst.hidden.clear();
-  for (const off of inst.undo.splice(0).reverse()) {
-    try {
-      off();
-    } catch (e) {
-      console.warn(`[box-plugin] box/${inst.name}: unloading threw: ${msg(e)}`);
-    }
-  }
+  if (first) inst.stop?.();
+  return inst.unloaded;
 }
 
 // ---------------------------------------------------------------- which copy runs
@@ -303,13 +457,15 @@ function names(vault: string): string[] {
   return [...out].sort();
 }
 
-function reconcileNow(vault: string): void {
+async function reconcileNow(vault: string): Promise<void> {
+  const ending: Promise<void>[] = [];
+  const drop = (i: Instance | null) => void ending.push(unload(i));
   const rt = runtimeOf(vault);
   const here = new Set(names(vault));
   for (const [name, p] of rt.plugins)
     if (!here.has(name)) {
-      unload(p.live);
-      unload(p.draft);
+      drop(p.live);
+      drop(p.draft);
       rt.plugins.delete(name);
     }
   for (const name of here) {
@@ -317,8 +473,8 @@ function reconcileNow(vault: string): void {
     const p = rt.plugins.get(name) ?? { live: null, draft: null };
     rt.plugins.set(name, p);
     if (pluginDesired(vault, id).state === "stopped") {
-      unload(p.live);
-      unload(p.draft);
+      drop(p.live);
+      drop(p.draft);
       p.live = p.draft = null;
       continue;
     }
@@ -328,16 +484,18 @@ function reconcileNow(vault: string): void {
     const text = c.kind ? code[c.kind] : undefined;
     const v = text !== undefined ? versionOf(text) : null;
     if (p.live && p.live.version !== v) {
-      unload(p.live);
+      drop(p.live);
       p.live = null;
     }
     if (!p.live && text !== undefined && c.kind) p.live = load(vault, name, c.kind, text, false);
     const pending = draftPending(code, changes);
     if (p.draft && p.draft.version !== pending) {
-      unload(p.draft);
+      drop(p.draft);
       p.draft = null;
     }
   }
+  // A copy that leaves has finished its cleanup before what follows (bounded by STOP_MS).
+  await Promise.all(ending);
 }
 
 /** Make the loaded copies match the files and records (serialised per vault). */
@@ -360,7 +518,7 @@ export function startBoxPlugins(vaults: () => string[], everyMs = 3_000): () => 
 
 /** Tests: unload everything. */
 export function _resetBoxPlugins(): void {
-  for (const rt of runtimes.values()) for (const p of rt.plugins.values()) (unload(p.live), unload(p.draft));
+  for (const rt of runtimes.values()) for (const p of rt.plugins.values()) for (const i of [p.live, p.draft]) if (i) (unload(i), i.kill?.(null));
   runtimes.clear();
 }
 
@@ -384,16 +542,15 @@ function copyFor(vault: string, name: string, p: Plugin, tried: string | null | 
   return p.live;
 }
 
-function findRoute(inst: Instance, method: string, sub: string): Handler | null {
-  const exact = inst.routes.get(`${method} ${sub}`);
-  if (exact) return exact;
-  let best: { len: number; h: Handler } | null = null;
-  for (const [k, h] of inst.routes) {
+function findRoute(inst: Instance, method: string, sub: string): string | null {
+  if (inst.routes.has(`${method} ${sub}`)) return `${method} ${sub}`;
+  let best: { len: number; k: string } | null = null;
+  for (const k of inst.routes) {
     if (!k.startsWith(`${method} `) || !k.endsWith("/*")) continue;
     const pre = k.slice(method.length + 1, -1);
-    if ((sub + "/").startsWith(pre) && (!best || pre.length > best.len)) best = { len: pre.length, h };
+    if ((sub + "/").startsWith(pre) && (!best || pre.length > best.len)) best = { len: pre.length, k };
   }
-  return best?.h ?? null;
+  return best?.k ?? null;
 }
 
 /**
@@ -411,21 +568,21 @@ export async function boxPluginRequest(vault: string, name: string, method: stri
   if (!inst) return { status: 404, body: { error: `${id} has no copy in effect` } };
   await inst.ready;
   if (inst.stopped) return { status: 503, body: { error: `${id} ${inst.draft ? "draft" : ""} is not running: ${inst.error ?? "unloaded"}`.replace("  ", " ") } };
-  const handler = findRoute(inst, method, sub || "/");
-  if (!handler) return { status: 404, body: { error: `${id} has no route ${method} ${sub || "/"}` } };
+  const route = findRoute(inst, method, sub || "/");
+  if (!route) return { status: 404, body: { error: `${id} has no route ${method} ${sub || "/"}` } };
   const q: Record<string, string> = {};
   for (const [k, v] of query) if (k !== "vc-try" && k !== "vault") q[k] = v;
   const t0 = Date.now();
   try {
-    const out = await withTimeout(Promise.resolve(handler({ method, path: sub || "/", query: q, body, tried: inst.draft })), BOX_HANDLER_MS, `${method} ${sub || "/"}`);
+    const out = await callIn(inst, "route", route, { method, path: sub || "/", query: q, body, tried: inst.draft } satisfies BoxRequest, null, BOX_HANDLER_MS, `${method} ${sub || "/"}`);
     const ms = Date.now() - t0;
     if (ms > BOX_SLOW_MS) failed(vault, inst, `${method} ${sub || "/"} took ${ms} ms (the limit is ${BOX_SLOW_MS} ms)`);
-    if (out && typeof out === "object" && (out as Reply)[REPLY]) return { status: (out as Reply).status, body: (out as Reply).body ?? null };
-    return { status: 200, body: out === undefined ? null : out };
+    if ("reply" in out) return { status: out.reply.status, body: out.reply.body ?? null };
+    return { status: 200, body: out.value === undefined ? null : out.value };
   } catch (e) {
     const why = `${method} ${sub || "/"} threw: ${msg(e)}`;
     failed(vault, inst, why);
-    return { status: /took over/.test(why) ? 504 : 500, body: { error: why } };
+    return { status: /took over|without yielding/.test(why) ? 504 : 500, body: { error: why } };
   }
 }
 
@@ -527,9 +684,9 @@ export async function boxAgentCall(vault: string, name: string, args: Record<str
   const t = inst?.tools.get(name);
   if (!inst || !t) return null;
   try {
-    const run = Promise.resolve(t.handler(structuredClone(args ?? {}), { tried: inst.draft, conv: o.conv ?? null }));
+    const run = callIn(inst, "tool", name, args ?? {}, { tried: inst.draft, conv: o.conv ?? null }, BOX_TOOL_MS, `tool ${name}`).then((r) => ("reply" in r ? r.reply : r.value));
     const stop = o.signal ? new Promise<never>((_, no) => (o.signal!.aborted ? no(new Error("stopped")) : o.signal!.addEventListener("abort", () => no(new Error("stopped")), { once: true }))) : null;
-    const out = await withTimeout(stop ? Promise.race([run, stop]) : run, BOX_TOOL_MS, `tool ${name}`);
+    const out = await (stop ? Promise.race([run, stop]) : run);
     const text = typeof out === "string" ? out : out === undefined ? "(done)" : JSON.stringify(out, null, 2) ?? String(out);
     return { ok: true, text: text.length > 100_000 ? `${text.slice(0, 100_000)}\n(cut at 100000 characters)` : text };
   } catch (e) {
