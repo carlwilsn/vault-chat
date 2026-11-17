@@ -5,14 +5,14 @@
 //
 // Drafts (change by asking, src/pluginDrafts.ts): <name>.draft.js next to a plugin (or alone: a new plugin) never mounts
 // by itself. It is listed in Change ready (src/changeReady.ts) and runs while Carl tries it, or once kept; a draft that
-// fails while tried discards itself.
+// fails while tried discards itself; a kept one that fails while its keep is watched switches back by itself.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AppPluginMount } from "./PluginMount";
 import { useStore } from "./store";
 import { VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES, isVaultPluginFile, parseVaultPluginMeta, vaultPluginId, vaultPluginRunsOn } from "./vaultPlugins";
-import { chooseCopy, slotFileOf } from "./pluginDrafts";
-import { autoDiscard, setVaultSlots, useTried } from "./changeReady";
+import { chooseCopy, slotFileOf, versionOf, watchedKeep } from "./pluginDrafts";
+import { autoDiscard, autoRevert, setVaultSlots, useTried } from "./changeReady";
 import { supervisorChangesNow, useSupervisorVersion } from "./pluginSupervisorApp";
 
 /** A plugin of the folder: its live file (`code`; "" with `added` when only a draft is there) and its draft and the
@@ -92,12 +92,24 @@ function One({ p }: { p: VaultPluginFile }) {
   const code = choice.kind ? slot[choice.kind] : undefined;
   if (code === undefined) return null;
   // A tried draft that fails discards itself; the copy in effect runs again.
-  const fallback = choice.why === "tried" && tried ? (info: { error: string | null }): ReactNode => (info.error ? <DraftFailed plugin={p.id} version={tried} why={info.error} /> : null) : undefined;
+  // A kept copy that fails while its keep is watched switches back by itself.
+  const kept = choice.why !== "tried" ? watchedKeep(supervisorChangesNow(p.id), Date.now()) : null;
+  const fallback =
+    choice.why === "tried" && tried
+      ? (info: { error: string | null }): ReactNode => (info.error ? <DraftFailed plugin={p.id} version={tried} why={info.error} /> : null)
+      : kept && kept.version === versionOf(code)
+        ? (info: { error: string | null }): ReactNode => (info.error ? <KeptFailed plugin={p.id} version={kept.version} why={info.error} /> : null)
+        : undefined;
   return <AppPluginMount key={choice.kind ?? "none"} plugin={info} code={code} fallback={fallback} />;
 }
 
 function DraftFailed({ plugin, version, why }: { plugin: string; version: string; why: string }) {
   useEffect(() => autoDiscard(plugin, version, `it stopped: ${why}`), [plugin, version, why]);
+  return null;
+}
+
+function KeptFailed({ plugin, version, why }: { plugin: string; version: string; why: string }) {
+  useEffect(() => void autoRevert(plugin, version, `it stopped: ${why}`), [plugin, version, why]);
   return null;
 }
 

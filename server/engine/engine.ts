@@ -2956,9 +2956,9 @@ export class Engine {
         const r = await noteTool(vault, name, a);
         return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
       }
-      // A plugin turned off or on (server/supervisorTools.ts): a record in the log every view follows.
+      // A plugin turned off or on, or its draft kept / dropped / gated (server/supervisorTools.ts): a record in the log every view follows.
       if (name === PLUGIN_TOOL) {
-        const r = pluginTool(vault, a);
+        const r = pluginTool(vault, a, { jobs: this.d.jobEnv, convId, byCarl: !!this.live.get(convId)?.byCarl });
         return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
       }
       // Carl's settings (server/settingsTool.ts): a setting record every open app and the phone follow.

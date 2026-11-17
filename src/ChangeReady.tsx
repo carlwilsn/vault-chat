@@ -12,6 +12,7 @@ import {
   clearOutcome,
   discardChange,
   keepChange,
+  noticeAutoSwitch,
   startChangeReady,
   stopTrying,
   switchBack,
@@ -19,8 +20,10 @@ import {
   useOutcome,
   usePendingChanges,
   useTries,
+  watchTyping,
   type PendingChange,
 } from "./changeReady";
+import { useSupervisorVersion } from "./pluginSupervisorApp";
 
 const tip = (label: string, id: "change.try" | "change.keep" | "change.discard") => `${label} (${chordText(shortcut(id).keys[0]!)})`;
 
@@ -35,6 +38,12 @@ export function ChangeReady() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => startChangeReady(), []);
+  // The records changed: a keep to watch (or one no longer watched), a switch back by itself to tell of.
+  const rv = useSupervisorVersion();
+  useEffect(() => {
+    watchTyping();
+    noticeAutoSwitch();
+  }, [rv, pending]);
   // The offers: the agent reads whether Carl is trying a draft (PluginRead app/changes) and can act on it.
   useEffect(() => declareOffers(CHANGES_PLUGIN.id, CHANGES_PLUGIN.name, changeOffers()).undo, []);
 

@@ -13,7 +13,7 @@
 // while Carl tries it (Change ready, src/changeReady.ts) or once kept; else the version the last keep / switch landed;
 // else the live copy. A copy turned off (a plugin.desired record for its vault path) is passed over; a copy that fails
 // (load, mount or later) is passed over too, until its file changes, and why is written next to it; a draft that fails
-// while tried discards itself. The built-in module is the last copy; only its failure shows the fallback.
+// while tried discards itself, and a kept copy that fails while its keep is watched switches back by itself. The built-in module is the last copy; only its failure shows the fallback.
 //
 // Props (src/pluginProps.ts): a part mounted with `props` (the Ctrl+K box's request, a viewer pane's pane) reads them as
 // api.props.get() / api.props.on(fn), live: new props reach the mounted part without a remount.
@@ -32,8 +32,8 @@ import { liveLoader, reportLiveFailure, useLiveCopies } from "./appPluginLiveHos
 import { appHostBackend } from "./hostBackend";
 import { supervisorChangesNow, usePluginDesired, useSupervisorVersion } from "./pluginSupervisorApp";
 import { moduleKey, placeModuleOf, skippedWhy, usePreset } from "./presetApp";
-import { chooseCopy } from "./pluginDrafts";
-import { autoDiscard, useTried } from "./changeReady";
+import { chooseCopy, versionOf } from "./pluginDrafts";
+import { autoDiscard, autoRevert, useTried } from "./changeReady";
 import { propsChannel, type PluginProps, type PropsChannel } from "./pluginProps";
 
 export class PluginBoundary extends Component<{ path: string; children: ReactNode; onFailed?: (why: string) => void }, { failed: string | null }> {
@@ -163,6 +163,8 @@ export function AppPluginMount({ plugin, module, code, part, props, settings, fa
       void reportLiveFailure(plugin.id, kind, bad, why);
       // Tried and failed: the draft discards itself (Carl's windows fall back, the notice says why).
       if (tried && isTried) autoDiscard(plugin.id, tried, `it stopped: ${why}`);
+      // Kept not long ago and failed: it switches back by itself (src/changeReady.ts autoRevert).
+      else autoRevert(plugin.id, versionOf(bad), `it stopped: ${why}`);
     };
     return (
       <PluginBoundary path={plugin.id} key={`${plugin.id}#${run}#${kind}`} onFailed={onCopyFailed}>

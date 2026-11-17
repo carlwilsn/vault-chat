@@ -3,22 +3,32 @@
 // same steps on both are compared: errors, visible text, typing speed. Nothing is written to the vault (it is only
 // read); the copy is the preview harness's in-memory vault (preview/README.md), the same frontend RecordUI drives.
 //
-//   node --import tsx scripts/draft-check.ts <plugin> --vault <vault> [--data <dir>] [--scenario conv-a]
-//        [--steps steps.json] [--keys 24] [--runs 2] [--port 1561] [--out result.json]
+//   node --import tsx scripts/draft-check.ts <plugin> --vault <vault> [--synthetic | --data <dir>] [--scenario conv-a]
+//        [--steps steps.json] [--keys 24] [--runs 2] [--port 1561] [--out result.json] [--unasked | --asked] [--box <url>]
+//   node --import tsx scripts/draft-check.ts <plugin> --vault <vault> --keep | --discard | --back [--reason <line>]
 //
 // <plugin>: an app plugin (composer, app/composer) or a vault plugin (pen-cursor, .vault-chat/plugins/pen-cursor.js).
-// --data: a copy of real data to run on (the ship script's secret-filtered real copy tree, or a base built by
-// preview/fixtures/build.mjs); left out, the harness's synthetic vault. The vault's own live copies and the draft are
-// laid over it. --steps: [{click|press|type|wait|waitFor}] (RecordUI's shapes), run on both sides before typing.
+// The data: by default a fresh, secret-filtered copy of the box's real data, made by the same installed capture helper
+// the ship script's real-data gate runs (realCopySource in ~/.local/lib/vault-chat/simple-ship/config.json: it only
+// reads, and copies outside the vault into a scratch folder removed after), its conversations and notes laid over the
+// synthetic vault's files (the raw event logs are left out of the scratch copy). --synthetic: the harness's synthetic vault
+// instead; --data <dir>: a copy you name. The vault's own live copies and the draft are laid over it. --steps:
+// [{click|press|type|wait|waitFor}] (RecordUI's shapes), run on both sides before typing.
 //
 // The verdict (Kayenta's success / marginal / failure):
 //   fail        the draft did not run, threw or logged errors the live side does not, or typing is over the Try limit
 //   borderline  the visible text differs (listed: is it what Carl asked for, and only that?) or typing is slower
 //   pass        no new errors, the same visible text, typing as fast
 // Exit code: 0 pass, 3 borderline, 1 fail, 2 could not run.
+//
+// Landing it (every change is a plugin.change record the box writes and moves the files for: scripts/boxChange.ts):
+//   --unasked   a fix Carl did not ask for: a clear pass lands it (a keep by "gate"), a clear fail drops it (a discard by
+//               "gate", with why); borderline is left as Change ready for him.
+//   --asked     what Carl asked for: a fail is dropped; otherwise it waits for him as Change ready (he judges it).
+//   --keep / --discard / --back   the record by hand (the agent's own word), as app-plugin-live.ts writes it.
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
@@ -26,13 +36,16 @@ import { appPluginFolder } from "../src/appPluginLive.ts";
 import { TRY_SLOW_MS, appSlot, slowMedian, vaultSlot, versionOf, type DraftSlot } from "../src/pluginDrafts.ts";
 // @ts-expect-error a plain .mjs module (no types)
 import { launch, evalIn, stats } from "./typing-bench.mjs";
+import { postBoxChange } from "./boxChange.ts";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TEXT = "the quick brown fox jumps over the lazy dog ";
+/** How long the app may take to start on a side (a copy of real data is bigger than the synthetic vault). */
+const START_MS = Number(process.env.VC_DRAFT_CHECK_START_MS) || 90_000;
 
 export type Step = { click?: string | { text: string }; press?: string; type?: string; wait?: number; waitFor?: string | { text: string }; timeout?: number };
 export type Side = { errors: string[]; text: string[]; ran: boolean; typingMs: number[] };
-export type Verdict = { verdict: "pass" | "borderline" | "fail"; reasons: string[]; plugin: string; version: string; live: Side; draft: Side; typing: { liveMedianMs: number | null; draftMedianMs: number | null }; textAdded: string[]; textRemoved: string[] };
+export type Verdict = { verdict: "pass" | "borderline" | "fail"; data?: string; reasons: string[]; plugin: string; version: string; live: Side; draft: Side; typing: { liveMedianMs: number | null; draftMedianMs: number | null }; textAdded: string[]; textRemoved: string[] };
 
 /** The slot a word names: an app plugin's folder or id, or a vault plugin's name or path. */
 export function slotFor(word: string): DraftSlot {
@@ -151,8 +164,8 @@ async function runSide(cdp: any, url: string, plugin: string, steps: Step[], key
     await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: INSTALL }, sid);
     await cdp.send("Page.navigate", { url }, sid);
     let ready = false;
-    for (let t = Date.now(); !ready && Date.now() - t < 90_000; await sleep(250)) ready = await evalIn(cdp, sid, `!!(window.__preview && __preview.ready && __preview.stepsDone)`).catch(() => false);
-    if (!ready) throw new Error(`${url}: the app did not start within 90 s`);
+    for (let t = Date.now(); !ready && Date.now() - t < START_MS; await sleep(250)) ready = await evalIn(cdp, sid, `!!(window.__preview && __preview.ready && __preview.stepsDone)`).catch(() => false);
+    if (!ready) throw new Error(`${url}: the app did not start within ${START_MS / 1000} s`);
     await sleep(2500); // the copies are read and mounted (the folder is looked at every 2 s)
     for (const s of steps) {
       if (s.wait !== undefined) await sleep(Math.min(30_000, Number(s.wait) || 0));
@@ -191,7 +204,75 @@ async function runSide(cdp: any, url: string, plugin: string, steps: Step[], key
   }
 }
 
-export async function draftCheck(o: { plugin: string; vault: string; data?: string; scenario?: string; steps?: Step[]; keys?: number; runs?: number; port?: number }): Promise<Verdict> {
+// ---------------------------------------------------------------- the data: a safe copy of the box's real data
+
+/** The installed capture helper the ship script's real-data gate runs (its config's realCopySource), or why not. */
+export function realCopySource(config = process.env.VC_SHIP_CONFIG || join(userInfo().homedir, ".local/lib/vault-chat/simple-ship/config.json")): { python: string; script: string; home: string; live: string } | { error: string } {
+  try {
+    const s = JSON.parse(readFileSync(config, "utf8"))?.realCopySource;
+    if (s && typeof s.python === "string" && typeof s.script === "string" && typeof s.home === "string" && typeof s.live === "string" && existsSync(s.script)) return { python: s.python, script: s.script, home: s.home, live: s.live };
+    return { error: `${config} names no real-copy capture helper` };
+  } catch (e) {
+    return { error: `no ship config with a real-copy capture helper (${(e as Error).message})` };
+  }
+}
+
+/**
+ * A fresh secret-filtered copy of the box's real data in `scratch` (the helper only reads the live data and the box's
+ * loopback API, and refuses to write inside the vaults or the box's state), as the ship script's capture does; the
+ * vault's folder in it. Tried twice: the helper refuses when the data changes while it copies.
+ */
+export async function captureRealData(vault: string, scratch: string, src = realCopySource()): Promise<string> {
+  if ("error" in src) throw new Error(`${src.error}: no real data to check on (--synthetic runs on the synthetic vault, --data <dir> on a copy you name)`);
+  let last = "";
+  for (let i = 0; i < 2; i++) {
+    const out = join(scratch, `real-capture-${i}`);
+    const r = await new Promise<{ code: number | null; text: string }>((res) => {
+      const c = spawn(src.python, [src.script, "--home", src.home, "--live", src.live.replace(/\/$/, ""), "--out", out], { cwd: scratch, env: { PATH: process.env.PATH ?? "", HOME: scratch, LANG: "C.UTF-8", __ETC_PROFILE_DONE: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+      let text = "";
+      c.stdout.on("data", (d) => (text += d));
+      c.stderr.on("data", (d) => (text = (text + d).slice(-4000)));
+      const t = setTimeout(() => c.kill("SIGKILL"), 5 * 60_000);
+      c.on("close", (code) => (clearTimeout(t), res({ code, text })));
+      c.on("error", (e) => (clearTimeout(t), res({ code: -1, text: e.message })));
+    });
+    last = r.text.trim().split("\n").slice(-3).join(" ");
+    if (r.code === 0) {
+      const name = vault.replace(/[\\/]+$/, "").split(/[\\/]/).pop()!;
+      const dir = join(out, "tree", "vc", "vaults", name); // the copy keeps the paths under the home folder
+      if (existsSync(dir)) {
+        // The box's raw event logs (tens of MB) are not what the harness runs on and stall its start; the conversations,
+        // notes and the rest stay. Only this scratch copy is touched.
+        rmSync(join(dir, ".vault-chat", "events"), { recursive: true, force: true });
+        return dir;
+      }
+      throw new Error(`the real-data copy has no vault ${name} (it copies the vaults under ${src.home}/vc/vaults)`);
+    }
+    rmSync(out, { recursive: true, force: true });
+  }
+  throw new Error(`the real-data capture failed: ${last}`);
+}
+
+// ---------------------------------------------------------------- landing by the verdict
+
+/** What the gate writes for a verdict: a fix Carl did not ask for lands on a clear pass and is dropped on a clear fail;
+ *  what he asked for is only dropped on a fail. Null: it waits for him as Change ready. Pure, for tests. */
+export function gateDecision(v: Pick<Verdict, "verdict" | "reasons">, asked: boolean): { change: "keep" | "discard"; reason: string } | null {
+  const why = v.reasons.join("; ").slice(0, 280);
+  if (v.verdict === "fail") return { change: "discard", reason: `the draft check failed: ${why}` };
+  if (v.verdict === "pass" && !asked) return { change: "keep", reason: `not asked for; the draft check passed: ${why}` };
+  return null;
+}
+
+/** Land a verdict (unless it waits for Carl): the record through the box, by "gate". */
+export async function landVerdict(vault: string, v: Verdict, asked: boolean, box?: string): Promise<string> {
+  const d = gateDecision(v, asked);
+  if (!d) return asked ? "it waits for Carl as Change ready (he tries it, then keeps or discards it)" : "borderline: it waits for Carl as Change ready";
+  const r = await postBoxChange(vault, { plugin: v.plugin, change: d.change, version: v.version, reason: d.reason, by: "gate" }, box);
+  return `${d.change === "keep" ? "landed" : "dropped"}: ${r.text} (record ${r.seq})`;
+}
+
+export async function draftCheck(o: { plugin: string; vault: string; data?: string; synthetic?: boolean; scenario?: string; steps?: Step[]; keys?: number; runs?: number; port?: number }): Promise<Verdict> {
   const slot = slotFor(o.plugin);
   const dir = join(o.vault, slot.dir);
   const read = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : undefined);
@@ -210,7 +291,10 @@ export async function draftCheck(o: { plugin: string; vault: string; data?: stri
       for (const [f, c] of Object.entries(files)) if (c !== undefined) writeFileSync(join(d, f), c);
       return join(scratch, name);
     };
-    const base = o.data ? [resolve(o.data)] : [join(REPO, "demo-vault"), join(REPO, "preview/fixtures/synthetic/vault")].filter(existsSync);
+    const real = o.data || o.synthetic ? null : await captureRealData(o.vault, scratch);
+    // The real copy holds the box's data (conversations, notes), not the vault's files: it is laid over the synthetic vault.
+    const synthetic = [join(REPO, "demo-vault"), join(REPO, "preview/fixtures/synthetic/vault")].filter(existsSync);
+    const base = o.data ? [resolve(o.data)] : real ? [...synthetic, real] : synthetic;
     const bases = {
       "gate-live": { vaultName: "gate", dirs: [...base, lay("live", { [slot.live]: live })] },
       "gate-draft": { vaultName: "gate", dirs: [...base, lay("draft", { [slot.live]: live, [slot.draft]: draft })] },
@@ -235,6 +319,7 @@ export async function draftCheck(o: { plugin: string; vault: string; data?: stri
     }
     const merge = (l: Side[]): Side => ({ errors: l.flatMap((s) => s.errors), text: l[l.length - 1]!.text, ran: l.every((s) => s.ran), typingMs: l.flatMap((s) => s.typingMs) });
     const v = judge(slot.plugin, version, merge(sides.live), merge(sides.draft));
+    v.data = o.data ? `the copy ${o.data}` : real ? "a fresh copy of the box's real data" : "the synthetic vault";
     if (slot.plugin.startsWith("app/") && !sides.draft.every((s) => (s as Side & { copy?: string | null }).copy === "draft")) {
       v.verdict = "fail";
       v.reasons = v.reasons.filter((r) => !r.startsWith("no new errors"));
@@ -259,24 +344,36 @@ async function main(argv: string[]): Promise<number> {
     const i = argv.indexOf(f);
     return i >= 0 ? argv[i + 1] : undefined;
   };
-  const takes = new Set(["--vault", "--data", "--scenario", "--steps", "--keys", "--runs", "--port", "--out"]);
+  const takes = new Set(["--vault", "--data", "--scenario", "--steps", "--keys", "--runs", "--port", "--out", "--box", "--reason"]);
   const plugin = argv.find((a, i) => !a.startsWith("--") && !takes.has(argv[i - 1] ?? ""));
   const vault = value("--vault");
   if (!plugin || !vault) {
-    console.error("usage: draft-check.ts <plugin> --vault <vault> [--data <dir>] [--scenario conv-a] [--steps steps.json] [--keys 24] [--runs 2] [--out result.json]");
+    console.error("usage: draft-check.ts <plugin> --vault <vault> [--synthetic | --data <dir>] [--scenario conv-a] [--steps steps.json] [--keys 24] [--runs 2] [--out result.json] [--unasked | --asked] [--box <url>]\n       draft-check.ts <plugin> --vault <vault> --keep | --discard | --back [--reason <line>]");
     return 2;
+  }
+  // The record by hand: the same one Carl's Change ready writes (the box moves the files).
+  const by = (["keep", "discard", "back"] as const).find((k) => argv.includes(`--${k}`));
+  if (by) {
+    const slot = slotFor(plugin);
+    const f = join(vault, slot.dir, slot.draft);
+    const version = by === "back" ? undefined : existsSync(f) ? versionOf(readFileSync(f, "utf8")) : null;
+    if (version === null) throw new Error(`no draft: ${slot.dir}/${slot.draft}`);
+    const r = await postBoxChange(vault, { plugin: slot.plugin, change: by === "back" ? "switch" : by, ...(version ? { version } : {}), ...(value("--reason") ? { reason: value("--reason") } : {}) }, value("--box"));
+    console.log(`${r.text} (record ${r.seq})`);
+    return 0;
   }
   const steps = value("--steps") ? (JSON.parse(readFileSync(value("--steps")!, "utf8")) as Step[]) : undefined;
   const num = (f: string) => (value(f) !== undefined ? Number(value(f)) : undefined);
-  const v = await draftCheck({ plugin, vault, data: value("--data"), scenario: value("--scenario"), steps, keys: num("--keys"), runs: num("--runs"), port: num("--port") });
+  const v = await draftCheck({ plugin, vault, data: value("--data"), synthetic: argv.includes("--synthetic"), scenario: value("--scenario"), steps, keys: num("--keys"), runs: num("--runs"), port: num("--port") });
   const out = value("--out");
   if (out) writeFileSync(out, JSON.stringify(v, null, 1) + "\n");
   const f = (n: number | null) => (n === null ? "n/a" : `${n.toFixed(1)} ms`);
-  console.log(`${v.verdict.toUpperCase()}: ${v.plugin} draft ${v.version}`);
+  console.log(`${v.verdict.toUpperCase()}: ${v.plugin} draft ${v.version} (on ${v.data ?? "the synthetic vault"})`);
   for (const r of v.reasons) console.log(`- ${r}`);
   console.log(`typing (composer, median a key): live ${f(v.typing.liveMedianMs)}, draft ${f(v.typing.draftMedianMs)}`);
   if (v.textAdded.length) console.log(`text only with the draft:\n${v.textAdded.slice(0, 20).map((l) => `  + ${l}`).join("\n")}`);
   if (v.textRemoved.length) console.log(`text gone with the draft:\n${v.textRemoved.slice(0, 20).map((l) => `  - ${l}`).join("\n")}`);
+  if (argv.includes("--unasked") || argv.includes("--asked")) console.log(await landVerdict(vault, v, argv.includes("--asked"), value("--box")));
   return v.verdict === "pass" ? 0 : v.verdict === "borderline" ? 3 : 1;
 }
 

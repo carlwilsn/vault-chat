@@ -178,3 +178,17 @@ export function slowMedian(samples: readonly number[]): number | null {
   const m = v.length >> 1;
   return v.length % 2 ? v[m]! : (v[m - 1]! + v[m]!) / 2;
 }
+
+// ---------------------------------------------------------------- auto-revert after Keep
+
+/** How long after a Keep the kept copy is watched: when it throws, fails to load or slows typing past TRY_SLOW_MS in
+ *  that time, it switches back by itself (a switch record by "auto", with the reason). */
+export const KEEP_WATCH_MS = 24 * 3600_000;
+
+/** The keep under watch: the newest keep / switch is a keep (of a copy that replaced another), at most KEEP_WATCH_MS
+ *  old. Null: nothing to switch back to on its own (no keep, already switched, or long enough ago). */
+export function watchedKeep(changes: readonly ChangeRecord[], now: number): ChangeRecord | null {
+  const l = landing(changes);
+  if (!l || l.change !== "keep" || (l.from ?? BUILT_IN) === l.version) return null;
+  return now - l.at <= KEEP_WATCH_MS && now >= l.at - 60_000 ? l : null;
+}

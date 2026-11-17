@@ -10,8 +10,9 @@
 //
 // A draft runs nowhere by itself: the laptop shows "Change ready: <what>" and Carl tries it, then keeps or discards it
 // (src/changeReady.ts; his Keep / Discard are records on the box, which moves the files: server/pluginDrafts.ts). Check
-// it first in a hidden copy: scripts/draft-check.ts. --keep / --discard / --back here move the same files the same way,
-// without a record (the agent's own, outside Change ready).
+// it first in a hidden copy: scripts/draft-check.ts (--unasked: a fix Carl did not ask for lands or drops by its verdict).
+// --keep / --discard / --back here write the same plugin.change record Carl's buttons do, through the box
+// (scripts/boxChange.ts; [--reason <line>] [--box <url>]): the box moves the files, never this script.
 //   node --import tsx scripts/app-plugin-live.ts --shared                           every shared name, by plugin (JSON)
 //
 // <name> is the plugin's folder (filetree, chats, vaults, composer, titlebar, notes, chat-rows, viewer, chat, settings, voice, context) or its id.
@@ -31,8 +32,8 @@ import {
   liveHeaderLine,
   liveStateFiles,
 } from "../src/appPluginLive.ts";
-import { appSlot, versionOf } from "../src/pluginDrafts.ts";
-import { landChange } from "../server/pluginDrafts.ts";
+import { versionOf } from "../src/pluginDrafts.ts";
+import { postBoxChange } from "./boxChange.ts";
 
 export const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -127,7 +128,7 @@ async function main(argv: string[]): Promise<void> {
     console.log(JSON.stringify(all, null, 2));
     return;
   }
-  const name = argv.find((a, i) => !a.startsWith("--") && argv[i - 1] !== "--vault" && argv[i - 1] !== "--what");
+  const name = argv.find((a, i) => !a.startsWith("--") && !["--vault", "--what", "--box", "--reason"].includes(argv[i - 1] ?? ""));
   const vault = value("--vault");
   if (!name || !vault) throw new Error("usage: app-plugin-live.ts <name> --vault <vault> [--draft [--what <line>] | --keep | --discard | --back | --remove]");
   const folder = name.replace(/^app\//, "");
@@ -139,12 +140,12 @@ async function main(argv: string[]): Promise<void> {
     rmSync(f, { force: true });
     rmSync(join(dir, liveErrorFile(basename(f))), { force: true });
   };
-  const land = (change: "keep" | "discard" | "switch") => {
-    const version = existsSync(draft) ? versionOf(readFileSync(draft, "utf8")) : "";
+  // Keep / Discard / Switch back: the record Carl's Change ready writes, through the box (it moves the files).
+  const land = async (change: "keep" | "discard" | "switch") => {
+    const version = change !== "switch" && existsSync(draft) ? versionOf(readFileSync(draft, "utf8")) : "";
     if (change !== "switch" && !version) throw new Error(`no draft: ${relative(vault, draft)}`);
-    const r = landChange(vault, appSlot(folder), change, version);
-    if (!r.ok) throw new Error(r.error);
-    console.log(r.text);
+    const r = await postBoxChange(vault, { plugin: `app/${folder}`, change, ...(version ? { version } : {}), ...(value("--reason") ? { reason: value("--reason") } : {}) }, value("--box"));
+    console.log(`${r.text} (record ${r.seq})`);
   };
   if (flag("--keep")) return land("keep");
   if (flag("--discard")) return land("discard");

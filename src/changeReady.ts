@@ -8,6 +8,10 @@
 // - A draft being tried that throws, fails to load or makes typing slow (composer or Ctrl+K keystroke-to-paint median
 //   over TRY_SLOW_MS) discards itself: Carl's windows fall back at once, a discard record is written (by "auto") and
 //   the notice says why.
+// - After Keep, the kept copy is watched for KEEP_WATCH_MS: when it throws, fails to load or makes typing slow, it
+//   switches back by itself (a switch record by "auto" naming the kept version, so two windows switch once) and the
+//   notice says why, in every window and after a restart (from the record). Nothing listens to typing unless a draft
+//   is tried or a keep is under watch.
 // - The state and the actions are offers (app/changes: PluginRead / PluginAct), so the agent sees whether Carl is
 //   trying a draft.
 import { useMemo, useSyncExternalStore } from "react";
@@ -17,7 +21,7 @@ import { liveCopiesNow, useAllLiveCopies, type LiveCopies } from "./appPluginLiv
 import { postPluginChange, supervisorChangesNow, useSupervisorVersion } from "./pluginSupervisorApp";
 import { APP_PLUGINS } from "./appPlugins";
 import { PRESET_DRAFT_FILE, PRESET_PLUGIN_ID, parseDraft } from "./appPreset";
-import { BUILT_IN, TRY_SLOW_MS, draftPending, draftWhat, landing, slowMedian, type SlotCode } from "./pluginDrafts";
+import { BUILT_IN, KEEP_WATCH_MS, TRY_SLOW_MS, draftPending, draftWhat, landing, slowMedian, watchedKeep, type SlotCode } from "./pluginDrafts";
 
 export const CHANGES_PLUGIN = { id: "app/changes", name: "Change ready" } as const;
 /** What Carl calls the app's preset in the notice. */
@@ -197,7 +201,7 @@ export function tryingNow(pending: readonly PendingChange[] = pendingChanges()):
 
 // ---------------------------------------------------------------- what happened last (the notice's line)
 
-export type Outcome = { plugin: string; name: string; text: string; ok: boolean; at: number };
+export type Outcome = { plugin: string; name: string; text: string; ok: boolean; at: number; /** the auto-revert record it tells of */ seq?: number };
 let outcome: Outcome | null = null;
 const outcomeListeners = new Set<() => void>();
 function say(o: Outcome | null): void {
@@ -208,7 +212,10 @@ const outcomeNow = () => outcome;
 export function useOutcome(): Outcome | null {
   return useSyncExternalStore((fn) => (outcomeListeners.add(fn), () => outcomeListeners.delete(fn)), outcomeNow, outcomeNow);
 }
-export const clearOutcome = () => say(null);
+export const clearOutcome = () => {
+  if (outcome?.seq) markSeen(outcome.seq);
+  say(null);
+};
 export const lastOutcome = () => outcome;
 
 const nameOf = (plugin: string) => (plugin === PRESET_PLUGIN_ID ? PRESET_NAME : plugin.startsWith("app/") ? appName(plugin) : vaultSlots.find((s) => s.id === plugin)?.name ?? plugin.split("/").pop() ?? plugin);
@@ -268,24 +275,98 @@ export function autoDiscard(plugin: string, version: string, why: string): void 
   void postPluginChange({ plugin, change: "discard", version, by: "auto", reason: short });
 }
 
-// ---------------------------------------------------------------- typing while a draft is tried
+// ---------------------------------------------------------------- after Keep: switching back by itself
 
-let typing: { off: () => void; samples: number[] } | null = null;
+/** Every plugin that can have drafts here: the app plugins with live copies and the vault plugins' slots. */
+const slotIds = (): string[] => [...LIVE_APP_PLUGINS, ...vaultSlots.map((s) => s.id)];
 
-/** Measure composer / Ctrl+K keystroke-to-paint only while something is tried (nothing is listening otherwise). */
-function watchTyping(): void {
-  const any = Object.keys(tries).length > 0;
+/** The keeps under watch now (src/pluginDrafts.ts watchedKeep): plugin, kept version, when the watch ends. */
+export function keepsUnderWatch(now = Date.now()): { plugin: string; version: string; until: number }[] {
+  const out: { plugin: string; version: string; until: number }[] = [];
+  for (const plugin of slotIds()) {
+    const k = watchedKeep(supervisorChangesNow(plugin), now);
+    if (k) out.push({ plugin, version: k.version, until: k.at + KEEP_WATCH_MS });
+  }
+  return out;
+}
+
+const revertDone = new Set<string>();
+/**
+ * A kept copy failed (threw, did not load, slowed typing) while its keep is under watch: switch back by itself, a record
+ * by "auto" with why, and say it. `version`: the copy that failed (null: whichever is kept). Whether it switched.
+ */
+export function autoRevert(plugin: string, version: string | null, why: string): boolean {
+  const k = watchedKeep(supervisorChangesNow(plugin), Date.now());
+  if (!k || (version !== null && k.version !== version)) return false;
+  const key = `${plugin}\u0000${k.seq}`;
+  if (revertDone.has(key)) return true;
+  revertDone.add(key);
+  const short = why.split("\n")[0]!.slice(0, 200);
+  say({ plugin, name: nameOf(plugin), text: `Switched back by itself: ${short}`, ok: false, at: Date.now() });
+  void postPluginChange({ plugin, change: "switch", version: k.version, by: "auto", reason: short }).then((r) => {
+    // Another window switched it first ("already switched"): the same outcome.
+    if (!r.ok && !/already switched/.test(r.text)) return say({ plugin, name: nameOf(plugin), text: `It broke after Keep (${short}) but could not switch back: ${r.text}`, ok: false, at: Date.now() });
+    // The record this notice tells of: dismissing it here dismisses it in every window.
+    const rec = supervisorChangesNow(plugin).filter((c) => c.change === "switch" && c.by === "auto" && c.seq > k.seq).pop();
+    if (rec && outcome?.plugin === plugin && !outcome.seq) say({ ...outcome, seq: rec.seq });
+  });
+  return true;
+}
+
+const SEEN_KEY = "vc.changeSeen:";
+const seenSeq = (): number => {
+  try {
+    return Number(tryVault ? globalThis.localStorage?.getItem(SEEN_KEY + tryVault) : 0) || 0;
+  } catch {
+    return 0;
+  }
+};
+function markSeen(seq: number): void {
+  try {
+    if (tryVault && seq > seenSeq()) globalThis.localStorage?.setItem(SEEN_KEY + tryVault, String(seq));
+  } catch {
+    /* no storage: it shows again next start */
+  }
+}
+
+/** A switch back by itself this window did not see happen (another window, before a restart): the notice says it. */
+export function noticeAutoSwitch(now = Date.now()): void {
+  if (outcome) return;
+  followTries();
+  const seen = seenSeq();
+  let best: { plugin: string; seq: number; reason: string | null; at: number } | null = null;
+  for (const plugin of slotIds())
+    for (const c of supervisorChangesNow(plugin))
+      if (c.change === "switch" && c.by === "auto" && c.seq > seen && now - c.at <= KEEP_WATCH_MS && (!best || c.seq > best.seq)) best = { plugin, seq: c.seq, reason: c.reason, at: c.at };
+  if (best) say({ plugin: best.plugin, name: nameOf(best.plugin), text: `Switched back by itself${best.reason ? `: ${best.reason}` : ""}`, ok: false, at: best.at, seq: best.seq });
+}
+
+// ---------------------------------------------------------------- typing while a draft is tried or a keep is watched
+
+let typing: { off: () => void; samples: number[]; until: number } | null = null;
+
+/** Measure composer / Ctrl+K keystroke-to-paint only while something is tried or a keep is under watch (nothing is
+ *  listening otherwise). Called again when the records change. */
+export function watchTyping(): void {
+  const keeps = keepsUnderWatch();
+  const any = Object.keys(tries).length > 0 || keeps.length > 0;
   if (!any) {
     typing?.off();
     typing = null;
     return;
   }
-  if (typing || typeof window === "undefined" || typeof window.addEventListener !== "function" || typeof requestAnimationFrame !== "function") return;
+  const until = Object.keys(tries).length ? Infinity : Math.max(...keeps.map((k) => k.until));
+  if (typing) {
+    typing.until = until;
+    return;
+  }
+  if (typeof window === "undefined" || typeof window.addEventListener !== "function" || typeof requestAnimationFrame !== "function") return;
   const samples: number[] = [];
   const onInput = (e: Event) => {
     const t = e.target as Element | null;
     if (!t || typeof t.closest !== "function" || !t.closest('[data-perf-target="composer"], [data-perf-target="ctrl-k"]')) return;
     if (document.hidden) return; // a hidden window's frames are throttled: not typing speed
+    if (typing && Date.now() > typing.until) return void watchTyping(); // the watch ended: stop listening
     const t0 = performance.now();
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
@@ -294,12 +375,14 @@ function watchTyping(): void {
         const m = slowMedian(samples);
         if (m === null || m <= TRY_SLOW_MS) return;
         samples.length = 0;
-        for (const [plugin, version] of Object.entries(tries)) autoDiscard(plugin, version, `typing got slow while it was tried (median ${Math.round(m)} ms a key, the limit is ${TRY_SLOW_MS} ms)`);
+        const ms = `median ${Math.round(m)} ms a key, the limit is ${TRY_SLOW_MS} ms`;
+        for (const [plugin, version] of Object.entries(tries)) autoDiscard(plugin, version, `typing got slow while it was tried (${ms})`);
+        for (const k of keepsUnderWatch()) autoRevert(k.plugin, k.version, `typing got slow after it was kept (${ms})`);
       }),
     );
   };
   window.addEventListener("input", onInput, true);
-  typing = { samples, off: () => window.removeEventListener("input", onInput, true) };
+  typing = { samples, until, off: () => window.removeEventListener("input", onInput, true) };
 }
 
 /** Start following what this app's windows try (the app calls it once at start). */
@@ -350,5 +433,6 @@ export function _resetChangeReady(): void {
   vaultSlots = [];
   outcome = null;
   autoDone.clear();
+  revertDone.clear();
 }
 

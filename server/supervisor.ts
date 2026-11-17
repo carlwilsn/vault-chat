@@ -71,8 +71,9 @@ export function presetInEffect(vault: string): PresetInEffect {
   return supervisorOf(vault).preset();
 }
 
-/** Who may be named on a change record from Carl's devices (the app's own Keep, the agent through the app's offers, an auto-discard). */
-const CHANGE_BY = new Set(["carl", "agent", "auto"]);
+/** Who may be named on a change record: Carl (the app's own Keep), the agent (offers, the scripts, the Plugins tool), an
+ *  auto-discard or auto-revert, the draft gate (scripts/draft-check.ts --unasked: a clear pass or fail). */
+const CHANGE_BY = new Set(["carl", "agent", "auto", "gate"]);
 
 /**
  * Carl's word on a plugin's draft ({plugin, change, version, reason?}): the slot's files are moved, then the record is

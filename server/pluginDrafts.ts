@@ -1,11 +1,12 @@
 // The box's side of change by asking (src/pluginDrafts.ts): Carl's Keep / Discard / Switch back on a plugin's draft is
 // one plugin.change record in the log, and the box moves the slot's files to match (the laptop and the phone get them by
-// the vault's sync; a host trusts the record before they arrive). Also used by scripts/app-plugin-live.ts, which moves
-// the files the same way without a record (the agent's own --keep / --discard, outside Carl's Change ready).
+// the vault's sync; a host trusts the record before they arrive). The scripts (app-plugin-live.ts, draft-check.ts) go
+// through the same route (scripts/boxChange.ts), so every change is a record.
 //
 //   keep     prev := live (none: prev removed, the built-in one was in effect), live := draft, draft removed
 //   discard  draft removed (only the version Carl saw: a newer draft written meanwhile stays)
-//   switch   live and prev swap (a missing file is the built-in one): undo of the last keep, and of the undo
+//   switch   live and prev swap (a missing file is the built-in one): undo of the last keep, and of the undo; with a
+//            version, only while that version is live (an auto-revert after Keep)
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BUILT_IN, appSlot, versionOf, vaultSlot, type ChangeKind, type DraftSlot } from "../src/pluginDrafts";
@@ -76,7 +77,9 @@ export function landChange(vault: string, slot: DraftSlot, change: ChangeKind, v
       }
       return { ok: true, version, text: `discarded the draft ${version} of ${slot.plugin}` };
     }
-    // switch: live and prev swap.
+    // switch: live and prev swap. With a version (an auto-revert names the kept copy it undoes): only while that copy
+    // is the live one, so two windows reverting the same keep switch once, never back again.
+    if (version && version !== lv) return { ok: false, status: 409, error: `${slot.plugin} is no longer at ${version} (now ${lv}): already switched` };
     const pv = code.prev !== undefined ? versionOf(code.prev) : BUILT_IN;
     if (pv === lv) return { ok: false, status: 409, error: `${slot.plugin} has nothing to switch back to` };
     mkdirSync(dir, { recursive: true });
