@@ -18,7 +18,8 @@ import { liveCopyAt, liveCopyId } from "../src/appPluginLive";
 import { withinVault } from "./phoneData";
 import { pluginDesired, setPluginBudget, setPluginChange, setPluginDesired, supervisorOf } from "./supervisor";
 import { slotCode, slotOf } from "./pluginDrafts";
-import { versionOf, type DraftSlot } from "../src/pluginDrafts";
+import { boxPluginLine, boxPluginNames } from "./boxPlugins";
+import { boxPluginName, versionOf, type DraftSlot } from "../src/pluginDrafts";
 import { startServiceJob, type JobEnv } from "./engine/jobs";
 import { masterDir } from "./master";
 import { loadConfig } from "./config";
@@ -35,7 +36,8 @@ export const pluginToolSpecs = [
     description:
       "Turn a plugin (a vault .html page, or a part of the app that is a plugin: the Notes panel, \"notes\"; or a whole surface: the phone app, \"phone\", the iPad board, \"board\") off or on everywhere it shows (the viewer, chats, the phone, its own link, the app's window), or from a later time (an end date), set its budget, or list what each plugin is. " +
       "Off: it is taken down in every view and the box gives it nothing; on: it comes back. action: status | disable | enable | budget. plugin: its vault path or its file name (\"html-lab\"), or the app part's name (\"notes\"). " +
-      "A plugin's draft (<name>.draft.js next to it): submit hands it to the draft gate (a side-by-side check on a copy of real data, in the background; asked: false, the default, for a fix Carl did not ask for: a clear pass lands it, a clear fail drops it, borderline waits for him as Change ready; asked: true: only a fail drops it, otherwise he tries it). keep / discard / back write the record Carl's Change ready buttons do (back: switch to the copy the last keep replaced); plugin \"settings-values\": the settings draft (Settings with draft: true). Never move the draft's files yourself.",
+      "A plugin's draft (<name>.draft.js next to it): submit hands it to the draft gate (a side-by-side check on a copy of real data, in the background; asked: false, the default, for a fix Carl did not ask for: a clear pass lands it, a clear fail drops it, borderline waits for him as Change ready; asked: true: only a fail drops it, otherwise he tries it). keep / discard / back write the record Carl's Change ready buttons do (back: switch to the copy the last keep replaced); plugin \"settings-values\": the settings draft (Settings with draft: true). Never move the draft's files yourself. " +
+      "Box plugins (box/<name>): the box's own behaviour, server-side modules .vault-chat/box-plugins/<name>.js exporting activate(box) (box.route(method, path, handler) at /api/v2/box/<name><path>, box.onRecord, box.every, box.readFile, box.state, box.reply, box.log; cleanups undone on unload), loaded live by the running box, no release. Write <name>.draft.js: it waits for Carl as Change ready; Try runs it only for his laptop's requests (header x-vc-try: <version> for your own checks over loopback), a tried draft cannot write state, and one that throws, fails to load or answers slower than 2 s discards itself; a kept one that does so within 24 h switches back by itself.",
     inputSchema: {
       type: "object",
       properties: {
@@ -89,6 +91,11 @@ function pagesNamed(vault: string, word: string): string[] {
 export function resolvePlugin(vault: string, word: string): { id: string } | { error: string } {
   const w = pluginIdOf(word.trim());
   if (!w) return { error: "name the plugin: its vault path or its file name" };
+  // A box plugin (server/boxPlugins.ts): box/<name>.
+  if (w.startsWith("box/")) {
+    const name = boxPluginName(w);
+    return name ? { id: `box/${name}` } : { error: `${w}: a box plugin is box/<name> (lowercase letters, digits, -)` };
+  }
   const app = appPluginNamed(w);
   if (app && app.id === w.toLowerCase()) return { id: app.id };
   // An app plugin's copy in the vault (src/appPluginLive.ts), by its path: turned off, the next copy runs.
@@ -185,6 +192,7 @@ function draftAction(vault: string, action: string, a: Record<string, unknown>, 
     return "error" in w ? { ok: false, text: w.error } : { ok: true, text: w.text };
   }
   if (draft === undefined) return { ok: false, text: `${slot.plugin} has no draft (${slot.dir}/${slot.draft})` };
+  if (action === "submit" && slot.plugin.startsWith("box/")) return { ok: false, text: `${slot.plugin}: a box plugin's draft has no side-by-side gate yet; it already waits for Carl as Change ready (Try runs it only for his laptop's requests)` };
   const version = versionOf(draft);
   if (action === "keep" || action === "discard") {
     const w = setPluginChange(vault, { plugin: slot.plugin, change: action, version, ...(a.reason ? { reason: a.reason } : {}) }, "agent");
@@ -208,11 +216,12 @@ export function pluginTool(vault: string, a: Record<string, unknown>, ctx?: Plug
   if (action === "submit" || action === "keep" || action === "discard" || action === "back") return draftAction(vault, action, a, ctx);
   if (action === "status" && !a.plugin) {
     const all = supervisorOf(vault).plugins();
-    return { ok: true, text: all.length ? all.map((id) => line(vault, id)).join("\n") : "Every plugin is on (no plugin has a record)." };
+    const box = boxPluginNames(vault).map((n) => boxPluginLine(vault, n));
+    return { ok: true, text: [all.length ? all.map((id) => line(vault, id)).join("\n") : "Every plugin is on (no plugin has a record).", ...box].join("\n") };
   }
   const r = resolvePlugin(vault, String(a.plugin ?? ""));
   if ("error" in r) return { ok: false, text: r.error };
-  if (action === "status") return { ok: true, text: line(vault, r.id) };
+  if (action === "status") return { ok: true, text: r.id.startsWith("box/") ? `${line(vault, r.id)}\n${boxPluginLine(vault, r.id.slice(4))}` : line(vault, r.id) };
   if (action === "budget") {
     const w = setPluginBudget(vault, { plugin: r.id, callsPerMinute: a.callsPerMinute ?? null }, "agent");
     return "error" in w ? { ok: false, text: w.error } : { ok: true, text: line(vault, r.id) };

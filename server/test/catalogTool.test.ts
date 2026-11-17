@@ -32,7 +32,7 @@ describe("the agent's Catalog tool", () => {
     const { tid } = await rig.start("What services exist?");
     const out = await rig.backend.h.toolCall(tid, "Catalog", {});
     expect(out.ok).toBe(true);
-    for (const s of ["ask", "mic", "persist", "voice-lab", "theme", "state", "log", "converse", "catalog"]) expect(out.text).toMatch(new RegExp(`^- ${s} \\(`, "m"));
+    for (const s of ["ask", "mic", "persist", "voice-lab", "theme", "state", "log", "converse", "catalog", "box"]) expect(out.text).toMatch(new RegExp(`^- ${s} \\(`, "m"));
     expect(out.text).toMatch(/Plugins in this vault \(2\)/);
     expect(out.text).toMatch(/^- \.vault-chat\/visuals\/voice-chat\.html "Voice chat": iframe; needs ask, mic, voice-lab$/m);
     expect(out.text).toMatch(/^- clock\.html: in-process; needs nothing$/m);

@@ -9,13 +9,17 @@
 //            version, only while that version is live (an auto-revert after Keep)
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { BUILT_IN, appSlot, versionOf, vaultSlot, type ChangeKind, type DraftSlot } from "../src/pluginDrafts";
+import { BUILT_IN, appSlot, boxPluginName, boxSlot, versionOf, vaultSlot, type ChangeKind, type DraftSlot } from "../src/pluginDrafts";
 import { APP_PLUGIN_LIVE_DIR, appPluginFolder } from "../src/appPluginLive";
 import { PRESET_DRAFT_FILE, parseDraft, type Preset, type PresetInEffect } from "../src/appPreset";
 import { isVaultPluginFile, vaultPluginFile } from "../src/vaultPlugins";
 
-/** The slot of a plugin id: an app plugin with live copies, or a vault plugin (its .js path). */
+/** The slot of a plugin id: an app plugin with live copies, a box plugin (box/<name>), or a vault plugin (its .js path). */
 export function slotOf(plugin: string): DraftSlot | null {
+  if (plugin.startsWith("box/")) {
+    const name = boxPluginName(plugin);
+    return name ? boxSlot(name) : null;
+  }
   const folder = appPluginFolder(plugin);
   if (folder) return appSlot(folder);
   const file = vaultPluginFile(plugin);

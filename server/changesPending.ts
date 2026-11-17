@@ -4,6 +4,7 @@
 // and the records in its log, so every surface shows the same list:
 //   - an app plugin's draft (.vault-chat/app-plugins/<name>.draft.js) and the app's preset draft (preset.draft.json),
 //   - a vault plugin's draft (.vault-chat/plugins/<name>.draft.js; `added` when no live file is there yet),
+//   - a box plugin's draft (.vault-chat/box-plugins/<name>.draft.js, server/boxPlugins.ts; the laptop also reads these),
 //   - the agent's draft of Carl's settings (setting.draft in the main log).
 // Carl's word goes through the same POST /api/v2/supervisor as the laptop's (a plugin.change / setting.change record),
 // so a decision on any surface clears the card on every one.
@@ -17,7 +18,7 @@ import { join } from "node:path";
 import { APP_PLUGINS } from "../src/appPlugins";
 import { APP_PLUGIN_LIVE_DIR, LIVE_APP_PLUGINS, appPluginFolder } from "../src/appPluginLive";
 import { PRESET_DRAFT_FILE, PRESET_PLUGIN_ID, parseDraft } from "../src/appPreset";
-import { appSlot, draftPending, draftWhat, slotFileOf, vaultSlot } from "../src/pluginDrafts";
+import { BOX_PLUGIN_DIR, appSlot, boxPluginName, boxSlot, draftPending, draftWhat, slotFileOf, vaultSlot } from "../src/pluginDrafts";
 import { SETTINGS_DRAFT_ID, SETTINGS_DRAFT_NAME, describeValues, pendingSettingsDraft, triable as settingsTriable, type SettingsState } from "../src/settingsRecords";
 import { VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES, parseVaultPluginMeta, vaultPluginDevices } from "../src/vaultPlugins";
 import { slotCode } from "./pluginDrafts";
@@ -81,6 +82,22 @@ export function pendingOnBox(vault: string, surface: ChangeSurface = "laptop", s
       tryOn,
       ...(surface === "phone" && phone ? { code: code.draft } : {}),
     });
+  }
+  // The box's own plugins (server/boxPlugins.ts): Try routes the trying laptop's requests to the draft.
+  let boxNames: string[] = [];
+  try {
+    boxNames = readdirSync(join(vault, BOX_PLUGIN_DIR)).sort();
+  } catch {
+    /* no box plugins */
+  }
+  for (const n of boxNames) {
+    const f = slotFileOf(n);
+    const name = f && f.kind === "draft" && f.ext === ".js" ? boxPluginName(f.base) : null;
+    if (!name) continue;
+    const slot = boxSlot(name);
+    const code = slotCode(vault, slot);
+    const v = code.draft !== undefined ? draftPending(code, sup.changes(slot.plugin)) : null;
+    if (v) out.push({ plugin: slot.plugin, name: `Box: ${name}`, what: draftWhat(code.draft!), version: v, added: code.live === undefined, tryOn: ["laptop"] });
   }
   const sd = settings ? pendingSettingsDraft(settings) : null;
   if (sd) out.push({ plugin: SETTINGS_DRAFT_ID, name: SETTINGS_DRAFT_NAME, what: sd.what || describeValues(sd.values), version: sd.version, added: false, tryOn: settingsTriable(sd.values) ? ["laptop"] : [] });

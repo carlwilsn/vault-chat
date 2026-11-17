@@ -20,6 +20,8 @@ import { appCss } from "./appCss";
 import { liveGateway, liveManifest, liveRevoke, liveToken } from "./liveProxy";
 import { devicePlugins, pluginCatalog } from "./pluginCatalog";
 import { offDocument, pluginDesired, supervisorRoute } from "./supervisor";
+import { boxPluginRequest, boxPluginsStatus } from "./boxPlugins";
+import { BOX_TRY_HEADER } from "../src/pluginDrafts";
 import { surfaceOff, surfaceOffPage } from "./surfaces";
 import { changesRoute } from "./changesPending";
 import { appPluginStateRoute } from "./pluginState";
@@ -772,6 +774,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // The supervisor (server/supervisor.ts): the plugins' desired-state records, and Carl's word on one.
   if (path === "/api/v2/supervisor" && (method === "GET" || method === "POST")) {
     const out = await supervisorRoute(vault, method, url.searchParams, method === "POST" ? await jsonBody(req) : null);
+    return json(res, out.status, out.body);
+  }
+  // Box plugins (server/boxPlugins.ts): server-side modules in the vault the box runs live; a draft only for whoever
+  // tries it (x-vc-try: <version>, or ?vc-try=).
+  if (path === "/api/v2/box-plugins" && method === "GET") {
+    const out = await boxPluginsStatus(open.path);
+    return json(res, out.status, out.body);
+  }
+  const boxM = /^\/api\/v2\/box\/([a-z][a-z0-9-]{0,40})(\/.*)?$/.exec(path);
+  if (boxM && (method === "GET" || method === "POST")) {
+    const tried = String(req.headers[BOX_TRY_HEADER] ?? "") || url.searchParams.get("vc-try") || null;
+    const out = await boxPluginRequest(open.path, boxM[1]!, method, boxM[2] ?? "/", url.searchParams, method === "POST" ? await jsonBody(req) : null, tried);
     return json(res, out.status, out.body);
   }
   // Live pages (src/liveBridge.ts; server/liveProxy.ts): a page's manifest, Carl's grant minted into a scoped token, and its calls.

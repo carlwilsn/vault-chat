@@ -66,7 +66,7 @@ describe("the catalog", () => {
     const r = await fetch(srv.base + "/api/v2/plugin/catalog");
     expect(r.status).toBe(200);
     const c = (await r.json()) as any;
-    expect(c.services.map((s: any) => s.name)).toEqual(["ask", "mic", "persist", "voice-lab", "theme", "state", "log", "converse", "catalog"]);
+    expect(c.services.map((s: any) => s.name)).toEqual(["ask", "mic", "persist", "voice-lab", "theme", "state", "log", "converse", "catalog", "box"]);
     expect(c.services.find((s: any) => s.name === "converse")).toMatchObject({ supplier: "box", grantable: true, always: false, call: "vc.converse" });
     expect(c.plugins).toEqual(expected);
     // Stage 2: the app's own parts that are plugins, by id (the Plugins tool turns them off and on).
@@ -100,7 +100,7 @@ describe("the catalog", () => {
     const got = await call(browser, "GET", "/api/v2/plugin/catalog");
     expect(got.status).toBe(200);
     expect(got.json.plugins.slice(0, 4)).toEqual(expected);
-    expect(got.json.services.at(-1).name).toBe("catalog");
+    expect(got.json.services.at(-2).name).toBe("catalog");
     // Only that one read: nothing else of the box, and no write.
     expect((await call(browser, "POST", "/api/v2/plugin/catalog", "{}")).status).toBe(403);
     expect((await call(browser, "GET", "/api/v2/plugin/state")).status).toBe(403);

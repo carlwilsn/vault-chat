@@ -103,6 +103,8 @@ async function main(): Promise<void> {
   // The clients' feed: every vault's conversations, whatever vault is open; Main is the main vault's.
   setFeedVaults(cfg.vault, () => vaultRefs().map((v) => v.path));
   for (const v of vaultRefs()) convLog(v.path);
+  // Box plugins (server/boxPlugins.ts): the vault's own server-side modules, loaded live by this server, the owner now.
+  (await import("./boxPlugins")).startBoxPlugins(() => vaultRefs().map((v) => v.path));
   // Carl's settings are records in the main vault's log (server/settings.ts); what the box kept in its localStorage
   // file moves there once, backed up first (outside the vault).
   {

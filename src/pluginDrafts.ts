@@ -6,6 +6,7 @@
 // A plugin with drafts has a slot of three files in one folder:
 //   app plugins (src/appPluginLive.ts)   .vault-chat/app-plugins/<name>.js, <name>.draft.js, <name>.prev.js
 //   vault plugins (src/vaultPlugins.ts)  .vault-chat/plugins/<name>.js, <name>.draft.js, <name>.prev.js
+//   box plugins (server/boxPlugins.ts)   .vault-chat/box-plugins/<name>.js, <name>.draft.js, <name>.prev.js
 // The live file runs; the draft waits for Carl; prev is what the last Keep replaced (absent: the built-in one, or for a
 // vault plugin nothing), so Switch back swaps live and prev.
 //
@@ -59,6 +60,21 @@ export function slotFileOf(name: string): { base: string; ext: string; kind: "li
   if (!m) return null;
   return { base: m[1]!, ext: m[3]!, kind: m[2] ? (m[2].toLowerCase() === ".draft" ? "draft" : "prev") : "live" };
 }
+
+// ---------------------------------------------------------------- box plugins (server/boxPlugins.ts)
+
+/** The box's own plugins: server-side modules in the vault the running box loads live (id box/<name>). */
+export const BOX_PLUGIN_DIR = ".vault-chat/box-plugins";
+const BOX_NAME_RE = /^[a-z][a-z0-9-]{0,40}$/;
+/** A box plugin's name from its id (box/<name>) or its name, or null. */
+export function boxPluginName(id: string): string | null {
+  const m = /^(?:box\/)?([^/]+)$/.exec(String(id ?? "").trim());
+  return m && BOX_NAME_RE.test(m[1]!) ? m[1]! : null;
+}
+/** The slot of a box plugin by its name. */
+export const boxSlot = (name: string): DraftSlot => ({ plugin: `box/${name}`, dir: BOX_PLUGIN_DIR, live: `${name}.js`, draft: `${name}.draft.js`, prev: `${name}.prev.js` });
+/** The request header (or `vc-try` query word) a window trying a box plugin's draft sends: `<version>`. */
+export const BOX_TRY_HEADER = "x-vc-try";
 
 // ---------------------------------------------------------------- records
 

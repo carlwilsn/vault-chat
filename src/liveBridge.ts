@@ -43,6 +43,12 @@ import { OFFER_TIMEOUT_MS, declareOffers, markPageMounted, type Offers, type Off
 /** Every message either way carries this marker. */
 export const LIVE = "vc-live";
 export const LIVE_ATTR = "data-vc-live";
+/** The box plugins' drafts this app's windows try ({"box/<name>": version}); src/changeReady.ts provides it. */
+let boxTriesOf: () => Record<string, string> = () => ({});
+export function provideBoxTries(fn: () => Record<string, string>): void {
+  boxTriesOf = fn;
+}
+
 export const LIVE_LIMITS = {
   asksPerMinute: 20,
   concurrentFetch: 6,
@@ -619,7 +625,10 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
           try {
             let g = await grantOf(f, st, page);
             if (!g?.token) return fail(id, "this page has not been allowed to do that");
-            const go = (token: string) => host.post("/api/v2/live/fetch", { token, path, method, headers, bodyBase64: body && body.length ? bytesToBase64(body) : "" });
+            // A box plugin's route while Carl tries its draft in this app (src/changeReady.ts): the box runs the draft
+            // for this call only (server/boxPlugins.ts). Set by the host, never by the page.
+            const tries = /^\/api\/v2\/box\//.test(path) ? boxTriesOf() : {};
+            const go = (token: string) => host.post("/api/v2/live/fetch", { token, path, method, headers, bodyBase64: body && body.length ? bytesToBase64(body) : "", ...(Object.keys(tries).length ? { tries } : {}) });
             let r = await go(g.token);
             if (r.status === 401) {
               // Expired, revoked, or the page changed since: ask the box again (and Carl, when the page changed).

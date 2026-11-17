@@ -13,6 +13,7 @@ import {
   discardChange,
   keepChange,
   noticeAutoSwitch,
+  refreshBoxDrafts,
   startChangeReady,
   stopTrying,
   switchBack,
@@ -40,12 +41,18 @@ export function ChangeReady() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => startChangeReady(), []);
+  // The box plugins' drafts live on the box: read again when the records change, and every minute.
+  useEffect(() => {
+    const t = setInterval(() => void refreshBoxDrafts(), 60_000);
+    return () => clearInterval(t);
+  }, []);
   // The records changed: a keep to watch (or one no longer watched), a switch back by itself to tell of.
   const rv = useSupervisorVersion();
   useEffect(() => {
     watchTyping();
     noticeAutoSwitch();
   }, [rv, pending]);
+  useEffect(() => void refreshBoxDrafts(), [rv]);
   // The offers: the agent reads whether Carl is trying a draft (PluginRead app/changes) and can act on it.
   useEffect(() => declareOffers(CHANGES_PLUGIN.id, CHANGES_PLUGIN.name, changeOffers()).undo, []);
 

@@ -31,6 +31,7 @@ import { labCall } from "./labProxy";
 import { PLUGIN_LIMITS, stateQuery } from "../src/pluginRecords";
 import { appendPluginLog, awaitPluginState, setPluginState } from "./pluginState";
 import { converseAfter, converseIntent } from "../src/pluginConverse";
+import { boxPluginRequest } from "./boxPlugins";
 import { pluginCatalog } from "./pluginCatalog";
 import { measurePluginCall, pluginStopped } from "./supervisor";
 
@@ -139,7 +140,7 @@ const reply = (u: Upstream): LiveOut => ({ status: 200, body: { ok: true, status
 const json = (status: number, v: unknown): Upstream => ({ status, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify(v)) });
 
 /** One call a granted service's route matched: what its handler gets. */
-type Call = { vault: string; c: Claims; own: Set<string>; method: "GET" | "POST"; path: string; headers: Record<string, string>; body: Buffer | null; vaultParam: string | null };
+type Call = { vault: string; c: Claims; own: Set<string>; method: "GET" | "POST"; path: string; headers: Record<string, string>; body: Buffer | null; vaultParam: string | null; tries: Record<string, string> };
 /** A service's box side: its answer, or null when it does not take this call after all (the gateway goes on, then 403). */
 type Handler = (call: Call) => Promise<LiveOut | null>;
 
@@ -249,8 +250,24 @@ const converseHandler: Handler = async ({ c, method, path, body, vaultParam }) =
 /** `catalog`: the registered services and the vault's plugins (read-only). */
 const catalogHandler: Handler = async ({ vault, method, path }) => (method === "GET" && path === "/api/v2/plugin/catalog" ? reply(json(200, pluginCatalog(vault))) : null);
 
+/** `box`: a box plugin's route (server/boxPlugins.ts). The draft runs only when the page's host tries it (`tries`). */
+const boxHandler: Handler = async ({ vault, method, path, body, tries }) => {
+  const m = /^\/api\/v2\/box\/([a-z][a-z0-9-]{0,40})(\/[^?]*)?(?:\?(.*))?$/.exec(path);
+  if (!m) return null;
+  let parsed: unknown = null;
+  if (body && body.length) {
+    try {
+      parsed = JSON.parse(body.toString("utf8"));
+    } catch {
+      parsed = body.toString("utf8");
+    }
+  }
+  const out = await boxPluginRequest(vault, m[1]!, method, m[2] ?? "/", new URLSearchParams(m[3] ?? ""), parsed, tries[`box/${m[1]}`] ?? null);
+  return reply(json(out.status, out.body));
+};
+
 /** The box side of every registered box service that opens routes (src/liveServices.ts). */
-export const HANDLERS: Readonly<Record<string, Handler>> = { ask: askHandler, "voice-lab": voiceLabHandler, state: stateHandler, log: logHandler, converse: converseHandler, catalog: catalogHandler };
+export const HANDLERS: Readonly<Record<string, Handler>> = { ask: askHandler, "voice-lab": voiceLabHandler, state: stateHandler, log: logHandler, converse: converseHandler, catalog: catalogHandler, box: boxHandler };
 
 /** The services a call may go to: granted by the token, opened by the box, with a declared route matching the call. */
 function servicesTaking(c: Claims, method: "GET" | "POST", path: string): LiveService[] {
@@ -283,12 +300,16 @@ export async function liveGateway(vault: string, vaultParam: string | null, b: R
     body = Buffer.from(b.bodyBase64, "base64");
     if (body.length > LIVE_LIMITS.requestBytes) return { status: 413, body: { error: "request body too large" } };
   }
+  // The box plugins' drafts the page's host tries (src/liveBridge.ts: the laptop while Carl tries one), never the page's.
+  const tries: Record<string, string> = {};
+  if (b.tries && typeof b.tries === "object")
+    for (const [k, v] of Object.entries(b.tries as Record<string, unknown>)) if (/^box\/[a-z][a-z0-9-]{0,40}$/.test(k) && typeof v === "string" && /^[0-9a-f]{8}$/.test(v)) tries[k] = v;
   const own = sessions.get(c.j) ?? new Set<string>();
   sessions.set(c.j, own);
   try {
     // In registry order (ask, then voice-lab): the first service that takes the call answers it.
     for (const s of servicesTaking(c, method, path)) {
-      const out = await HANDLERS[s.name]?.({ vault, c, own, method, path, headers, body, vaultParam });
+      const out = await HANDLERS[s.name]?.({ vault, c, own, method, path, headers, body, vaultParam, tries });
       if (out) return out;
     }
   } catch (e) {

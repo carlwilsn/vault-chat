@@ -47,8 +47,13 @@ _resetConvLogs();
 setFeedVaults(vault, () => [vault]);
 const posts: any[] = [];
 fake.setHandler("vault_box_config", () => ({ box: "http://127.0.0.1:9", vault: null }));
+const { changesRoute } = await import("../../server/changesPending.ts");
 fake.setHandler("box_get_json", async ({ url }: any) => {
   const u = new URL(url);
+  if (u.pathname === "/api/v2/changes") {
+    const out = changesRoute(vault, u.searchParams);
+    return { status: out.status, body: JSON.stringify(out.body) };
+  }
   if (u.pathname !== "/api/v2/supervisor") return { status: 404, body: "{}" };
   const out = await supervisorRoute(vault, "GET", u.searchParams, null);
   return { status: out.status, body: JSON.stringify(out.body) };
@@ -406,4 +411,43 @@ test("the scripts write the same records through the box (app-plugin-live --keep
   } finally {
     srv.close();
   }
+});
+
+test("box plugins: the box lists their drafts, Try sends the tried version with a page's calls to their routes only, a decision clears the card, a draft discarded by itself is said", async () => {
+  CR._resetChangeReady();
+  await loadSupervisor(true);
+  const dir = path.join(vault, ".vault-chat", "box-plugins");
+  fs.mkdirSync(dir, { recursive: true });
+  const live = "export function activate(box) { box.route('GET', '/hi', () => 1); }\n";
+  const draft = "// @vc-change the box answers two\nexport function activate(box) { box.route('GET', '/hi', () => 2); }\n";
+  fs.writeFileSync(path.join(dir, "hello.js"), live);
+  fs.writeFileSync(path.join(dir, "hello.draft.js"), draft);
+  const v = versionOf(draft);
+  await CR.refreshBoxDrafts();
+  const p = CR.pendingChanges().find((c) => c.plugin === "box/hello");
+  assert.deepEqual(p, { plugin: "box/hello", name: "Box: hello", what: "the box answers two", version: v, added: false, triable: true });
+  assert.deepEqual(CR.boxTries(), {}, "nothing tried yet");
+  CR.tryChange("box/hello", v);
+  assert.deepEqual(CR.boxTries(), { "box/hello": v }, "the page host sends this with calls to /api/v2/box/…");
+  // Keep on another surface (the record): the card goes at once, before the box is read again.
+  const keep = await supervisorRoute(vault, "POST", new URLSearchParams(), { plugin: "box/hello", change: "keep", version: v });
+  assert.equal(keep.status, 200);
+  await loadSupervisor(true);
+  assert.equal(CR.pendingChanges().some((c) => c.plugin === "box/hello"), false);
+  await CR.refreshBoxDrafts();
+  assert.deepEqual(CR.boxTries(), {}, "a draft no longer waiting is not tried");
+
+  // A new draft the box discarded by itself while Carl tried it: the notice says why.
+  const bad = "export function activate(box) { box.route('GET', '/hi', () => { throw new Error('nope'); }); }\n";
+  fs.writeFileSync(path.join(dir, "hello.draft.js"), bad);
+  const bv = versionOf(bad);
+  await CR.refreshBoxDrafts();
+  CR.tryChange("box/hello", bv);
+  const out = await supervisorRoute(vault, "POST", new URLSearchParams(), { plugin: "box/hello", change: "discard", version: bv, by: "auto", reason: "GET /hi threw: nope" });
+  assert.equal(out.status, 200);
+  await loadSupervisor(true);
+  await CR.refreshBoxDrafts();
+  assert.deepEqual(CR.boxTries(), {});
+  assert.match(String(CR.lastOutcome()?.text), /^Discarded by itself: GET \/hi threw: nope$/);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

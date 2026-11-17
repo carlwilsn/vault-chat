@@ -23,6 +23,8 @@ import { useStore } from "./store";
 import { appPluginFolder, LIVE_APP_PLUGINS } from "./appPluginLive";
 import { liveCopiesNow, useAllLiveCopies, type LiveCopies } from "./appPluginLiveHost";
 import { postPluginChange, supervisorChangesNow, useSupervisorVersion } from "./pluginSupervisorApp";
+import { boxGet, boxLinkFor } from "./boxChat";
+import { provideBoxTries } from "./liveBridge";
 import { APP_PLUGINS } from "./appPlugins";
 import { PRESET_DRAFT_FILE, PRESET_PLUGIN_ID, parseDraft } from "./appPreset";
 import { SETTINGS_DRAFT_ID, SETTINGS_DRAFT_NAME, describeValues, pendingSettingsDraft, triable as settingsTriable, windowValues } from "./settingsRecords";
@@ -152,6 +154,52 @@ export function setVaultSlots(list: readonly VaultSlot[]): void {
   for (const fn of [...changeListeners]) fn();
 }
 
+// ---------------------------------------------------------------- the box plugins' drafts (the box reads them)
+
+let boxPending: readonly PendingChange[] = [];
+/** Box plugins seen with a draft here (their switch back by itself is told of after the draft is gone). */
+const boxKnown = new Set<string>();
+
+/** The box plugins' drafts waiting (server/boxPlugins.ts; GET /api/v2/changes lists them from the box's files). */
+export function setBoxPending(list: readonly PendingChange[]): void {
+  for (const p of list) boxKnown.add(p.plugin);
+  boxPending = list;
+  for (const fn of [...changeListeners]) fn();
+}
+
+/** The box plugins' drafts this app's windows try: a page's calls to their routes run the draft (src/liveBridge.ts). */
+export function boxTries(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(followTries())) if (k.startsWith("box/") && boxPending.some((p) => p.plugin === k && p.version === v)) out[k] = v;
+  return out;
+}
+provideBoxTries(boxTries);
+
+/** Read the box plugins' drafts from the box. A tried one that is gone stops being tried (discarded by itself: said). */
+export async function refreshBoxDrafts(): Promise<void> {
+  const v = useStore.getState().vaultPath;
+  const link = await boxLinkFor(v).catch(() => null);
+  if (!link) return;
+  let r: { changes?: unknown };
+  try {
+    r = await boxGet(link, "/api/v2/changes?surface=laptop");
+  } catch {
+    return; // an older box, or unreachable: nothing to add
+  }
+  if (useStore.getState().vaultPath !== v || !Array.isArray(r?.changes)) return;
+  const list: PendingChange[] = [];
+  for (const c of r.changes as Record<string, unknown>[])
+    if (typeof c?.plugin === "string" && c.plugin.startsWith("box/") && typeof c.version === "string")
+      list.push({ plugin: c.plugin, name: String(c.name ?? c.plugin), what: String(c.what ?? ""), version: c.version, added: !!c.added, triable: true });
+  for (const [plugin, version] of Object.entries(followTries())) {
+    if (!plugin.startsWith("box/") || list.some((p) => p.plugin === plugin && p.version === version)) continue;
+    setTried(plugin, null);
+    const d = changesOf(plugin).filter((c) => c.change === "discard" && c.version === version).pop();
+    if (d?.by === "auto") say({ plugin, name: list.find((p) => p.plugin === plugin)?.name ?? boxPending.find((p) => p.plugin === plugin)?.name ?? plugin, text: `Discarded by itself: ${d.reason ?? "it failed while tried"}`, ok: false, at: Date.now() });
+  }
+  setBoxPending(list);
+}
+
 // ---------------------------------------------------------------- the drafts waiting for Carl
 
 export type PendingChange = {
@@ -179,7 +227,7 @@ function appSlotCode(all: LiveCopies, folder: string): SlotCode {
 }
 
 /** Every draft nobody decided on yet, app plugins first. */
-export function pendingChanges(all: LiveCopies = liveCopiesNow(), slots: readonly VaultSlot[] = vaultSlots): PendingChange[] {
+export function pendingChanges(all: LiveCopies = liveCopiesNow(), slots: readonly VaultSlot[] = vaultSlots, box: readonly PendingChange[] = boxPending): PendingChange[] {
   const out: PendingChange[] = [];
   for (const id of LIVE_APP_PLUGINS) {
     const code = appSlotCode(all, appPluginFolder(id)!);
@@ -199,6 +247,8 @@ export function pendingChanges(all: LiveCopies = liveCopiesNow(), slots: readonl
     const v = draftPending(s, supervisorChangesNow(s.id));
     if (v) out.push({ plugin: s.id, name: s.name, what: draftWhat(s.draft!), version: v, added: s.live === undefined, triable: true });
   }
+  // The box's own plugins: the box said which drafts wait; the records here may have decided one since.
+  for (const p of box) if (supervisorChangesNow(p.plugin).every((c) => c.version !== p.version || c.change === "switch")) out.push(p);
   // Carl's settings (src/settingsRecords.ts): the agent's draft of them.
   const sd = pendingSettingsDraft(settingsDraftsNow());
   if (sd) out.push({ plugin: SETTINGS_DRAFT_ID, name: SETTINGS_DRAFT_NAME, what: sd.what || describeValues(sd.values), version: sd.version, added: false, triable: settingsTriable(sd.values) });
@@ -210,14 +260,16 @@ function subscribeChanges(fn: () => void): () => void {
   return () => changeListeners.delete(fn);
 }
 const slotsNow = () => vaultSlots;
+const boxNow = () => boxPending;
 
-/** The drafts waiting for Carl, kept current (the copies, the vault plugins' slots, the records). */
+/** The drafts waiting for Carl, kept current (the copies, the vault plugins' slots, the box's, the records). */
 export function usePendingChanges(): PendingChange[] {
   const all = useAllLiveCopies();
   const slots = useSyncExternalStore(subscribeChanges, slotsNow, slotsNow);
+  const box = useSyncExternalStore(subscribeChanges, boxNow, boxNow);
   const rv = useSupervisorVersion();
   const sv = useSyncExternalStore(onSettingsDrafts, settingsDraftsVersion, settingsDraftsVersion);
-  return useMemo(() => pendingChanges(all, slots), [all, slots, rv, sv]);
+  return useMemo(() => pendingChanges(all, slots, box), [all, slots, box, rv, sv]);
 }
 
 /** The plugins Carl is trying now (pending drafts only), with the version. */
@@ -244,7 +296,7 @@ export const clearOutcome = () => {
 };
 export const lastOutcome = () => outcome;
 
-const nameOf = (plugin: string) => (plugin === SETTINGS_DRAFT_ID ? SETTINGS_DRAFT_NAME : plugin === PRESET_PLUGIN_ID ? PRESET_NAME : plugin.startsWith("app/") ? appName(plugin) : vaultSlots.find((s) => s.id === plugin)?.name ?? plugin.split("/").pop() ?? plugin);
+const nameOf = (plugin: string) => (plugin === SETTINGS_DRAFT_ID ? SETTINGS_DRAFT_NAME : plugin === PRESET_PLUGIN_ID ? PRESET_NAME : plugin.startsWith("app/") ? appName(plugin) : plugin.startsWith("box/") ? boxPending.find((p) => p.plugin === plugin)?.name ?? `Box: ${plugin.slice(4)}` : vaultSlots.find((s) => s.id === plugin)?.name ?? plugin.split("/").pop() ?? plugin);
 
 // ---------------------------------------------------------------- the actions
 
@@ -370,7 +422,7 @@ export function noticeAutoSwitch(now = Date.now()): void {
   followTries();
   const seen = seenSeq();
   let best: { plugin: string; seq: number; reason: string | null; at: number } | null = null;
-  for (const plugin of slotIds())
+  for (const plugin of [...slotIds(), ...boxKnown])
     for (const c of changesOf(plugin))
       if (c.change === "switch" && c.by === "auto" && c.seq > seen && now - c.at <= KEEP_WATCH_MS && (!best || c.seq > best.seq)) best = { plugin, seq: c.seq, reason: c.reason, at: c.at };
   if (best) say({ plugin: best.plugin, name: nameOf(best.plugin), text: `Switched back by itself${best.reason ? `: ${best.reason}` : ""}`, ok: false, at: best.at, seq: best.seq });
@@ -487,6 +539,8 @@ export function _resetChangeReady(): void {
   tryVault = null;
   tries = NONE;
   vaultSlots = [];
+  boxPending = [];
+  boxKnown.clear();
   outcome = null;
   autoDone.clear();
   revertDone.clear();
