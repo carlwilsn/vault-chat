@@ -4,18 +4,31 @@
 // voice a call speaks with and the automatic-push switch read it here; the laptop, the phone and the agent's Settings
 // tool write it here. Every record is also a signal on every feed, so an open app and the phone follow at once.
 //
+// The agent's own idea for a setting is a draft (setting.draft) that waits for Carl as Change ready; his Keep, Discard
+// and Switch back are setting.change records, a keep and a switch also the setting records they set (draftSettings,
+// settingsChange; POST /api/v2/settings {change, version} and the supervisor's route for app/settings-values).
+//
 // Before this, those four lived in the box's localStorage file. migrateSettings moves them, once: what it moves is
 // first written to a backup file (outside the vault), then becomes records, then leaves the old file.
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ConvLog } from "./convlog/log";
 import type { LogRecord } from "../src/convlog/protocol";
+import { landing, versionOf } from "../src/pluginDrafts";
 import {
   SETTING,
+  SETTING_CHANGE,
+  SETTING_DRAFT,
   SETTINGS,
   SETTING_KEYS,
+  canonicalValues,
+  describeValues,
+  draftVersion,
   emptySettings,
+  foldSettingDraft,
   foldSettings,
+  pendingSettingsDraft,
+  settingValuesOf,
   isSettingKey,
   legacyValue,
   settingProblem,
@@ -23,6 +36,7 @@ import {
   type SettingKey,
   type SettingSignal,
   type SettingValue,
+  type SettingValues,
   type SettingsState,
 } from "../src/settingsRecords";
 
@@ -47,16 +61,17 @@ function folded(log: ConvLog): Folded {
   f = { state, changed };
   folds.set(log, f);
   log.onRecord((r: LogRecord) => {
-    if (r.conv === null && foldSettings(state, r)) {
+    if (r.conv !== null) return;
+    if (foldSettings(state, r)) {
       const key = (r as { signal?: { key?: SettingKey } }).signal!.key!;
       for (const fn of [...changed]) fn(key);
-    }
+    } else foldSettingDraft(state, r);
   });
-  for (const r of log.signals(0)) foldSettings(state, r);
+  for (const r of log.signals(0)) foldSettings(state, r) || foldSettingDraft(state, r);
   return f;
 }
 
-const copy = (s: SettingsState): SettingsState => ({ seq: s.seq, values: { ...s.values }, set: { ...s.set } });
+const copy = (s: SettingsState): SettingsState => ({ seq: s.seq, values: { ...s.values }, set: { ...s.set }, drafts: [...s.drafts], changes: [...s.changes] });
 
 /** Every setting now (on `log`, default the main vault's). */
 export function readSettings(log: ConvLog | null = mainLog?.() ?? null): SettingsState {
@@ -123,8 +138,123 @@ export function settingsRoute(method: string, body: Record<string, unknown> | nu
     }
     return { status: 200, body: { ...readSettings(log), moved, refused } };
   }
+  if (typeof b.change === "string") {
+    const who = typeof b.by === "string" && CHANGE_BY.has(b.by) ? b.by : by;
+    const c = settingsChange(b.change, b.version, who, b.reason, log);
+    return c.ok ? { status: 200, body: { ok: true, seq: c.seq, text: c.text } } : { status: c.status, body: { error: c.error } };
+  }
   const r = setSetting(b.key, b.value, by, log);
   return r.ok ? { status: 200, body: { ...readSettings(log), key: r.key, value: r.value } } : { status: r.status, body: { error: r.error } };
+}
+
+// ---------------------------------------------------------------- drafts (src/settingsRecords.ts)
+
+/** Who may be named on a settings change record (as on a plugin's: server/supervisor.ts). */
+const CHANGE_BY = new Set(["carl", "agent", "auto", "gate"]);
+
+/** The value a record leaves `key` at, for comparing (null: its default). */
+const effective = (k: SettingKey, v: SettingValue | undefined): SettingValue => (v === null || v === undefined ? SETTINGS[k].default : v);
+
+export type DraftResult = { ok: true; version: string; values: SettingValues; what: string; carried: SettingValues } | { ok: false; status: number; error: string };
+
+/**
+ * The agent's own idea for some settings: a setting.draft record that waits for Carl as Change ready (nothing is set).
+ * A draft still waiting carries over (its settings not named again). Values already in effect are left out; when
+ * nothing is left, nothing is written. `what`: one line for the notice (default: the settings, said).
+ */
+export function draftSettings(values: Record<string, unknown>, what: unknown, by: string, log: ConvLog | null = mainLog?.() ?? null): DraftResult {
+  const v = settingValuesOf(values);
+  if (!v || !Object.keys(v).length) {
+    for (const [k, x] of Object.entries(values ?? {})) {
+      const bad = settingProblem(k, x === undefined ? null : x);
+      if (bad) return { ok: false, status: 400, error: bad };
+    }
+    return { ok: false, status: 400, error: "name a setting and its value" };
+  }
+  for (const [k, x] of Object.entries(v)) {
+    const bad = x !== null ? (checks.get(k as SettingKey)?.(x) ?? null) : null;
+    if (bad) return { ok: false, status: 400, error: bad };
+  }
+  if (!log) return { ok: false, status: 503, error: "the settings log is not open yet" };
+  const st = folded(log).state;
+  const waiting = pendingSettingsDraft(st);
+  const carried: SettingValues = {};
+  if (waiting) for (const k of SETTING_KEYS) if (k in waiting.values && !(k in v)) carried[k] = waiting.values[k];
+  const all: SettingValues = { ...carried, ...v };
+  const out: SettingValues = {};
+  for (const k of SETTING_KEYS) if (k in all && effective(k, all[k]) !== st.values[k]) out[k] = all[k];
+  if (!Object.keys(out).length) return { ok: false, status: 409, error: `already so (${describeValues(all)}): nothing to draft` };
+  const at = Date.now();
+  const version = draftVersion(out, at);
+  const line = typeof what === "string" && what.trim() ? what.trim().slice(0, 160) : describeValues(out);
+  try {
+    log.emit(null, { type: "signal", signal: { type: SETTING_DRAFT, values: out, version, what: line, by: String(by || "?").slice(0, 40), at } });
+  } catch (e) {
+    return { ok: false, status: 500, error: `the log could not be written: ${(e as Error).message}` };
+  }
+  for (const k of Object.keys(carried) as SettingKey[]) if (!(k in out)) delete carried[k];
+  return { ok: true, version, values: out, what: line, carried };
+}
+
+export type ChangeResult = { ok: true; seq: number; text: string } | { ok: false; status: number; error: string };
+
+/**
+ * Carl's word on the settings draft (the Change ready buttons, app/changes, the Plugins tool, an auto-discard):
+ *   keep     the draft `version` (still waiting) is set, a setting record per key, then the keep record naming what it replaced
+ *   discard  the draft is dropped: only the record
+ *   switch   the settings the last keep (or switch) replaced are set again, for each it set that nobody changed since;
+ *            `version` given: only while that one is in effect (two windows switching back by themselves switch once)
+ */
+export function settingsChange(change: unknown, version: unknown, by: string, reason?: unknown, log: ConvLog | null = mainLog?.() ?? null): ChangeResult {
+  if (change !== "keep" && change !== "discard" && change !== "switch") return { ok: false, status: 400, error: 'change is "keep", "discard" or "switch"' };
+  if (!log) return { ok: false, status: 503, error: "the settings log is not open yet" };
+  const st = folded(log).state;
+  const why = typeof reason === "string" && reason.trim() ? reason.trim().slice(0, 300) : undefined;
+  const who = String(by || "?").slice(0, 40);
+  const emit = (sig: Record<string, unknown>): number => log.emit(null, { type: "signal", signal: { type: SETTING_CHANGE, ...sig, by: who, ...(why ? { reason: why } : {}), at: Date.now() } }).seq;
+  try {
+    if (change === "keep" || change === "discard") {
+      const d = st.drafts.find((x) => x.version === version);
+      if (!d) return { ok: false, status: 409, error: `no settings draft ${String(version ?? "").slice(0, 20)} (look again: app/changes, or Settings)` };
+      const decided = st.changes.find((c) => c.version === d.version && c.change !== "switch");
+      if (decided) return decided.change === change ? { ok: true, seq: decided.seq, text: `already ${change === "keep" ? "kept" : "discarded"}` } : { ok: false, status: 409, error: `that draft was already ${decided.change === "keep" ? "kept" : "discarded"}` };
+      if (change === "discard") return { ok: true, seq: emit({ change, version: d.version }), text: `discarded the settings draft (${describeValues(d.values)})` };
+      if (pendingSettingsDraft(st)?.version !== d.version) return { ok: false, status: 409, error: "a newer settings draft replaced that one: look again" };
+      for (const [k, x] of Object.entries(d.values)) {
+        const bad = x !== null ? (checks.get(k as SettingKey)?.(x) ?? null) : null;
+        if (bad) return { ok: false, status: 400, error: `${bad}; nothing kept` };
+      }
+      const was: SettingValues = {};
+      for (const k of SETTING_KEYS) if (k in d.values) was[k] = st.set[k] ? st.values[k] : null;
+      for (const [k, x] of Object.entries(d.values)) {
+        const r = setSetting(k, x, who, log);
+        if (!r.ok) return { ok: false, status: r.status, error: `${r.error} (the settings before it in the draft are set)` };
+      }
+      const seq = emit({ change, version: d.version, from: versionOf(canonicalValues(was)), values: d.values, was });
+      return { ok: true, seq, text: `kept: ${describeValues(d.values)}; Switch back returns to ${describeValues(was)}` };
+    }
+    const l = landing(st.changes) as (typeof st.changes)[number] | null;
+    if (!l) return { ok: false, status: 409, error: "the settings have nothing to switch back to (no draft was kept)" };
+    if (typeof version === "string" && version && l.version !== version) return { ok: false, status: 409, error: "already switched" };
+    const back: SettingValues = {};
+    const left: SettingKey[] = [];
+    for (const k of SETTING_KEYS) {
+      if (!(k in l.values)) continue;
+      if (effective(k, l.values[k]) === st.values[k]) back[k] = k in l.was ? l.was[k] : null;
+      else left.push(k);
+    }
+    if (!Object.keys(back).length) return { ok: false, status: 409, error: `nothing to switch back: ${left.join(", ")} changed since` };
+    const now: SettingValues = {};
+    for (const k of Object.keys(back) as SettingKey[]) now[k] = l.values[k];
+    for (const [k, x] of Object.entries(back)) {
+      const r = setSetting(k, x, who, log);
+      if (!r.ok) return { ok: false, status: r.status, error: r.error };
+    }
+    const seq = emit({ change, version: versionOf(`${canonicalValues(back)}@${Date.now()}`), from: l.version, values: back, was: now });
+    return { ok: true, seq, text: `switched the settings back: ${describeValues(back)}${left.length ? ` (${left.join(", ")} left as Carl set it since)` : ""}` };
+  } catch (e) {
+    return { ok: false, status: 500, error: `the log could not be written: ${(e as Error).message}` };
+  }
 }
 
 type Storage = { getItem(k: string): string | null; removeItem(k: string): void };

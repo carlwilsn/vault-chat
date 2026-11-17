@@ -595,6 +595,11 @@ class BoxChatSession {
         // One of Carl's settings changed (the agent's Settings tool, the phone, another window): shown here now.
         void import("./settings").then((m) => m.settingSignal(e, seq)).catch(() => {});
         return;
+      case "setting.draft":
+      case "setting.change":
+        // The agent's settings draft, or Carl's word on it (src/changeReady.ts shows it as Change ready).
+        if (typeof seq === "number") void import("./settings").then((m) => m.settingDraftSignal(e, seq)).catch(() => {});
+        return;
       case "file_changed":
         // The agent on the box just wrote this file: a pane showing it shows the box's bytes now.
         if (typeof e.path === "string") boxFileChanged({ vault: this.vault, rel: e.path, fetch: (rel) => fetchBoxFile(this.link, rel) });

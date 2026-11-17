@@ -7,8 +7,8 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConvLog } from "../convlog/log";
-import { SETTING, emptySettings, foldSettings, settingProblem } from "../../src/settingsRecords";
-import { configureSettings, migrateSettings, readSetting, readSettings, setSetting, settingsRoute } from "../settings";
+import { SETTING, emptySettings, foldSettings, pendingSettingsDraft, settingProblem } from "../../src/settingsRecords";
+import { configureSettings, migrateSettings, readSetting, readSettings, setSetting, settingsChange, settingsRoute } from "../settings";
 import { settingsTool, settingsToolSpecs } from "../settingsTool";
 import { agentToolSpecs } from "../engine/engine";
 
@@ -179,5 +179,87 @@ describe("the route the app and the phone use", () => {
     r = settingsRoute("POST", { migrate: { theme: "graphite" } }, "carl");
     expect(r.body).toMatchObject({ moved: [], values: { theme: "light" } });
     expect(readSettings().seq).toBe(seq);
+  });
+});
+
+describe("drafts: the agent's own idea waits for Carl (Change ready)", () => {
+  const changes = () => log.after(0).events.filter((r: any) => r.signal?.type === "setting.change").map((r: any) => r.signal);
+
+  it("draft: true sets nothing; Keep sets it (a setting record per key, by carl) and names what it replaced; Switch back undoes it, again redoes it", () => {
+    settingsTool({ key: "effort", value: "high" });
+    const seq = readSettings().seq;
+    let r = settingsTool({ key: "theme", value: "light", draft: true, what: "easier to read in daylight" });
+    expect(r.ok).toBe(true);
+    expect(r.text).toMatch(/^Drafted, nothing set: theme light .*Try shows it on his windows only/);
+    // A second draft while it waits carries it (one draft, both settings); nothing is set.
+    r = settingsTool({ key: "effort", value: "low", draft: true });
+    expect(r.text).toMatch(/theme light, effort low.*It carries the draft that was waiting \(theme light\)/);
+    expect(readSettings().seq).toBe(seq);
+    expect(readSettings().values).toMatchObject({ theme: "graphite", effort: "high" });
+    const d = pendingSettingsDraft(readSettings())!;
+    expect(d).toMatchObject({ values: { theme: "light", effort: "low" }, by: "agent" });
+    expect(settingsTool({}).text).toMatch(/A draft waits for Carl \(Change ready, app\/settings-values [0-9a-f]{8}\): theme light, effort low/);
+    // The drafts ride every feed with the settings: the records are vault-level signals.
+    expect((log.after(0).events.at(-1) as any).conv).toBeNull();
+
+    // Keep: through the supervisor's route, as Carl's Change ready posts it.
+    expect(settingsChange("keep", "00000000", "carl").ok).toBe(false);
+    const k = settingsRoute("POST", { change: "keep", version: d.version }, "carl");
+    expect(k).toMatchObject({ status: 200, body: { ok: true, text: expect.stringMatching(/^kept: theme light, effort low; Switch back returns to theme back to its default, effort high/) } });
+    expect(readSettings().values).toMatchObject({ theme: "light", effort: "low" });
+    expect(readSettings().set.theme?.by).toBe("carl");
+    expect(pendingSettingsDraft(readSettings())).toBeNull();
+    expect(changes().at(-1)).toMatchObject({ change: "keep", version: d.version, values: { theme: "light", effort: "low" }, was: { theme: null, effort: "high" }, by: "carl" });
+    expect(settingsRoute("POST", { change: "keep", version: d.version }, "carl").body).toMatchObject({ text: "already kept" });
+
+    // Switch back: only the setting nobody changed since.
+    setSetting("effort", "max", "carl");
+    let b = settingsChange("switch", "", "carl");
+    expect(b).toMatchObject({ ok: true, text: expect.stringMatching(/switched the settings back: theme back to its default \(effort left as Carl set it since\)/) });
+    expect(readSettings().values).toMatchObject({ theme: "graphite", effort: "max" });
+    // An auto-revert naming the kept version after a switch: already switched, nothing written.
+    expect(settingsChange("switch", d.version, "auto")).toMatchObject({ ok: false, error: "already switched" });
+    // Again: the kept theme comes back.
+    b = settingsChange("switch", "", "carl");
+    expect(b.ok).toBe(true);
+    expect(readSettings().values.theme).toBe("light");
+  });
+
+  it("Discard writes only the record; a value already in effect is not drafted; the box's settings are drafted with no Try", () => {
+    expect(settingsTool({ key: "theme", value: "graphite", draft: true })).toMatchObject({ ok: false, text: expect.stringMatching(/already so .*nothing drafted/) });
+    expect(settingsTool({ key: "model", value: "gpt-4", draft: true })).toMatchObject({ ok: false, text: expect.stringMatching(/not a model this engine runs; nothing drafted/) });
+    const r = settingsTool({ key: "model", value: "sonnet", draft: true });
+    expect(r.text).toMatch(/model sonnet .*it is the box's, so there is no Try: Keep sets it/);
+    const d = pendingSettingsDraft(readSettings())!;
+    const seq = readSettings().seq;
+    expect(settingsChange("discard", d.version, "carl")).toMatchObject({ ok: true, text: expect.stringMatching(/discarded the settings draft \(model sonnet\)/) });
+    expect(readSettings().seq).toBe(seq);
+    expect(readSettings().values.model).toBeNull();
+    expect(pendingSettingsDraft(readSettings())).toBeNull();
+    expect(settingsChange("keep", d.version, "carl")).toMatchObject({ ok: false, error: "that draft was already discarded" });
+    expect(settingsChange("switch", "", "carl")).toMatchObject({ ok: false, status: 409 });
+  });
+
+  it("the fold reads drafts and words back after a restart", () => {
+    settingsTool({ key: "chatSidebar", value: false, draft: true });
+    const v = log.vault;
+    log.close();
+    log = new ConvLog(v, null, join(v, "events"));
+    expect(pendingSettingsDraft(readSettings())).toMatchObject({ values: { chatSidebar: false } });
+  });
+
+  it("the supervisor's route and the Plugins tool hand app/settings-values to the settings", async () => {
+    const { setPluginChange } = await import("../supervisor");
+    const { pluginTool } = await import("../supervisorTools");
+    settingsTool({ key: "theme", value: "light", draft: true });
+    const d = pendingSettingsDraft(readSettings())!;
+    const w = setPluginChange(root, { plugin: "app/settings-values", change: "keep", version: d.version }, "carl");
+    expect(w).toMatchObject({ status: 200, text: expect.stringMatching(/^kept: theme light/) });
+    expect(readSettings().values.theme).toBe("light");
+    expect(pluginTool(root, { action: "back", plugin: "settings-values" })).toMatchObject({ ok: true, text: expect.stringMatching(/switched the settings back/) });
+    expect(readSettings().values.theme).toBe("graphite");
+    settingsTool({ key: "theme", value: "light", draft: true });
+    expect(pluginTool(root, { action: "discard", plugin: "app/settings-values" })).toMatchObject({ ok: true, text: expect.stringMatching(/discarded/) });
+    expect(pluginTool(root, { action: "submit", plugin: "settings-values" }).ok).toBe(false);
   });
 });

@@ -14,6 +14,10 @@
 //   is tried or a keep is under watch.
 // - The state and the actions are offers (app/changes: PluginRead / PluginAct), so the agent sees whether Carl is
 //   trying a draft.
+// - Carl's settings have drafts too (src/settingsRecords.ts: the agent's own idea, Settings with draft: true), shown as
+//   "app/settings-values": Try lays their window settings (theme, sidebar) over the records on his windows only
+//   (src/settings.ts setSettingsTry); a draft of settings only the box applies (model, voice …) has no Try, only
+//   Keep / Discard. Keep, Discard and Switch back post the same change to the box, which writes the settings.
 import { useMemo, useSyncExternalStore } from "react";
 import { useStore } from "./store";
 import { appPluginFolder, LIVE_APP_PLUGINS } from "./appPluginLive";
@@ -21,7 +25,9 @@ import { liveCopiesNow, useAllLiveCopies, type LiveCopies } from "./appPluginLiv
 import { postPluginChange, supervisorChangesNow, useSupervisorVersion } from "./pluginSupervisorApp";
 import { APP_PLUGINS } from "./appPlugins";
 import { PRESET_DRAFT_FILE, PRESET_PLUGIN_ID, parseDraft } from "./appPreset";
-import { BUILT_IN, KEEP_WATCH_MS, TRY_SLOW_MS, draftPending, draftWhat, landing, slowMedian, watchedKeep, type SlotCode } from "./pluginDrafts";
+import { SETTINGS_DRAFT_ID, SETTINGS_DRAFT_NAME, describeValues, pendingSettingsDraft, triable as settingsTriable, windowValues } from "./settingsRecords";
+import { onPickWhileTrying, onSettingsDrafts, refreshBoxSettings, setSettingsTry, settingsDraftsNow, settingsDraftsVersion } from "./settings";
+import { BUILT_IN, KEEP_WATCH_MS, TRY_SLOW_MS, draftPending, draftWhat, landing, slowMedian, watchedKeep, type ChangeRecord, type SlotCode } from "./pluginDrafts";
 
 export const CHANGES_PLUGIN = { id: "app/changes", name: "Change ready" } as const;
 /** What Carl calls the app's preset in the notice. */
@@ -59,6 +65,7 @@ function followTries(): Tries {
 }
 
 function emitTries(): void {
+  syncSettingsTry();
   for (const fn of [...tryListeners]) fn();
   for (const fn of [...changeListeners]) fn();
 }
@@ -119,6 +126,19 @@ export function setTried(plugin: string, version: string | null): void {
   emitTries();
 }
 
+// ---------------------------------------------------------------- Carl's settings (src/settings.ts)
+
+/** A plugin's change records: the supervisor's, or for the settings, the settings' own (they live with them). */
+export function changesOf(plugin: string): readonly ChangeRecord[] {
+  return plugin === SETTINGS_DRAFT_ID ? settingsDraftsNow().changes : supervisorChangesNow(plugin);
+}
+
+/** This window shows the settings draft Carl tries (its window settings over the records), or the records again. */
+function syncSettingsTry(): void {
+  const d = pendingSettingsDraft(settingsDraftsNow());
+  setSettingsTry(d && followTries()[SETTINGS_DRAFT_ID] === d.version ? windowValues(d.values) : null);
+}
+
 // ---------------------------------------------------------------- the vault plugins' slots (VaultPluginHost writes them)
 
 export type VaultSlot = { id: string; name: string } & SlotCode;
@@ -143,6 +163,8 @@ export type PendingChange = {
   version: string;
   /** A vault plugin with no live file yet: the draft adds it. */
   added: boolean;
+  /** Whether Try can run it on Carl's windows (a settings draft of only the box's settings can't: Keep sets it). */
+  triable: boolean;
 };
 
 const appName = (id: string) => APP_PLUGINS.find((p) => p.id === id)?.name ?? id.replace(/^app\//, "");
@@ -162,7 +184,7 @@ export function pendingChanges(all: LiveCopies = liveCopiesNow(), slots: readonl
   for (const id of LIVE_APP_PLUGINS) {
     const code = appSlotCode(all, appPluginFolder(id)!);
     const v = draftPending(code, supervisorChangesNow(id));
-    if (v) out.push({ plugin: id, name: appName(id), what: draftWhat(code.draft!), version: v, added: false });
+    if (v) out.push({ plugin: id, name: appName(id), what: draftWhat(code.draft!), version: v, added: false, triable: true });
   }
   // The app's preset (src/appPreset.ts): its draft file waits the same way.
   const preset = all[PRESET_DRAFT_FILE];
@@ -170,13 +192,16 @@ export function pendingChanges(all: LiveCopies = liveCopiesNow(), slots: readonl
     const v = draftPending({ draft: preset }, supervisorChangesNow(PRESET_PLUGIN_ID));
     if (v) {
       const d = parseDraft(preset);
-      out.push({ plugin: PRESET_PLUGIN_ID, name: PRESET_NAME, what: "preset" in d ? d.what || `the app's preset "${d.preset.name}"` : "", version: v, added: false });
+      out.push({ plugin: PRESET_PLUGIN_ID, name: PRESET_NAME, what: "preset" in d ? d.what || `the app's preset "${d.preset.name}"` : "", version: v, added: false, triable: true });
     }
   }
   for (const s of slots) {
     const v = draftPending(s, supervisorChangesNow(s.id));
-    if (v) out.push({ plugin: s.id, name: s.name, what: draftWhat(s.draft!), version: v, added: s.live === undefined });
+    if (v) out.push({ plugin: s.id, name: s.name, what: draftWhat(s.draft!), version: v, added: s.live === undefined, triable: true });
   }
+  // Carl's settings (src/settingsRecords.ts): the agent's draft of them.
+  const sd = pendingSettingsDraft(settingsDraftsNow());
+  if (sd) out.push({ plugin: SETTINGS_DRAFT_ID, name: SETTINGS_DRAFT_NAME, what: sd.what || describeValues(sd.values), version: sd.version, added: false, triable: settingsTriable(sd.values) });
   return out;
 }
 
@@ -191,7 +216,8 @@ export function usePendingChanges(): PendingChange[] {
   const all = useAllLiveCopies();
   const slots = useSyncExternalStore(subscribeChanges, slotsNow, slotsNow);
   const rv = useSupervisorVersion();
-  return useMemo(() => pendingChanges(all, slots), [all, slots, rv]);
+  const sv = useSyncExternalStore(onSettingsDrafts, settingsDraftsVersion, settingsDraftsVersion);
+  return useMemo(() => pendingChanges(all, slots), [all, slots, rv, sv]);
 }
 
 /** The plugins Carl is trying now (pending drafts only), with the version. */
@@ -218,14 +244,23 @@ export const clearOutcome = () => {
 };
 export const lastOutcome = () => outcome;
 
-const nameOf = (plugin: string) => (plugin === PRESET_PLUGIN_ID ? PRESET_NAME : plugin.startsWith("app/") ? appName(plugin) : vaultSlots.find((s) => s.id === plugin)?.name ?? plugin.split("/").pop() ?? plugin);
+const nameOf = (plugin: string) => (plugin === SETTINGS_DRAFT_ID ? SETTINGS_DRAFT_NAME : plugin === PRESET_PLUGIN_ID ? PRESET_NAME : plugin.startsWith("app/") ? appName(plugin) : vaultSlots.find((s) => s.id === plugin)?.name ?? plugin.split("/").pop() ?? plugin);
 
 // ---------------------------------------------------------------- the actions
 
-/** Try a draft (Carl's windows only). */
+/** Try a draft (Carl's windows only). A settings draft of only the box's settings can't be tried: nothing happens. */
 export function tryChange(plugin: string, version: string): void {
+  if (plugin === SETTINGS_DRAFT_ID && !pendingChanges().some((p) => p.plugin === plugin && p.version === version && p.triable)) return;
   say(null);
   setTried(plugin, version);
+}
+
+/** Carl's word on a draft: the box's route (for the settings too: it hands theirs to them); the settings then read
+ *  back at once, not when the feed brings them. */
+async function post(body: Parameters<typeof postPluginChange>[0]): Promise<{ ok: boolean; text: string }> {
+  const r = await postPluginChange(body);
+  if (body.plugin === SETTINGS_DRAFT_ID) await refreshBoxSettings();
+  return r;
 }
 
 /** Stop trying: the copy in effect runs again. */
@@ -235,7 +270,7 @@ export function stopTrying(plugin: string): void {
 
 /** Keep a draft: the record (the box moves the files); this window stops "trying", the kept copy runs as live. */
 export async function keepChange(plugin: string, version: string, by = "carl"): Promise<{ ok: boolean; text: string }> {
-  const r = await postPluginChange({ plugin, change: "keep", version, by });
+  const r = await post({ plugin, change: "keep", version, by });
   if (r.ok) setTried(plugin, null);
   say({ plugin, name: nameOf(plugin), text: r.ok ? "Kept. Switch back undoes it." : `Not kept: ${r.text}`, ok: r.ok, at: Date.now() });
   return r;
@@ -244,21 +279,21 @@ export async function keepChange(plugin: string, version: string, by = "carl"): 
 /** Discard a draft: this window falls back at once, then the record (the box removes the file). */
 export async function discardChange(plugin: string, version: string, opts: { by?: string; reason?: string } = {}): Promise<{ ok: boolean; text: string }> {
   setTried(plugin, null);
-  const r = await postPluginChange({ plugin, change: "discard", version, by: opts.by ?? "carl", ...(opts.reason ? { reason: opts.reason } : {}) });
+  const r = await post({ plugin, change: "discard", version, by: opts.by ?? "carl", ...(opts.reason ? { reason: opts.reason } : {}) });
   if (!opts.reason) say({ plugin, name: nameOf(plugin), text: r.ok ? "Discarded." : `Discard not written: ${r.text}`, ok: r.ok, at: Date.now() });
   return r;
 }
 
 /** Switch back: the copy the last Keep replaced runs again (a record; undo is another switch). */
 export async function switchBack(plugin: string, by = "carl"): Promise<{ ok: boolean; text: string }> {
-  const r = await postPluginChange({ plugin, change: "switch", by });
+  const r = await post({ plugin, change: "switch", by });
   say({ plugin, name: nameOf(plugin), text: r.ok ? r.text : `Not switched: ${r.text}`, ok: r.ok, at: Date.now() });
   return r;
 }
 
 /** Whether the plugin has a kept change Switch back can undo (the newest keep/switch record). */
 export function canSwitchBack(plugin: string): boolean {
-  const l = landing(supervisorChangesNow(plugin));
+  const l = landing(changesOf(plugin));
   return !!l && (l.from ?? BUILT_IN) !== l.version;
 }
 
@@ -272,19 +307,19 @@ export function autoDiscard(plugin: string, version: string, why: string): void 
   autoDone.add(key);
   const short = why.split("\n")[0]!.slice(0, 200);
   say({ plugin, name: nameOf(plugin), text: `Discarded by itself: ${short}`, ok: false, at: Date.now() });
-  void postPluginChange({ plugin, change: "discard", version, by: "auto", reason: short });
+  void post({ plugin, change: "discard", version, by: "auto", reason: short });
 }
 
 // ---------------------------------------------------------------- after Keep: switching back by itself
 
 /** Every plugin that can have drafts here: the app plugins with live copies and the vault plugins' slots. */
-const slotIds = (): string[] => [...LIVE_APP_PLUGINS, ...vaultSlots.map((s) => s.id)];
+const slotIds = (): string[] => [...LIVE_APP_PLUGINS, ...vaultSlots.map((s) => s.id), SETTINGS_DRAFT_ID];
 
 /** The keeps under watch now (src/pluginDrafts.ts watchedKeep): plugin, kept version, when the watch ends. */
 export function keepsUnderWatch(now = Date.now()): { plugin: string; version: string; until: number }[] {
   const out: { plugin: string; version: string; until: number }[] = [];
   for (const plugin of slotIds()) {
-    const k = watchedKeep(supervisorChangesNow(plugin), now);
+    const k = watchedKeep(changesOf(plugin), now);
     if (k) out.push({ plugin, version: k.version, until: k.at + KEEP_WATCH_MS });
   }
   return out;
@@ -296,18 +331,18 @@ const revertDone = new Set<string>();
  * by "auto" with why, and say it. `version`: the copy that failed (null: whichever is kept). Whether it switched.
  */
 export function autoRevert(plugin: string, version: string | null, why: string): boolean {
-  const k = watchedKeep(supervisorChangesNow(plugin), Date.now());
+  const k = watchedKeep(changesOf(plugin), Date.now());
   if (!k || (version !== null && k.version !== version)) return false;
   const key = `${plugin}\u0000${k.seq}`;
   if (revertDone.has(key)) return true;
   revertDone.add(key);
   const short = why.split("\n")[0]!.slice(0, 200);
   say({ plugin, name: nameOf(plugin), text: `Switched back by itself: ${short}`, ok: false, at: Date.now() });
-  void postPluginChange({ plugin, change: "switch", version: k.version, by: "auto", reason: short }).then((r) => {
+  void post({ plugin, change: "switch", version: k.version, by: "auto", reason: short }).then((r) => {
     // Another window switched it first ("already switched"): the same outcome.
     if (!r.ok && !/already switched/.test(r.text)) return say({ plugin, name: nameOf(plugin), text: `It broke after Keep (${short}) but could not switch back: ${r.text}`, ok: false, at: Date.now() });
     // The record this notice tells of: dismissing it here dismisses it in every window.
-    const rec = supervisorChangesNow(plugin).filter((c) => c.change === "switch" && c.by === "auto" && c.seq > k.seq).pop();
+    const rec = changesOf(plugin).filter((c) => c.change === "switch" && c.by === "auto" && c.seq > k.seq).pop();
     if (rec && outcome?.plugin === plugin && !outcome.seq) say({ ...outcome, seq: rec.seq });
   });
   return true;
@@ -336,7 +371,7 @@ export function noticeAutoSwitch(now = Date.now()): void {
   const seen = seenSeq();
   let best: { plugin: string; seq: number; reason: string | null; at: number } | null = null;
   for (const plugin of slotIds())
-    for (const c of supervisorChangesNow(plugin))
+    for (const c of changesOf(plugin))
       if (c.change === "switch" && c.by === "auto" && c.seq > seen && now - c.at <= KEEP_WATCH_MS && (!best || c.seq > best.seq)) best = { plugin, seq: c.seq, reason: c.reason, at: c.at };
   if (best) say({ plugin: best.plugin, name: nameOf(best.plugin), text: `Switched back by itself${best.reason ? `: ${best.reason}` : ""}`, ok: false, at: best.at, seq: best.seq });
 }
@@ -386,15 +421,27 @@ export function watchTyping(): void {
 }
 
 /** Start following what this app's windows try (the app calls it once at start). */
+let settingsHooked = false;
 export function startChangeReady(): void {
   followTries();
   hookStorage();
+  if (!settingsHooked) {
+    settingsHooked = true;
+    // A settings draft arrived, was decided or replaced: what this window shows follows (and a keep may be watched).
+    onSettingsDrafts(() => {
+      syncSettingsTry();
+      watchTyping();
+    });
+    // Carl picks a setting the tried draft lays over: his pick wins and the trying stops.
+    onPickWhileTrying(() => setTried(SETTINGS_DRAFT_ID, null));
+  }
+  syncSettingsTry();
   watchTyping();
 }
 
 // ---------------------------------------------------------------- the offers (PluginRead / PluginAct)
 
-const describe = (p: PendingChange) => ({ plugin: p.plugin, name: p.name, what: p.what || null, version: p.version, added: p.added, trying: triedVersion(p.plugin) === p.version });
+const describe = (p: PendingChange) => ({ plugin: p.plugin, name: p.name, what: p.what || null, version: p.version, added: p.added, trying: triedVersion(p.plugin) === p.version, triable: p.triable });
 
 export function changeOffers() {
   const need = (args: Record<string, unknown>) => {
@@ -403,7 +450,7 @@ export function changeOffers() {
     if (!p) throw new Error(plugin ? `no draft of ${plugin} is waiting` : "no draft is waiting");
     return p;
   };
-  const pluginArg = { type: "object", properties: { plugin: { type: "string", description: "The plugin (app/composer, or a vault plugin's path); left out: the first waiting draft." } }, additionalProperties: false };
+  const pluginArg = { type: "object", properties: { plugin: { type: "string", description: "The plugin (app/composer, a vault plugin's path, app/settings-values for Carl's settings); left out: the first waiting draft." } }, additionalProperties: false };
   return {
     state: {
       changes: { description: "The drafts waiting for Carl (Change ready), each with whether he is trying it now on his laptop windows.", read: () => pendingChanges().map(describe) },
@@ -411,7 +458,16 @@ export function changeOffers() {
       last: { description: "What happened last: kept, discarded, or discarded by itself and why.", read: () => outcome },
     },
     actions: {
-      try: { description: "Try a waiting draft on Carl's windows (only when he asked).", args: pluginArg, run: (a: Record<string, unknown>) => { const p = need(a); tryChange(p.plugin, p.version); return describe(p); } },
+      try: {
+        description: "Try a waiting draft on Carl's windows (only when he asked). A settings draft (app/settings-values) of only the box's settings has no Try.",
+        args: pluginArg,
+        run: (a: Record<string, unknown>) => {
+          const p = need(a);
+          if (!p.triable) throw new Error(`${p.name}: ${p.what} is the box's, so it can't be tried on Carl's windows; Keep sets it`);
+          tryChange(p.plugin, p.version);
+          return describe(p);
+        },
+      },
       stop: { description: "Stop trying a draft: the copy in effect runs again.", args: pluginArg, run: (a: Record<string, unknown>) => { const p = need(a); stopTrying(p.plugin); return describe(p); } },
       keep: { description: "Keep a draft (only when Carl said so): a record; the box makes it the live copy.", args: pluginArg, run: async (a: Record<string, unknown>) => { const p = need(a); return keepChange(p.plugin, p.version, "agent"); } },
       discard: { description: "Discard a draft: a record; the box removes it.", args: pluginArg, run: async (a: Record<string, unknown>) => { const p = need(a); return discardChange(p.plugin, p.version, { by: "agent" }); } },
@@ -434,5 +490,6 @@ export function _resetChangeReady(): void {
   outcome = null;
   autoDone.clear();
   revertDone.clear();
+  setSettingsTry(null);
 }
 

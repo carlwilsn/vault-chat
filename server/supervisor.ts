@@ -6,7 +6,8 @@
 //   - GET /api/v2/supervisor answers the records (a host folds them itself) and waits for the next (?after=seq&wait=ms);
 //     POST /api/v2/supervisor writes Carl's word ({plugin, state, from?, reason?}) or a budget ({plugin, callsPerMinute}),
 //     or his word on a draft ({plugin, change: keep | discard | switch, version, reason?}: the record, and the files moved
-//     to match, server/pluginDrafts.ts), for app/preset: the app.preset record a kept draft preset becomes, src/appPreset.ts).
+//     to match, server/pluginDrafts.ts), for app/preset: the app.preset record a kept draft preset becomes, src/appPreset.ts;
+//     for app/settings-values: the settings draft's word, written with the settings, server/settings.ts).
 // What is policy (a disable, an end date, a budget) is only ever a record; the hosts reconcile from the same records.
 import { signal, signalLog, type ConvLog } from "./convlog/log";
 import { budgetSignal, desiredSignal, offLine, pluginIdOf, Supervisor, type Desired, type SupervisorRecord } from "../src/pluginSupervisor";
@@ -14,6 +15,8 @@ import type { LogRecord } from "../src/convlog/protocol";
 import { changeSignal } from "../src/pluginDrafts";
 import { landChange, landPreset, slotOf } from "./pluginDrafts";
 import { PRESET_PLUGIN_ID, presetSignal, type PresetInEffect } from "../src/appPreset";
+import { SETTINGS_DRAFT_ID } from "../src/settingsRecords";
+import { settingsChange } from "./settings";
 
 type Followed = { sup: Supervisor; changed: Set<() => void> };
 const follows = new WeakMap<ConvLog, Followed>();
@@ -84,6 +87,11 @@ export function setPluginChange(vault: string, b: Record<string, unknown> | null
   const sig = changeSignal(b, who, Date.now());
   if ("error" in sig) return sig;
   const plugin = pluginIdOf(sig.plugin);
+  if (plugin === SETTINGS_DRAFT_ID) {
+    // Carl's settings (server/settings.ts): their draft and his word on it live with the settings, in the main log.
+    const c = settingsChange(sig.change, sig.version, who, sig.reason);
+    return c.ok ? { status: 200, seq: c.seq, text: c.text } : { status: c.status, error: c.error };
+  }
   if (plugin === PRESET_PLUGIN_ID) {
     // The app's preset: its draft file is checked and removed, and the preset it lands is its own record.
     const sup = supervisorOf(vault);

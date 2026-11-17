@@ -23,6 +23,8 @@ import { startServiceJob, type JobEnv } from "./engine/jobs";
 import { masterDir } from "./master";
 import { loadConfig } from "./config";
 import { killTree } from "./commands/proc";
+import { SETTINGS_DRAFT_ID, pendingSettingsDraft } from "../src/settingsRecords";
+import { readSettings } from "./settings";
 
 export const PLUGIN_TOOL = "Plugins";
 
@@ -33,7 +35,7 @@ export const pluginToolSpecs = [
     description:
       "Turn a plugin (a vault .html page, or a part of the app that is a plugin: the Notes panel, \"notes\"; or a whole surface: the phone app, \"phone\", the iPad board, \"board\") off or on everywhere it shows (the viewer, chats, the phone, its own link, the app's window), or from a later time (an end date), set its budget, or list what each plugin is. " +
       "Off: it is taken down in every view and the box gives it nothing; on: it comes back. action: status | disable | enable | budget. plugin: its vault path or its file name (\"html-lab\"), or the app part's name (\"notes\"). " +
-      "A plugin's draft (<name>.draft.js next to it): submit hands it to the draft gate (a side-by-side check on a copy of real data, in the background; asked: false, the default, for a fix Carl did not ask for: a clear pass lands it, a clear fail drops it, borderline waits for him as Change ready; asked: true: only a fail drops it, otherwise he tries it). keep / discard / back write the record Carl's Change ready buttons do (back: switch to the copy the last keep replaced). Never move the draft's files yourself.",
+      "A plugin's draft (<name>.draft.js next to it): submit hands it to the draft gate (a side-by-side check on a copy of real data, in the background; asked: false, the default, for a fix Carl did not ask for: a clear pass lands it, a clear fail drops it, borderline waits for him as Change ready; asked: true: only a fail drops it, otherwise he tries it). keep / discard / back write the record Carl's Change ready buttons do (back: switch to the copy the last keep replaced); plugin \"settings-values\": the settings draft (Settings with draft: true). Never move the draft's files yourself.",
     inputSchema: {
       type: "object",
       properties: {
@@ -164,7 +166,17 @@ function runGate(repo: string, args: string[], signal: AbortSignal, log: (t: str
   });
 }
 
+/** The settings draft (server/settings.ts): keep / discard / back are its records; there is no gate (Carl decides). */
+function settingsDraftAction(vault: string, action: string, a: Record<string, unknown>): { ok: boolean; text: string } {
+  if (action === "submit") return { ok: false, text: "a settings draft has no gate: it already waits for Carl as Change ready (Settings with draft: true)" };
+  const d = pendingSettingsDraft(readSettings());
+  if (action !== "back" && !d) return { ok: false, text: "no settings draft waits" };
+  const w = setPluginChange(vault, { plugin: SETTINGS_DRAFT_ID, change: action === "back" ? "switch" : action, ...(action !== "back" ? { version: d!.version } : {}), ...(a.reason ? { reason: a.reason } : {}) }, "agent");
+  return "error" in w ? { ok: false, text: w.error } : { ok: true, text: w.text };
+}
+
 function draftAction(vault: string, action: string, a: Record<string, unknown>, ctx?: PluginToolCtx): { ok: boolean; text: string } {
+  if (/^(?:app\/)?settings-values$/i.test(pluginIdOf(String(a.plugin ?? "").trim()))) return settingsDraftAction(vault, action, a);
   const slot = draftSlotOf(vault, String(a.plugin ?? ""));
   if (!slot) return { ok: false, text: `${String(a.plugin ?? "") || "(no plugin)"} has no drafts: name an app plugin with live copies (composer …) or a vault plugin's .js` };
   const draft = slotCode(vault, slot).draft;

@@ -17,7 +17,7 @@ import { fold, pendingOf, shown } from "../../src/convlog/reduce.ts";
 import { ackShow, feedOpened } from "../../server/show.ts";
 import { recordHostBuild } from "../../server/hostBuild.ts";
 import { saveAttachment } from "../../server/attachments.ts";
-import { settingsRoute } from "../../server/settings.ts";
+import { settingsChange, settingsRoute } from "../../server/settings.ts";
 import { appPluginStateRoute } from "../../server/pluginState.ts";
 
 export class FakeBox {
@@ -281,6 +281,14 @@ export class FakeBox {
           if (u.pathname === "/api/v2/settings") {
             const out = settingsRoute(req.method!, raw ? JSON.parse(raw) : null, "carl", this.log);
             return send(out.status, out.body);
+          }
+          // Carl's word on the settings draft (Change ready posts it to the supervisor's route, which hands it on).
+          if (route === "POST /api/v2/supervisor") {
+            const b = raw ? JSON.parse(raw) : {};
+            if (b.plugin === "app/settings-values") {
+              const out = settingsChange(b.change, b.version, typeof b.by === "string" ? b.by : "carl", b.reason, this.log);
+              return out.ok ? send(200, { ok: true, seq: out.seq, text: out.text }) : send(out.status, { error: out.error });
+            }
           }
           // An app plugin's own state: the box's real route over this feed (server/pluginState.ts).
           if (u.pathname === "/api/v2/plugin/app-state") {

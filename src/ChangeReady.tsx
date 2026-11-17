@@ -1,6 +1,6 @@
 // The "Change ready" notice (src/changeReady.ts): a plugin's draft waits for Carl. Shaped like "Update ready"
 // (src/UpdateBanner.tsx): Try runs it on his windows only; then Keep or Discard (each a record on the box); Back stops
-// trying. Part of the core, never of the plugin tried, with shortcuts that work whatever the draft does to the screen.
+// trying. A settings draft of only the box's settings (the model, the voice …) has no Try: Keep / Discard at once. Part of the core, never of the plugin tried, with shortcuts that work whatever the draft does to the screen.
 import { useEffect, useState } from "react";
 import { FlaskConical, X, Check, Undo2, Play } from "lucide-react";
 import { Button } from "./ui";
@@ -35,6 +35,8 @@ export function ChangeReady() {
   // The one shown: the draft being tried, else the first waiting.
   const shown: PendingChange | null = pending.find((p) => tries[p.plugin] === p.version) ?? pending[0] ?? null;
   const trying = !!shown && tries[shown.plugin] === shown.version;
+  // A draft Try can't run (settings only the box applies): Keep / Discard straight away.
+  const direct = !!shown && !shown.triable;
   const [busy, setBusy] = useState(false);
 
   useEffect(() => startChangeReady(), []);
@@ -56,7 +58,7 @@ export function ChangeReady() {
       setBusy(false);
     }
   };
-  const doTry = () => shown && (trying ? stopTrying(shown.plugin) : tryChange(shown.plugin, shown.version));
+  const doTry = () => shown && !direct && (trying ? stopTrying(shown.plugin) : tryChange(shown.plugin, shown.version));
   const doKeep = () => shown && void act(() => keepChange(shown.plugin, shown.version));
   const doDiscard = () => shown && void act(() => discardChange(shown.plugin, shown.version));
 
@@ -65,7 +67,7 @@ export function ChangeReady() {
     if (!shown) return;
     const onKey = (e: KeyboardEvent) => {
       if (hit(e, "change.try")) doTry();
-      else if (hit(e, "change.keep") && trying) doKeep();
+      else if (hit(e, "change.keep") && (trying || direct)) doKeep();
       else if (hit(e, "change.discard")) doDiscard();
       else return;
       e.preventDefault();
@@ -103,8 +105,9 @@ export function ChangeReady() {
           </div>
           <div className="p-3 space-y-2.5">
             {trying && <div className="text-[11.5px] text-muted-foreground/90 leading-relaxed">Trying it on this laptop's windows. Nothing on the box changes until you keep it.</div>}
+            {direct && <div data-el="change-direct" className="text-[11.5px] text-muted-foreground/90 leading-relaxed">The box applies this, so it can't be tried on your windows only. Keep sets it; Switch back undoes it.</div>}
             <div className="flex gap-2">
-              {trying ? (
+              {trying || direct ? (
                 <>
                   <Button size="sm" data-el="change-keep" disabled={busy} onClick={doKeep} title={tip("Keep", "change.keep")} className="bg-primary text-primary-foreground hover:bg-primary/90 flex-1">
                     <Check className="h-3 w-3 mr-1.5" />
@@ -113,9 +116,11 @@ export function ChangeReady() {
                   <Button size="sm" variant="ghost" data-el="change-discard" disabled={busy} onClick={doDiscard} title={tip("Discard", "change.discard")}>
                     Discard
                   </Button>
-                  <Button size="sm" variant="ghost" data-el="change-back" disabled={busy} onClick={doTry} title={tip("Back to the current one", "change.try")}>
-                    <Undo2 className="h-3 w-3" />
-                  </Button>
+                  {trying && (
+                    <Button size="sm" variant="ghost" data-el="change-back" disabled={busy} onClick={doTry} title={tip("Back to the current one", "change.try")}>
+                      <Undo2 className="h-3 w-3" />
+                    </Button>
+                  )}
                 </>
               ) : (
                 <>
