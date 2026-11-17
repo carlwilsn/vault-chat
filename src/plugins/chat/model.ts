@@ -1,5 +1,5 @@
 // The chat pane's own state and actions (src/plugins/chat): the ⋯ menu's open state, which memory its Memory entry
-// opens, and a handle on the pane's scroll (registered by src/ChatPane.tsx, which keeps the transcript). Shared by the
+// opens, and a handle on the pane's scroll (registered by the transcript, ./Transcript.tsx). Shared by the
 // header (./Header.tsx), its offers (./index.tsx) and the built-in fallback (src/ChatHeader.tsx), so what the agent does
 // through PluginAct is what a click does, on screen.
 import { create } from "zustand";
@@ -54,16 +54,17 @@ export async function openChatMemory(names?: (slug: string) => string): Promise<
   return { target: t, path };
 }
 
-/** The pane's scroll, as src/ChatPane.tsx draws it: registered while the pane shows a chat. */
+/** The pane's scroll, as ./Transcript.tsx draws it: registered while the pane shows a chat. */
 export type PaneScroll = {
-  /** atBottom: following the newest; shown: messages drawn; total: messages in the chat; older: how many are not drawn yet. */
-  state(): { atBottom: boolean; shown: number; total: number; older: number };
+  /** atBottom: following the newest; shown: messages drawn; total: messages in the chat; older: how many are not drawn yet;
+   *  jump: the "new messages" button is shown (scrolled away while a reply comes in). */
+  state(): { atBottom: boolean; shown: number; total: number; older: number; jump: boolean };
   toBottom(): void;
   /** Draw `n` more older messages (all: every one) and keep the view where it was, or go to the top. */
   older(n: number | "all", top?: boolean): void;
 };
 let pane: PaneScroll | null = null;
-/** ChatPane registers its scroll; the off. */
+/** The transcript registers its scroll; the off. */
 export function setPaneScroll(p: PaneScroll): () => void {
   pane = p;
   return () => {

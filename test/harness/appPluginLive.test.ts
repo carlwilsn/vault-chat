@@ -22,6 +22,7 @@ import {
   liveCopyId,
   liveCopyOf,
   liveHeaderLine,
+  liveStateFiles,
   parseLiveHeader,
 } from "../../src/appPluginLive.ts";
 import { APP_SHARED, provideShared } from "../../src/appPluginShared.ts";
@@ -88,13 +89,22 @@ test("every app plugin builds on its own, and every module it takes from the app
     const missing = shared.filter((n) => !(n in APP_SHARED));
     assert.deepEqual(missing, [], `${id} takes modules src/appPluginShared.ts does not share (add them there)`);
     // Its own files are in the copy; its state files and the rest of the app are the app's.
-    for (const n of shared) if (n.startsWith(`src/plugins/${folder}/`)) assert.match(n, /\/(model|draft|view)$/, `${id}: ${n}`);
+    for (const n of shared) if (n.startsWith(`src/plugins/${folder}/`)) assert.ok(liveStateFiles(id).includes(n.slice(n.lastIndexOf("/") + 1)), `${id}: ${n}`);
     assert.ok(!/createLucideIcon\("zodiac-virgo"/.test(code), `${id}: a package bundled whole`);
   }
   const tree = await buildLiveCopy("filetree");
   assert.ok(tree.shared.includes("src/plugins/filetree/model") && tree.shared.includes("src/store") && tree.shared.includes("react"));
   assert.ok(!tree.shared.some((n) => /Tree$/.test(n)), "the tree's component is the copy's own");
   assert.match(tree.code, /data-el/);
+  // The viewer's copy is its offers: the app's own viewers, its kept choices, scroll and zoom stay the app's (one registry).
+  const viewer = await buildLiveCopy("viewer");
+  for (const n of ["builtins", "prefs", "scroll", "zoom"]) assert.ok(viewer.shared.includes(`src/plugins/viewer/${n}`), n);
+  assert.match(viewer.code, /function viewerOffers/);
+  assert.ok(!/PdfView|pdfjs/.test(viewer.code), "no viewer bundled into the copy");
+  // The chat pane's copy holds its header and transcript; the rows, the composer and the header's slot are the app's.
+  const chat = await buildLiveCopy("chat");
+  assert.match(chat.code, /function Transcript/);
+  for (const n of ["src/plugins/chat/model", "src/plugins/chat-rows/rows", "src/ComposerPanel", "src/ChatHeader"]) assert.ok(chat.shared.includes(n), n);
 });
 
 test("a built copy runs on the app's own modules: the same state, and live bindings", async () => {

@@ -74,11 +74,11 @@ test("the chat pane is a registered app plugin that loads live, mounted only thr
   const slot = fs.readFileSync("src/ChatHeader.tsx", "utf8");
   assert.match(slot, /<AppPluginMount plugin=\{CHAT_PLUGIN\} module=\{chatPlugin\} fallback=/);
   assert.match(slot, /<AppPluginMount plugin=\{CHAT_PLUGIN\} module=\{chatPlugin\.bar\} part="bar" fallback=/);
-  assert.match(fs.readFileSync("src/ChatPane.tsx", "utf8"), /<ChatHeaderSlot \/>/);
+  assert.match(fs.readFileSync("src/plugins/chat/Transcript.tsx", "utf8"), /<ChatHeaderSlot \/>/);
   const fsc = fs.readFileSync("src/FullscreenChat.tsx", "utf8");
   assert.match(fsc, /<ChatBarSlot \/>/);
   assert.doesNotMatch(fsc, /<ChatTitle \/>/, "the bar's title is the plugin's");
-  assert.doesNotMatch(fs.readFileSync("src/ChatPane.tsx", "utf8"), /data-el="total-cost"/, "the cost moved into the header");
+  assert.doesNotMatch(fs.readFileSync("src/plugins/chat/Transcript.tsx", "utf8"), /data-el="total-cost"/, "the cost moved into the header");
 });
 
 let handle: ReturnType<typeof mountPlugin> | null = null;
@@ -98,9 +98,9 @@ test("mounted through the host, it draws the header and declares its offers", as
   assert.match(html(host), />Main</);
   const d = listOffers().find((p: any) => p.id === "app/chat")!;
   assert.ok(d, "listed while it runs");
-  assert.deepEqual(d.state.map((s: any) => s.name), ["chat", "view", "scroll", "menu", "memory"]);
-  assert.deepEqual(d.actions.map((a: any) => a.name), ["openMenu", "openMemory", "clickItem", "scrollToBottom", "showOlder", "openParent"]);
-  assert.deepEqual(d.events.map((e: any) => e.name), ["menuOpened", "memoryOpened", "itemClicked", "itemAdded", "itemRemoved", "scrolled"]);
+  assert.deepEqual(d.state.map((s: any) => s.name), ["chat", "view", "scroll", "tasks", "ongoing", "menu", "memory"]);
+  assert.deepEqual(d.actions.map((a: any) => a.name), ["openMenu", "openMemory", "clickItem", "scrollToBottom", "showOlder", "openParent", "openTask", "stopTask", "steerTask", "openBoxSettings"]);
+  assert.deepEqual(d.events.map((e: any) => e.name), ["menuOpened", "memoryOpened", "itemClicked", "itemAdded", "itemRemoved", "scrolled", "olderShown", "jumped", "tasksChanged"]);
 });
 
 test("read: the open chat, the view, which memory Memory opens (Main's, or the project's)", async () => {
@@ -159,7 +159,7 @@ test("scroll: through the pane's handle; none registered, a plain error", async 
   const calls: string[] = [];
   let shown = 60;
   const off = setPaneScroll({
-    state: () => ({ atBottom: calls.at(-1) === "bottom", shown, total: 200, older: 200 - shown }),
+    state: () => ({ atBottom: calls.at(-1) === "bottom", shown, total: 200, older: 200 - shown, jump: false }),
     toBottom: () => void calls.push("bottom"),
     older: (n, top) => {
       calls.push(`older:${n}:${!!top}`);
@@ -172,7 +172,7 @@ test("scroll: through the pane's handle; none registered, a plain error", async 
   r = await actOffers("app/chat", "showOlder", { count: 40 });
   assert.equal(r.result.shown, 100);
   r = await actOffers("app/chat", "showOlder", { all: true, top: true });
-  assert.deepEqual(r.result, { atBottom: false, shown: 200, total: 200, older: 0 });
+  assert.deepEqual(r.result, { atBottom: false, shown: 200, total: 200, older: 0, jump: false });
   assert.deepEqual(calls, ["bottom", "older:40:false", "older:all:true"]);
   off();
   r = await readOffers("app/chat", "scroll");

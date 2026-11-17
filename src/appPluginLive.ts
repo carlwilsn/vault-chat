@@ -24,7 +24,7 @@ export const APP_PLUGIN_LIVE_DIR = ".vault-chat/app-plugins";
 export const APP_PLUGIN_LIVE_MAX_BYTES = 4 * 1024 * 1024;
 
 /** The app plugins that can run a live copy (their code is under src/plugins/<name>/, with an index module). */
-export const LIVE_APP_PLUGINS: readonly string[] = ["app/notes", "app/chats", "app/composer", "app/chat-rows", "app/vaults", "app/filetree", "app/titlebar", "app/chat", "app/settings", "app/voice", "app/context"];
+export const LIVE_APP_PLUGINS: readonly string[] = ["app/notes", "app/chats", "app/composer", "app/chat-rows", "app/vaults", "app/filetree", "app/titlebar", "app/viewer", "app/chat", "app/settings", "app/voice", "app/context"];
 
 export type LiveCopyKind = "draft" | "live";
 
@@ -78,6 +78,15 @@ export function parseLiveHeader(code: string): LiveHeader | null {
 
 /** Files in a plugin's folder that hold its state: shared with the app, never bundled into a live copy. */
 export const LIVE_STATE_FILES: readonly string[] = ["model", "draft", "view"];
+/** A plugin's other files the app itself draws with or keeps state in (the app imports them from outside the folder):
+ *  shared like its state files. The viewer's are the app's own viewers (the built-in layer every pane draws through),
+ *  its kept choices, where each file is scrolled and the zoom handles the PDF and image views register; its live copy
+ *  is its offers (index.ts). */
+export const LIVE_STATE_FILES_OF: Readonly<Record<string, readonly string[]>> = {
+  "app/viewer": ["builtins", "prefs", "scroll", "zoom"],
+};
+/** Every file of the plugin's folder that is the app's, not the copy's (by name, without extension). */
+export const liveStateFiles = (plugin: string): readonly string[] => [...LIVE_STATE_FILES, ...(LIVE_STATE_FILES_OF[plugin] ?? [])];
 /** Packages a live copy takes from the app (one React for the app and its plugins). Other packages are bundled. */
 export const LIVE_SHARED_PACKAGES: readonly string[] = ["react", "react-dom", "react-dom/client", "react/jsx-runtime", "react/jsx-dev-runtime"];
 

@@ -8,7 +8,7 @@
 //   node --import tsx scripts/app-plugin-live.ts <name> --vault <vault> --remove    the live copy is dropped (built-in runs)
 //   node --import tsx scripts/app-plugin-live.ts --shared                           every shared name, by plugin (JSON)
 //
-// <name> is the plugin's folder (filetree, chats, vaults, composer, titlebar, notes, chat-rows, chat, settings, voice, context) or its id.
+// <name> is the plugin's folder (filetree, chats, vaults, composer, titlebar, notes, chat-rows, viewer, chat, settings, voice, context) or its id.
 import { build, type Plugin } from "esbuild";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -19,11 +19,11 @@ import {
   LIVE_APP_PLUGINS,
   LIVE_SHARED_GLOBAL,
   LIVE_SHARED_PACKAGES,
-  LIVE_STATE_FILES,
   appPluginFolder,
   liveCopyFile,
   liveErrorFile,
   liveHeaderLine,
+  liveStateFiles,
 } from "../src/appPluginLive.ts";
 
 export const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -53,6 +53,7 @@ export async function buildLiveCopy(folder: string, opts: { root?: string; built
   const entry = ["index.tsx", "index.ts"].map((f) => join(dir, f)).find((f) => existsSync(f));
   if (!entry) throw new Error(`no index.tsx or index.ts in ${relative(root, dir)}`);
   const shared = new Set<string>();
+  const stateFiles = liveStateFiles(plugin);
   const share: Plugin = {
     name: "vc-app-shared",
     setup(b) {
@@ -66,7 +67,7 @@ export async function buildLiveCopy(folder: string, opts: { root?: string; built
         const p = r.path;
         if (!p.startsWith(src + sep)) return { path: p, sideEffects: r.sideEffects };
         const own = p.startsWith(dir + sep);
-        const state = dirname(p) === dir && LIVE_STATE_FILES.includes(basename(p).replace(/\.[^.]+$/, ""));
+        const state = dirname(p) === dir && stateFiles.includes(basename(p).replace(/\.[^.]+$/, ""));
         if (own && !state) return { path: p, sideEffects: r.sideEffects }; // the plugin's own code: what a live copy changes
         return { path: "src/" + relative(src, p).split(sep).join("/").replace(/\.(tsx?|jsx?|mjs)$/, ""), namespace: "vc-shared" };
       });
