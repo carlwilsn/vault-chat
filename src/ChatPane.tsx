@@ -8,7 +8,14 @@
 //  - failing to mount or render (the built-in copy too), a plain transcript stands in (TranscriptFallback): the
 //    messages as text, the composer, and one line that says what happened with Reload.
 // The rows' offers (app/chat-rows) are mounted here beside it; they draw nothing.
-import { memo, useEffect, useRef } from "react";
+//
+// One pane, moved, never remounted: in the main window App mounts ChatPaneHost once, which draws the pane into a
+// detached element; every <ChatPane /> there (the docked column, fullscreen chat's frame, even in a plugin's own React
+// root) is only a slot that the element moves into. Ctrl+Shift+F used to unmount the pane in one layout and mount a
+// new one in the other, re-rendering the last 60 rows' markdown and code highlighting each time (most of the toggle's
+// cost, growing with how heavy the newest replies are). Other windows (the popout) draw the pane in place as before.
+import { memo, useEffect, useLayoutEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useStore } from "./store";
 import { loadSkills } from "./skills";
 import { SettingsPane } from "./SettingsPane";
@@ -28,7 +35,63 @@ placeModule(CHAT_PLUGIN, () => chatPlugin.transcript, "transcript");
 /** The transcript's row (src/plugins/chat-rows/rows.tsx); exported here as it always was. */
 export { MessageBubble };
 
+/** The one moved pane of the main window (ChatPaneHost), its element, and its transcript's last scroll. */
+const chatHost: { active: boolean; el: HTMLDivElement | null; scroll: { top: number; atBottom: boolean } | null } = { active: false, el: null, scroll: null };
+
+function hostElement(): HTMLDivElement {
+  if (chatHost.el) return chatHost.el;
+  const el = document.createElement("div");
+  el.className = "h-full w-full";
+  el.dataset.el = "chat-pane-host";
+  // A moved element loses its scroll offsets: keep the transcript's, to put back where it lands.
+  el.addEventListener("scroll", (e) => {
+    const t = e.target as HTMLElement;
+    if (t instanceof HTMLElement && t.dataset.el === "chat-scroll" && t.isConnected && t.clientHeight > 0) {
+      chatHost.scroll = { top: t.scrollTop, atBottom: t.scrollHeight - t.scrollTop - t.clientHeight < 40 };
+    }
+  }, true);
+  chatHost.el = el;
+  return el;
+}
+
+/** The main window's one chat pane (src/App.tsx), drawn into an element that the <ChatPane /> slots move. */
+export function ChatPaneHost() {
+  chatHost.active = true;
+  useEffect(() => {
+    chatHost.active = true;
+    return () => { chatHost.active = false; };
+  }, []);
+  return createPortal(<ChatPaneView />, hostElement());
+}
+
+/** Where the main window shows the chat: the host's element moves in, the pane keeps its state and rows. */
+function ChatPaneSlot() {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const slot = ref.current;
+    if (!slot) return;
+    const el = hostElement();
+    slot.appendChild(el);
+    const scroller = el.querySelector<HTMLElement>('[data-el="chat-scroll"]');
+    const saved = chatHost.scroll;
+    if (scroller && saved) {
+      scroller.scrollTop = saved.atBottom ? scroller.scrollHeight : saved.top;
+      // Rows rewrap to the new width over the next frame: one at the bottom stays there.
+      if (saved.atBottom) requestAnimationFrame(() => { if (scroller.isConnected) scroller.scrollTop = scroller.scrollHeight; });
+    }
+    return () => {
+      if (el.parentNode === slot) slot.removeChild(el);
+    };
+  }, []);
+  return <div ref={ref} className="h-full w-full" data-el="chat-pane-slot" />;
+}
+
 export function ChatPane() {
+  // The main window: a slot for its one pane. Elsewhere (the popout window): the pane itself.
+  return chatHost.active ? <ChatPaneSlot /> : <ChatPaneView />;
+}
+
+function ChatPaneView() {
   const vaultPath = useStore((s) => s.vaultPath);
   const showSettings = useStore((s) => s.showSettings);
   const setSkills = useStore((s) => s.setSkills);

@@ -6,7 +6,7 @@ import type { FileEntry } from "./store";
 import "allotment/dist/style.css";
 import { FileTree } from "./FileTree";
 import { MarkdownArea } from "./MarkdownArea";
-import { ChatPane } from "./ChatPane";
+import { ChatPane, ChatPaneHost } from "./ChatPane";
 import { SettingsPane } from "./SettingsPane";
 import { Titlebar } from "./Titlebar";
 import { FullscreenChat } from "./FullscreenChat";
@@ -486,8 +486,13 @@ export default function App() {
   // Fullscreen chat mode (FullscreenChat.tsx): the chats sidebar and the chat,
   // no titlebar, no Allotment, no viewer. Same Ctrl+Shift+F exits. Skipped
   // when the chat is popped out (the popout window is the fullscreen chat).
+  // The chat pane itself is ChatPaneHost's, at the same place in either layout: <ChatPane /> in a layout is a slot it
+  // moves into (src/ChatPane.tsx), so switching layouts never rebuilds the transcript.
+  const host = !popoutOpen && <ChatPaneHost />;
   if (chatFullscreen && !popoutOpen) {
     return (
+      <>
+      {host}
       <FullscreenChat>
         {captureOver && (
           <div className="fixed inset-0 z-40 flex flex-col bg-background" data-el="fullscreen-capture">
@@ -502,10 +507,13 @@ export default function App() {
         )}
         {overlays}
       </FullscreenChat>
+      </>
     );
   }
 
   return (
+    <>
+    {host}
     <div className="h-full w-full bg-background flex flex-col">
       <Titlebar />
       <div className="flex-1 min-h-0">
@@ -531,6 +539,7 @@ export default function App() {
       </div>
       {overlays}
     </div>
+    </>
   );
 }
 
