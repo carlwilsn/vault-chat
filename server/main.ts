@@ -19,6 +19,7 @@ import { setLegacySource, signal, signalLog, convLog, setSharedClock, setFeedVau
 import { endOwnProcesses, promote, takeOwnership } from "./owner";
 import type { FileLocalStorage } from "./shims/globals";
 import { legacySource } from "./convlog/importer";
+import { macGitStatus, prepareMacEnv, type GitState } from "./macEnv";
 
 function fatal(msg: string, code = 2): never {
   console.error(`[vault-chat-server] FATAL: ${msg}`);
@@ -26,8 +27,10 @@ function fatal(msg: string, code = 2): never {
 }
 
 
-let gitState: "ok" | "missing" = "missing";
+let gitState: GitState = "missing";
 function checkGit(): void {
+  // On a Mac, never run /usr/bin/git just to see: with no Command Line Tools it opens Apple's install dialog.
+  if (process.platform === "darwin") { gitState = macGitStatus(); return; }
   const r = spawnSync("git", ["--version"], { windowsHide: true, timeout: 10_000 });
   gitState = r.status === 0 ? "ok" : "missing";
 }
@@ -39,6 +42,8 @@ async function main(): Promise<void> {
     fatal(`VC_VAULT ${cfg.vault} is not a directory (set VC_VAULT to the box working copy)`);
   }
 
+  // A Finder/Dock launch on macOS has launchd's bare PATH: the login shell's, Homebrew's and ~/.local/bin first.
+  prepareMacEnv(cfg.stateDir);
   registerCommands();
 
   // Keys: in-process from the box's encrypted store. The server still starts
@@ -288,6 +293,7 @@ async function main(): Promise<void> {
       })(),
       vault: cfg.vaultName,
       git: gitState,
+      ...(gitState === "needs-command-line-tools" ? { gitHelp: "git needs macOS's Command Line Tools: run xcode-select --install (or brew install git)" } : {}),
       keys: { elevenlabs: hasKey("service.elevenlabs"), claudeCode: hasKey(CLAUDE_CODE_KEY) },
       // A live voice session counts as a run: the updater waits for busy.runs == 0
       // (server/deploy/vault-chat-update.sh), so it never restarts under someone talking.

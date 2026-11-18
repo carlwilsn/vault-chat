@@ -258,3 +258,21 @@ Later changes (not trivial):
    suggests `timeout`/chromium on PATH; wrong on a Mac.
 10. Fullscreen chat (`src/plugins/chat/Frame.tsx`, `FrameFallback` in src/FullscreenChat.tsx, the chats sidebar)
     has no left inset on macOS: its first button sits under the traffic lights.
+
+## mac-3: local server on macOS (findings 1 and 2)
+
+- Finding 1 fixed: `server/convlog/maintenance.ts` keeps flock(1) on Linux (same kernel semantics); off Linux it
+  uses holder files made with O_EXCL in `$TMPDIR/vault-chat-locks/<hash of the events dir's real path>/` (outside
+  the vault, so nothing gets staged): many shared or one exclusive, conflicts within one process like flock FDs,
+  holders of dead pids (crash/SIGKILL) and half-written ones (>10 s) reaped, released on exit.
+  `VC_EVENT_LOCK=portable` forces it on Linux (the existing lock tests pass that way, except the flock-specific one).
+  Tests: test/harness/portableEventLock.test.ts. Known limit: a reused pid of a crashed holder keeps it held.
+- Finding 2 fixed server-side (server/macEnv.ts, called first in main()): on darwin PATH = login shell's
+  (`$SHELL -ilc`, 4 s limit) + /opt/homebrew/{bin,sbin}, /usr/local/bin, ~/.local/bin + launchd's. git is judged
+  without running /usr/bin/git (the old 60 s `git --version` would have popped the CLT dialog every minute): a
+  non-/usr/bin git is ok; else `xcode-select -p` decides; missing tools put a stand-in `git` (says
+  `xcode-select --install`, exit 127) first on PATH for everything the server/agent runs, Health shows
+  `git: "needs-command-line-tools"` + `gitHelp`, and it clears itself once the tools are installed.
+  Tests: test/harness/macEnv.test.ts. Rust side untouched (mac-2 owns local_server.rs changes).
+- Left for later (not blocking boot): StartJob uses systemd-run/systemctl (server/engine/jobs.ts) so jobs fail on a
+  Mac; the Rust side's own spawns (e.g. `claude setup-token`) still see launchd's PATH; findings 4-10 stand.
