@@ -192,8 +192,9 @@ export function installLaptopPerf({ popout = false }: { popout?: boolean } = {})
         try {
           // Existing Rust Instant begins at run() entry. Includes command dispatch/IPC until native read.
           const timing = await invoke<{ uptime_ms: number }>("boot_timing");
-          add("launch-interactive", "native-entry-ready-ipc-upper-bound", timing.uptime_ms, "native-entry");
-          noteLaunch(timing.uptime_ms, "native-entry-ready-ipc-upper-bound");
+          const l = launchSampleFor(timing.uptime_ms, performance.now());
+          add("launch-interactive", l.method, l.ms, l.startPoint);
+          noteLaunch(l.ms, l.method);
         } catch { /* Never relabel renderer age as native launch. */ }
       } else {
         const ms = performance.now();
@@ -205,6 +206,20 @@ export function installLaptopPerf({ popout = false }: { popout?: boolean } = {})
   document.addEventListener("visibilitychange", () => { if (!document.hidden) maybeLaunch(); });
   void afterVaultReady(90_000).then(maybeLaunch);
 }
+
+/**
+ * This window's launch-interactive sample. A fresh app: native run() entry to ready (boot_timing's uptime). A window
+ * the running app reloaded (a hot core swap or a core loader fallback, src-tauri/src/core_loader.rs reload_all): the
+ * process has been up far longer than this renderer, so its uptime is no launch (and over the 10 min cap it was dropped
+ * whole: no launch number after a swap). Then: this navigation to ready, labelled as such.
+ */
+export function launchSampleFor(uptimeMs: number, rendererMs: number): { ms: number; method: "native-entry-ready-ipc-upper-bound" | "navigation-ready-estimate"; startPoint: "native-entry" | "navigation" } {
+  return Number.isFinite(rendererMs) && rendererMs >= 0 && uptimeMs - rendererMs > RELOADED_AFTER_MS
+    ? { ms: rendererMs, method: "navigation-ready-estimate", startPoint: "navigation" }
+    : { ms: uptimeMs, method: "native-entry-ready-ipc-upper-bound", startPoint: "native-entry" };
+}
+/** Process start to this renderer's navigation, beyond which the window was reloaded rather than launched. */
+const RELOADED_AFTER_MS = 60_000;
 
 /** Chromium UAs put AppleWebKit first; never mislabel its compatibility token as WebView2. */
 export function runtimeVersionFor(ua: string): string {

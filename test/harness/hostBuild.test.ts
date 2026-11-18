@@ -154,3 +154,13 @@ test("reports are checked: unknown hosts and missing fields refused, junk fields
   assert.equal((c as any).launchMs, undefined);
   assert.equal(recordHostBuild(stateDir, { host: "laptop" }).status, 400);
 });
+
+test("launch number: a fresh app counts from native entry; a window reloaded by a core swap counts from its own navigation", async () => {
+  const { launchSampleFor } = await import("../../src/laptopPerf.ts");
+  assert.deepEqual(launchSampleFor(2140, 1300), { ms: 2140, method: "native-entry-ready-ipc-upper-bound", startPoint: "native-entry" });
+  // After a hot core swap the process has run for hours: its uptime is no launch (and the box drops >= 10 min).
+  const swapped = launchSampleFor(5 * 3_600_000, 1800);
+  assert.deepEqual(swapped, { ms: 1800, method: "navigation-ready-estimate", startPoint: "navigation" });
+  const kept = cleanHostBuild({ ...installed("0.9.49+core.6d84f139", "b".repeat(40)), launchMs: swapped.ms, launchMethod: swapped.method });
+  assert.equal(typeof kept === "object" && kept.launchMs, 1800);
+});

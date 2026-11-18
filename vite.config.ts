@@ -26,6 +26,11 @@ try {
 // The box's core build (scripts/core-publish.ts) builds a source archive of one accepted main commit and names it.
 if (appRevision === "unknown" && /^[0-9a-f]{40}$/.test(process.env.VC_APP_REVISION ?? "")) appRevision = process.env.VC_APP_REVISION!;
 
+// The version: package.json's (CI's release builds bump it on the tagged child); a box core build names its own
+// (scripts/core-publish.ts coreAppVersion: "<newest release it contains>+core.<commit>").
+const pkgVersion: string = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
+const appVersion = /^\d+\.\d+\.\d+\+core\.[0-9a-f]{8}$/.test(process.env.VC_APP_VERSION ?? "") ? process.env.VC_APP_VERSION! : pkgVersion;
+
 // https://vite.dev/config/
 export default defineConfig(async ({ command }) => ({
   plugins: [react()],
@@ -36,7 +41,7 @@ export default defineConfig(async ({ command }) => ({
     ] : [],
   },
   // The app's version on every app-log line (src/debugLog.ts).
-  define: { __APP_REVISION__: JSON.stringify(appRevision), __APP_VERSION__: JSON.stringify(JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version) },
+  define: { __APP_REVISION__: JSON.stringify(appRevision), __APP_VERSION__: JSON.stringify(appVersion) },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

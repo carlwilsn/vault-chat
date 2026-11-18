@@ -64,6 +64,19 @@ export function storeCore(root: string, dist: string, meta: { commit: string; co
   return { version, sha256: hash, manifest };
 }
 
+/**
+ * The version a box-built core reports (vite's __APP_VERSION__): package.json on main never moves (CI bumps the version
+ * only on each release tag's own version-only child, off main), so a core built from raw main said "0.7.25". Instead:
+ * the newest stable release whose code it contains (the tag's parent, the main commit that release was built from, is
+ * an ancestor of `commit`), plus "+core.<commit>": "0.9.49+core.6d84f139". No such tag in the repo: "0.0.0+core.<commit>".
+ */
+export function coreAppVersion(repo: string, commit: string): string {
+  const git = (args: string[]) => spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+  const tags = (git(["tag", "--list", "v*", "--sort=-version:refname"]).stdout ?? "").split("\n").filter((t) => /^v\d+\.\d+\.\d+$/.test(t)).slice(0, 30);
+  const base = tags.find((t) => git(["merge-base", "--is-ancestor", `${t}^`, commit]).status === 0 || git(["merge-base", "--is-ancestor", t, commit]).status === 0);
+  return `${base ? base.slice(1) : "0.0.0"}+core.${commit.slice(0, 8)}`;
+}
+
 function arg(argv: string[], k: string): string {
   const i = argv.indexOf(k);
   const v = i >= 0 ? argv[i + 1] : undefined;
@@ -87,7 +100,7 @@ async function main(argv: string[]): Promise<void> {
   const r = spawnSync(process.execPath, [join(src, "node_modules", "vite", "bin", "vite.js"), "build", "--outDir", dist, "--emptyOutDir"], {
     cwd: src,
     stdio: "inherit",
-    env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=4096", VC_APP_REVISION: commit },
+    env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=4096", VC_APP_REVISION: commit, VC_APP_VERSION: coreAppVersion(repo, commit) },
   });
   if (r.status !== 0) throw new Error(`vite build failed (exit ${r.status})`);
   const commitTime = Number(execFileSync("git", ["-C", repo, "log", "-1", "--format=%ct", commit], { encoding: "utf8" }).trim());

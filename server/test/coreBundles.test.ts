@@ -7,13 +7,14 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import type { Server } from "node:http";
 import { freePort } from "./helpers";
 import { _resetConvLogs, setFeedVaults, signalLog } from "../convlog/log";
 import { configureSettings, setSetting } from "../settings";
 import { startHttpServer, type VaultScope } from "../http";
-import { storeCore, needsOf } from "../../scripts/core-publish";
+import { coreAppVersion, storeCore, needsOf } from "../../scripts/core-publish";
 import { CORE_BOX_API, CORE_PART, manifestProblem, missingNeeds, nextCoreStep, safeCorePath, scanNeeds, type CoreNeeds } from "../../src/coreBundle";
 
 vi.mock("../../src-tauri/assets/phone.html", () => ({ default: "" }));
@@ -301,5 +302,36 @@ describe("LaptopBuild says which core runs, apart from the native shell", () => 
     const b = cleanHostBuild({ host: "laptop", version: "0.7.25", revision: COMMIT, surface: "tauri-production", nativeVersion: "0.9.40", core: { version: "abcd1234", commit: COMMIT, fellBack: "x → built-in: threw" } });
     expect(b).toMatchObject({ nativeVersion: "0.9.40", core: { version: "abcd1234", commit: COMMIT, fellBack: "x → built-in: threw" } });
     expect(cleanHostBuild({ host: "laptop", version: "1", revision: "r", surface: "s", core: { version: "../x" } })).not.toHaveProperty("core");
+  });
+});
+
+describe("a box-built core says which version it is", () => {
+  it("the newest release whose code it contains, plus +core.<commit>; not package.json's never-bumped version", () => {
+    const repo = mkdtempSync(join(tmpdir(), "vc-corever-"));
+    const git = (...a: string[]) => execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", ...a], { encoding: "utf8" }).trim();
+    git("init", "-q", "-b", "main");
+    const commit = (m: string) => (git("commit", "-q", "--allow-empty", "-m", m), git("rev-parse", "HEAD"));
+    const a = commit("a");
+    expect(coreAppVersion(repo, a)).toBe(`0.0.0+core.${a.slice(0, 8)}`);
+    // CI's way: the release tag is on a version-only child of a main commit, never on main itself.
+    const release = (v: string) => {
+      const here = git("rev-parse", "HEAD");
+      git("checkout", "-q", "--detach");
+      commit(`v${v} [skip ci]`);
+      git("tag", `v${v}`);
+      git("checkout", "-q", "main");
+      expect(git("rev-parse", "HEAD")).toBe(here);
+    };
+    release("0.9.48");
+    const b = commit("b");
+    release("0.9.49");
+    const c = commit("c");
+    expect(coreAppVersion(repo, c)).toBe(`0.9.49+core.${c.slice(0, 8)}`);
+    // The main commit a release was cut from contains it; an older main only the older release.
+    expect(coreAppVersion(repo, b)).toBe(`0.9.49+core.${b.slice(0, 8)}`);
+    expect(coreAppVersion(repo, a)).toBe(`0.9.48+core.${a.slice(0, 8)}`);
+    // The perf probe and the box accept it as a version.
+    expect(/^\d+\.\d+\.\d+(?:[-+][a-z0-9.-]+)?$/i.test(coreAppVersion(repo, c))).toBe(true);
+    rmSync(repo, { recursive: true, force: true });
   });
 });
