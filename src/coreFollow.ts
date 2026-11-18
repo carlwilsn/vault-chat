@@ -17,7 +17,7 @@
 // Only with a box (never a server this app runs itself), only in the native app's main window.
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { boxGet, boxLinkFor, boxPost, localServerLink, type Link } from "./boxChat";
-import { CORE_PART, nextCoreStep, type CoreCandidate, type CoreOffer, type CoreStep } from "./coreBundle";
+import { CORE_PART, nextCoreStep, type CoreCandidate, type CoreLook, type CoreOffer, type CoreStep } from "./coreBundle";
 import { BUILT_IN } from "./pluginDrafts";
 import { useStore } from "./store";
 
@@ -48,7 +48,85 @@ export type CoreDeps = {
   triedFailed?: (version: string, why: string) => void;
   /** Just before the loader swaps: keep the screen (src/coreSwap.ts saveSwapState). */
   beforeSwap?: () => Promise<unknown>;
+  /** Just before the loader swaps: what the window should run after the load, so the new page says plainly whether it
+   *  does (checkSwapOutcome). */
+  expect?: (e: Omit<SwapExpect, "at">) => void;
 };
+
+// ---------------------------------------------------------------- what the swap was for, said after the load
+
+/** The main window's sessionStorage (it survives the load): what the swap was to run. */
+export const EXPECT_KEY = "vc.coreExpect";
+/** Older than this, a kept expectation is not about this load (a crash, a later launch). */
+const EXPECT_MAX_MS = 3 * 60_000;
+export type SwapExpect = { to: string; kind: "try" | "back" | "follow"; what?: string; looks?: CoreLook[]; at: number };
+
+const session = (): Storage | null => {
+  try {
+    return globalThis.sessionStorage ?? null;
+  } catch {
+    return null;
+  }
+};
+
+export function expectSwap(e: Omit<SwapExpect, "at">, now = Date.now()): void {
+  try {
+    session()?.setItem(EXPECT_KEY, JSON.stringify({ ...e, at: now }));
+  } catch {
+    /* no storage: nothing said after the load */
+  }
+}
+export function clearSwapExpect(): void {
+  try {
+    session()?.removeItem(EXPECT_KEY);
+  } catch {
+    /* none */
+  }
+}
+/** The kept expectation, once (it is removed), or null when none or too old. */
+export function takeSwapExpect(now = Date.now()): SwapExpect | null {
+  let e: SwapExpect | null = null;
+  try {
+    const raw = session()?.getItem(EXPECT_KEY);
+    e = raw ? (JSON.parse(raw) as SwapExpect) : null;
+  } catch {
+    e = null;
+  }
+  clearSwapExpect();
+  return e && typeof e.to === "string" && typeof e.at === "number" && Math.abs(now - e.at) <= EXPECT_MAX_MS ? e : null;
+}
+
+const coreLabel = (v: string) => (v === BUILT_IN ? "the installed app's own frontend" : `frontend ${v}`);
+
+/** What to tell Carl after a swap's load, from what the loader runs now. Never silent: a swap that did not take says why. */
+export function swapOutcome(e: SwapExpect, s: Pick<CoreStatus, "active" | "bad" | "events">): { ok: boolean; text: string; looks?: CoreLook[] } {
+  if (s.active === e.to) {
+    if (e.kind === "try") {
+      const look = e.looks?.length ? ` Look: ${e.looks.map((l) => l.text).join("; ")}.` : "";
+      return { ok: true, text: `Now running the new frontend${e.what ? `: ${e.what}` : ""}.${look} Keep makes it stay; Back returns to your current version.`, ...(e.looks?.length ? { looks: e.looks } : {}) };
+    }
+    return { ok: true, text: e.to === BUILT_IN ? "Back on the installed app's own frontend." : `Now running ${coreLabel(e.to)}${e.what ? `: ${e.what}` : ""}.` };
+  }
+  const ev = [...s.events].reverse().find((x) => x.from === e.to);
+  const why = ev ? ev.reason : s.bad.includes(e.to) ? `${e.to} failed to come up here` : "the app's loader kept the one it ran";
+  return { ok: false, text: `Couldn't switch: ${why}. Still on ${e.kind === "try" ? "your current version" : coreLabel(s.active)}.` };
+}
+
+/** Main window, once after its load: a swap just happened here, so say what runs now. Waits for this load to have
+ *  said ready to the loader (a bundle that loads but never comes up is not "running"). Null: no swap, or no loader. */
+export async function checkSwapOutcome(native: CoreDeps["native"] = invoke, o: { waitMs?: number; stepMs?: number } = {}): Promise<{ ok: boolean; text: string; looks?: CoreLook[] } | null> {
+  const e = takeSwapExpect();
+  if (!e) return null;
+  const end = Date.now() + (o.waitMs ?? 35_000);
+  for (;;) {
+    const s = await coreStatus(native);
+    if (!s) return null;
+    // Not the bundle it was to run: the loader chose another one (or fell back already): say so now.
+    if (s.active !== e.to || s.ready || Date.now() > end) return swapOutcome(e, s);
+    await new Promise((r) => setTimeout(r, o.stepMs ?? 300));
+  }
+}
+
 
 /** The loader's state now, or null (an installed app from before the loader). */
 export async function coreStatus(native: CoreDeps["native"] = invoke): Promise<CoreStatus | null> {
@@ -121,8 +199,10 @@ export async function followCoreOnce(d: CoreDeps, o: { swap?: boolean; now?: boo
   if (!o.swap || (!o.now && !d.quiet())) return { step, did: step.kind === "install" ? "installed" : "waiting" };
   try {
     await d.beforeSwap?.().catch(() => {});
+    d.expect?.({ to: version ?? BUILT_IN, kind: o.now ? "back" : "follow" });
     await d.native("core_use", { version });
   } catch (e) {
+    clearSwapExpect();
     return { step, did: "failed", error: String((e as Error)?.message ?? e) };
   }
   return { step, did: "swapped" };
@@ -130,7 +210,7 @@ export async function followCoreOnce(d: CoreDeps, o: { swap?: boolean; now?: boo
 
 /** Try a bundle waiting as Change ready in Carl's windows: the loader fetches and checks it, the screen is kept, and
  *  every window loads it. Throws a plain reason when this laptop can't run it (the card says it). */
-export async function tryCore(version: string, c: CoreCandidate, d: CoreDeps): Promise<void> {
+export async function tryCore(version: string, c: CoreCandidate, d: CoreDeps, what?: string, looks?: CoreLook[]): Promise<void> {
   const s = await coreStatus(d.native);
   if (!s) throw new Error("this installed app has no core loader yet (it needs one newer installer)");
   const why = candidateProblem(version, c, s);
@@ -140,7 +220,13 @@ export async function tryCore(version: string, c: CoreCandidate, d: CoreDeps): P
   if (s.active !== version) {
     await d.native("core_install", { baseUrl: link.url, token: link.token, version, sha256: c.sha256 });
     await d.beforeSwap?.().catch(() => {});
-    await d.native("core_use", { version });
+    d.expect?.({ to: version, kind: "try", ...(what ? { what } : {}), ...(looks?.length ? { looks } : {}) });
+    try {
+      await d.native("core_use", { version });
+    } catch (e) {
+      clearSwapExpect();
+      throw e;
+    }
   }
 }
 
@@ -169,6 +255,7 @@ export async function defaultDeps(): Promise<CoreDeps> {
     tried: () => trying.tried?.() ?? null,
     triedFailed: (version, why) => trying.triedFailed?.(version, why),
     beforeSwap: () => saveSwapState(),
+    expect: (e) => expectSwap(e),
     native: invoke,
     link: async () => {
       const vault = useStore.getState().vaultPath;

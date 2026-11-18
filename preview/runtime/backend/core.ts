@@ -11,9 +11,9 @@
 //   look     a bundle may carry `css`: what that build changes on screen, applied while the loader runs it.
 // Nothing here runs unless a scenario gives `host.core`.
 import { BUILT_IN, decision, landing, type ChangeRecord } from "../../../src/pluginDrafts";
-import { CORE_BOX_API, CORE_NAME, CORE_PART } from "../../../src/coreBundle";
+import { CORE_BOX_API, CORE_NAME, CORE_PART, type CoreCommit } from "../../../src/coreBundle";
 
-export type CoreBundle = { version: string; sha256?: string; commit?: string; commitTime: number; what: string; css?: string };
+export type CoreBundle = { version: string; sha256?: string; commit?: string; commitTime: number; what: string; css?: string; /** main's commits up to it, newest first (the box's git log) */ commits?: CoreCommit[] };
 export type CoreConfig = { bundles: CoreBundle[]; bakedCommitTime?: number };
 
 type Loader = { active: string | null; current: string | null; previous: string | null; bad: string[] };
@@ -124,7 +124,7 @@ export function coreBoxGet(u: URL): { status: number; body: string } | null {
     return ok({
       surface: u.searchParams.get("surface") ?? "laptop",
       changes: pending
-        ? [{ plugin: CORE_PART, name: CORE_NAME, what: newest!.what, version: v, added: false, tryOn: ["laptop"], core: { sha256: sha(newest!), commit: commit(newest!), commitTime: newest!.commitTime, needs: { commands: ["app_ready", "core_ready"], plugins: ["dialog"], boxApi: CORE_BOX_API }, boxApi: CORE_BOX_API } }]
+        ? [{ plugin: CORE_PART, name: CORE_NAME, what: newest!.what, version: v, added: false, tryOn: ["laptop"], core: { sha256: sha(newest!), commit: commit(newest!), commitTime: newest!.commitTime, needs: { commands: ["app_ready", "core_ready"], plugins: ["dialog"], boxApi: CORE_BOX_API }, boxApi: CORE_BOX_API, ...(newest!.commits ? { commits: newest!.commits } : {}) } }]
         : [],
     });
   }

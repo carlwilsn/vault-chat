@@ -50,6 +50,9 @@ import { layoutTool, LAYOUT_DESCRIPTION, LAYOUT_SCHEMA } from "../layoutTool";
 import { pluginOfferTool, pluginOfferToolSpecs } from "../pluginOffersTool";
 import { screenTool, SCREEN_DESCRIPTION, SCREEN_SCHEMA } from "../screenTool";
 import { laptopBuildTool, LAPTOP_BUILD_DESCRIPTION, LAPTOP_BUILD_SCHEMA } from "../hostBuild";
+import { supervisorOf } from "../supervisor";
+import { coreVault } from "../coreBundles";
+import { CORE_PART } from "../../src/coreBundle";
 import { driveTool, DRIVE_DESCRIPTION, DRIVE_SCHEMA } from "../driveTool";
 import { actTool, ACT_DESCRIPTION, ACT_SCHEMA } from "../actTool";
 import { timingTool, TIMING_DESCRIPTION, TIMING_SCHEMA } from "../timingTool";
@@ -3226,7 +3229,10 @@ export class Engine {
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "LaptopBuild": {
-          const r = await laptopBuildTool({ vault, stateDir: loadConfig().stateDir, conv: convId, byCarl: !!this.live.get(convId)?.byCarl, emit: (ev) => this.d.broadcast?.(ev), server: { version: SERVER_VERSION, rev: BOX_SERVER_REV } }, a);
+          const r = await laptopBuildTool({ vault, stateDir: loadConfig().stateDir, conv: convId, byCarl: !!this.live.get(convId)?.byCarl, emit: (ev) => this.d.broadcast?.(ev), server: { version: SERVER_VERSION, rev: BOX_SERVER_REV }, coreChange: () => {
+            const c = supervisorOf(coreVault() ?? vault).changes(CORE_PART).at(-1);
+            return c ? { change: c.change, version: c.version, by: c.by ?? "?", at: c.at, ...(c.reason ? { reason: c.reason } : {}) } : null;
+          } }, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "DeleteConversation": {

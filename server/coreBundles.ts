@@ -24,7 +24,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, s
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { BUILT_IN, decision, landing, type ChangeKind, type ChangeRecord } from "../src/pluginDrafts";
-import { CORE_BOX_API, CORE_NAME, CORE_PART, CORE_VERSION_RE, manifestProblem, safeCorePath, type CoreManifest, type CoreOffer } from "../src/coreBundle";
+import { CORE_BOX_API, CORE_NAME, CORE_PART, CORE_VERSION_RE, bundlePath, coreCard, coreChangesSince, parseLooks, manifestProblem, safeCorePath, type CoreCommit, type CoreManifest, type CoreOffer } from "../src/coreBundle";
 import type { BoxPendingChange } from "../src/changeCards";
 import { probeJob, readJobs, reapJobs, startJobWith, type JobEnv } from "./engine/jobs";
 
@@ -120,7 +120,33 @@ export function coreLanding(stateDir: string, changes: readonly ChangeRecord[], 
  * kept or discarded, was switched away from (it failed somewhere, or Carl went back from it), or needs a newer box API.
  * Older undecided bundles are never offered: the newest carries every fix before it.
  */
-export function pendingCore(stateDir: string, changes: readonly ChangeRecord[], on = true): BoxPendingChange | null {
+/** The box's vault-chat repo (the publisher builds its main). */
+export const coreRepo = (): string => process.env.VC_CORE_REPO ?? join(homedir(), "vc", "projects", "vault-chat");
+
+const commitsCache = new Map<string, CoreCommit[]>();
+/** Main's newest first-parent commits up to `commit` (newest first, at most `n`), for the card's words; [] when the repo
+ *  can't say. A commit's history never changes: kept once read. */
+export function coreCommits(repo: string, commit: string, n = 40, exec: Exec = realExec): CoreCommit[] {
+  if (!/^[0-9a-f]{40}$/.test(commit)) return [];
+  const hit = commitsCache.get(commit);
+  if (hit) return hit;
+  // One record per commit (\x1e): hash, time, subject, its Look trailers, then the paths it changed.
+  const r = exec("git", ["-C", repo, "log", "--first-parent", `-n${n}`, "--format=%x1e%H%x09%ct%x09%s%x09%(trailers:key=Look,valueonly=true,separator=%x1f)", "--name-only", commit]);
+  if (r.status !== 0) return [];
+  const out: CoreCommit[] = [];
+  for (const rec of r.stdout.split("\x1e")) {
+    const [head = "", ...paths] = rec.split("\n");
+    const [h, t, title = "", looks = ""] = head.split("\t");
+    if (!h || !/^[0-9a-f]{40}$/.test(h) || !Number.isFinite(Number(t))) continue;
+    const kinds = paths.map((p) => p.trim()).filter(Boolean).map(bundlePath);
+    const look = parseLooks(looks);
+    out.push({ commit: h, time: Number(t), title: title.slice(0, 400), frontend: kinds.some((k) => k.frontend), visible: kinds.some((k) => k.visible) || look.length > 0, ...(look.length ? { look } : {}) });
+  }
+  if (out.length) commitsCache.set(commit, out);
+  return out;
+}
+
+export function pendingCore(stateDir: string, changes: readonly ChangeRecord[], on = true, commitsOf: (commit: string) => CoreCommit[] = () => []): BoxPendingChange | null {
   if (!on) return null;
   const newest = storedCores(stateDir)[0];
   if (!newest) return null;
@@ -128,14 +154,20 @@ export function pendingCore(stateDir: string, changes: readonly ChangeRecord[], 
   if (landing(changes)?.version === v || decision(changes, v) !== null || changes.some((c) => c.change === "switch" && c.from === v)) return null;
   const m = newest.manifest;
   if (m.needs.boxApi > CORE_BOX_API) return null;
+  const commits = commitsOf(m.commit);
+  // The words here are over the core in effect on the box's records; the laptop says them again over the core it runs.
+  const kept = coreOffer(stateDir, changes, on);
+  const card = coreCard(commits.length ? coreChangesSince(commits, { commit: kept?.commit ?? null, time: kept?.commitTime ?? null }) : null, m.commit);
+  // The titles the line does not already say.
+  const rest = card.changes.filter((t) => !card.what.includes(t));
   return {
     plugin: CORE_PART,
     name: CORE_NAME,
-    what: `the app's frontend from main ${m.commit.slice(0, 12)} (${new Date(m.commitTime * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC)`,
+    what: commits.length ? card.what + (rest.length ? `: ${rest.slice(0, 3).join("; ")}${rest.length > 3 ? `; and ${rest.length - 3} more` : ""}` : "") : `the app's frontend from main ${m.commit.slice(0, 12)} (${new Date(m.commitTime * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC)`,
     version: v,
     added: false,
     tryOn: ["laptop"],
-    core: { sha256: newest.sha256, commit: m.commit, commitTime: m.commitTime, needs: m.needs, boxApi: CORE_BOX_API },
+    core: { sha256: newest.sha256, commit: m.commit, commitTime: m.commitTime, needs: m.needs, boxApi: CORE_BOX_API, ...(commits.length ? { commits } : {}) },
   };
 }
 
@@ -285,7 +317,7 @@ export function pruneCores(stateDir: string, changes: readonly ChangeRecord[]): 
 let timer: ReturnType<typeof setInterval> | null = null;
 /** At boot (the box that owns the log): look every minute. Off with VC_CORE_PUBLISH=0, or with no repo. */
 export function startCorePublisher(d: Omit<PublisherDeps, "repo"> & { repo?: string }): boolean {
-  const repo = d.repo ?? process.env.VC_CORE_REPO ?? join(homedir(), "vc", "projects", "vault-chat");
+  const repo = d.repo ?? coreRepo();
   if (process.env.VC_CORE_PUBLISH === "0" || process.platform !== "linux" || !existsSync(join(repo, ".git")) || !existsSync(join(repo, "node_modules"))) return false;
   if (timer) clearInterval(timer);
   let lastLine = "";

@@ -167,3 +167,82 @@ test("Try: the loader fetches and checks the bundle, the screen is kept, then it
   await assert.rejects(tryCore("abcd1234", c, deps({ status: null }).d), /no core loader/);
   await assert.rejects(tryCore("abcd1234", { ...c, commitTime: 50 }, deps().d), /installed app's own core/);
 });
+
+test("after a Try's load the new page says plainly what runs: the new frontend, or why it couldn't switch (never silent)", async () => {
+  const { tryCore, swapOutcome, checkSwapOutcome, takeSwapExpect, expectSwap, EXPECT_KEY } = await import("../../src/coreFollow.ts");
+  // The window's session storage (it survives the load): a plain one here.
+  if (!(globalThis as { sessionStorage?: Storage }).sessionStorage) {
+    const m = new Map<string, string>();
+    (globalThis as { sessionStorage?: unknown }).sessionStorage = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, String(v)), removeItem: (k: string) => void m.delete(k) };
+  }
+  const c = { sha256: OFFER.sha256, commit: OFFER.commit, commitTime: 300, needs: OFFER.needs, boxApi: CORE_BOX_API };
+  const t = deps();
+  const seen: unknown[] = [];
+  t.d.expect = (e) => void seen.push(e);
+  await tryCore("abcd1234", c, t.d, "Inline pages play their video and audio");
+  assert.deepEqual(seen, [{ to: "abcd1234", kind: "try", what: "Inline pages play their video and audio" }]);
+  const e = { to: "abcd1234", kind: "try" as const, what: "Inline pages play their video and audio", at: Date.now() };
+  assert.deepEqual(swapOutcome(e, status({ active: "abcd1234" })), { ok: true, text: "Now running the new frontend: Inline pages play their video and audio. Keep makes it stay; Back returns to your current version." });
+  const fell = swapOutcome(e, status({ bad: ["abcd1234"], events: [{ from: "abcd1234", to: "built-in", reason: "threw before it was ready: x is not a function", at_ms: 1 }] }));
+  assert.deepEqual(fell, { ok: false, text: "Couldn't switch: threw before it was ready: x is not a function. Still on your current version." });
+  assert.equal(swapOutcome({ ...e, kind: "back", to: "built-in" }, status()).text, "Back on the installed app's own frontend.");
+  // Kept in the window's session across the load, taken once; the check waits for this load to say ready.
+  expectSwap({ to: "abcd1234", kind: "try", what: "x" });
+  assert.ok(sessionStorage.getItem(EXPECT_KEY));
+  let n = 0;
+  const native = async <T,>(cmd: string) => (assert.equal(cmd, "core_status"), status({ active: "abcd1234", ready: ++n >= 3 }) as T);
+  assert.deepEqual(await checkSwapOutcome(native, { stepMs: 1 }), { ok: true, text: "Now running the new frontend: x. Keep makes it stay; Back returns to your current version." });
+  assert.equal(n, 3);
+  assert.equal(takeSwapExpect(), null, "said once");
+  assert.equal(await checkSwapOutcome(native), null, "no swap: nothing said");
+  expectSwap({ to: "abcd1234", kind: "try" }, Date.now() - 10 * 60_000);
+  assert.equal(takeSwapExpect(), null, "an old one is not about this load");
+  // core_use refused: nothing is left expected.
+  const bad = deps();
+  bad.d.expect = (x) => expectSwap(x);
+  const nat = bad.d.native;
+  bad.d.native = async (cmd, args) => (cmd === "core_use" ? Promise.reject(new Error("abcd1234 is incomplete")) : nat(cmd, args));
+  await assert.rejects(tryCore("abcd1234", c, bad.d), /incomplete/);
+  assert.equal(sessionStorage.getItem(EXPECT_KEY), null);
+});
+
+test("the card's words: the titles of main's commits since the core this laptop runs", async () => {
+  const { coreChangesSince, coreWhat, shortTitle } = await import("../../src/coreBundle.ts");
+  const commits = [
+    { commit: "6".repeat(40), time: 300, title: "Inline pages play their video and audio: relative mp4/webm refs are embedded" },
+    { commit: "7".repeat(40), time: 200, title: "Free local voice by default: Kokoro + Whisper" },
+    { commit: "8".repeat(40), time: 100, title: "Core builds no longer stall after the first: reaped" },
+  ];
+  assert.deepEqual(coreChangesSince(commits, { commit: "7".repeat(40), time: null }).map((c) => c.commit), ["6".repeat(40)]);
+  assert.deepEqual(coreChangesSince(commits, { commit: "f".repeat(40), time: 150 }).length, 2, "not in the list: by its time");
+  assert.equal(coreChangesSince(commits, { commit: null, time: null }).length, 3);
+  assert.equal(shortTitle(commits[0]!.title), "Inline pages play their video and audio");
+  assert.equal(coreWhat(commits.slice(0, 1), "6".repeat(40)), "new frontend: Inline pages play their video and audio");
+  assert.equal(coreWhat(commits, "6".repeat(40), true), "new frontend, 3 changes");
+  assert.equal(coreWhat(commits, "6".repeat(40)), "new frontend, 3 changes: Inline pages play their video and audio; Free local voice by default; Core builds no longer stall after the first");
+  assert.equal(coreWhat([], "6".repeat(40)), "the app's frontend from main 666666666666");
+});
+
+test("Try only for what Carl can see: behind-the-scenes fixes get Keep only; a change's Look says where it shows", async () => {
+  const { bundlePath, parseLooks, coreCard } = await import("../../src/coreBundle.ts");
+  assert.deepEqual(bundlePath("src/InlineHtmlFrame.tsx"), { frontend: true, visible: true });
+  assert.deepEqual(bundlePath("src/coreFollow.ts"), { frontend: true, visible: false });
+  assert.deepEqual(bundlePath("src/x.test.tsx"), { frontend: false, visible: false });
+  assert.deepEqual(bundlePath("server/voiceProvider.ts"), { frontend: false, visible: false });
+  assert.deepEqual(parseLooks('[data-el="model-menu"] :: the model menu lists Fable\x1fthe chat scrolls smoother'), [
+    { selector: '[data-el="model-menu"]', text: "the model menu lists Fable" },
+    { selector: null, text: "the chat scrolls smoother" },
+  ]);
+  const look = { selector: '[data-el="model-menu"]', text: "the model menu lists Fable" };
+  const c = (title: string, o: object) => ({ commit: "1".repeat(40), time: 1, title, ...o });
+  const shown = coreCard([c("Model menu lists Fable: x", { frontend: true, visible: true, look: [look] }), c("Faster chat sync: y", { frontend: true, visible: false }), c("Box voice: z", { frontend: false, visible: false })], "1".repeat(40));
+  assert.deepEqual(shown, { what: "new frontend: Model menu lists Fable", changes: ["Model menu lists Fable", "and 1 behind-the-scenes fix"], looks: [look], triable: true });
+  const quiet = coreCard([c("Faster chat sync: y", { frontend: true, visible: false }), c("Box voice: z", { frontend: false, visible: false })], "1".repeat(40));
+  assert.deepEqual(quiet, { what: "behind-the-scenes fixes, nothing to look at", changes: ["Faster chat sync"], looks: [], triable: false });
+  assert.equal(coreCard([c("Box voice: z", { frontend: false, visible: false })], "1".repeat(40)).triable, false);
+  assert.equal(coreCard(null, "1".repeat(40)).triable, true, "unknown (an older box): Try as before");
+  const { swapOutcome } = await import("../../src/coreFollow.ts");
+  const r = swapOutcome({ to: "abcd1234", kind: "try", what: "Model menu lists Fable", looks: [look], at: Date.now() }, status({ active: "abcd1234" }));
+  assert.equal(r.text, "Now running the new frontend: Model menu lists Fable. Look: the model menu lists Fable. Keep makes it stay; Back returns to your current version.");
+  assert.deepEqual(r.looks, [look]);
+});

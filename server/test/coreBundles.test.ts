@@ -107,6 +107,31 @@ describe("core bundles on the box", () => {
     expect((await getJson("/api/v2/core")).publish).toBe(true);
   });
 
+  it("the card says what a bundle changes: main's commit titles (git log of the box's repo), not just a hash", () => {
+    const C = "6".repeat(40);
+    // git log's records: \x1e, then hash, time, subject, Look trailers; then the paths each changed.
+    const log = `\x1e${C}\t300\tInline pages play their video and audio: relative refs\t[data-el="chat-scroll"] :: a page's video plays\n\nsrc/InlineHtmlFrame.tsx\nserver/http.ts\n` + `\x1e${"7".repeat(40)}\t200\tFree local voice by default: Kokoro\t\n\nserver/voiceProvider.ts\n`;
+    const calls: string[][] = [];
+    const exec = (cmd: string, args: string[]) => (calls.push([cmd, ...args]), { status: 0, stdout: log, stderr: "" });
+    const commits = core.coreCommits("/repo", C, 40, exec);
+    expect(commits).toEqual([
+      { commit: C, time: 300, title: "Inline pages play their video and audio: relative refs", frontend: true, visible: true, look: [{ selector: '[data-el="chat-scroll"]', text: "a page's video plays" }] },
+      { commit: "7".repeat(40), time: 200, title: "Free local voice by default: Kokoro", frontend: false, visible: false },
+    ]);
+    expect(calls[0]).toEqual(["git", "-C", "/repo", "log", "--first-parent", "-n40", "--format=%x1e%H%x09%ct%x09%s%x09%(trailers:key=Look,valueonly=true,separator=%x1f)", "--name-only", C]);
+    expect(core.coreCommits("/repo", C, 40, exec)).toBe(commits);
+    expect(calls.length).toBe(1);
+    expect(core.coreCommits("/repo", "not-a-commit", 40, exec)).toEqual([]);
+    const y = build("why-words", { "index.html": "<p>words</p>" }, NEEDS, 100, "2099-01-01T00:00:00Z");
+    const p = core.pendingCore(state, sup.supervisorOf(A.path).changes(CORE_PART), true, () => commits);
+    expect(p?.version).toBe(y.version);
+    // The box's own voice change is not the frontend's: the card names only what the bundle brings.
+    expect(p?.what).toBe("new frontend: Inline pages play their video and audio");
+    expect(p?.core?.commits).toEqual(commits);
+    expect(core.pendingCore(state, sup.supervisorOf(A.path).changes(CORE_PART), true)?.core?.commits).toBeUndefined();
+    rmSync(join(root, y.version), { recursive: true, force: true });
+  });
+
   it("a finished build job no longer holds the one-job cap: the next main's build starts", () => {
     // The job registry kept a done build "running" (nothing reaped it), so every later main was refused.
     const work = join(state, "core-bundles", "work");

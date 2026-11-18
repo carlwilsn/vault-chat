@@ -350,7 +350,25 @@ export const scenarios: Scenario[] = [
       "Keep: the record (no reload, it runs already). Switch back: the installed app's own core again, the screen kept the same way.",
     build: (c) => world(c, { extraConvs: (now) => [{ ...W.longChat(now, 60_000, "c-core", 12), kind: "separate", lastActivityAt: now - 2 * MIN }] }),
     activeConversation: "c-core",
-    host: { core: { bakedCommitTime: 100, bundles: [{ version: CORE_NEW, commitTime: 1_800_000_000, what: "the composer gets a blue ring (main 4f1e0c2ab9d3)", css: CORE_LOOK }] } },
+    host: {
+      core: {
+        bakedCommitTime: 100,
+        bundles: [
+          {
+            version: CORE_NEW,
+            commit: "4f1e0c2ab9d3" + "0".repeat(28),
+            commitTime: 1_800_000_000,
+            what: "the composer gets a blue ring (main 4f1e0c2ab9d3)",
+            css: CORE_LOOK,
+            commits: [
+              { commit: "4f1e0c2ab9d3" + "0".repeat(28), time: 1_800_000_000, title: "The composer gets a blue ring: easier to find where to type", frontend: true, visible: true, look: [{ selector: '[data-perf-target="composer"]', text: "the composer has a blue ring" }] },
+              { commit: "3e1e0c2ab9d3" + "0".repeat(28), time: 1_799_999_000, title: "Chat sync retries sooner after a dropped link: no visible change", frontend: true, visible: false },
+              { commit: "b".repeat(40), time: 100, title: "v0.9.40 base" },
+            ],
+          },
+        ],
+      },
+    },
     open: [
       ...deskOpen(NOTE, "c-core"),
       {
@@ -363,6 +381,34 @@ export const scenarios: Scenario[] = [
       { sleep: 300 },
       { run: (api) => { const el = api.q('[data-el="chat-scroll"]'); if (el) el.scrollTop = Math.round(el.scrollHeight * 0.35); } },
     ],
+  },
+
+  {
+    id: "core-quiet",
+    title: "Hot core — only behind-the-scenes fixes: no Try, Keep applies it",
+    group: "Hot core",
+    notes: "The box built a core whose changes show nothing on screen (sync, speed). The card says so plainly and lists them; there is no Try, only Keep (applied the next time Carl steps away) or Discard.",
+    build: (c) => world(c),
+    activeConversation: "c-spectral",
+    host: {
+      core: {
+        bakedCommitTime: 100,
+        bundles: [
+          {
+            version: "c0de3c28",
+            commit: "5a1e0c2ab9d3" + "0".repeat(28),
+            commitTime: 1_800_000_000,
+            what: "the app's frontend from main 5a1e0c2ab9d3",
+            commits: [
+              { commit: "5a1e0c2ab9d3" + "0".repeat(28), time: 1_800_000_000, title: "Chat sync retries sooner after a dropped link: no visible change", frontend: true, visible: false },
+              { commit: "6a1e0c2ab9d3" + "0".repeat(28), time: 1_799_999_000, title: "Box voice provider picks local Whisper: server only", frontend: false, visible: false },
+              { commit: "b".repeat(40), time: 100, title: "v0.9.40 base" },
+            ],
+          },
+        ],
+      },
+    },
+    open: deskOpen(NOTE, "c-spectral"),
   },
 
   // ===== Basics =====

@@ -38,7 +38,7 @@ import { PRESET_DRAFT_FILE, PRESET_PLUGIN_ID, parseDraft } from "./appPreset";
 import { SETTINGS_DRAFT_ID, SETTINGS_DRAFT_NAME, describeValues, pendingSettingsDraft, triable as settingsTriable, windowValues } from "./settingsRecords";
 import { onPickWhileTrying, onSettingsDrafts, refreshBoxSettings, setSettingsTry, settingsDraftsNow, settingsDraftsVersion } from "./settings";
 import { isMigrationId, summaryLine, type MigrationSummary } from "./migrations";
-import { CORE_NAME, CORE_PART, type CoreCandidate } from "./coreBundle";
+import { CORE_NAME, CORE_PART, coreCard, coreChangesSince, type CoreCandidate, type CoreCommit, type CoreLook } from "./coreBundle";
 import { provideCoreTrying } from "./coreFollow";
 import { BUILT_IN, KEEP_WATCH_MS, TRY_SLOW_MS, draftPending, draftWhat, landing, slowMedian, watchedKeep, type ChangeRecord, type SlotCode } from "./pluginDrafts";
 
@@ -198,17 +198,37 @@ let coreRunsHere = async (version: string, c: CoreCandidate): Promise<boolean> =
     return false;
   }
 };
+/** What a core bundle changes over the core this laptop runs now (its main commit: the box bundle's, else the installed
+ *  app's own), newest first; null when the loader can't say (tests replace it). */
+let coreChangesHere = async (c: CoreCandidate): Promise<CoreCommit[] | null> => {
+  if (!c.commits?.length) return null;
+  try {
+    const s = await (await import("./coreFollow")).coreStatus();
+    if (!s) return null;
+    // Running the candidate itself (Carl tries it): its words stay those over the installed app's own core.
+    const box = s.active !== BUILT_IN && s.activeCommit !== c.commit;
+    const running = { commit: box ? s.activeCommit : s.baked.commit || null, time: box ? null : s.baked.commitTime };
+    return coreChangesSince(c.commits, running);
+  } catch {
+    return null;
+  }
+};
+/** Tests: what a core bundle changes here. */
+export function _setCoreChangesHere(fn: typeof coreChangesHere): void {
+  coreChangesHere = fn;
+}
+
 /** Tests: what the loader says about a core bundle. */
 export function _setCoreRunsHere(fn: typeof coreRunsHere): void {
   coreRunsHere = fn;
 }
 
 /** The loader's side of a core change (src/coreFollow.ts); tests replace it. */
-type CoreActs = { tryCore: (version: string, c: CoreCandidate) => Promise<void>; followNow: () => Promise<unknown> };
+type CoreActs = { tryCore: (version: string, c: CoreCandidate, what?: string, looks?: CoreLook[]) => Promise<void>; followNow: () => Promise<unknown> };
 let coreActs: CoreActs = {
-  tryCore: async (version, c) => {
+  tryCore: async (version, c, what, looks) => {
     const m = await import("./coreFollow");
-    await m.tryCore(version, c, await m.defaultDeps());
+    await m.tryCore(version, c, await m.defaultDeps(), what, looks);
   },
   followNow: async () => (await import("./coreFollow")).followCoreNow(),
 };
@@ -240,7 +260,21 @@ export async function refreshBoxDrafts(): Promise<void> {
       // Only a bundle this laptop's loader can run (an app with the loader, the shell's commands, newer than its own).
       const core = c.core as CoreCandidate;
       if (!(await coreRunsHere(c.version, core))) continue;
-      list.push({ plugin: CORE_PART, name: CORE_NAME, what: String(c.what ?? ""), version: c.version, added: false, triable: true, core });
+      // What it changes, in words: the titles of main's commits since the core this laptop runs (the box's words else),
+      // and where to look. Only behind-the-scenes fixes: no Try (nothing to look at), Keep applies it.
+      const since = await coreChangesHere(core);
+      const card = since ? coreCard(since, core.commit) : null;
+      list.push({
+        plugin: CORE_PART,
+        name: CORE_NAME,
+        what: card ? card.what : String(c.what ?? ""),
+        version: c.version,
+        added: false,
+        triable: card ? card.triable : true,
+        core,
+        ...(card?.changes.length ? { changes: card.changes } : {}),
+        ...(card?.looks.length ? { looks: card.looks } : {}),
+      });
       continue;
     }
     if (typeof c?.plugin === "string" && (c.plugin.startsWith("box/") || isMigrationId(c.plugin)) && typeof c.version === "string")
@@ -283,6 +317,10 @@ export type PendingChange = {
   migration?: { target: string | null };
   /** The app's core bundle (part app/core): how the loader fetches and checks it. */
   core?: CoreCandidate;
+  /** The app's core bundle: what it changes over the core running here (main's commit titles, newest first). */
+  changes?: string[];
+  /** The app's core bundle: where its changes show (the app points there after Try). */
+  looks?: CoreLook[];
 };
 
 const appName = (id: string) => APP_PLUGINS.find((p) => p.id === id)?.name ?? id.replace(/^app\//, "");
@@ -410,6 +448,9 @@ export async function tryMigration(plugin: string, version: string): Promise<Mig
   return out;
 }
 
+/** A core bundle's changes in one line, for the words after its Try. */
+const tryWhat = (changes: readonly string[]) => changes.slice(0, 3).join("; ") + (changes.length > 3 ? ` (+${changes.length - 3} more)` : "");
+
 /** Try a draft (Carl's windows only). A settings draft of only the box's settings can't be tried: nothing happens. A
  *  migration's Try runs it on a copy of the real state on the box and shows the summary. */
 export function tryChange(plugin: string, version: string): Promise<MigrationTry> | null {
@@ -419,10 +460,12 @@ export function tryChange(plugin: string, version: string): Promise<MigrationTry
     const p = boxPending.find((x) => x.plugin === plugin && x.version === version);
     if (!p?.core) return null;
     setTried(plugin, version);
-    // The loader fetches, checks and loads it: every window loads it (the screen is kept). What stops it is said.
-    void coreActs.tryCore(version, p.core).catch((e) => {
+    // The loader fetches, checks and loads it: every window loads it (the screen is kept); the new page says it runs
+    // (checkCoreSwap). What stops it is said.
+    const what = p.changes?.length ? tryWhat(p.changes) : undefined;
+    void coreActs.tryCore(version, p.core, what, p.looks).catch((e) => {
       setTried(plugin, null);
-      say({ plugin, name: CORE_NAME, text: `Not tried: ${String((e as Error)?.message ?? e).slice(0, 200)}`, ok: false, at: Date.now() });
+      say({ plugin, name: CORE_NAME, text: `Couldn't switch: ${String((e as Error)?.message ?? e).slice(0, 200)}. Still on your current version.`, ok: false, at: Date.now() });
     });
     return null;
   }
@@ -604,7 +647,60 @@ export function watchTyping(): void {
 
 /** Start following what this app's windows try (the app calls it once at start). */
 let settingsHooked = false;
+let swapChecked = false;
+/** Once per page: a core swap just loaded this window, so say plainly what runs now (src/coreFollow.ts
+ *  checkSwapOutcome): the new frontend, or why it could not switch. Tests replace the check. */
+let swapCheck = async (): Promise<{ ok: boolean; text: string; looks?: CoreLook[] } | null> => {
+  const m = await import("./coreFollow");
+  const said = await m.checkSwapOutcome();
+  const tried = triedVersion(CORE_PART);
+  const SAID_KEY = "vc.coreTriedSaid";
+  if (said) {
+    try {
+      if (said.ok && tried) globalThis.sessionStorage?.setItem(SAID_KEY, tried);
+    } catch {
+      /* no storage */
+    }
+    return said;
+  }
+  // A Try started by a core from before this check (the installer's own, today) leaves no expectation: the bundle Carl
+  // tries running here, once per window session, is said the same way.
+  let s = await m.coreStatus();
+  for (let i = 0; s && tried && s.active === tried && !s.ready && i < 100; i++) {
+    await new Promise((r) => setTimeout(r, 300));
+    s = await m.coreStatus();
+  }
+  if (!s || !tried || s.active !== tried || !s.ready) return null;
+  try {
+    if (globalThis.sessionStorage?.getItem(SAID_KEY) === tried) return null;
+    globalThis.sessionStorage?.setItem(SAID_KEY, tried);
+  } catch {
+    return null;
+  }
+  await refreshBoxDrafts().catch(() => {});
+  const card = boxPending.find((p) => p.plugin === CORE_PART && p.version === tried);
+  return m.swapOutcome({ to: tried, kind: "try", at: Date.now(), ...(card?.changes?.length ? { what: tryWhat(card.changes) } : {}), ...(card?.looks?.length ? { looks: card.looks } : {}) }, s);
+};
+export function _setSwapCheck(fn: typeof swapCheck): void {
+  swapChecked = false;
+  swapCheck = fn;
+}
+function checkCoreSwap(): void {
+  if (swapChecked) return;
+  swapChecked = true;
+  void swapCheck()
+    .then((r) => {
+      if (!r) return;
+      console.info(`[core] after the swap: ${r.text}`);
+      say({ plugin: CORE_PART, name: CORE_NAME, text: r.text, ok: r.ok, at: Date.now() });
+      // Point at where it shows (the commits' Look selectors), so his eye goes straight to it.
+      if (r.ok && r.looks?.length) void import("./corePointer").then((p) => p.pointAt(r.looks!)).catch(() => {});
+    })
+    .catch((e) => console.warn("[core] could not say what runs after the swap:", e));
+}
+
 export function startChangeReady(): void {
+  checkCoreSwap();
   followTries();
   hookStorage();
   if (!settingsHooked) {
@@ -625,7 +721,7 @@ export function startChangeReady(): void {
 
 const describe = (p: PendingChange) => {
   const m = p.migration ? migrationTryOf(p.plugin, p.version) : null;
-  return { plugin: p.plugin, name: p.name, what: p.what || null, version: p.version, added: p.added, trying: triedVersion(p.plugin) === p.version, triable: p.triable, ...(p.migration ? { migration: { target: p.migration.target, tried: m ? { state: m.state, line: m.line ?? null, error: m.error ?? null, summary: m.summary ?? null } : null } } : {}) };
+  return { plugin: p.plugin, name: p.name, what: p.what || null, version: p.version, added: p.added, trying: triedVersion(p.plugin) === p.version, triable: p.triable, ...(p.changes ? { changes: p.changes } : {}), ...(p.migration ? { migration: { target: p.migration.target, tried: m ? { state: m.state, line: m.line ?? null, error: m.error ?? null, summary: m.summary ?? null } : null } } : {}) };
 };
 
 export function changeOffers() {

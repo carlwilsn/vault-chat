@@ -606,7 +606,7 @@ test("the app's core: a bundle the box built is a Change ready card; Try has the
   CR._setCoreActs({ tryCore: async () => { throw new Error("c needs a newer installed app (command brand_new)"); }, followNow: async () => {} });
   await CR.refreshBoxDrafts();
   CR.tryChange(CORE_PART, c.version);
-  await waitFor("refused", () => /^Not tried: c needs a newer installed app/.test(String(CR.lastOutcome()?.text)));
+  await waitFor("refused", () => /^Couldn't switch: c needs a newer installed app \(command brand_new\)\. Still on your current version\.$/.test(String(CR.lastOutcome()?.text)));
   assert.equal(CR.triedVersion(CORE_PART), null);
 
   await act(async () => root.unmount());

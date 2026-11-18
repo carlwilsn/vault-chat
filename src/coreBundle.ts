@@ -55,8 +55,43 @@ export type CoreManifest = {
   needs: CoreNeeds;
   files: CoreFile[];
 };
-/** A bundle waiting for Carl (the Change ready card's `core`): how to fetch and check it, and whether this laptop can run it. */
-export type CoreCandidate = { sha256: string; commit: string; commitTime: number; needs: CoreNeeds; boxApi: number };
+/** Where a change shows in the app: a CSS selector of the element to point at (null: no one element), and what to see.
+ *  A commit says it with a `Look: <selector> :: <what to see>` trailer (or `Look: <what to see>`). */
+export type CoreLook = { selector: string | null; text: string };
+/** One main commit a bundle carries (newest first in a list): what Carl reads on the card. `frontend`: it touches the
+ *  bundle's sources at all (false: a box/test/docs change the frontend does not carry); `visible`: it may change what
+ *  Carl sees (a Look trailer, or a component / style file), else a behind-the-scenes fix; `look`: where to look. Absent
+ *  (an older box): unknown, read as a frontend change that may show. */
+export type CoreCommit = { commit: string; time: number; title: string; frontend?: boolean; visible?: boolean; look?: CoreLook[] };
+
+/** Whether a changed path is part of the bundle (what `vite build` reads), and whether it may change what Carl sees. */
+export function bundlePath(p: string): { frontend: boolean; visible: boolean } {
+  const frontend = /^(src\/|public\/|index\.html$|vite\.config\.ts$|tailwind\.config|postcss\.config|package(-lock)?\.json$)/.test(p) && !/\.test\.[jt]sx?$/.test(p);
+  return { frontend, visible: frontend && (/\.(tsx|css|html|svg|png|woff2?)$/.test(p) || p === "index.html" || /^tailwind\.config/.test(p)) };
+}
+
+/** A commit's Look trailers (git's valueonly list, one per line or \x1f-separated). */
+export function parseLooks(raw: string): CoreLook[] {
+  return raw
+    .split(/[\x1f\n]/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .slice(0, 4)
+    .map((x) => {
+      const i = x.indexOf(" :: ");
+      return i > 0 ? { selector: x.slice(0, i).trim().slice(0, 200), text: x.slice(i + 4).trim().slice(0, 200) } : { selector: null, text: x.slice(0, 200) };
+    });
+}
+
+/** The changes Carl can see (a Try shows them), and the ones he can't (behind-the-scenes: Keep only). */
+export function splitVisible(changes: readonly CoreCommit[]): { visible: CoreCommit[]; hidden: CoreCommit[] } {
+  const own = changes.filter((c) => c.frontend !== false);
+  return { visible: own.filter((c) => c.visible !== false || !!c.look?.length), hidden: own.filter((c) => c.visible === false && !c.look?.length) };
+}
+/** A bundle waiting for Carl (the Change ready card's `core`): how to fetch and check it, and whether this laptop can run it.
+ *  `commits`: main's newest first-parent commits up to the bundle's (the box's git log), so the laptop can say what
+ *  changes from the core it runs now. */
+export type CoreCandidate = { sha256: string; commit: string; commitTime: number; needs: CoreNeeds; boxApi: number; commits?: CoreCommit[] };
 /** What the box offers: the bundle in effect and how to check it. */
 export type CoreOffer = { version: string; sha256: string; commit: string; commitTime: number; needs: CoreNeeds; seq: number };
 
@@ -147,4 +182,50 @@ export function nextCoreStep(o: {
   if (missing.length) return { kind: "stay", why: `needs a newer installed app (${missing.slice(0, 4).join(", ")})` };
   if (o.boxApi === null || offer.needs.boxApi > o.boxApi) return { kind: "stay", why: `needs box API ${offer.needs.boxApi}, the box serves ${o.boxApi ?? "none"}` };
   return { kind: "install", offer };
+}
+
+/** The commits a bundle brings over the core running here (`running`: its main commit, and that commit's time when
+ *  known): the list down to that commit, else those newer than its time. Neither found: the whole list. */
+export function coreChangesSince(commits: readonly CoreCommit[] | undefined, running: { commit: string | null; time: number | null }): CoreCommit[] {
+  const list = commits ?? [];
+  const at = running.commit ? list.findIndex((c) => c.commit === running.commit || (running.commit!.length >= 7 && c.commit.startsWith(running.commit!))) : -1;
+  if (at >= 0) return list.slice(0, at);
+  if (running.time !== null) return list.filter((c) => c.time > running.time!);
+  return [...list];
+}
+
+/** A commit's title as Carl reads it: its first clause (main's subjects are long sentences), at most 90 characters. */
+export function shortTitle(subject: string): string {
+  const s = subject.replace(/\s+/g, " ").trim();
+  const i = s.indexOf(": ");
+  const head = i >= 12 ? s.slice(0, i) : s;
+  return head.length > 90 ? `${head.slice(0, 87).trimEnd()}...` : head;
+}
+
+/** The card's line for a core bundle: what changes, in words (`listed`: the card lists the titles under it, so the
+ *  line only counts them). */
+export function coreWhat(changes: readonly CoreCommit[], commit: string, listed = false): string {
+  if (!changes.length) return `the app's frontend from main ${commit.slice(0, 12)}`;
+  const titles = changes.map((c) => shortTitle(c.title));
+  if (titles.length === 1) return `new frontend: ${titles[0]}`;
+  if (listed) return `new frontend, ${titles.length} changes`;
+  return `new frontend, ${titles.length} changes: ${titles.slice(0, 3).join("; ")}${titles.length > 3 ? `; and ${titles.length - 3} more` : ""}`;
+}
+
+/** What the Change ready card says about a core bundle, from the commits it brings over the core running (`changes`,
+ *  coreChangesSince; null: unknown, an older box). Something Carl can see: Try, and after it the app points at it.
+ *  Only behind-the-scenes fixes: no Try (nothing to look at), Keep applies it. */
+export type CoreCard = { what: string; changes: string[]; looks: CoreLook[]; triable: boolean };
+export function coreCard(changes: readonly CoreCommit[] | null, commit: string): CoreCard {
+  if (!changes) return { what: coreWhat([], commit), changes: [], looks: [], triable: true };
+  const { visible, hidden } = splitVisible(changes);
+  if (visible.length)
+    return {
+      what: coreWhat(visible, commit, true),
+      changes: [...visible.map((c) => shortTitle(c.title)), ...(hidden.length ? [`and ${hidden.length} behind-the-scenes fix${hidden.length > 1 ? "es" : ""}`] : [])],
+      looks: visible.flatMap((c) => c.look ?? []),
+      triable: true,
+    };
+  if (hidden.length) return { what: "behind-the-scenes fixes, nothing to look at", changes: hidden.map((c) => shortTitle(c.title)), looks: [], triable: false };
+  return { what: "a rebuild of the frontend with nothing to look at", changes: [], looks: [], triable: false };
 }

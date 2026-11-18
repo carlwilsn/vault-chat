@@ -25,7 +25,7 @@ import { SETTINGS_DRAFT_ID, SETTINGS_DRAFT_NAME, describeValues, pendingSettings
 import { VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES, parseVaultPluginMeta, vaultPluginDevices } from "../src/vaultPlugins";
 import { slotCode } from "./pluginDrafts";
 import { pendingMigrations } from "./migrations";
-import { coreStateDir, coreVault, pendingCore } from "./coreBundles";
+import { coreCommits, coreRepo, coreStateDir, coreVault, pendingCore } from "./coreBundles";
 import { CORE_PART } from "../src/coreBundle";
 import { supervisorOf } from "./supervisor";
 import { surfaceOff, type Surface } from "./surfaces";
@@ -116,7 +116,7 @@ export function pendingOnBox(vault: string, surface: ChangeSurface = "laptop", s
   // vault's records), tried in the laptop's windows only.
   const coreDir = coreStateDir();
   if (coreDir) {
-    const c = pendingCore(coreDir, supervisorOf(coreVault() ?? vault).changes(CORE_PART), corePublishOn());
+    const c = pendingCore(coreDir, supervisorOf(coreVault() ?? vault).changes(CORE_PART), corePublishOn(), (commit) => coreCommits(coreRepo(), commit));
     if (c) out.push(c);
   }
   // Migration drafts (src/migrations.ts): a plugin's state reshaped; Try runs it on a copy of real data (the laptop).

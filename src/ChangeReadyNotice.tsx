@@ -108,6 +108,14 @@ export function ChangeReady() {
               <div className="text-[12px] font-semibold text-foreground/95" data-el="change-ready-title">
                 Change ready: {shown.what || (shown.added ? `new plugin ${shown.name}` : shown.name)}
               </div>
+              {!!shown.changes?.length && (
+                <ul data-el="change-ready-changes" className="mt-1 space-y-0.5 text-[11px] text-foreground/85 leading-snug list-disc pl-3.5">
+                  {shown.changes.slice(0, 4).map((t, i) => (
+                    <li key={i}>{t}</li>
+                  ))}
+                  {shown.changes.length > 4 && <li className="list-none -ml-3.5 text-muted-foreground">and {shown.changes.length - 4} more</li>}
+                </ul>
+              )}
               <div className="text-[11px] text-muted-foreground mt-0.5 font-mono truncate">
                 {shown.name} · {shown.version}
                 {pending.length > 1 ? ` · ${pending.length - 1} more` : ""}
@@ -120,7 +128,11 @@ export function ChangeReady() {
             )}
           </div>
           <div className="p-3 space-y-2.5">
-            {trying && !shown.migration && <div className="text-[11.5px] text-muted-foreground/90 leading-relaxed">Trying it on this laptop's windows. Nothing on the box changes until you keep it.</div>}
+            {trying && !shown.migration && (
+              <div className="text-[11.5px] text-muted-foreground/90 leading-relaxed">
+                {shown.core ? "This laptop runs the new frontend now. Keep makes it stay; Back returns to your current version." : "Trying it on this laptop's windows. Nothing on the box changes until you keep it."}
+              </div>
+            )}
             {trying && shown.migration && (
               <div data-el="change-migration" data-vc-state={mig?.state ?? "running"} className="text-[11.5px] text-muted-foreground/90 leading-relaxed space-y-1">
                 <div>
@@ -142,7 +154,16 @@ export function ChangeReady() {
                 )}
               </div>
             )}
-            {direct && <div data-el="change-direct" className="text-[11.5px] text-muted-foreground/90 leading-relaxed">The box applies this, so it can't be tried on your windows only. Keep sets it; Switch back undoes it.</div>}
+            {direct && (
+              <div data-el="change-direct" className="text-[11.5px] text-muted-foreground/90 leading-relaxed">
+                {shown.core ? "Nothing to look at, so there is nothing to try. Keep applies it the next time you step away; Switch back undoes it." : "The box applies this, so it can't be tried on your windows only. Keep sets it; Switch back undoes it."}
+              </div>
+            )}
+            {!trying && !direct && !!shown.looks?.length && (
+              <div data-el="change-looks" className="text-[11.5px] text-muted-foreground/90 leading-relaxed">
+                Try shows it. Look at: {shown.looks.map((l) => l.text).join("; ")}
+              </div>
+            )}
             <div className="flex gap-2">
               {trying || direct ? (
                 <>

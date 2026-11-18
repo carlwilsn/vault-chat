@@ -208,6 +208,9 @@ export type LaptopBuildDeps = {
   emit: (ev: Record<string, unknown>) => void;
   server: { version: string; rev: string };
   ackMs?: number;
+  /** The box's newest app/core change record (Carl's Try is not one; a keep, discard or switch is), so a core seen as
+   *  "the installed app's own" right after a Discard is not read as a failed boot. */
+  coreChange?: () => { change: string; version: string; by: string; at: number; reason?: string } | null;
 };
 
 const ago = (iso: string, now: number) => {
@@ -263,6 +266,8 @@ export async function laptopBuildTool(d: LaptopBuildDeps, args: Record<string, u
   if (last) lines.push(`Last reported at launch, ${ago(last.at, now)} (${last.at}):`, ...describe(last).map((l) => `- ${l}`));
   else lines.push("No launch report from the laptop yet (an app from before build reports, or it has not started since).");
   lines.push(`Box server: v${d.server.version}${d.server.rev ? ` (${short(d.server.rev)})` : ""}.`);
+  const cc = d.coreChange?.();
+  if (cc) lines.push(`Last app/core change record: ${cc.change} ${cc.version} by ${cc.by}, ${ago(new Date(cc.at).toISOString(), now)}${cc.reason ? ` (${cc.reason.slice(0, 160)})` : ""}.`);
   const watches = readWatches(d.stateDir).filter((w) => w.conv === d.conv && w.expires > now);
   if (watches.length) lines.push(`This conversation is waiting for a laptop build report (watch ${watches.map((w) => w.id).join(", ")}).`);
   return { ok: ok || !!last, text: lines.join("\n") };
