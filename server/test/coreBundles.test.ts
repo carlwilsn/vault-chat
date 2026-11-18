@@ -106,6 +106,23 @@ describe("core bundles on the box", () => {
     expect((await getJson("/api/v2/core")).publish).toBe(true);
   });
 
+  it("a finished build job no longer holds the one-job cap: the next main's build starts", () => {
+    // The job registry kept a done build "running" (nothing reaped it), so every later main was refused.
+    const work = join(state, "core-bundles", "work");
+    mkdirSync(work, { recursive: true });
+    writeFileSync(join(work, "jobs.json"), JSON.stringify([{ id: "core-old-1", name: "core-old", command: "true", startedAt: Date.now() - 60_000, timeoutS: 2700, state: "running" }]));
+    writeFileSync(join(work, "core-old-1.log"), "stored core\n[exit 0]\n");
+    const exec = () => ({ status: 0, stdout: "d".repeat(40), stderr: "" });
+    let started = 0;
+    const deps = { stateDir: state, repo: join(home, "repo"), changes: () => sup.supervisorOf(A.path).changes(CORE_PART), exec, on: () => true, startJob: (() => (started++, { text: "not started" })) as never };
+    core.publishTick(deps);
+    const jobs = JSON.parse(readFileSync(join(work, "jobs.json"), "utf8"));
+    expect(jobs.find((j: { id: string }) => j.id === "core-old-1")).toMatchObject({ state: "finished", exit: 0 });
+    expect(started).toBe(1);
+    rmSync(join(work, "jobs.json"), { force: true });
+    rmSync(join(state, "core-bundles", "publisher.json"), { force: true });
+  });
+
   it("stores a bundle by its manifest's hash and serves it byte for byte; tampering and paths outside it are refused", async () => {
     const one = build("one", { "index.html": "<p>one</p>", "assets/app-1.js": "console.log(1)" });
     expect(one.sha256.startsWith(one.version)).toBe(true);

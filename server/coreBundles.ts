@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { BUILT_IN, decision, landing, type ChangeKind, type ChangeRecord } from "../src/pluginDrafts";
 import { CORE_BOX_API, CORE_NAME, CORE_PART, CORE_VERSION_RE, manifestProblem, safeCorePath, type CoreManifest, type CoreOffer } from "../src/coreBundle";
 import type { BoxPendingChange } from "../src/changeCards";
-import { probeJob, readJobs, startJobWith, type JobEnv } from "./engine/jobs";
+import { probeJob, readJobs, reapJobs, startJobWith, type JobEnv } from "./engine/jobs";
 
 export const coreRoot = (stateDir: string) => join(stateDir, "core-bundles");
 
@@ -209,6 +209,9 @@ export function publishTick(d: PublisherDeps): string {
   const exec = d.exec ?? realExec;
   const now = (d.now ?? Date.now)();
   const env: JobEnv = { logDir: workDir(d.stateDir), wrap: null, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? homedir(), NODE_OPTIONS: "--max-old-space-size=4096", LANG: "C.UTF-8" }, memoryMax: "6G", max: 1 };
+  // Ended build jobs are marked ended in the job registry first: nothing else reaps it, and a finished build left
+  // "running" there filled the one-job cap, so every later main was refused ("1 jobs are already running").
+  reapJobs(env);
   const st = readPublisher(d.stateDir);
   const head = exec("git", ["-C", d.repo, "rev-parse", "--verify", "refs/heads/main^{commit}"]);
   const main = head.status === 0 ? head.stdout.trim() : "";
