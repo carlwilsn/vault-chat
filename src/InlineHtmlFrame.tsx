@@ -17,7 +17,7 @@ import { usePluginDesired } from "./pluginSupervisorApp";
 import { isNewestEmbed, newestEmbed, registerEmbed, subscribeEmbeds } from "./inlineEmbeds";
 import { changedRev, useChangedFiles } from "./liveReload";
 import { appPageTheme, PAGE_FRAME_ATTR } from "./pageTheme";
-import { embedRelativeImages, joinPagePath, relativeImageRefs, frameHeight, inlineHtmlCollapses, inlineHtmlDocument, inlineHtmlReport, parseFrameHint, parseFrameHintFromHtml, HTML_MAX_H, HTML_MIN_FRAME_H, type FrameHint, type FrameReport } from "./inlineHtml";
+import { embedRelativeImages, joinPagePath, relativeAssetRefs, planPageAssets, pageMediaRequest, assetMime, PAGE_MEDIA_MSG, frameHeight, inlineHtmlCollapses, inlineHtmlDocument, inlineHtmlReport, parseFrameHint, parseFrameHintFromHtml, HTML_MAX_H, HTML_MIN_FRAME_H, type FrameHint, type FrameReport } from "./inlineHtml";
 
 let appStyles: Promise<string> | null = null;
 
@@ -154,7 +154,8 @@ function LiveInlineHtml({ src, alt, sizeHint, placement = "inline", foldInViewer
     const path = viewerPath(src, s.vaultPath);
     return inlineHtmlCollapses(s, samePath(s.currentFile, path) || s.panes.some((p) => samePath(p.file, path)));
   });
-  const [state, setState] = useState<{ key: string; html: string | null; css: string } | null>(null);
+  // `raw`: the file as written (the viewer gets it when media is handed off, it reads the files itself); `media`: too-big video/audio the frame asks for (pageMediaScript).
+  const [state, setState] = useState<{ key: string; html: string | null; css: string; raw?: string | null; media?: Map<string, ArrayLike<number>> } | null>(null);
   const key = JSON.stringify([src, vaultPath, convId]);
   // The page changed under us (an edit saved in the viewer, the agent's write, a box sync): re-read it, once the
   // writes settle. The previous page stays on screen meanwhile and the frame keeps its height, so it is one quiet reload.
@@ -188,26 +189,51 @@ function LiveInlineHtml({ src, alt, sizeHint, placement = "inline", foldInViewer
       ]);
       if (cancelled) return;
       let html = page ? new TextDecoder().decode(new Uint8Array(page.bytes)) : null;
+      const raw = html;
+      const media = new Map<string, ArrayLike<number>>();
       if (html) {
-        // Relative images (a photo viewer's files beside the page) become data: URIs: the frame's CSP loads nothing else.
+        // Relative images, video and audio beside the page: small ones become data: URIs (the frame's CSP loads nothing
+        // else); too-big media is handed to the frame on its request (planPageAssets, the message listener below).
         const dir = cleaned.replace(/[?#].*$/, "").split("/").slice(0, -1).join("/");
-        const imgs = new Map<string, ArrayLike<number>>();
+        const read = new Map<string, ArrayLike<number>>();
         const io = { local: (path: string) => invoke<number[]>("read_binary_file", { path }), box: async () => { const link = await boxLinkFor(vaultPath); return link ? (path: string) => (convId ? fetchBoxFile(link, path, convId) : Promise.resolve(null)) : null; } };
-        await Promise.all(relativeImageRefs(html).map(async (ref) => {
+        const refs = relativeAssetRefs(html);
+        await Promise.all(refs.map(async (ref) => {
           const at = joinPagePath(dir, ref);
           const r = at === null ? null : await readChatImage(at, vaultPath, files, io).catch(() => null);
-          if (r) imgs.set(ref, r.bytes);
+          if (r) read.set(ref, r.bytes);
         }));
         if (cancelled) return;
-        html = embedRelativeImages(html, imgs);
+        // In the page's order, so the budget goes to what comes first.
+        const sizes = new Map(refs.filter((r) => read.has(r)).map((r) => [r, read.get(r)!.length] as const));
+        const plan = planPageAssets(sizes);
+        for (const ref of plan.handoff) media.set(ref, read.get(ref)!);
+        html = embedRelativeImages(html, new Map([...read].filter(([r]) => plan.inline.has(r))), plan.handoff);
       }
       // A failed re-read keeps the page that is showing; an identical one changes nothing.
-      setState((st) => (st && st.key === key && (html === null || st.html === html) ? st : { key, html, css }));
+      setState((st) => (st && st.key === key && (html === null || st.html === html) ? st : { key, html, css, raw, media }));
     })(), wait);
     return () => { cancelled = true; clearTimeout(timer); };
     // `files` only helps a local chat find a moved file; a new index is not a new page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, rev]);
+
+  // The frame's request for a handed-off video/audio file: a copy of its bytes, only to this page's own frame.
+  const media = state?.key === key ? state.media : undefined;
+  useEffect(() => {
+    if (!media?.size) return;
+    const onMsg = (e: MessageEvent) => {
+      const frame = wrapRef.current?.querySelector("iframe");
+      const ref = pageMediaRequest(e.data);
+      if (!frame || e.source !== frame.contentWindow || ref === null) return;
+      const bytes = media.get(ref);
+      if (!bytes) return;
+      const buf = Uint8Array.from(bytes).buffer;
+      frame.contentWindow?.postMessage({ type: PAGE_MEDIA_MSG, ref, buf, mime: assetMime(ref) }, "*", [buf]);
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, [media]);
 
   // A page in the vault (a relative path, no ..) may be a live page (src/liveBridge.ts): it needs a manifest too.
   const pagePath = (() => { const p = localPathFromUrl(src); return insideVault(p, vaultPath) ? p : null; })();
@@ -235,7 +261,7 @@ function LiveInlineHtml({ src, alt, sizeHint, placement = "inline", foldInViewer
   }
   // Chat and viewer both showing this file: one live copy, not two. Closing the file or hiding either side brings the
   // inline page back. Placed in the viewer: always this one row.
-  if (inViewer || placement === "viewer") return <OpenInViewerRow name={name} onOpen={() => openInViewer(src, live.html ?? "", vaultPath)} />;
+  if (inViewer || placement === "viewer") return <OpenInViewerRow name={name} onOpen={() => openInViewer(src, (live.media?.size ? live.raw : live.html) ?? "", vaultPath)} />;
   const inProcess = live.html != null && parseLiveMount(live.html) === "in-process";
   const hint = parseFrameHint(sizeHint) ?? parseFrameHintFromHtml(live.html ?? "");
   // The renderer's size: only when neither the reply nor the page (its meta, or what it reports) asks one.
@@ -264,7 +290,7 @@ function LiveInlineHtml({ src, alt, sizeHint, placement = "inline", foldInViewer
         {!inProcess && <button type="button" onClick={toggleBig} className="inline-flex items-center gap-1 hover:text-foreground" data-el="chat-html-larger" title={big ? "Back to the chat" : "Show the page large"}>
           {big ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />} {big ? "Smaller" : "Larger"}
         </button>}
-        {viewerButton && <button type="button" onClick={() => openInViewer(src, live.html ?? "", vaultPath)} className="inline-flex items-center gap-1 hover:text-foreground" data-el="chat-html-viewer" title="Open in the viewer">
+        {viewerButton && <button type="button" onClick={() => openInViewer(src, (live.media?.size ? live.raw : live.html) ?? "", vaultPath)} className="inline-flex items-center gap-1 hover:text-foreground" data-el="chat-html-viewer" title="Open in the viewer">
           <PanelRight className="h-3 w-3" /> Open in viewer
         </button>}
       </span>

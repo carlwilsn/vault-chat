@@ -22,14 +22,30 @@ export const HTML_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
 
 const IMG_EXT = "png|jpe?g|gif|webp|svg|avif";
-const IMG_MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", avif: "image/avif" };
-// A quoted string or url() that is a relative image path: `<img src="a.png">`, `url(a.png)`, and `photos=["a.jpg","b.jpg"]` in a script.
-const IMG_REF_RE = new RegExp(`(["'(])((?!(?:[a-z][a-z0-9+.-]*:|//|/|#))[^"'()\\s<>\\\\]+\\.(?:${IMG_EXT}))(?=["')])`, "gi");
-/** The page's relative image files (vault-relative once joined to the page's folder), at most 300. */
-export function relativeImageRefs(html: string): string[] {
-  return [...new Set([...html.matchAll(IMG_REF_RE)].map((m) => m[2]!))].slice(0, 300);
+const MEDIA_EXT = "mp4|webm|m4v|mov|mp3|wav|ogg|oga|m4a";
+const ASSET_MIME: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", avif: "image/avif",
+  // .mov/.m4v as mp4: Chromium/WebKit play their H.264 under that type, and refuse video/quicktime in places.
+  mp4: "video/mp4", m4v: "video/mp4", mov: "video/mp4", webm: "video/webm",
+  mp3: "audio/mpeg", wav: "audio/wav", ogg: "audio/ogg", oga: "audio/ogg", m4a: "audio/mp4",
+};
+// A quoted string or url() that is a relative image/video/audio path: `<img src="a.png">`, `<video src="a.mp4">`,
+// `<source src="a.webm">`, `poster="p.jpg"`, `url(a.png)`, and `photos=["a.jpg","b.jpg"]` in a script.
+const ASSET_REF_RE = new RegExp(`(["'(])((?!(?:[a-z][a-z0-9+.-]*:|//|/|#))[^"'()\\s<>\\\\]+\\.(?:${IMG_EXT}|${MEDIA_EXT}))(?=["')])`, "gi");
+const extOf = (ref: string) => ref.split(/[?#]/)[0]!.split(".").pop()!.toLowerCase();
+/** A relative ref that is a video or audio file (not an image). */
+export const isMediaRef = (ref: string): boolean => new RegExp(`^(?:${MEDIA_EXT})$`).test(extOf(ref));
+/** A page asset's MIME type by its extension. */
+export const assetMime = (ref: string): string => ASSET_MIME[extOf(ref)] ?? "application/octet-stream";
+/** The page's relative image, video and audio files (vault-relative once joined to the page's folder), at most 300. */
+export function relativeAssetRefs(html: string): string[] {
+  return [...new Set([...html.matchAll(ASSET_REF_RE)].map((m) => m[2]!))].slice(0, 300);
 }
-/** A page's relative image path joined to its folder; null when it climbs out of the vault. */
+/** The page's relative images only. */
+export function relativeImageRefs(html: string): string[] {
+  return relativeAssetRefs(html).filter((r) => !isMediaRef(r));
+}
+/** A page's relative path joined to its folder; null when it climbs out of the vault. */
 export function joinPagePath(pageDir: string, ref: string): string | null {
   const out: string[] = [];
   for (const seg of `${pageDir}/${ref.split(/[?#]/)[0]}`.split("/")) {
@@ -38,23 +54,65 @@ export function joinPagePath(pageDir: string, ref: string): string | null {
   }
   return (pageDir.startsWith("/") ? "/" : "") + out.join("/");
 }
-/** Inline the page's relative images as data: URIs (the CSP loads nothing else). `loaded`: ref -> bytes. */
-export function embedRelativeImages(html: string, loaded: ReadonlyMap<string, Uint8Array | ArrayLike<number>>): string {
-  if (!loaded.size) return html;
+
+/** An image the page embeds: at most this big (as before). */
+export const IMAGE_INLINE_MAX = 20 * 1024 * 1024;
+/** A video/audio file at most this big is embedded in the page as a data: URI. */
+export const MEDIA_INLINE_MAX = 8 * 1024 * 1024;
+/** All data: URIs of one page together (images first, then media): past it, media goes by hand-off. */
+export const PAGE_INLINE_BUDGET = 24 * 1024 * 1024;
+/** A video/audio file too big to embed is handed to the frame as bytes it turns into its own blob: URL, up to this. */
+export const MEDIA_HANDOFF_MAX = 50 * 1024 * 1024;
+/** What a too-big media ref is rewritten to; the frame's script (pageMediaScript) asks the chat for its bytes. */
+export const MEDIA_HANDOFF_PREFIX = "about:blank#vc-media=";
+/** The postMessage type of that hand-off: frame → chat `{type, ref}`, chat → frame `{type, ref, buf, mime}`. */
+export const PAGE_MEDIA_MSG = "vc-page-media";
+
+/** Which assets a page embeds as data: (`inline`) and which media it gets by hand-off (`handoff`), by their sizes.
+ *  Refs in order of the page; a missing size (not found) is neither. Over every cap: neither (it stays as written). */
+export function planPageAssets(sizes: ReadonlyMap<string, number>, opts: { handoff?: boolean } = {}): { inline: Set<string>; handoff: Set<string> } {
+  const inline = new Set<string>(), handoff = new Set<string>();
+  let used = 0;
+  for (const [ref, n] of sizes) if (!isMediaRef(ref) && n <= IMAGE_INLINE_MAX) { inline.add(ref); used += n; }
+  for (const [ref, n] of sizes) {
+    if (!isMediaRef(ref)) continue;
+    if (n <= MEDIA_INLINE_MAX && used + n <= PAGE_INLINE_BUDGET) { inline.add(ref); used += n; }
+    else if (opts.handoff !== false && n <= MEDIA_HANDOFF_MAX) handoff.add(ref);
+  }
+  return { inline, handoff };
+}
+
+/** A frame's request for a handed-off media file: its ref, or null when it is not one. */
+export function pageMediaRequest(data: unknown): string | null {
+  const d = data as { type?: unknown; ref?: unknown } | null;
+  return d && d.type === PAGE_MEDIA_MSG && typeof d.ref === "string" && d.ref.length < 1000 && isMediaRef(d.ref) ? d.ref : null;
+}
+
+/** Inline the page's relative images and media as data: URIs (the CSP loads nothing else); refs in `handoff` become
+ *  MEDIA_HANDOFF_PREFIX placeholders the frame fills with blob: URLs. `loaded`: ref -> bytes. */
+export function embedRelativeImages(html: string, loaded: ReadonlyMap<string, Uint8Array | ArrayLike<number>>, handoff: ReadonlySet<string> = new Set()): string {
+  if (!loaded.size && !handoff.size) return html;
   const uri = new Map<string, string>();
-  return html.replace(IMG_REF_RE, (all, q: string, ref: string) => {
+  return html.replace(ASSET_REF_RE, (all, q: string, ref: string) => {
+    if (handoff.has(ref)) return q + MEDIA_HANDOFF_PREFIX + encodeURIComponent(ref);
     const bytes = loaded.get(ref);
     if (!bytes) return all;
     let u = uri.get(ref);
     if (!u) {
-      const b = Uint8Array.from(bytes as ArrayLike<number>);
+      const b = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes as ArrayLike<number>);
       let bin = "";
       for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode(...b.subarray(i, i + 0x8000));
-      u = `data:${IMG_MIME[ref.split(/[?#]/)[0]!.split(".").pop()!.toLowerCase()] ?? "application/octet-stream"};base64,${btoa(bin)}`;
+      u = `data:${assetMime(ref)};base64,${btoa(bin)}`;
       uri.set(ref, u);
     }
     return q + u;
   });
+}
+
+/** In a page with handed-off media: each placeholder src/poster asks the chat (its parent) for the file once and gets
+ *  its own blob: URL (the frame's origin; the CSP's media-src/img-src allow blob:). No network, no same-origin. */
+export function pageMediaScript(): string {
+  return `<script>(function(){var P=${JSON.stringify(MEDIA_HANDOFF_PREFIX)},T=${JSON.stringify(PAGE_MEDIA_MSG)},W={},U={};function scan(){var els=document.querySelectorAll('[src^="'+P+'"],[poster^="'+P+'"]');for(var i=0;i<els.length;i++){var el=els[i];["src","poster"].forEach(function(a){var v=el.getAttribute(a);if(!v||v.indexOf(P)!==0)return;var r=decodeURIComponent(v.slice(P.length));if(U[r]){put(el,a,U[r]);return;}el.removeAttribute(a);if(!W[r]){W[r]=[];parent.postMessage({type:T,ref:r},"*");}W[r].push([el,a]);});}}function put(el,a,u){el.setAttribute(a,u);var m=el.tagName==="SOURCE"?el.parentElement:null;if(m&&m.load)m.load();}addEventListener("message",function(e){var d=e.data;if(e.source!==parent||!d||d.type!==T||typeof d.ref!=="string"||!(d.buf instanceof ArrayBuffer))return;var u=U[d.ref]||(U[d.ref]=URL.createObjectURL(new Blob([d.buf],{type:d.mime||""})));(W[d.ref]||[]).forEach(function(x){put(x[0],x[1],u);});W[d.ref]=[];});if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",scan);else scan();if(window.MutationObserver)document.addEventListener("DOMContentLoaded",function(){new MutationObserver(scan).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:["src","poster"]});});})();</script>`;
 }
 
 export const isHtmlSrc = (src: string | undefined | null): boolean => /\.html?(?:[?#].*)?$/i.test(src ?? "");
@@ -138,7 +196,7 @@ export function inlineHtmlDocument(html: string, opts: { css: string; theme?: st
   const styles = `<style data-vc-app-styles>${safeCss}</style><style>html,body{height:auto;overflow:visible}</style>`;
   const body = html.replace(LINK_RE, () => styles);
   const head =
-    `<meta http-equiv="Content-Security-Policy" content="${HTML_CSP}">` + pageThemeHead(opts.pageTheme ?? pageThemeFor(modeOf(opts.theme === "graphite" ? "dark" : opts.theme))) + (opts.live && declaresServices(html) ? liveScript() : "") + sizeScript(opts.theme ?? null);
+    `<meta http-equiv="Content-Security-Policy" content="${HTML_CSP}">` + pageThemeHead(opts.pageTheme ?? pageThemeFor(modeOf(opts.theme === "graphite" ? "dark" : opts.theme))) + (html.includes(MEDIA_HANDOFF_PREFIX) ? pageMediaScript() : "") + (opts.live && declaresServices(html) ? liveScript() : "") + sizeScript(opts.theme ?? null);
   // The CSP first in <head>, after any doctype (a tag before the doctype would put the page in quirks mode).
   const insertAfter = (m: RegExpExecArray, s: string) => body.slice(0, m.index + m[0].length) + s + body.slice(m.index + m[0].length);
   const headTag = /<head\b[^>]*>/i.exec(body);

@@ -58,6 +58,8 @@ export type BuildCtx = {
   now: number;
   /** write a text file (vault-relative) */
   write: (rel: string, text: string) => void;
+  /** write a binary file (vault-relative) */
+  writeBytes: (rel: string, bytes: Uint8Array) => void;
   read: (rel: string) => string | null;
   conversations: (convs: unknown[]) => void;
   history: (commits: SeedCommit[]) => void;

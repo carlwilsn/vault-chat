@@ -18,6 +18,7 @@
 import { readFileSync, statSync } from "node:fs";
 import HOST_JS from "vc:page-link-host";
 import { withinVault } from "./phoneData";
+import { embedPageAssets } from "./pageAssets";
 import { appCss } from "./appCss";
 import { APP_STYLES_HREF, inlineHtmlDocument, isHtmlSrc } from "../src/inlineHtml";
 import { pluginStopped } from "./supervisor";
@@ -65,7 +66,7 @@ export function pageLinkDocument(vault: string, id: string, vaultName: string | 
   }
   const title = id.split("/").pop()!.replace(/\.html?$/i, "");
   // The page as the chat shows it inline, in the device's theme (the host script follows it and tells the page).
-  const page = inlineHtmlDocument(html, { css: appCss(), live: true });
+  const page = inlineHtmlDocument(embedPageAssets(vault, id, html, { handoff: false }), { css: appCss(), live: true });
   const frame = (f: string) => (pluginStopped(vault, id) ? `<template data-vc-page>${f}</template>` : f);
   const shell =
     `<!doctype html><html data-theme="dark"${vaultName ? ` data-vc-vault="${attr(vaultName)}"` : ""}><head><meta charset="utf-8">` +

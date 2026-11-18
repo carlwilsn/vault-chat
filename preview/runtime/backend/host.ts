@@ -486,7 +486,8 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       const m = boxMerge[rel];
       const text = m === undefined ? cur : typeof m === "function" ? m(cur) : m;
       if (text == null) return { status: 404, body: JSON.stringify({ error: "no such file" }) };
-      const bytes = new TextEncoder().encode(text);
+      // Bytes as they are (a video beside a page), unless the box's merge changed the text.
+      const bytes = (m === undefined ? fs.bytesOf(`${laptopVault}/${rel}`) : null) ?? new TextEncoder().encode(text);
       let bin = "";
       for (const b of bytes) bin += String.fromCharCode(b);
       return { status: 200, body: JSON.stringify({ path: rel, size: bytes.length, base64: btoa(bin) }) };

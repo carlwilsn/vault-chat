@@ -52,6 +52,7 @@ function seedVault(vault: string, base: Base, sc: Scenario, t: number): void {
     base: base.name,
     now: t,
     write: (rel, text) => fs.seedText(`${vault}/${rel}`, text, t),
+    writeBytes: (rel, bytes) => fs.seedBytes(`${vault}/${rel}`, bytes, t),
     read: (rel) => fs.readText(`${vault}/${rel}`),
     conversations: (convs) => {
       seededChats.push(...(convs as Record<string, unknown>[]));

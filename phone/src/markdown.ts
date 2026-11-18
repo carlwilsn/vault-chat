@@ -11,7 +11,7 @@ import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown, { type Components } from "react-markdown";
 import { markdownUrlTransform, pluginsFor, prepareMarkdown, splitStreaming, type MdProfile } from "../../src/mdPipeline";
-import { frameHeight, inlineHtmlReport, isHtmlSrc, parseFrameHint } from "../../src/inlineHtml";
+import { assetMime, frameHeight, inlineHtmlReport, isHtmlSrc, joinPagePath, pageMediaRequest, parseFrameHint, PAGE_MEDIA_MSG } from "../../src/inlineHtml";
 import { displayHost, soloWebImages } from "../../src/inlineWeb";
 
 /** Inline .html pages' last reported heights, by frame URL: a re-rendered bubble starts at the fitted size. */
@@ -22,6 +22,22 @@ function listenHtmlHeights(): void {
   if (htmlListener || typeof window === "undefined") return;
   htmlListener = true;
   window.addEventListener("message", (e) => {
+    // A page's too-big video/audio (src/inlineHtml.ts pageMediaScript): fetched from the box beside the page (the
+    // phone's cookie signs it, as it does the page) and handed to that frame as bytes; the frame makes its own blob: URL.
+    const ref = pageMediaRequest(e.data);
+    if (ref !== null && e.source) {
+      const f = Array.from(document.querySelectorAll<HTMLIFrameElement>('iframe[data-el="chat-html"]')).find((x) => x.contentWindow === e.source);
+      const page = f?.getAttribute("data-vc-live");
+      const at = page ? joinPagePath(page.split("/").slice(0, -1).join("/"), ref) : null;
+      if (!f || at === null) return;
+      const u = new URL(f.getAttribute("src") ?? "", location.href);
+      u.searchParams.set("path", at);
+      u.searchParams.delete("inline");
+      void fetch(u.href, { credentials: "same-origin" }).then((res) => (res.ok ? res.arrayBuffer() : null)).then((buf) => {
+        if (buf) f.contentWindow?.postMessage({ type: PAGE_MEDIA_MSG, ref, buf, mime: assetMime(ref) }, "*", [buf]);
+      }).catch(() => {});
+      return;
+    }
     const r = inlineHtmlReport(e.data);
     if (r === null || !e.source) return;
     for (const f of Array.from(document.querySelectorAll<HTMLIFrameElement>('iframe[data-el="chat-html"]'))) {

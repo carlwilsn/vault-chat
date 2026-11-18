@@ -81,6 +81,12 @@ export function seedText(path: string, text: string, mtimeMs?: number): void {
   nodes.set(p, { kind: "file", data, size: data.length, mtimeMs: mtimeMs ?? clock() });
 }
 
+export function seedBytes(path: string, data: Uint8Array, mtimeMs?: number): void {
+  const p = norm(path);
+  ensureDirs(parentOf(p));
+  nodes.set(p, { kind: "file", data, size: data.length, mtimeMs: mtimeMs ?? clock() });
+}
+
 export function seedLazy(path: string, url: string, size: number, mtimeMs?: number): void {
   const p = norm(path);
   ensureDirs(parentOf(p));

@@ -9,6 +9,9 @@ import type * as W from "./world";
 import REAL_SVG from "./visual-real-model.svg?raw";
 // The sample mockup: the app's composer with its real classes, linking the app's stylesheet (src/inlineHtml.ts).
 import SAMPLE_HTML from "./inline-html-sample.html?raw";
+// A page with a video beside it (as Carl's mac-proof page): the chat embeds the clip so it plays in the sandbox.
+import MEDIA_HTML from "./inline-html-media.html?raw";
+import MEDIA_CLIP from "./inline-html-media.mp4?inline";
 import THEME_HTML from "./page-theme.html?raw";
 import LIVE_HTML from "./live-chat-demo.html?raw";
 // A copy of the vault page .vault-chat/visuals/voice-lab.html (tool:voice-lab.*, mic): its calls reach the real lab service.
@@ -177,6 +180,34 @@ export const visualScenarios: Scenario[] = [
     open: [{ chat: true }, { conversation: HTML_CONV }, { sleep: 1200 }],
     surfaces: ["desktop"],
   },
+...([false, true] as const).map((big): Scenario => ({
+    id: big ? "inline-html-media-big" : "inline-html-media",
+    title: big
+      ? "Inline HTML with a 9 MB video — too big to embed, the chat hands the frame its bytes as a blob: URL"
+      : "Inline HTML with a video — a page's relative <video src> plays in the chat (embedded, no network)",
+    group: "Chat",
+    notes: "The page links launch.mp4 beside it. The chat embeds a small file as a data: URI; one over 8 MB is handed to the frame on its request and plays from a blob: URL of the frame's own.",
+    build: (ctx: BuildCtx) => {
+      ctx.write(".vault-chat/local/pages/mac-proof/index.html", MEDIA_HTML);
+      const bin = atob(String(MEDIA_CLIP).split(",")[1] ?? "");
+      const clip = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+      // Padded after the clip's last box: still the same 3 s video, 9 MB on disk.
+      const bytes = big ? new Uint8Array(9 * 1024 * 1024) : clip;
+      if (big) bytes.set(clip);
+      ctx.writeBytes(".vault-chat/local/pages/mac-proof/launch.mp4", bytes);
+      ctx.conversations([{
+        id: "c-inline-html-media", title: "Mac proof", source: "manual", status: "idle", unread: false,
+        createdAt: ctx.now - 5 * MIN, lastActivityAt: ctx.now - MIN,
+        messages: [
+          { role: "user", content: "show me the mac proof" },
+          { role: "assistant", content: "Here it is:\n\n![Mac proof](.vault-chat/local/pages/mac-proof/index.html)\n\nThe video is the launch." },
+        ],
+      }]);
+    },
+    activeConversation: "c-inline-html-media",
+    open: [{ chat: true }, { conversation: "c-inline-html-media" }, { sleep: 1200 }],
+    surfaces: ["desktop"],
+  })),
   {
     id: "inline-web",
     title: "Inline web page — a public page the agent found, live in the reply (a native browser view on the laptop)",

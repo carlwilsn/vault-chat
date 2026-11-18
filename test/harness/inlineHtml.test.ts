@@ -44,6 +44,43 @@ test("an inline page collapses to the note only when chat and the viewer showing
   assert.equal(c({ ...split, popoutOpen: true }, true), true, "chat popped out beside the viewer: note");
 });
 
+test("relative video/audio refs (src, <source>, poster, script) are found and embedded with their media types", async () => {
+  const { relativeAssetRefs, relativeImageRefs, embedRelativeImages, isMediaRef } = await import("../../src/inlineHtml.ts");
+  const html = `<video src="launch.mp4" poster="p.jpg" controls></video><video><source src="clips/a.webm" type="video/webm"></video><audio src='s.mp3'></audio><script>var t=["x.m4a","http://h/y.mp4","/z.wav"]</script><img src="i.png">`;
+  assert.deepEqual(relativeAssetRefs(html).sort(), ["clips/a.webm", "i.png", "launch.mp4", "p.jpg", "s.mp3", "x.m4a"]);
+  assert.deepEqual(relativeImageRefs(html).sort(), ["i.png", "p.jpg"]);
+  assert.ok(isMediaRef("a.MOV") && isMediaRef("b.oga") && isMediaRef("c.wav") && !isMediaRef("d.png"));
+  const out = embedRelativeImages(html, new Map([["launch.mp4", new Uint8Array([1])], ["clips/a.webm", new Uint8Array([2])], ["s.mp3", new Uint8Array([3])], ["x.m4a", new Uint8Array([4])]]));
+  assert.ok(out.includes('<video src="data:video/mp4;base64,AQ=="'));
+  assert.ok(out.includes('<source src="data:video/webm;base64,Ag=="'));
+  assert.ok(out.includes("<audio src='data:audio/mpeg;base64,Aw=='"));
+  assert.ok(out.includes('"data:audio/mp4;base64,BA=="') && out.includes('"http://h/y.mp4"') && out.includes('"/z.wav"') && out.includes('poster="p.jpg"'));
+  assert.ok(HTML_CSP.includes("media-src data: blob:") && HTML_CSP.includes("connect-src 'none'"));
+});
+
+test("media size caps: small media inline within the page budget, big media handed off, over the hand-off cap left alone", async () => {
+  const m = await import("../../src/inlineHtml.ts");
+  const MB = 1024 * 1024;
+  const plan = m.planPageAssets(new Map([["a.png", 3 * MB], ["v1.mp4", 7 * MB], ["v2.mp4", 9 * MB], ["s.mp3", 6 * MB], ["s2.mp3", 7 * MB], ["s3.mp3", 4 * MB], ["huge.mov", 60 * MB], ["big.png", 21 * MB]]));
+  // a.png 3 + v1 7 + s 6 + s2 7 = 23 MB inline; v2 (9) is over the per-file cap and s3 (4) past the budget: hand-off;
+  // huge.mov is over the hand-off cap and big.png over the image cap: neither.
+  assert.deepEqual([...plan.inline].sort(), ["a.png", "s.mp3", "s2.mp3", "v1.mp4"]);
+  assert.deepEqual([...plan.handoff].sort(), ["s3.mp3", "v2.mp4"]);
+  assert.equal(m.MEDIA_INLINE_MAX, 8 * MB);
+  assert.equal(m.PAGE_INLINE_BUDGET, 24 * MB);
+  // Where nobody answers a hand-off (the /p/ link), big media is left as written.
+  assert.equal(m.planPageAssets(new Map([["v2.mp4", 9 * MB]]), { handoff: false }).handoff.size, 0);
+  // Placeholders, the frame's script that asks for them, and the request check.
+  const html = m.embedRelativeImages(`<video src="clips/big.mp4"></video><video><source src='v2.mp4'></video>`, new Map(), new Set(["clips/big.mp4", "v2.mp4"]));
+  assert.ok(html.includes(`src="${m.MEDIA_HANDOFF_PREFIX}clips%2Fbig.mp4"`) && html.includes(`src='${m.MEDIA_HANDOFF_PREFIX}v2.mp4'`));
+  const doc = m.inlineHtmlDocument(`<html><head></head><body>${html}</body></html>`, { css: "" });
+  assert.ok(doc.includes(m.PAGE_MEDIA_MSG) && doc.includes("createObjectURL"));
+  assert.ok(!m.inlineHtmlDocument("<p>no media</p>", { css: "" }).includes("createObjectURL"));
+  assert.equal(m.pageMediaRequest({ type: m.PAGE_MEDIA_MSG, ref: "v2.mp4" }), "v2.mp4");
+  assert.equal(m.pageMediaRequest({ type: m.PAGE_MEDIA_MSG, ref: "secret.json" }), null);
+  assert.equal(m.pageMediaRequest({ type: "other", ref: "v2.mp4" }), null);
+});
+
 test("relative image refs (attribute, script string, url()) become data: URIs; absolute, http and missing ones stay", async () => {
   const { embedRelativeImages, joinPagePath, relativeImageRefs } = await import("../../src/inlineHtml.ts");
   const html = `<img src="a.png"><script>var p=['b/c.jpg',"http://x/d.png","/e.png"];</script><div style="background:url(f.svg)"></div><img src="gone.png">`;
