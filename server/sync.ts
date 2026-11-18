@@ -379,10 +379,12 @@ exit 0
     return r.code !== 0 || r.stdout.trim() !== "";
   }
 
+  /** `--no-verify`: the bare repo is a local path, so no hook has anything to do here, and a pre-push hook a global
+   * git-lfs install once left in .git/hooks (it fails on a local path: "missing protocol") would stop every push. */
   private async pushBox(): Promise<void> {
     const s = this.status;
     try {
-      const r = await runGit(this.vault, ["push", "-q", this.bare, `refs/heads/${this.BRANCH}:refs/heads/${BOX_BRANCH}`], {
+      const r = await runGit(this.vault, ["push", "-q", "--no-verify", this.bare, `refs/heads/${this.BRANCH}:refs/heads/${BOX_BRANCH}`], {
         env: { VC_PUSHER: "box" },
       });
       if (r.code !== 0) throw new Error(`git push ${this.BRANCH === BOX_BRANCH ? BOX_BRANCH : `${this.BRANCH} → ${BOX_BRANCH}`} (exit ${r.code}): ${r.stderr.trim()}`);
