@@ -194,3 +194,26 @@ test("the recorded tour the Mac job runs is a valid steps file, paced, every sur
   for (const want of ["Mod+K", "Mod+L", "Mod+Shift+F", "Mod+M", "chat-popout", "settings-pane", "\"drag\"", "Rename", "noFile", "ask-answer", "composer"]) assert.ok(all.includes(want), `the tour covers ${want}`);
   assert.ok(!/Control\+|Ctrl\+|Meta\+/.test(all), "keys go through Mod, so the same tour is Ctrl on Linux and Cmd on a Mac");
 });
+
+test("a step that never settles fails as hung at its cap; progress names each step as it starts and ends", async () => {
+  const seen: string[] = [];
+  const d = deps({
+    runStep: (s) => ("click" in s ? new Promise(() => {}) : Promise.resolve({ i: 1, action: "wait", ok: true, ms: 1 })),
+    stepCap: () => 30,
+    progress: (i, action, o) => void seen.push(`${i} ${action} ${o ? (o.ok ? "ok" : "FAIL") : "start"}`),
+  });
+  const r = await runSelfTest([{ wait: 1 }, { click: "#modal", label: "pop out" }, { wait: 1 }], d);
+  assert.equal(r.ok, false);
+  assert.equal(r.steps.length, 2);
+  assert.match(r.steps[1]!.error!, /did not finish in 0 s \(hung\)/);
+  assert.deepEqual(seen, ["1 wait start", "1 wait ok", "2 click: pop out start", "2 click: pop out FAIL"]);
+});
+
+test("each step's cap is its own timeout (or wait) plus a minute", async () => {
+  const { stepCapMs } = await import("../../src/selfTest.ts");
+  assert.equal(stepCapMs({ waitFor: "#x", timeout: 30_000 }), 90_000);
+  assert.equal(stepCapMs({ wait: 1000, label: "x" }), 61_000);
+  assert.equal(stepCapMs({ expect: { text: "a", timeout: 90_000 } }), 150_000);
+  assert.equal(stepCapMs({ expect: { health: "server" } }), 150_000);
+  assert.equal(stepCapMs({ click: "#a" }), 70_000);
+});

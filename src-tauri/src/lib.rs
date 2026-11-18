@@ -6250,6 +6250,7 @@ pub fn run() {
             app_ready,
             self_test::selftest_config,
             self_test::selftest_finish,
+            self_test::selftest_progress,
             core_loader::core_status,
             core_loader::core_ready,
             core_loader::core_boot_error,

@@ -166,3 +166,30 @@ test("a self-test launch never checks for updates", () => {
   assert.equal(banner.match(/runCheck\(\)/g)?.length, 2, "runCheck runs only behind the self-test gate (first check, interval)");
   assert.match(read("src/selfTestLaunch.ts"), /invoke<unknown>\("selftest_config"\)/);
 });
+
+test("a hung or runnerless Mac job still yields a readable mac-proof.zip", () => {
+  const wf = yaml.load(read(".github/workflows/ship.yml")) as any;
+  const steps = wf.jobs.build_macos.steps as any[];
+  // Every long step fails on its own clock, well inside the job's.
+  for (const name of [/^Build the \.app/, /^Launch it/, /^Self-test the app/, /^Self-test tour/, /^Package the \.dmg/]) {
+    const s = steps.find((x) => name.test(x.name ?? ""));
+    assert.ok(s && s["timeout-minutes"] > 0 && s["timeout-minutes"] < wf.jobs.build_macos["timeout-minutes"], String(name));
+  }
+  const status = steps.findIndex((s) => /status\.txt/.test(s.name ?? ""));
+  const upload = steps.findIndex((s) => s.uses?.startsWith("actions/upload-artifact"));
+  assert.ok(status >= 0 && status < upload && steps[status].if === "always()");
+  // mac_proof: a missing artifact is not fatal, and the zip says what GitHub saw.
+  const job = wf.jobs.mac_proof;
+  const dl = job.steps.find((s: any) => s.uses?.startsWith("actions/download-artifact"));
+  assert.equal(dl["continue-on-error"], true);
+  const run = job.steps.map((s: any) => s.run ?? "").join("\n");
+  assert.match(run, /mkdir -p mac-proof/);
+  assert.match(run, /never gave this job a macOS runner/);
+  // A Mac job GitHub never ran is re-run once the run is over (cancelled with no runner only).
+  const retry = yaml.load(read(".github/workflows/mac-retry.yml")) as any;
+  assert.deepEqual(retry.on.workflow_run.workflows, [wf.name]);
+  const r = retry.jobs.retry_mac.steps.map((s: any) => s.run).join("\n");
+  assert.match(r, /conclusion" = cancelled \] && \[ "\$\{runner:-0\}" = 0 \]/);
+  assert.match(r, /actions\/jobs\/\$id\/rerun/);
+  assert.doesNotMatch(r, /release upload|workflow run|dispatch/);
+});

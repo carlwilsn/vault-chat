@@ -15,7 +15,7 @@
 //! app is exactly as before.
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 pub const STEPS_VAR: &str = "VC_SELFTEST";
@@ -55,6 +55,25 @@ pub fn plan_from(get: impl Fn(&str) -> Option<String>) -> Option<Plan> {
 static PLAN: OnceLock<Option<Plan>> = OnceLock::new();
 static CONFIG: OnceLock<Config> = OnceLock::new();
 static FINISHED: AtomicBool = AtomicBool::new(false);
+/// The steps reported so far (`selftest_progress`): every finished step's outcome and the one in flight, so a run the
+/// watchdog ends still says which steps passed and where it hung.
+static PROGRESS: Mutex<Progress> = Mutex::new(Progress { done: Vec::new(), current: None });
+
+struct Progress {
+    done: Vec<serde_json::Value>,
+    current: Option<(u64, String)>,
+}
+
+/// The timeout result: the steps that finished, and the step that never did.
+pub fn timeout_result(why: &str, done: &[serde_json::Value], current: Option<&(u64, String)>) -> serde_json::Value {
+    let mut r = failure(&match current {
+        Some((i, action)) => format!("{why}; stuck at step {i} ({action})"),
+        None => why.to_string(),
+    });
+    r["steps"] = serde_json::Value::Array(done.to_vec());
+    r
+}
+
 /// The code the process ends with once a run finished (-1: not finished).
 static EXIT_CODE: AtomicI32 = AtomicI32::new(-1);
 
@@ -149,9 +168,16 @@ pub fn start(app: &tauri::AppHandle) {
             return;
         }
         let why = format!("timed out after {} s: the app never finished its steps", timeout.as_secs());
-        eprintln!("[selftest] {why}");
-        let _ = write_result(&out, &failure(&why));
+        let result = match PROGRESS.lock() {
+            Ok(p) => timeout_result(&why, &p.done, p.current.as_ref()),
+            Err(_) => failure(&why),
+        };
+        eprintln!("[selftest] {}", result["error"].as_str().unwrap_or(&why));
+        let _ = write_result(&out, &result);
         end(&app, 1);
+        // The event loop may be the thing that hung (a modal, a native dialog): never wait on it to exit.
+        std::thread::sleep(Duration::from_secs(10));
+        std::process::exit(1);
     });
 }
 
@@ -162,6 +188,33 @@ pub fn selftest_config(window: tauri::WebviewWindow) -> Option<Config> {
         return None;
     }
     CONFIG.get().cloned()
+}
+
+/// The main window says a step started (`outcome` null) or ended: logged on stdout (the CI job's app.log shows the run
+/// step by step) and kept for the watchdog's result. Ignored outside a self-test.
+#[tauri::command]
+pub fn selftest_progress(window: tauri::WebviewWindow, i: u64, action: String, outcome: Option<serde_json::Value>) {
+    if window.label() != "main" || plan().is_none() {
+        return;
+    }
+    let action: String = action.chars().take(200).collect();
+    let Ok(mut p) = PROGRESS.lock() else { return };
+    match outcome {
+        None => {
+            println!("[selftest] step {i} {action} ...");
+            p.current = Some((i, action));
+        }
+        Some(o) => {
+            let ok = o.get("ok").and_then(|v| v.as_bool()) == Some(true);
+            let ms = o.get("ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            let err = o.get("error").and_then(|v| v.as_str()).unwrap_or("");
+            println!("[selftest] step {i} {action} {} {ms} ms {err}", if ok { "ok" } else { "FAILED" });
+            p.current = None;
+            if p.done.len() < 1000 {
+                p.done.push(o);
+            }
+        }
+    }
 }
 
 /// The main window's outcome: written to the results file, then the app exits
@@ -193,6 +246,16 @@ mod tests {
     fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let m: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         move |k| m.get(k).cloned()
+    }
+
+    #[test]
+    fn a_timeout_says_where_it_hung_and_keeps_the_steps_done() {
+        let done = vec![serde_json::json!({"i": 1, "action": "waitFor", "ok": true, "ms": 5})];
+        let r = timeout_result("timed out after 840 s", &done, Some(&(2, "click: pop out the chat".to_string())));
+        assert_eq!(r["ok"], false);
+        assert_eq!(r["error"], "timed out after 840 s; stuck at step 2 (click: pop out the chat)");
+        assert_eq!(r["steps"].as_array().unwrap().len(), 1);
+        assert_eq!(timeout_result("t", &[], None)["error"], "t");
     }
 
     #[test]

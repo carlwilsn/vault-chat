@@ -146,7 +146,35 @@ export type SelfTestDeps = {
   pace?: number;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  /** Told when a step starts (outcome undefined) and when it ends: the native side logs it and keeps it, so a run
+   * the watchdog has to end still says which steps passed and which one hung. */
+  progress?: (i: number, action: string, outcome?: StepOutcome) => void;
+  /** The hard cap on one step (default: its own timeout + 60 s, see stepCapMs). Tests pass their own. */
+  stepCap?: (s: SelfTestStep) => number;
 };
+
+/** How long one step may take before the run calls it hung: its own timeout (or wait) plus a minute. A step that never
+ * settles (a native dialog, a modal, a window that blocks) then fails with a message instead of holding the run until
+ * the app's watchdog (VC_SELFTEST_TIMEOUT) or the CI job's own timeout kills it with nothing said. */
+export function stepCapMs(raw: SelfTestStep): number {
+  const s = bare(raw) as Record<string, unknown>;
+  const e = s.expect as Record<string, unknown> | undefined;
+  const own = typeof s.timeout === "number" ? s.timeout
+    : typeof s.wait === "number" ? s.wait
+    : e && typeof e.timeout === "number" ? e.timeout
+    : e && "health" in e ? 90_000
+    : 10_000;
+  return own + 60_000;
+}
+
+/** The promise, or a rejection saying the step hung once `ms` pass (the timer is cleared either way). */
+function capped<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const hung = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`the step did not finish in ${Math.round(ms / 1000)} s (hung)`)), ms);
+  });
+  return Promise.race([p, hung]).finally(() => clearTimeout(timer));
+}
 
 const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -161,23 +189,27 @@ export async function runSelfTest(steps: SelfTestStep[], deps: SelfTestDeps): Pr
     const s = bare(raw);
     const t0 = now();
     let r: StepOutcome;
+    deps.progress?.(i, action);
     try {
-      if ("expect" in s) {
-        const note = await expect(s.expect, deps, sleep, now);
-        r = { i, action, ok: true, ms: Math.round(now() - t0), ...(note ? { note } : {}) };
-      } else if ("closeWindow" in s) {
-        if (!deps.closeWindow) throw new Error("no windows to close here");
-        await deps.closeWindow(s.closeWindow);
-        r = { i, action, ok: true, ms: Math.round(now() - t0) };
-      } else if ("shot" in s) {
-        r = { i, action, ok: true, ms: 0, note: "no picture in self-test: the job takes native screenshots outside the app" };
-      } else {
-        r = { ...(await deps.runStep(s)), i, action };
-      }
+      const one = async (): Promise<StepOutcome> => {
+        if ("expect" in s) {
+          const note = await expect(s.expect, deps, sleep, now);
+          return { i, action, ok: true, ms: Math.round(now() - t0), ...(note ? { note } : {}) };
+        }
+        if ("closeWindow" in s) {
+          if (!deps.closeWindow) throw new Error("no windows to close here");
+          await deps.closeWindow(s.closeWindow);
+          return { i, action, ok: true, ms: Math.round(now() - t0) };
+        }
+        if ("shot" in s) return { i, action, ok: true, ms: 0, note: "no picture in self-test: the job takes native screenshots outside the app" };
+        return { ...(await deps.runStep(s)), i, action };
+      };
+      r = await capped(one(), (deps.stepCap ?? stepCapMs)(raw));
     } catch (e) {
       r = { i, action, ok: false, ms: Math.round(now() - t0), error: String((e as Error)?.message ?? e) };
     }
     out.push(r);
+    deps.progress?.(i, action, r);
     console.info(`[selftest] ${i} ${action} ${r.ok ? "ok" : `FAILED: ${r.error}`}`);
     if (!r.ok) break;
     if (deps.pace) await sleep(deps.pace);
@@ -332,6 +364,7 @@ export async function startSelfTestIfAsked(): Promise<void> {
       },
       shows: (css) => !!find(document, css),
       pace: plan.pace,
+      progress: (i, action, outcome) => void invoke("selftest_progress", { i, action, outcome: outcome ?? null }).catch(() => {}),
     });
     await finish(selfTestResult({ ok: r.ok, vault, steps: r.steps, errors, text: visibleText(document), ms: performance.now() - began }));
   } catch (e) {

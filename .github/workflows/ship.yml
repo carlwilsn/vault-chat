@@ -375,11 +375,18 @@ jobs:
   #   continue-on-error keeps a Mac failure to this job alone, so Windows/Linux
   #   ship exactly as before;
   # - its proof (screenshot, launch video, logs) is a workflow artifact.
+  # Every long step has its own timeout-minutes, so a hung step FAILS (and the
+  # steps after it, the status and the upload, still run) instead of the job
+  # timing out with nothing said; status.txt in the proof names each step's
+  # outcome. A job GitHub never gives a macOS runner (arm64 capacity: run
+  # 44313098612 was "not acquired by Runner of type hosted" after 15 min) has
+  # no steps at all: mac_proof then says so in the zip, and mac-retry.yml
+  # re-runs the Mac job once the run is over.
   build_macos:
     needs: prepare
     if: needs.prepare.outputs.has_changes == 'true'
     continue-on-error: true
-    timeout-minutes: 60
+    timeout-minutes: 120
     permissions:
       contents: read
     runs-on: macos-15
@@ -401,24 +408,36 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - run: npm ci
+      - id: npm_ci
+        run: npm ci
+        timeout-minutes: 15
 
       - name: Download Tectonic LaTeX engine
+        id: tectonic
         run: node scripts/download-tectonic.mjs
+        timeout-minutes: 10
 
       - name: Download the Node runtime the app carries
+        id: node_runtime
         run: node scripts/download-node.mjs
+        timeout-minutes: 10
 
       - name: Pack the server the app carries
+        id: pack_server
         run: node scripts/pack-server-into-app.mjs
+        timeout-minutes: 10
 
       # src-tauri/tauri.macos.conf.json is merged in by itself (native traffic
       # lights over the app's own title bar, ad-hoc signature). No updater
       # artifacts, so no signing key is read.
       - name: Build the .app (local only, uploaded nowhere)
+        id: build_app
+        timeout-minutes: 45
         run: npx tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Launch it with a fresh HOME and check its window
+        id: launch
+        timeout-minutes: 6
         shell: bash
         run: |
           set -u
@@ -493,7 +512,9 @@ jobs:
       # to the job's summary. Any variant failing fails this job (and only this
       # job: continue-on-error, in nobody's needs but mac_proof).
       - name: Self-test the app (fresh HOME, path hazards)
+        id: selftest
         if: ${{ !cancelled() }}
+        timeout-minutes: 50
         shell: bash
         run: |
           set +e -u   # every variant runs; the table says which failed
@@ -614,7 +635,9 @@ jobs:
       # (test/selftest/fake-anthropic.mjs) behind the real Claude Code CLI, so no
       # account or key. Per-step results: tour/result.json and tour/steps.md.
       - name: Self-test tour, recorded
+        id: tour
         if: ${{ !cancelled() }}
+        timeout-minutes: 20
         shell: bash
         run: |
           set +e -u
@@ -657,6 +680,11 @@ jobs:
               jq -r 'if .error then "\nerror: \(.error)" else "" end' "$T/result.json"
             else
               echo "| - | no results file | FAIL | - | exit $code |"
+              echo
+              echo "Last steps the app logged:"
+              echo '```'
+              grep '^\[selftest\]' "$T/app.log" | tail -n 8
+              echo '```'
             fi
           } > "$T/steps.md"
           cat "$T/steps.md" | tee -a "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
@@ -667,10 +695,27 @@ jobs:
       # After the launch check, so a Finder-scripting hiccup in the DMG layout
       # never hides whether the app itself runs.
       - name: Package the .dmg (local only, uploaded nowhere)
+        id: dmg
         if: ${{ !cancelled() }}
+        timeout-minutes: 10
         run: |
           npx tauri bundle --bundles dmg --config '{"bundle":{"createUpdaterArtifacts":false}}'
           ls -la src-tauri/target/release/bundle/dmg/ | tee -a "$RUNNER_TEMP/mac-proof/bundles.txt"
+
+      # What each step did, in the proof itself: a failed or timed-out step is
+      # named here even when its own files never got written.
+      - name: Write status.txt (every step's outcome)
+        if: always()
+        shell: bash
+        env:
+          STEPS_JSON: ${{ toJSON(steps) }}
+        run: |
+          OUT="$RUNNER_TEMP/mac-proof"; mkdir -p "$OUT"
+          {
+            echo "build_macos on $(sw_vers -productVersion 2>/dev/null) $(uname -m), runner ${RUNNER_NAME:-?}"
+            echo "$STEPS_JSON" | jq -r 'to_entries[] | "\(.key): \(.value.outcome)"'
+          } > "$OUT/status.txt"
+          cat "$OUT/status.txt"
 
       - name: Upload the proof (screenshot, video, logs)
         if: always()
@@ -763,6 +808,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
+      checks: read
     steps:
       # Every job stands on the tagged child (test/harness/ci-tag-only.test.ts),
       # though this one only uploads.
@@ -770,7 +817,11 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.sha }}
 
+      # A Mac job that failed early, timed out or never got a runner uploads
+      # nothing (or part): the zip is still made, with status.txt saying why.
       - uses: actions/download-artifact@v4
+        id: download
+        continue-on-error: true
         with:
           name: macos-launch-proof
           path: mac-proof
@@ -780,9 +831,31 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.prepare.outputs.version }}
           MAC_RESULT: ${{ needs.build_macos.result }}
+          DOWNLOAD: ${{ steps.download.outcome }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          printf 'version: v%s\nbuild_macos: %s\nrun: %s\n' "$VERSION" "$MAC_RESULT" "$RUN_URL" > mac-proof/job.txt
+          mkdir -p mac-proof
+          printf 'version: v%s\nbuild_macos: %s\nrun: %s (attempt %s)\nartifact: %s\n' "$VERSION" "$MAC_RESULT" "$RUN_URL" "$RUN_ATTEMPT" "$DOWNLOAD" > mac-proof/job.txt
+          # The Mac job as GitHub saw it: runner, steps, annotations (e.g. "not acquired by Runner").
+          JOB=$(gh api "repos/$REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=50" \
+                  --jq '.jobs[] | select(.name == "build_macos")' 2>>mac-proof/job.txt || true)
+          {
+            echo
+            echo "## build_macos (from the GitHub API)"
+            if [ -n "$JOB" ]; then
+              jq -r '"conclusion: \(.conclusion)\nrunner: \(if (.runner_name // "") == "" then "NONE (GitHub never gave this job a macOS runner)" else .runner_name end)\nstarted \(.started_at), completed \(.completed_at)\nsteps:" , (.steps[]? | "  \(.number) \(.name): \(.conclusion)")' <<<"$JOB"
+              gh api "repos/$REPO/check-runs/$(jq -r .id <<<"$JOB")/annotations" --jq '.[] | "annotation (\(.annotation_level)): \(.message)"' 2>&1 || true
+            else
+              echo "(could not read the job)"
+            fi
+            [ "$DOWNLOAD" = success ] || echo "no proof artifact was uploaded: the zip holds only what is said here"
+          } >> mac-proof/job.txt
+          # status.txt is the Mac job's own step list; without it, this says what happened.
+          [ -s mac-proof/status.txt ] || cp mac-proof/job.txt mac-proof/status.txt
+          cat mac-proof/job.txt
           (cd mac-proof && zip -qr ../mac-proof.zip .)
           ls -la mac-proof.zip
           gh release upload "v$VERSION" --repo "${{ github.repository }}" mac-proof.zip --clobber
