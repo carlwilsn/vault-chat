@@ -6,6 +6,7 @@ import { Button } from "./ui";
 import { isRunInBackground } from "./background";
 import { activeRuns } from "./runRegistry";
 import { useStore } from "./store";
+import { isSelfTestLaunch } from "./selfTestLaunch";
 
 type Phase =
   | { kind: "idle" }
@@ -82,11 +83,17 @@ export function UpdateBanner() {
       }
     };
 
-    void runCheck();
-    const timer = window.setInterval(() => void runCheck(), RECHECK_MS);
+    // A self-test launch (CI driving the built app on a fresh machine) never checks: no prompt over its steps, no
+    // download, no relaunch mid-run.
+    let timer: number | undefined;
+    void isSelfTestLaunch().then((selfTest) => {
+      if (cancelled || selfTest) return;
+      void runCheck();
+      timer = window.setInterval(() => void runCheck(), RECHECK_MS);
+    });
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      if (timer !== undefined) clearInterval(timer);
     };
   }, []);
 

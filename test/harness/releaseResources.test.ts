@@ -10,7 +10,9 @@
 // own build steps actually produce.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 
@@ -89,10 +91,78 @@ test("the macOS job checks a build and publishes nothing", () => {
   assert.match(mac["runs-on"], /^macos-/);
   for (const [name, job] of Object.entries<any>(wf.jobs)) {
     const needs = [job.needs ?? []].flat();
-    assert.ok(!needs.includes("build_macos"), `${name} must never wait for the Mac job`);
+    // Only the proof upload (mac_proof, below) follows it, and nothing follows that.
+    if (name !== "mac_proof") assert.ok(!needs.includes("build_macos"), `${name} must never wait for the Mac job`);
+    assert.ok(!needs.includes("mac_proof"), `${name} must never wait for the Mac proof`);
   }
   const text = JSON.stringify(mac);
   assert.doesNotMatch(text, /gh release|tauri-action|TAURI_SIGNING|releaseId|latest\.json/);
   assert.match(text, /createUpdaterArtifacts\\":false/);
   assert.doesNotMatch(read("scripts/build-updater-manifest.mjs"), /darwin/);
+});
+
+test("the macOS job self-tests the app on a fresh HOME and the Mac path hazards, and says so in its summary", () => {
+  const wf = yaml.load(read(".github/workflows/ship.yml")) as any;
+  const steps = wf.jobs.build_macos.steps as { name?: string; run?: string; if?: string }[];
+  const i = steps.findIndex((s) => /Self-test/.test(s.name ?? ""));
+  const launch = steps.findIndex((s) => /^Launch it/.test(s.name ?? ""));
+  assert.ok(i > launch && launch >= 0, "the self-test runs after the launch check");
+  const run = steps[i]!.run!;
+  assert.match(steps[i]!.if ?? "", /!cancelled\(\)/, "it runs even when the launch check failed");
+  assert.match(run, /test\/selftest\/smoke\.json/);
+  assert.match(run, /VC_SELFTEST="\$steps" VC_SELFTEST_OUT=/);
+  for (const v of ["fresh-home", "spaces-unicode", "case-sensitive-apfs"]) assert.match(run, new RegExp(`\\b${v}\\b`), v);
+  assert.match(run, /Case-sensitive APFS/);
+  assert.match(run, /GITHUB_STEP_SUMMARY/);
+  assert.match(run, /\[ "\$failed" = 0 \]\s*$/, "a failing variant fails the (continue-on-error) Mac job");
+  assert.ok(JSON.parse(read("test/selftest/smoke.json")).steps.length > 0);
+  // The proof upload takes the whole proof folder, self-test results with it.
+  const upload = steps.find((s: any) => s.uses?.startsWith("actions/upload-artifact")) as any;
+  assert.equal(upload.if, "always()");
+  assert.match(upload.with.path, /mac-proof$/);
+});
+
+test("the Mac proof is attached to the release as mac-proof.zip, after it is published, and blocks nothing", () => {
+  const wf = yaml.load(read(".github/workflows/ship.yml")) as any;
+  const job = wf.jobs.mac_proof;
+  assert.deepEqual(job.needs, ["prepare", "build_macos", "manifest"]);
+  assert.match(job.if, /^always\(\) && /);
+  assert.equal(job["continue-on-error"], true);
+  assert.equal(job.permissions.contents, "write");
+  const run = (job.steps as { run?: string }[]).map((s) => s.run ?? "").join("\n");
+  // One asset, by that name; never a manifest or an installer.
+  assert.match(run, /gh release upload "v\$VERSION" --repo "\$\{\{ github\.repository \}\}" mac-proof\.zip --clobber/);
+  assert.equal(run.match(/gh release upload/g)?.length, 1);
+  assert.doesNotMatch(run, /latest\.json|\.sig\b|\.dmg|\.app\b|TAURI_SIGNING/);
+});
+
+test("latest.json never names the Mac proof (or anything but the six Windows/Linux installers)", () => {
+  // Run the real manifest builder over a release that carries mac-proof.zip (and even a stray signature for it).
+  const dir = mkdtempSync(join(tmpdir(), "vc-manifest-"));
+  try {
+    const v = "9.9.9";
+    const files = [`vault-chat_${v}_x64-setup.exe`, `vault-chat_${v}_x64_en-US.msi`, `vault-chat_${v}_amd64.AppImage`, `vault-chat_${v}_amd64.deb`];
+    mkdirSync(join(dir, "sigs"));
+    for (const f of [...files, "mac-proof.zip"]) writeFileSync(join(dir, "sigs", `${f}.sig`), `sig-of-${f}`);
+    writeFileSync(join(dir, "mac-proof.zip"), "PK");
+    execFileSync(process.execPath, [join(root, "scripts/build-updater-manifest.mjs")], {
+      cwd: dir,
+      env: { ...process.env, VERSION: v, NOTES: "", GITHUB_REPOSITORY: "o/r" },
+      stdio: "pipe",
+    });
+    const text = readFileSync(join(dir, "latest.json"), "utf8");
+    assert.doesNotMatch(text, /mac-proof|\.zip/);
+    const urls = Object.values<any>(JSON.parse(text).platforms).map((p) => p.url.split("/").pop());
+    assert.deepEqual([...new Set(urls)].sort(), [...files].sort());
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  assert.doesNotMatch(read("scripts/build-updater-manifest.mjs"), /mac-proof|\.zip/);
+});
+
+test("a self-test launch never checks for updates", () => {
+  const banner = read("src/UpdateBanner.tsx");
+  assert.match(banner, /isSelfTestLaunch\(\)\.then\(\(selfTest\) => \{\s*if \(cancelled \|\| selfTest\) return;\s*void runCheck\(\);/);
+  assert.equal(banner.match(/runCheck\(\)/g)?.length, 2, "runCheck runs only behind the self-test gate (first check, interval)");
+  assert.match(read("src/selfTestLaunch.ts"), /invoke<unknown>\("selftest_config"\)/);
 });

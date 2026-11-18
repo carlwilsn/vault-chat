@@ -476,9 +476,100 @@ jobs:
           cat "$OUT/checks.txt"
           [ "$ok" = 1 ]
 
+      # The built app drives itself (VC_SELFTEST, src-tauri/src/self_test.rs) with
+      # test/selftest/smoke.json: its own local server answers, a note is made,
+      # typed into and saved. Once on a fresh HOME as Carl's friend would start,
+      # then with the path hazards a Mac brings: a vault path with spaces and
+      # non-ASCII letters, and a case-sensitive APFS volume. Each variant's
+      # results JSON, app log and a screenshot go into the proof; the table goes
+      # to the job's summary. Any variant failing fails this job (and only this
+      # job: continue-on-error, in nobody's needs but mac_proof).
+      - name: Self-test the app (fresh HOME, path hazards)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set +e -u   # every variant runs; the table says which failed
+          OUT="$RUNNER_TEMP/mac-proof"; ST="$OUT/selftest"; mkdir -p "$ST"
+          APP=$(ls -d src-tauri/target/release/bundle/macos/*.app | head -1)
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          pkill -9 -x "$EXE" 2>/dev/null; sleep 1   # nothing left from the launch check
+          SMOKE="$GITHUB_WORKSPACE/test/selftest/smoke.json"
+          SUM="$OUT/summary.md"
+          {
+            echo "## macOS self-test ($(sw_vers -productVersion), $(uname -m))"
+            echo
+            echo "| variant | result | steps | took | first failure |"
+            echo "|---|---|---|---|---|"
+          } > "$SUM"
+          failed=0
+          row() { echo "| $1 | $2 | $3 | $4 | $5 |" >> "$SUM"; }
+          # run <name> <home> [vault]: one launch in self-test mode, its row in the table.
+          run() {
+            local name=$1 home=$2 vault=${3:-} steps res code pid guard t0
+            steps="$ST/$name.steps.json"; res="$ST/$name.result.json"
+            rm -rf "$home"; mkdir -p "$home"
+            if [ -n "$vault" ]; then jq --arg v "$vault" '{vault: $v} + .' "$SMOKE" > "$steps"; else cp "$SMOKE" "$steps"; fi
+            echo "::group::self-test $name (vault: ${vault:-a fresh temp dir})"
+            t0=$(date +%s)
+            HOME="$home" VC_SELFTEST="$steps" VC_SELFTEST_OUT="$res" VC_SELFTEST_TIMEOUT=420 \
+              "$APP/Contents/MacOS/$EXE" > "$ST/$name.app.log" 2>&1 &
+            pid=$!
+            # (Detached from the step's output, so a leftover sleep never holds the log open.)
+            ( sleep 480; kill -9 "$pid" ) > /dev/null 2>&1 & guard=$!   # the app's own timeout is 420 s
+            ( sleep 25; kill -0 "$pid" && screencapture -x "$ST/$name.png" ) > /dev/null 2>&1 &
+            wait "$pid"; code=$?
+            kill "$guard" 2>/dev/null || true
+            local took="$(( $(date +%s) - t0 )) s"
+            # What the app and its local server wrote under that HOME.
+            find "$home" -maxdepth 7 -type f \( -name '*.log' -o -name '*.jsonl' -o -name '*.json' \) -size -5M -print0 2>/dev/null \
+              | xargs -0 -I{} sh -c 'mkdir -p "$1/$(dirname "${2#$3/}")" && cp "$2" "$1/${2#$3/}"' _ "$ST/$name-home" {} "$home" || true
+            tail -n 40 "$ST/$name.app.log" || true
+            echo "::endgroup::"
+            if [ ! -s "$res" ]; then
+              echo "::error::self-test $name: no results file (exit $code)"
+              row "$name" "FAIL" "-" "$took" "no results file, exit $code"; failed=1; return
+            fi
+            local ok passed total why
+            ok=$(jq -r '.ok' "$res")
+            passed=$(jq '[.steps[] | select(.ok)] | length' "$res")
+            total=$(jq '.steps | length' "$steps")
+            why=$(jq -r '(.error // "") as $e | ([.steps[] | select(.ok | not)][0]) as $s
+                         | if $s then "step \($s.i) \($s.action): \($s.error // "")" else $e end' "$res" \
+                  | tr '\n|' '  ' | cut -c1-240)
+            if [ "$ok" = true ] && [ "$code" = 0 ]; then
+              row "$name" "pass" "$passed/$total" "$took" ""
+            else
+              echo "::error::self-test $name failed: ${why:-exit $code}"
+              row "$name" "FAIL" "$passed/$total" "$took" "${why:-exit $code}"; failed=1
+            fi
+          }
+          run fresh-home "$RUNNER_TEMP/st-home-fresh"
+          run spaces-unicode "$RUNNER_TEMP/st-home-unicode" "$RUNNER_TEMP/My Vault ü日本/Notes Ä é"
+          # A case-sensitive APFS volume (some Macs format so): the vault and HOME on it.
+          IMG="$RUNNER_TEMP/case-sensitive.dmg"; MNT="$RUNNER_TEMP/cs-volume"
+          if hdiutil create -quiet -size 512m -fs "Case-sensitive APFS" -volname VCCaseSensitive "$IMG" \
+             && mkdir -p "$MNT" && hdiutil attach -quiet -nobrowse -mountpoint "$MNT" "$IMG"; then
+            diskutil info "$MNT" | grep -i 'personality' >> "$ST/case-sensitive.volume.txt" || true
+            run case-sensitive-apfs "$MNT/Home" "$MNT/Vault"
+            hdiutil detach -quiet "$MNT" || hdiutil detach -force -quiet "$MNT" || true
+          else
+            row case-sensitive-apfs "skipped" "-" "-" "could not make the disk image"
+          fi
+          {
+            echo
+            echo "Launch check:"
+            echo '```'
+            cat "$OUT/checks.txt" 2>/dev/null || echo "(no launch check)"
+            echo '```'
+          } >> "$SUM"
+          cat "$SUM" >> "$GITHUB_STEP_SUMMARY"
+          cat "$SUM"
+          [ "$failed" = 0 ]
+
       # After the launch check, so a Finder-scripting hiccup in the DMG layout
       # never hides whether the app itself runs.
       - name: Package the .dmg (local only, uploaded nowhere)
+        if: ${{ !cancelled() }}
         run: |
           npx tauri bundle --bundles dmg --config '{"bundle":{"createUpdaterArtifacts":false}}'
           ls -la src-tauri/target/release/bundle/dmg/ | tee -a "$RUNNER_TEMP/mac-proof/bundles.txt"
@@ -554,3 +645,48 @@ jobs:
         run: |
           gh release edit "v${{ needs.prepare.outputs.version }}" \
             --repo "${{ github.repository }}" --draft=false --latest
+
+  # ── The Mac proof where anyone can read it ───────────────────────────────
+  # The workflow artifact needs a GitHub login; the box's gh has none. So the
+  # same proof (screenshots, launch video, checks, self-test results, the
+  # summary table) is zipped and attached to this run's release as
+  # mac-proof.zip, plain anonymous HTTP once the release is published:
+  #   https://github.com/<repo>/releases/download/v<version>/mac-proof.zip
+  # It is no installer: latest.json names only the six Windows/Linux files
+  # (scripts/build-updater-manifest.mjs), the box's updater fetches named
+  # server files, so neither the updater nor any Mac install ever reads it.
+  # It waits for manifest so the upload lands on the published release, runs
+  # whatever the Mac job did (always()), and nothing waits for it.
+  mac_proof:
+    needs: [prepare, build_macos, manifest]
+    if: always() && needs.prepare.outputs.has_changes == 'true' && needs.build_macos.result != 'skipped'
+    continue-on-error: true
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Every job stands on the tagged child (test/harness/ci-tag-only.test.ts),
+      # though this one only uploads.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-launch-proof
+          path: mac-proof
+
+      - name: Attach mac-proof.zip to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          MAC_RESULT: ${{ needs.build_macos.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          printf 'version: v%s\nbuild_macos: %s\nrun: %s\n' "$VERSION" "$MAC_RESULT" "$RUN_URL" > mac-proof/job.txt
+          (cd mac-proof && zip -qr ../mac-proof.zip .)
+          ls -la mac-proof.zip
+          gh release upload "v$VERSION" --repo "${{ github.repository }}" mac-proof.zip --clobber
+          echo "mac-proof.zip: https://github.com/${{ github.repository }}/releases/download/v$VERSION/mac-proof.zip" >> "$GITHUB_STEP_SUMMARY"
+          cat mac-proof/summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
