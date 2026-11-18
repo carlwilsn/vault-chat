@@ -17,6 +17,7 @@ import { subscribeBoxSync, openTailscale, boxSyncNow, type BoxSyncState } from "
 import { openTerminal, subscribeTerminalNote, terminalBoxName, terminalTitle } from "../../terminal";
 import { subscribeTitlebarItems, titlebarItems, type TitlebarItem, type TitlebarSide } from "../../titlebarItems";
 import { closeHidden, openHidden, refreshTree, toggleSelected, unhide, useBar } from "./model";
+import { shortcutHint } from "../../shortcuts";
 
 /** With the chat closed: "1 running" while the agent's background tasks work; a click opens the chat. */
 function TasksRunning({ hidden, onOpen }: { hidden: boolean; onOpen: () => void }) {
@@ -81,7 +82,7 @@ export function Bar() {
         <button
           onClick={toggleLeft}
           className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 ${leftCollapsed ? "text-muted-foreground" : "text-foreground/90"}`}
-          title={`${leftCollapsed ? "Show" : "Hide"} file panel (Ctrl+B)`}
+          title={`${leftCollapsed ? "Show" : "Hide"} file panel (${shortcutHint("view.files")})`}
         >
           <PanelLeft className="h-3.5 w-3.5" />
         </button>
@@ -110,7 +111,7 @@ export function Bar() {
                   ? "bg-accent text-foreground"
                   : "hover:bg-accent/60 text-muted-foreground"
               }`}
-              title="Notes (Ctrl+N to create)"
+              title={`Notes (${shortcutHint("files.note")} to create)`}
             >
               <StickyNote className="h-3.5 w-3.5" />
               {openNotes && (
@@ -139,7 +140,7 @@ export function Bar() {
           title={
             popoutOpen
               ? "Chat is popped out — close the popout window to dock"
-              : `${rightCollapsed ? "Show" : "Hide"} chat panel (Ctrl+Shift+B)`
+              : `${rightCollapsed ? "Show" : "Hide"} chat panel (${shortcutHint("view.chat")})`
           }
         >
           <PanelRight className="h-3.5 w-3.5" />

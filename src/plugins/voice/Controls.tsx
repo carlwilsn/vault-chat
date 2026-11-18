@@ -7,6 +7,7 @@ import { relayedVoiceLevels } from "../../sync";
 import { WaitTracker, calibFrom, renderWaitLine, waitInputs, type WaitCalib } from "../../voiceWaitLine";
 import { askVoiceSignIn, useVoiceSignInAsked } from "../../claudeAuthLive";
 import { ClaudeSignInPrompt, useAiBlocked } from "../../ClaudeCodeSignIn";
+import { shortcutHint } from "../../shortcuts";
 
 const NUM_BARS = 12;
 const LEVEL_DECAY = 0.85;
@@ -65,7 +66,7 @@ export function VoiceCockpit() {
           data-el="voice-waves-mute"
           aria-pressed={muted}
           onClick={() => toggleVoiceMute()}
-          title={muted ? "Muted: nothing is sent. Click (or Ctrl+Shift+M) to talk" : "Listening. Click to mute (Ctrl+Shift+M)"}
+          title={muted ? `Muted: nothing is sent. Click (or ${shortcutHint("voice.mute")}) to talk` : `Listening. Click to mute (${shortcutHint("voice.mute")})`}
           className={`relative flex items-center rounded px-0.5 ${muted ? "opacity-40" : ""}`}
         >
           <VoiceWaves />
@@ -162,7 +163,7 @@ export function VoiceMicGroup() {
         className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 relative z-10 bg-card disabled:opacity-40 ${
           voiceMode ? "text-foreground" : "text-muted-foreground"
         }`}
-        title={voiceMode ? "Voice mode (on) — Ctrl+D to turn off" : "Voice mode (off) — Ctrl+D to turn on"}
+        title={voiceMode ? `Voice mode (on) — ${shortcutHint("voice.toggle")} to turn off` : `Voice mode (off) — ${shortcutHint("voice.toggle")} to turn on`}
       >
         <Mic className="h-3.5 w-3.5" strokeWidth={voiceMode ? 2.5 : 2} />
       </button>
@@ -210,7 +211,7 @@ export function VoiceMuteButton() {
       data-el="voice-mute"
       aria-pressed={muted}
       aria-label={muted ? "Unmute" : "Mute"}
-      title={muted ? "Muted: nothing is sent. Click or Ctrl+Shift+M to talk" : "Mute the mic (Ctrl+Shift+M)"}
+      title={muted ? `Muted: nothing is sent. Click or ${shortcutHint("voice.mute")} to talk` : `Mute the mic (${shortcutHint("voice.mute")})`}
       className={`h-7 px-2.5 gap-1.5 flex items-center rounded-full text-[11px] font-semibold whitespace-nowrap transition-colors ${
         muted ? "bg-red-600 text-white hover:bg-red-700" : "bg-accent/70 text-foreground hover:bg-accent"
       }`}

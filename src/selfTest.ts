@@ -5,9 +5,12 @@
 // steps with the Drive step engine (src/driveSteps.ts) in this window — writable, unlike the Drive copy — and hands
 // the outcome to `selftest_finish`, which writes the results JSON and exits 0 or 1.
 //
-// Steps file: `{"vault"?: "/path", "steps": [...]}` or just the list. Each step is a Drive step
-// (click/hover/type/press/wait/waitFor/scroll), `shot` (a no-op here: native screenshots are taken outside the app,
-// e.g. screencapture on macOS), or one check:
+// Steps file: `{"vault"?: "/path", "pace"?: ms, "steps": [...]}` or just the list. `pace`: a pause after every step,
+// so a recording of the run can be followed (at most 5 s). Each step is a Drive step
+// (click/hover/rightClick/type/press/wait/waitFor/scroll/drag/select), `shot` (a no-op here: native screenshots are
+// taken outside the app, e.g. screencapture on macOS), `{closeWindow: "<label>"}` (closes another window of the app,
+// e.g. the chat popout "chat-popout", as its close button would), or one check. Any step may carry `"label": "…"`, a
+// name for it in the results.
 //   {expect: {health: "server", timeout?}}             the app's local server answers /api/v1/health (default 90 s)
 //   {expect: {text: "…", timeout?}}                     the window shows that text (default 5 s)
 //   {expect: {file: "rel/path", contains?: "…", timeout?}}  that file is on disk in the vault (with that text)
@@ -16,7 +19,10 @@
 //                                                        values (nested objects match in part; "$vault" = the vault)
 //   {expect: {key: "service.x", sha256: "<hex>", timeout?}}  the key store holds a value with that SHA-256 under that
 //                                                        name; only match / no match is ever reported, never the value
-import { checkSteps, runSteps, stepAction, visibleText, type Step, type StepOutcome } from "./driveSteps";
+//   {expect: {noFile: "rel/path", timeout?}}             that file is no longer on disk in the vault
+//   {expect: {gone: "css", timeout?}}                    nothing visible matches that selector (any more)
+//   {expect: {window: "<label>", open: true|false, timeout?}}  the app's window with that label is open / closed
+import { checkSteps, find, runSteps, stepAction, visibleText, type Step, type StepOutcome } from "./driveSteps";
 
 export type Expect =
   | { health: "server"; timeout?: number }
@@ -24,9 +30,12 @@ export type Expect =
   | { file: string; contains?: string; timeout?: number }
   | { notText: string; timeout?: number }
   | { status: Record<string, unknown>; timeout?: number }
-  | { key: string; sha256: string; timeout?: number };
-export type SelfTestStep = Step | { expect: Expect };
-export type SelfTestPlan = { vault?: string; steps: SelfTestStep[] };
+  | { key: string; sha256: string; timeout?: number }
+  | { noFile: string; timeout?: number }
+  | { gone: string; timeout?: number }
+  | { window: string; open: boolean; timeout?: number };
+export type SelfTestStep = (Step | { expect: Expect } | { closeWindow: string }) & { label?: string };
+export type SelfTestPlan = { vault?: string; pace?: number; steps: SelfTestStep[] };
 export type SelfTestConfig = { steps: unknown; out: string; vault: string; tempVault?: boolean };
 export type SelfTestResult = {
   schema: 1;
@@ -46,27 +55,45 @@ const MAX_WAIT_MS = 180_000;
 export function parseSelfTest(raw: unknown): SelfTestPlan | string {
   const obj = Array.isArray(raw) ? { steps: raw } : raw;
   if (!obj || typeof obj !== "object") return "the steps file must be a list of steps or {steps: [...]}";
-  const { steps, vault } = obj as { steps?: unknown; vault?: unknown };
+  const { steps, vault, pace } = obj as { steps?: unknown; vault?: unknown; pace?: unknown };
   if (vault !== undefined && typeof vault !== "string") return "vault must be a path";
+  if (pace !== undefined && !(typeof pace === "number" && pace >= 0 && pace <= 5000)) return "pace is 0-5000 ms";
   if (!Array.isArray(steps) || !steps.length) return "steps must be a non-empty list";
   if (steps.length > SELFTEST_MAX_STEPS) return `at most ${SELFTEST_MAX_STEPS} steps`;
   for (const [i, s] of steps.entries()) {
     const why = checkStep(s);
     if (why) return `step ${i + 1}: ${why}`;
   }
-  return { ...(vault ? { vault } : {}), steps: steps as SelfTestStep[] };
+  return { ...(vault ? { vault } : {}), ...(pace ? { pace } : {}), steps: steps as SelfTestStep[] };
 }
 
-function checkStep(s: unknown): string | null {
-  if (!s || typeof s !== "object") return "not an object";
+/** The step without its label. */
+function bare(s: SelfTestStep): SelfTestStep {
+  if (!("label" in s)) return s;
+  const { label: _label, ...rest } = s;
+  return rest as SelfTestStep;
+}
+
+function checkStep(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return "not an object";
+  const label = (raw as { label?: unknown }).label;
+  if (label !== undefined && !(typeof label === "string" && label.trim())) return "label needs text";
+  const s = bare(raw as SelfTestStep);
+  if ("closeWindow" in s) {
+    if (Object.keys(s).length !== 1) return "closeWindow is a step of its own";
+    return typeof s.closeWindow === "string" && /^[\w-]+$/.test(s.closeWindow) ? null : "closeWindow needs a window label";
+  }
   if ("expect" in s) {
     if (Object.keys(s).length !== 1) return "expect is a step of its own";
     const e = (s as { expect: unknown }).expect;
     if (!e || typeof e !== "object") return "expect needs {health}, {text} or {file}";
     const o = e as Record<string, unknown>;
     if (o.timeout !== undefined && !(typeof o.timeout === "number" && o.timeout > 0 && o.timeout <= MAX_WAIT_MS)) return `timeout is at most ${MAX_WAIT_MS} ms`;
-    const kinds = ["health", "text", "file", "notText", "status", "key"].filter((k) => k in o);
-    if (kinds.length !== 1) return "expect needs exactly one of health, text, file, notText, status, key";
+    const kinds = ["health", "text", "file", "notText", "status", "key", "noFile", "gone", "window"].filter((k) => k in o);
+    if (kinds.length !== 1) return "expect needs exactly one of health, text, file, notText, status, key, noFile, gone, window";
+    if ("gone" in o && !(typeof o.gone === "string" && o.gone.trim())) return "expect.gone needs a CSS selector";
+    if ("window" in o && !(typeof o.window === "string" && /^[\w-]+$/.test(o.window) && typeof o.open === "boolean")) return "expect.window needs a window label and open: true or false";
+    if ("noFile" in o && !(typeof o.noFile === "string" && o.noFile.trim() && !o.noFile.startsWith("/") && !/^[a-z]:/i.test(o.noFile) && !o.noFile.split(/[\\/]/).includes(".."))) return "expect.noFile needs a vault-relative path inside the vault";
     if ("notText" in o && !(typeof o.notText === "string" && o.notText.trim())) return "expect.notText needs text";
     if ("status" in o && !(o.status && typeof o.status === "object" && !Array.isArray(o.status))) return "expect.status needs an object of values";
     if ("key" in o && !(typeof o.key === "string" && o.key.trim() && typeof o.sha256 === "string" && /^[0-9a-f]{64}$/.test(o.sha256))) return "expect.key needs a key name and a sha256 (64 hex digits)";
@@ -85,9 +112,14 @@ function checkStep(s: unknown): string | null {
   return typeof checked === "string" ? checked.replace(/^step 1(: | )/, "") : null;
 }
 
-export function selfTestAction(s: SelfTestStep): string {
-  if ("expect" in s) return `expect ${Object.keys(s.expect).find((k) => k !== "timeout" && k !== "contains" && k !== "sha256")}`;
-  return stepAction(s);
+export function selfTestAction(raw: SelfTestStep): string {
+  const s = bare(raw);
+  const what = "expect" in s
+    ? `expect ${Object.keys(s.expect).find((k) => k !== "timeout" && k !== "contains" && k !== "sha256" && k !== "open")}`
+    : "closeWindow" in s
+      ? "closeWindow"
+      : stepAction(s);
+  return raw.label ? `${what}: ${raw.label}` : what;
 }
 
 /** What a run needs from the app; tests pass their own. */
@@ -105,6 +137,13 @@ export type SelfTestDeps = {
   keyHash?: (name: string) => Promise<string | null>;
   /** What "$vault" in an expected status stands for. */
   vault?: string;
+  /** Whether the app's window with that label is open; closing one. */
+  windowOpen?: (label: string) => Promise<boolean>;
+  closeWindow?: (label: string) => Promise<void>;
+  /** Whether a visible element matches the selector. */
+  shows?: (css: string) => boolean;
+  /** A pause after every step (the plan's pace). */
+  pace?: number;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
 };
@@ -116,15 +155,20 @@ export async function runSelfTest(steps: SelfTestStep[], deps: SelfTestDeps): Pr
   const sleep = deps.sleep ?? realSleep;
   const now = deps.now ?? (() => performance.now());
   const out: StepOutcome[] = [];
-  for (const [n, s] of steps.entries()) {
+  for (const [n, raw] of steps.entries()) {
     const i = n + 1;
-    const action = selfTestAction(s);
+    const action = selfTestAction(raw);
+    const s = bare(raw);
     const t0 = now();
     let r: StepOutcome;
     try {
       if ("expect" in s) {
         const note = await expect(s.expect, deps, sleep, now);
         r = { i, action, ok: true, ms: Math.round(now() - t0), ...(note ? { note } : {}) };
+      } else if ("closeWindow" in s) {
+        if (!deps.closeWindow) throw new Error("no windows to close here");
+        await deps.closeWindow(s.closeWindow);
+        r = { i, action, ok: true, ms: Math.round(now() - t0) };
       } else if ("shot" in s) {
         r = { i, action, ok: true, ms: 0, note: "no picture in self-test: the job takes native screenshots outside the app" };
       } else {
@@ -136,6 +180,7 @@ export async function runSelfTest(steps: SelfTestStep[], deps: SelfTestDeps): Pr
     out.push(r);
     console.info(`[selftest] ${i} ${action} ${r.ok ? "ok" : `FAILED: ${r.error}`}`);
     if (!r.ok) break;
+    if (deps.pace) await sleep(deps.pace);
   }
   return { ok: out.length === steps.length && out.every((r) => r.ok), steps: out };
 }
@@ -161,6 +206,17 @@ async function expect(e: Expect, deps: SelfTestDeps, sleep: (ms: number) => Prom
       const miss = st == null ? "there is no status file yet" : statusMismatch(e.status, st, deps.vault);
       if (!miss) return undefined;
       last = miss;
+    } else if ("noFile" in e) {
+      const body = await deps.readFile(e.noFile).catch(() => null);
+      if (body === null) return undefined;
+      last = `${e.noFile} is still on disk`;
+    } else if ("gone" in e) {
+      if (!(deps.shows ?? (() => false))(e.gone)) return undefined;
+      last = `${e.gone} is still on screen`;
+    } else if ("window" in e) {
+      const open = await (deps.windowOpen ?? (async () => false))(e.window).catch(() => false);
+      if (open === e.open) return undefined;
+      last = `window ${e.window} is ${open ? "open" : "not open"}`;
     } else if ("key" in e) {
       const h = await (deps.keyHash ?? (async () => null))(e.key).catch(() => null);
       if (h === e.sha256) return `the value kept under ${e.key} matches`;
@@ -263,6 +319,19 @@ export async function startSelfTestIfAsked(): Promise<void> {
         return v ? sha256Hex(v) : null;
       },
       vault,
+      windowOpen: async (label) => {
+        const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+        const w = await WebviewWindow.getByLabel(label);
+        return !!w && (await w.isVisible().catch(() => true));
+      },
+      closeWindow: async (label) => {
+        const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+        const w = await WebviewWindow.getByLabel(label);
+        if (!w) throw new Error(`no window ${label} is open`);
+        await w.close();
+      },
+      shows: (css) => !!find(document, css),
+      pace: plan.pace,
     });
     await finish(selfTestResult({ ok: r.ok, vault, steps: r.steps, errors, text: visibleText(document), ms: performance.now() - began }));
   } catch (e) {

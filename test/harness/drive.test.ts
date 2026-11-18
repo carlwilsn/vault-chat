@@ -258,6 +258,15 @@ test("steps and keys are checked; the Drive guard allows reads only; storage is 
   assert.match(String(checkSteps([{ wait: 99999 }])), /wait is/);
   assert.match(String(checkSteps([{ press: "Hyper+Q" }])), /press needs a key/);
   assert.ok(Array.isArray(checkSteps([{ click: { text: "Save" } }, { type: "x" }, { waitFor: "#a", timeout: 100 }, { scroll: 300 }])));
+  // Mod is the platform's mod key: Ctrl here (not a Mac), Cmd on a Mac (src/shortcuts.ts isMod).
+  assert.deepEqual(parseKey("Mod+Shift+F"), { key: "F", code: "KeyF", keyCode: 70, ctrlKey: true, shiftKey: true, altKey: false, metaKey: false });
+  assert.equal(parseKey("Meta+k")!.metaKey, true);
+  // A drag, a right click and a selection, checked like the rest.
+  assert.ok(Array.isArray(checkSteps([{ drag: "[data-tree-path$='/a.md']", to: "[data-el=markdown-area]", at: { x: 0.95, y: 0.5 } }, { rightClick: { text: "a" } }, { select: ".prose", text: "fox" }])));
+  assert.match(String(checkSteps([{ drag: "#a" }])), /drag needs to/);
+  assert.match(String(checkSteps([{ drag: "#a", to: "#b", start: { x: 2, y: 0 } }])), /fractions/);
+  assert.match(String(checkSteps([{ select: "#a", text: " " }])), /select's text/);
+  assert.match(String(checkSteps([{ rightClick: "" }])), /rightClick needs/);
 
   assert.equal(isDriveWindow, false, "a test (or Carl's window) is not the Drive window");
   assert.equal(driveCommandRefusal("write_text_file"), null, "Carl's windows are never refused");

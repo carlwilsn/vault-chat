@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { FileCode2 } from "lucide-react";
 import { PdfView } from "./PdfView";
 import { useStore } from "./store";
+import { shortcutHint } from "./shortcuts";
 
 type CompileResult = { pdf_path: string; log: string };
 
@@ -198,7 +199,7 @@ export function TexView({
         onToggleMode();
       }}
       className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground mr-1"
-      title="Source (Ctrl+E)"
+      title={`Source (${shortcutHint("edit.mode")})`}
     >
       <FileCode2 className="h-3 w-3" />
     </button>

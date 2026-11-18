@@ -13,6 +13,7 @@ import { cn } from "../../lib/utils";
 import { NewProjectForm } from "../../NewProjectForm";
 import { usePlaceOpen } from "../../placeOpen";
 import { chatLevels, useChatLevel } from "./view";
+import { shortcutHint } from "../../shortcuts";
 
 /** Composer focus is owned by ChatPane (the event App.tsx and the popout send too). */
 export const focusComposer = () => window.dispatchEvent(new CustomEvent("vc-focus-composer"));
@@ -92,7 +93,7 @@ export function ChatsSidebarView() {
           <button
             onClick={toggle}
             className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
-            title="Hide (Ctrl+B)"
+            title={`Hide (${shortcutHint("view.files")})`}
           >
             <PanelLeftClose className="h-3.5 w-3.5" />
           </button>

@@ -25,6 +25,7 @@ import { ClaudeSignInPrompt } from "../../ClaudeCodeSignIn";
 import { useFittedPlaceholder } from "../../fitPlaceholder";
 import { useChatGate } from "../../chatGate";
 import { ChatFooterTools } from "../../ChatFooter";
+import { shortcutHint } from "../../shortcuts";
 import {
   addAttached,
   addCapture,
@@ -579,7 +580,7 @@ export function Composer() {
                   disabled={!vaultPath}
                   data-el="composer-voice"
                   className={cn("h-7 w-7 flex items-center justify-center rounded-lg hover:bg-accent/60 hover:text-foreground disabled:opacity-40", voiceMode ? "text-foreground" : "text-muted-foreground")}
-                  title={voiceMode ? "Voice on — Ctrl+D to turn off" : "Voice (Ctrl+D)"}
+                  title={voiceMode ? `Voice on — ${shortcutHint("voice.toggle")} to turn off` : `Voice (${shortcutHint("voice.toggle")})`}
                 >
                   <Mic className="h-3.5 w-3.5" strokeWidth={voiceMode ? 2.5 : 2} />
                 </button>

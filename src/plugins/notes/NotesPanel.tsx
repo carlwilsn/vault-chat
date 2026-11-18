@@ -20,6 +20,7 @@ type NoteAnchorLike = Pick<NoteAnchor, "source_path" | "source_anchor">;
 import { cn } from "../../lib/utils";
 import { MessageSquare } from "lucide-react";
 import { createNotesView, type NotesView } from "./view";
+import { shortcutHint } from "../../shortcuts";
 
 // Slide-in review panel for vault notes. Shows active by default;
 // toggle pill flips to resolved. Click a card → opens the note's
@@ -239,7 +240,7 @@ export function NotesPanel({ host, view: given }: { host: HostApi; view?: NotesV
         <div className="flex-1 overflow-auto">
           {filtered.length === 0 ? (
             <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
-              {query ? "No matches." : filter === "resolved" ? "No resolved notes yet." : "No notes yet. Ctrl+N to capture one."}
+              {query ? "No matches." : filter === "resolved" ? "No resolved notes yet." : `No notes yet. ${shortcutHint("files.note")} to capture one.`}
             </div>
           ) : (
             filtered.map((n) => (

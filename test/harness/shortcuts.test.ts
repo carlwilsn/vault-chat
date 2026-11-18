@@ -9,7 +9,7 @@ import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, relative } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { SHORTCUTS, SUPPRESSED_KEYS, parseChord, hit, chordMatches, cmKey, chordLabel, type Shortcut } from "../../src/shortcuts.ts";
+import { SHORTCUTS, SUPPRESSED_KEYS, parseChord, hit, chordMatches, cmKey, chordLabel, chordText, isMod, monacoKeys, shortcutHint, type Shortcut } from "../../src/shortcuts.ts";
 
 const root = join(import.meta.dirname, "..", "..");
 const all = SHORTCUTS as readonly Shortcut[];
@@ -114,13 +114,65 @@ test("Ctrl+/ (Cmd+/ on a Mac) opens the sheet; typing / does not", () => {
 test("chords match exactly, and translate for the editors and the Mac", () => {
   assert.equal(chordMatches(ev("F", { ctrlKey: true, shiftKey: true }), "Mod+Shift+F"), true);
   assert.equal(chordMatches(ev("f", { ctrlKey: true }), "Mod+Shift+F"), false);
-  assert.equal(chordMatches(ev("d", { metaKey: true }), "Ctrl+D"), false, "Ctrl is the Ctrl key, not Cmd");
+  assert.equal(chordMatches(ev("d", { metaKey: true }), "Ctrl+D", false), false, "off a Mac, Ctrl is the Ctrl key, not the Windows key");
   assert.equal(hit(ev("j", { ctrlKey: true, shiftKey: true }), "view.terminalOther"), true);
   assert.equal(hit(ev("Escape"), "view.close"), true);
   assert.equal(cmKey("edit.inline"), "Mod-k");
   assert.deepEqual(chordLabel("Mod+Shift+F", false), ["Ctrl", "Shift", "F"]);
   assert.deepEqual(chordLabel("Mod+Shift+F", true), ["⌘", "⇧", "F"]);
-  assert.deepEqual(chordLabel("Ctrl+D", true), ["⌃", "D"]);
+  assert.deepEqual(chordLabel("Ctrl+D", true), ["⌘", "D"], "every Ctrl+X is Cmd+X on a Mac");
+  assert.equal(chordText("Mod+Shift+F", false), "Ctrl+Shift+F");
+  assert.equal(chordText("Mod+Shift+F", true), "⌘⇧F");
+  assert.equal(shortcutHint("view.files", false), "Ctrl+B");
+  assert.equal(shortcutHint("voice.toggle", true), "⌘D");
+});
+
+test("on a Mac every app shortcut is Cmd: Ctrl+letter stays the Mac's own text key; elsewhere nothing changes", () => {
+  const mac = true;
+  // Cmd fires the app's shortcuts, Mod and Ctrl chords alike.
+  assert.equal(hit(ev("k", { metaKey: true }), "edit.inline", mac), true);
+  assert.equal(hit(ev("l", { metaKey: true }), "edit.ask", mac), true);
+  assert.equal(hit(ev("F", { metaKey: true, shiftKey: true }), "view.fullscreen", mac), true);
+  assert.equal(hit(ev("d", { metaKey: true }), "voice.toggle", mac), true);
+  assert.equal(hit(ev("M", { metaKey: true, shiftKey: true }), "voice.mute", mac), true);
+  assert.equal(hit(ev("/", { metaKey: true }, "Slash"), "view.shortcuts", mac), true);
+  // Ctrl is not: Ctrl+K/E/B/N/T/D are kill-line, end, back, next line, transpose, delete in every Mac text field.
+  for (const [k, id] of [["k", "edit.inline"], ["l", "edit.ask"], ["e", "edit.mode"], ["b", "view.files"], ["n", "files.note"], ["t", "chat.new"], ["d", "voice.toggle"]] as const) {
+    assert.equal(hit(ev(k, { ctrlKey: true }), id, mac), false, `Ctrl+${k} on a Mac`);
+    assert.equal(hit(ev(k, { ctrlKey: true, metaKey: true }), id, mac), false, `Ctrl+Cmd+${k} on a Mac`);
+  }
+  assert.equal(hit(ev("Escape", { metaKey: true }), "view.close", mac), false);
+  assert.equal(hit(ev("Escape"), "view.close", mac), true);
+  // Option+L types "¬" on a Mac: the physical key decides.
+  assert.equal(hit({ ...ev("¬", { altKey: true }), code: "KeyL" }, "view.theme", mac), true);
+  assert.equal(isMod(ev("k", { metaKey: true }), true), true);
+  assert.equal(isMod(ev("k", { ctrlKey: true }), true), false);
+  // Windows/Linux: exactly as before (Ctrl, or the Windows/Super key for Mod chords).
+  assert.equal(hit(ev("k", { ctrlKey: true }), "edit.inline", false), true);
+  assert.equal(hit(ev("k", { metaKey: true }), "edit.inline", false), true);
+  assert.equal(hit(ev("d", { ctrlKey: true }), "voice.toggle", false), true);
+  assert.equal(isMod(ev("k", { ctrlKey: true }), false), true);
+  // The editors: CodeMirror's Mod and Monaco's CtrlCmd are Cmd on a Mac already; a Ctrl chord becomes them there.
+  assert.equal(cmKey("edit.inline", true), "Mod-k");
+  const monaco = { KeyMod: { CtrlCmd: 2048, WinCtrl: 256, Shift: 1024, Alt: 512 }, KeyCode: { KeyK: 41, KeyD: 34 } };
+  assert.equal(monacoKeys("edit.inline", monaco, true), 2048 | 41);
+  assert.equal(monacoKeys("edit.inline", monaco, false), 2048 | 41);
+});
+
+test("on-screen hints name the platform's keys: no \"Ctrl+\" typed into a label", () => {
+  // Tooltips and visible text get their chord from shortcutHint / chordText (⌘ on a Mac). Words the agent reads
+  // (offer descriptions, prompts, activity lines) may say Ctrl+K: they describe Carl's Windows laptop.
+  const offenders: string[] = [];
+  for (const abs of sources(join(root, "src"))) {
+    const file = relative(root, abs).replace(/\\/g, "/");
+    if (!file.endsWith(".tsx") && file !== "src/terminal.ts") continue;
+    readFileSync(abs, "utf8").split("\n").forEach((line, i) => {
+      const code = line.trim();
+      if (/^(\/\/|\*|\/\*|\{\/\*|")/.test(code) || /description:|throw new Error/.test(code)) return;
+      if (/(title|placeholder|aria-label|label)=\{?["`][^"`]*Ctrl\+/.test(code) || /["`>][^"`<]*\bCtrl\+[A-Z/][^"`<]*["`<]/.test(code)) offenders.push(`${file}:${i + 1}: ${code.slice(0, 120)}`);
+    });
+  }
+  assert.deepEqual(offenders, []);
 });
 
 test("the sheet lists every registry entry", async () => {

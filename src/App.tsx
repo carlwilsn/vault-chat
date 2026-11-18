@@ -25,7 +25,7 @@ import { UpdateBanner } from "./UpdateBanner";
 import { ChangeReady } from "./ChangeReadyNotice";
 import { isDriveWindow } from "./windowKind";
 import { ShortcutSheet } from "./ShortcutSheet";
-import { hit } from "./shortcuts";
+import { hit, isMod } from "./shortcuts";
 import { fileKind } from "./fileKind";
 import type { NoteAnchor } from "./notes";
 import { useStore } from "./store";
@@ -169,7 +169,7 @@ export default function App() {
         setTheme(useStore.getState().theme === "light" ? "graphite" : "light");
         return;
       }
-      const mod = e.ctrlKey || e.metaKey;
+      const mod = isMod(e);
       if (!mod) return;
       // Holding a Ctrl-shortcut auto-repeats the keydown at the OS rate
       // (~30 Hz). Without this guard, Ctrl+B flickers the pane on/off,
@@ -394,7 +394,7 @@ export default function App() {
   // their own contextmenu handlers that preventDefault locally.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const mod = e.ctrlKey || e.metaKey;
+      const mod = isMod(e);
       const k = e.key.toLowerCase();
       if (mod && (k === "f" || k === "g" || k === "r" || k === "p" || k === "s")) {
         e.preventDefault();

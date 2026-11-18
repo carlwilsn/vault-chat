@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "./store";
 import { boxName, readBoxConfig } from "./vaultSync";
 import { boxGet, boxLinkFor } from "./boxChat";
+import { shortcutHint } from "./shortcuts";
 
 export type BoxTarget = { host: string; user: string; path: string };
 
@@ -56,7 +57,7 @@ export function boxTargetFromHealth(boxUrl: string, vaultName: string | null, he
 
 /** The button's tooltip. */
 export function terminalTitle(box: string | null): string {
-  return box ? `Terminal on ${box} (Ctrl+J) · Shift: this laptop` : "Terminal (Ctrl+J)";
+  return box ? `Terminal on ${box} (${shortcutHint("view.terminal")}) · Shift: this laptop` : `Terminal (${shortcutHint("view.terminal")})`;
 }
 
 /** The box's short name for this vault's tooltip, or null (laptop-only). */

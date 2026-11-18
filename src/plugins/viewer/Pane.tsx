@@ -24,7 +24,7 @@ import { noteEditedFile } from "../../commit-controller";
 import { applyDiskContent, pendingBoxText, registerDirty, setDiskChanged, useLiveFiles } from "../../liveReload";
 
 import { flipNthTaskCheckbox, localPathFromUrl } from "../../mdPipeline";
-import { hit } from "../../shortcuts";
+import { hit, shortcutHint } from "../../shortcuts";
 import { NotePre, useNoteSource } from "../../NoteWidget";
 import { registerPane } from "./panes";
 
@@ -667,11 +667,11 @@ export function Pane({ paneId }: Props) {
               title={
                 kind === "tex"
                   ? mode === "view"
-                    ? "Source (Ctrl+E)"
-                    : "Preview PDF (Ctrl+E)"
+                    ? `Source (${shortcutHint("edit.mode")})`
+                    : `Preview PDF (${shortcutHint("edit.mode")})`
                   : mode === "view"
-                    ? "Edit (Ctrl+E)"
-                    : "View (Ctrl+E)"
+                    ? `Edit (${shortcutHint("edit.mode")})`
+                    : `View (${shortcutHint("edit.mode")})`
               }
               draggable={false}
             >

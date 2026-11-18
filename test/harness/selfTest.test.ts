@@ -143,3 +143,54 @@ test("signin.json expects the hash of the token the fake claude prints", async (
   const steps = JSON.parse(fs.readFileSync(path.join(dir, "signin.json"), "utf8")).steps as { expect?: { sha256?: string } }[];
   assert.equal(steps.find((s) => s.expect?.sha256)!.expect!.sha256, await sha256Hex(token));
 });
+
+test("the tour's steps: labels name the results, pace pauses after each, windows and gone things are checked", async () => {
+  const plan = parseSelfTest({ pace: 700, steps: [{ press: "Mod+K", label: "Cmd+K opens the box" }, { closeWindow: "chat-popout" }] });
+  assert.deepEqual(plan, { pace: 700, steps: [{ press: "Mod+K", label: "Cmd+K opens the box" }, { closeWindow: "chat-popout" }] });
+  assert.match(String(parseSelfTest({ pace: 9000, steps: [{ wait: 1 }] })), /pace/);
+  assert.match(String(parseSelfTest([{ closeWindow: "../x" }])), /window label/);
+  assert.match(String(parseSelfTest([{ expect: { window: "chat-popout" } }])), /open: true or false/);
+  assert.match(String(parseSelfTest([{ expect: { noFile: "../a.md" } }])), /inside the vault/);
+  assert.match(String(parseSelfTest([{ wait: 1, label: "" }])), /label needs text/);
+
+  let open = true;
+  const closed: string[] = [];
+  let shown = 2;
+  const d = deps({
+    readFile: async (rel) => (rel === "gone.md" ? null : "x"),
+    windowOpen: async () => open,
+    closeWindow: async (label) => void (closed.push(label), (open = false)),
+    shows: () => --shown > 0,
+    pace: 700,
+  });
+  const r = await runSelfTest(
+    [
+      { expect: { window: "chat-popout", open: true }, label: "popout open" },
+      { closeWindow: "chat-popout" },
+      { expect: { window: "chat-popout", open: false } },
+      { expect: { noFile: "gone.md" } },
+      { expect: { gone: "[data-perf-view=fullscreen]" } },
+      { press: "Mod+Shift+F", label: "fullscreen" },
+    ],
+    d,
+  );
+  assert.equal(r.ok, true, JSON.stringify(r.steps));
+  assert.deepEqual(r.steps.map((s) => s.action), ["expect window: popout open", "closeWindow", "expect window", "expect noFile", "expect gone", "press: fullscreen"]);
+  assert.deepEqual(closed, ["chat-popout"]);
+  assert.deepEqual(d.ran, [{ press: "Mod+Shift+F" }], "the runner gets the step without its label");
+  assert.ok(d.clock.t >= 6 * 700, `paced: ${d.clock.t} ms`);
+
+  const stuck = await runSelfTest([{ expect: { noFile: "a.md", timeout: 500 } }], deps({ readFile: async () => "x" }));
+  assert.match(stuck.steps[0]!.error!, /a.md is still on disk \(waited 500 ms\)/);
+});
+
+test("the recorded tour the Mac job runs is a valid steps file, paced, every surface Carl listed", () => {
+  const raw = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "../selftest/tour.json"), "utf8"));
+  const plan = parseSelfTest(raw);
+  assert.equal(typeof plan, "object", String(plan));
+  const p = plan as Exclude<typeof plan, string>;
+  assert.ok((p.pace ?? 0) >= 500, "steps pause so the recording is watchable");
+  const all = JSON.stringify(p.steps);
+  for (const want of ["Mod+K", "Mod+L", "Mod+Shift+F", "Mod+M", "chat-popout", "settings-pane", "\"drag\"", "Rename", "noFile", "ask-answer", "composer"]) assert.ok(all.includes(want), `the tour covers ${want}`);
+  assert.ok(!/Control\+|Ctrl\+|Meta\+/.test(all), "keys go through Mod, so the same tour is Ctrl on Linux and Cmd on a Mac");
+});

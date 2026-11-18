@@ -8,15 +8,30 @@
 //                                                  pointer + mouse events and a click at the element's centre; focuses it
 //   {hover: ...same}                               pointerover/enter/move
 //   {type: "hello", into?: "css" | {text}}        text into the focused (or given) field, as typing would insert it
-//   {press: "Control+K"}                           keydown/keyup (Enter, Escape, Tab, Backspace, Arrow*, F1-F12, a, ...)
+//   {rightClick: ...same}                          a right-button press and a contextmenu event (the app's own menus)
+//   {press: "Control+K"}                           keydown/keyup (Enter, Escape, Tab, Backspace, Arrow*, F1-F12, a, ...);
+//                                                  "Mod+K" is the platform's mod key: Cmd on a Mac, Ctrl elsewhere
+//   {drag: target, to: target, start?: {x, y}, at?: {x, y}}
+//                                                  a pointer drag (pointer + mouse events, a move per frame) from the
+//                                                  first element to the second; start / at are the points in each
+//                                                  element's box as fractions (default the centre, 0.5/0.5)
+//   {select: target, text?: "words"}              select those words (else all the text) in the element, as a drag
+//                                                  over them would; an editor in it takes the selection as its own
 //   {wait: 500}                                    ms (at most 10 s)
 //   {waitFor: "css" | {text}, timeout?: ms}        until it is on screen (default 5 s, at most 30 s); fails otherwise
 //   {scroll: 600, in?: "css"}                      scroll the given (or the focused element's nearest) scroller
 //   {shot: "name"}                                 a picture of the window (the caller's `shot`)
 export type Target = string | { text: string } | { role: string; name?: string };
+import { IS_MAC } from "./shortcuts";
+
+/** A point inside an element's box, as fractions of its width and height. */
+export type BoxPoint = { x: number; y: number };
 export type Step =
   | { click: Target }
   | { hover: Target }
+  | { rightClick: Target }
+  | { drag: Target; to: Target; start?: BoxPoint; at?: BoxPoint }
+  | { select: Target; text?: string }
   | { type: string; into?: Target }
   | { press: string }
   | { wait: number }
@@ -27,7 +42,7 @@ export type StepOutcome = { i: number; action: string; ok: boolean; ms: number; 
 export type Shot = { name: string; data: string; mimeType: string; width: number; height: number };
 export type StepsResult = { ok: boolean; aborted?: string; steps: StepOutcome[]; errors: string[]; text: string; shots: Shot[]; ms: number };
 
-export const STEP_ACTIONS = ["click", "hover", "type", "press", "wait", "waitFor", "scroll", "shot"] as const;
+export const STEP_ACTIONS = ["click", "hover", "rightClick", "type", "press", "wait", "waitFor", "scroll", "shot", "drag", "select"] as const;
 export const MAX_STEPS = 40;
 export const MAX_SHOTS = 4;
 
@@ -54,7 +69,11 @@ export function checkSteps(raw: unknown): Step[] | string {
     if (acts.length !== 1) return `step ${i + 1} needs exactly one of: ${STEP_ACTIONS.join(", ")}`;
     const o = s as Record<string, unknown>;
     const a = acts[0]!;
-    if ((a === "click" || a === "hover" || a === "waitFor") && !target(o[a])) return `step ${i + 1}: ${a} needs a CSS selector, {text} or {role, name?}`;
+    if ((a === "click" || a === "hover" || a === "rightClick" || a === "waitFor" || a === "drag" || a === "select") && !target(o[a])) return `step ${i + 1}: ${a} needs a CSS selector, {text} or {role, name?}`;
+    if (a === "drag" && !target(o.to)) return `step ${i + 1}: drag needs to: a CSS selector, {text} or {role, name?}`;
+    const frac = (v: unknown) => v === undefined || (!!v && typeof v === "object" && [(v as BoxPoint).x, (v as BoxPoint).y].every((n) => typeof n === "number" && n >= 0 && n <= 1));
+    if (a === "drag" && !(frac(o.start) && frac(o.at))) return `step ${i + 1}: start and at are {x, y} fractions of the element's box (0-1)`;
+    if (a === "select" && o.text !== undefined && !(typeof o.text === "string" && o.text.trim())) return `step ${i + 1}: select's text needs words`;
     if (a === "type" && (typeof o.type !== "string" || o.type.length > 2000)) return `step ${i + 1}: type needs text (at most 2000 characters)`;
     if (a === "type" && o.into !== undefined && !target(o.into)) return `step ${i + 1}: into needs a CSS selector, {text} or {role, name?}`;
     if (a === "press" && (typeof o.press !== "string" || !parseKey(o.press))) return `step ${i + 1}: press needs a key like "Enter" or "Control+K"`;
@@ -100,7 +119,7 @@ export function parseKey(spec: string): Key | null {
     else if (m === "shift") mods.shiftKey = true;
     else if (m === "alt" || m === "option") mods.altKey = true;
     else if (m === "meta" || m === "cmd" || m === "command" || m === "super") mods.metaKey = true;
-    else if (m === "mod") mods.ctrlKey = true; // the laptop is Windows: Mod is Control
+    else if (m === "mod") mods[IS_MAC ? "metaKey" : "ctrlKey"] = true; // the platform's mod key (src/shortcuts.ts isMod)
     else return null;
   }
   const named = NAMED[name.toLowerCase()];
@@ -209,14 +228,14 @@ export function find(doc: Document, t: Target): Element | null {
 
 // ---------------------------------------------------------------- doing things
 
-function centre(el: Element) {
+function centre(el: Element, at: BoxPoint = { x: 0.5, y: 0.5 }) {
   const r = el.getBoundingClientRect();
-  return { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+  return { clientX: r.left + r.width * at.x, clientY: r.top + r.height * at.y };
 }
 
 function pointer(el: Element, type: string, extra: Record<string, unknown> = {}) {
   const view = el.ownerDocument.defaultView!;
-  const init = { bubbles: true, cancelable: true, composed: true, view, button: 0, buttons: type.endsWith("down") ? 1 : 0, ...centre(el), ...extra };
+  const init = { bubbles: true, cancelable: true, composed: true, view, button: 0, buttons: type.endsWith("down") || type.endsWith("move") ? 1 : 0, ...centre(el), ...extra };
   const Ctor = type.startsWith("pointer") && typeof view.PointerEvent === "function" ? view.PointerEvent : type === "click" || type.startsWith("mouse") ? view.MouseEvent : view.MouseEvent;
   el.dispatchEvent(new Ctor(type, type.startsWith("pointer") ? { ...init, pointerId: 1, pointerType: "mouse", isPrimary: true } : init));
 }
@@ -232,6 +251,81 @@ function click(el: Element) {
   pointer(el, "pointerup");
   pointer(el, "mouseup");
   pointer(el, "click", { detail: 1 });
+}
+
+function rightClick(el: Element) {
+  const right = { button: 2, buttons: 2 };
+  pointer(el, "pointerdown", right);
+  pointer(el, "mousedown", right);
+  pointer(el, "pointerup", { button: 2 });
+  pointer(el, "mouseup", { button: 2 });
+  pointer(el, "contextmenu", { button: 2 });
+}
+
+/** A pointer drag from `from` to `to`, one move per frame, each move sent to what is under the pointer then (a drag's
+ *  shield, a drop zone) as a real one is. */
+async function drag(doc: Document, from: Element, to: Element, start?: BoxPoint, at?: BoxPoint, signal?: AbortSignal): Promise<string> {
+  const a = centre(from, start);
+  const b = centre(to, at);
+  const under = (p: { clientX: number; clientY: number }) => doc.elementFromPoint(p.clientX, p.clientY) ?? doc.body;
+  pointer(from, "pointerover", a);
+  pointer(from, "pointerdown", a);
+  pointer(from, "mousedown", a);
+  const moves = 16;
+  for (let i = 1; i <= moves && !signal?.aborted; i++) {
+    const p = { clientX: a.clientX + ((b.clientX - a.clientX) * i) / moves, clientY: a.clientY + ((b.clientY - a.clientY) * i) / moves };
+    const el = under(p);
+    pointer(el, "pointermove", p);
+    pointer(el, "mousemove", p);
+    await sleep(30, signal);
+  }
+  const end = under(b);
+  pointer(end, "pointerup", b);
+  pointer(end, "mouseup", b);
+  await sleep(30, signal);
+  return `(${Math.round(a.clientX)},${Math.round(a.clientY)}) → (${Math.round(b.clientX)},${Math.round(b.clientY)}) on <${end.tagName.toLowerCase()}>`;
+}
+
+/** Select `text` (the first place it occurs; all the text when left out) inside the element. */
+function select(el: Element, text?: string): string {
+  const doc = el.ownerDocument;
+  const view = doc.defaultView!;
+  if (isField(el)) {
+    const i = text ? el.value.indexOf(text) : 0;
+    if (i < 0) throw new Error(`"${text}" is not in the field`);
+    el.focus({ preventScroll: true });
+    el.setSelectionRange(i, text ? i + text.length : el.value.length);
+    return el.value.slice(i, text ? i + text.length : undefined).slice(0, 60);
+  }
+  const range = doc.createRange();
+  if (!text) range.selectNodeContents(el);
+  else {
+    // The text nodes in order, so words that cross an element (bold, a link) are found too.
+    const walker = doc.createTreeWalker(el, view.NodeFilter.SHOW_TEXT);
+    const nodes: Text[] = [];
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n as Text);
+    const whole = nodes.map((n) => n.data).join("");
+    const i = whole.indexOf(text);
+    if (i < 0) throw new Error(`"${text}" is not in that element's text`);
+    const at = (pos: number, end: boolean): [Text, number] => {
+      let off = 0;
+      for (const n of nodes) {
+        if (pos < off + n.data.length || (end && pos === off + n.data.length)) return [n, pos - off];
+        off += n.data.length;
+      }
+      const last = nodes[nodes.length - 1]!;
+      return [last, last.data.length];
+    };
+    range.setStart(...at(i, false));
+    range.setEnd(...at(i + text.length, true));
+  }
+  const editable = (el as HTMLElement).isContentEditable ? (el as HTMLElement) : el.closest<HTMLElement>("[contenteditable=true]");
+  editable?.focus({ preventScroll: true });
+  const sel = view.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+  doc.dispatchEvent(new view.Event("selectionchange"));
+  return (sel?.toString() ?? "").replace(/\s+/g, " ").slice(0, 60);
 }
 
 function hover(el: Element) {
@@ -375,12 +469,23 @@ export async function runSteps(doc: Document, steps: Step[], o: RunOptions = {})
       };
       try {
         const st = s as Record<string, unknown>;
-        if (action === "click" || action === "hover") {
+        if (action === "click" || action === "hover" || action === "rightClick") {
           const el = find(doc, st[action] as Target);
           if (!el) throw new Error(`nothing on screen matches ${describe(st[action] as Target)}`);
           if (action === "click") click(el);
+          else if (action === "rightClick") rightClick(el);
           else hover(el);
           done(true, { note: `<${el.tagName.toLowerCase()}>${((el as HTMLElement).innerText ?? "").trim().slice(0, 60)}` });
+        } else if (action === "drag") {
+          const from = find(doc, st.drag as Target);
+          if (!from) throw new Error(`nothing on screen matches ${describe(st.drag as Target)}`);
+          const to = find(doc, st.to as Target);
+          if (!to) throw new Error(`nothing on screen matches ${describe(st.to as Target)}`);
+          done(true, { note: await drag(doc, from, to, st.start as BoxPoint | undefined, st.at as BoxPoint | undefined, o.signal) });
+        } else if (action === "select") {
+          const el = find(doc, st.select as Target);
+          if (!el) throw new Error(`nothing on screen matches ${describe(st.select as Target)}`);
+          done(true, { note: `"${select(el, st.text as string | undefined)}"` });
         } else if (action === "type") {
           const el = st.into !== undefined ? find(doc, st.into as Target) : focused(doc);
           if (!el) throw new Error(`nothing on screen matches ${describe(st.into as Target)}`);

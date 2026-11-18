@@ -4,9 +4,13 @@
 // sheet cannot go stale. test/harness/shortcuts.test.ts greps the key handlers
 // in src/ and fails on a key that is handled in code but missing here.
 //
-// Chord syntax: modifiers then the key, joined by "+". "Mod" is Ctrl on
-// Windows/Linux and Cmd on a Mac (ctrlKey || metaKey); "Ctrl" is the Ctrl key
-// only, on every platform. A shortcut with several chords lists them all.
+// Chord syntax: modifiers then the key, joined by "+". "Mod" is the platform's
+// mod key (`isMod`): Ctrl on Windows/Linux (ctrlKey || metaKey, as always), Cmd
+// on a Mac (metaKey only: Ctrl+A/E/K/N/B… stay the Mac's own text keys in every
+// field). "Ctrl" is the Ctrl key only on Windows/Linux and Cmd on a Mac too:
+// every app shortcut that is Ctrl+X there is Cmd+X on a Mac. Labels and hints
+// come from `chordText` / `shortcutHint` (⌘ on a Mac, "Ctrl+" elsewhere). A
+// shortcut with several chords lists them all.
 // `files`: where it is handled (the registry test checks each one).
 
 export type ShortcutGroup =
@@ -143,14 +147,27 @@ export function parseChord(chord: string): { mod: boolean; ctrl: boolean; shift:
 function keyIs(e: KeyLike, key: string): boolean {
   if (key === "Esc") return e.key === "Escape";
   if (key === "/") return e.key === "/" || e.code === "Slash";
-  if (key.length === 1) return e.key.toLowerCase() === key.toLowerCase();
+  if (key.length === 1) {
+    if (e.key.toLowerCase() === key.toLowerCase()) return true;
+    // Option+L on a Mac types "¬": the physical key decides there.
+    return e.altKey && /^[a-z]$/i.test(key) && e.code === `Key${key.toUpperCase()}`;
+  }
   return e.key === key;
 }
 
-/** Whether the event is exactly this chord (modifiers included). */
-export function chordMatches(e: KeyLike, chord: string): boolean {
+export const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
+
+/** Whether the platform's mod key is down: Cmd on a Mac, Ctrl (or the Windows/Super key, as always) elsewhere. */
+export function isMod(e: { ctrlKey: boolean; metaKey: boolean }, mac = IS_MAC): boolean {
+  return mac ? e.metaKey && !e.ctrlKey : e.ctrlKey || e.metaKey;
+}
+
+/** Whether the event is exactly this chord (modifiers included). On a Mac both Mod and Ctrl are Cmd. */
+export function chordMatches(e: KeyLike, chord: string, mac = IS_MAC): boolean {
   const c = parseChord(chord);
-  if (c.mod) {
+  if (mac) {
+    if ((c.mod || c.ctrl) !== (e.metaKey && !e.ctrlKey) || (!c.mod && !c.ctrl && e.ctrlKey)) return false;
+  } else if (c.mod) {
     if (!e.ctrlKey && !e.metaKey) return false;
   } else if (e.ctrlKey !== c.ctrl || e.metaKey) return false;
   if (e.shiftKey !== c.shift || e.altKey !== c.alt) return false;
@@ -158,24 +175,22 @@ export function chordMatches(e: KeyLike, chord: string): boolean {
 }
 
 /** Whether the event is one of the shortcut's chords. */
-export function hit(e: KeyLike, id: ShortcutId): boolean {
-  return shortcut(id).keys.some((k) => chordMatches(e, k));
+export function hit(e: KeyLike, id: ShortcutId, mac = IS_MAC): boolean {
+  return shortcut(id).keys.some((k) => chordMatches(e, k, mac));
 }
 
-/** The shortcut's first chord as CodeMirror writes it ("Mod-k"). */
-export function cmKey(id: ShortcutId): string {
+/** The shortcut's first chord as CodeMirror writes it ("Mod-k"; CodeMirror's Mod is Cmd on a Mac). */
+export function cmKey(id: ShortcutId, mac = IS_MAC): string {
   const c = parseChord(shortcut(id).keys[0]!);
-  return [c.mod && "Mod", c.ctrl && "Ctrl", c.alt && "Alt", c.shift && "Shift", c.key.toLowerCase()].filter(Boolean).join("-");
+  return [(c.mod || (mac && c.ctrl)) && "Mod", !mac && c.ctrl && "Ctrl", c.alt && "Alt", c.shift && "Shift", c.key.toLowerCase()].filter(Boolean).join("-");
 }
 
 /** The shortcut's first chord as Monaco's keybinding number. Letters only. */
-export function monacoKeys(id: ShortcutId, m: { KeyMod: { CtrlCmd: number; WinCtrl: number; Shift: number; Alt: number }; KeyCode: Record<string, unknown> }): number {
+export function monacoKeys(id: ShortcutId, m: { KeyMod: { CtrlCmd: number; WinCtrl: number; Shift: number; Alt: number }; KeyCode: Record<string, unknown> }, mac = IS_MAC): number {
   const c = parseChord(shortcut(id).keys[0]!);
   const code = m.KeyCode[`Key${c.key.toUpperCase()}`] as number;
-  return (c.mod ? m.KeyMod.CtrlCmd : 0) | (c.ctrl ? m.KeyMod.WinCtrl : 0) | (c.shift ? m.KeyMod.Shift : 0) | (c.alt ? m.KeyMod.Alt : 0) | code;
+  return (c.mod || (mac && c.ctrl) ? m.KeyMod.CtrlCmd : 0) | (c.ctrl && !mac ? m.KeyMod.WinCtrl : 0) | (c.shift ? m.KeyMod.Shift : 0) | (c.alt ? m.KeyMod.Alt : 0) | code;
 }
-
-export const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
 
 const KEY_NAMES: Record<string, string> = { ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→", " ": "Space", Enter: "Enter", Esc: "Esc", Tab: "Tab" };
 
@@ -183,15 +198,19 @@ const KEY_NAMES: Record<string, string> = { ArrowUp: "↑", ArrowDown: "↓", Ar
 export function chordLabel(chord: string, mac = IS_MAC): string[] {
   const c = parseChord(chord);
   const caps: string[] = [];
-  if (c.ctrl) caps.push(mac ? "⌃" : "Ctrl");
-  if (c.mod) caps.push(mac ? "⌘" : "Ctrl");
+  if (c.ctrl || c.mod) caps.push(mac ? "⌘" : "Ctrl");
   if (c.alt) caps.push(mac ? "⌥" : "Alt");
   if (c.shift) caps.push(mac ? "⇧" : "Shift");
   caps.push(KEY_NAMES[c.key] ?? (c.key.length === 1 ? c.key.toUpperCase() : c.key));
   return caps;
 }
 
-/** The chord as one string, for tooltips: "Ctrl+Shift+F" / "⌘⇧F". */
+/** The chord as one string, for tooltips and hints: "Ctrl+Shift+F" / "⌘⇧F". */
 export function chordText(chord: string, mac = IS_MAC): string {
   return chordLabel(chord, mac).join(mac ? "" : "+");
+}
+
+/** A shortcut's first chord as a hint for this platform: shortcutHint("view.files") is "Ctrl+B" / "⌘B". */
+export function shortcutHint(id: ShortcutId, mac = IS_MAC): string {
+  return chordText(shortcut(id).keys[0]!, mac);
 }

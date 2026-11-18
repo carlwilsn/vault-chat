@@ -15,6 +15,7 @@ import { usePluginDesired } from "./pluginSupervisorApp";
 import { toggleVoice, toggleVoiceMute } from "./voiceCall";
 import { isPopout } from "./windowKind";
 import * as builtin from "./plugins/voice/Controls";
+import { shortcutHint } from "./shortcuts";
 
 export type VoicePartName = "cockpit" | "mic" | "mute" | "inlineWaves";
 export type VoicePartSet = Partial<Record<VoicePartName, ComponentType>>;
@@ -116,7 +117,7 @@ function PlainMic() {
       data-el="voice-mic"
       data-plain="1"
       className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 disabled:opacity-40 ${voiceMode ? "text-foreground" : "text-muted-foreground"}`}
-      title={voiceMode ? "Voice mode (on) — Ctrl+D to turn off" : "Voice mode (off) — Ctrl+D to turn on"}
+      title={voiceMode ? `Voice mode (on) — ${shortcutHint("voice.toggle")} to turn off` : `Voice mode (off) — ${shortcutHint("voice.toggle")} to turn on`}
     >
       <Mic className="h-3.5 w-3.5" strokeWidth={voiceMode ? 2.5 : 2} />
     </button>
@@ -133,7 +134,7 @@ function PlainMute() {
       data-el="voice-mute"
       data-plain="1"
       aria-pressed={muted}
-      title={muted ? "Muted: click or Ctrl+Shift+M to talk" : "Mute the mic (Ctrl+Shift+M)"}
+      title={muted ? `Muted: click or ${shortcutHint("voice.mute")} to talk` : `Mute the mic (${shortcutHint("voice.mute")})`}
       className={`h-7 px-2.5 gap-1.5 flex items-center rounded-full text-[11px] font-semibold ${muted ? "bg-red-600 text-white" : "bg-accent/70 text-foreground"}`}
     >
       {muted ? <MicOff className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}

@@ -11,6 +11,7 @@ import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
 import { placeModule } from "./presetApp";
 import * as askPlugin from "./plugins/ask";
 import { AskPrompt, type AskPromptProps } from "./plugins/ask/Prompt";
+import { shortcutHint } from "./shortcuts";
 
 // The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
 placeModule(ASK_PLUGIN, () => askPlugin.prompt, "prompt");
@@ -36,7 +37,7 @@ export function AskFallback({ info, props }: { info: PluginFallbackInfo; props: 
       className="fixed z-50 w-[360px] rounded-lg border border-border bg-popover px-3 py-2 shadow-xl text-[12.5px] flex items-center gap-2"
       style={{ left: Math.max(8, Math.min(a.left, window.innerWidth - 368)), top: Math.max(8, Math.min(a.bottom + 6, window.innerHeight - 60)) }}
     >
-      <span className="flex-1 min-w-0 truncate text-muted-foreground" title={info.error ?? ""}>The Ctrl+K box stopped.</span>
+      <span className="flex-1 min-w-0 truncate text-muted-foreground" title={info.error ?? ""}>The {shortcutHint("edit.inline")} box stopped.</span>
       <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
         Reload
       </button>

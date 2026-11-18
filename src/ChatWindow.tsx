@@ -5,7 +5,7 @@ import { applyHljsTheme } from "./hljsTheme";
 import { useGlobalAnchorClickHandler } from "./linkNav";
 import { dispatchChatAction } from "./sync";
 import { ShortcutSheet } from "./ShortcutSheet";
-import { hit } from "./shortcuts";
+import { hit, isMod } from "./shortcuts";
 
 /**
  * The chat popout window: the fullscreen chat itself (FullscreenChat.tsx), with
@@ -27,7 +27,7 @@ export function ChatWindow() {
   // leave here, and the webview's own Ctrl+F/G/R/P/S/F5 stay off.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const mod = e.ctrlKey || e.metaKey;
+      const mod = isMod(e);
       const k = e.key.toLowerCase();
       if (e.key === "F5") {
         e.preventDefault();

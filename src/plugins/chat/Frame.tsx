@@ -12,6 +12,7 @@ import { ChatBarSlot } from "../../ChatHeader";
 import { WindowControls } from "../../WindowControls";
 import { useStore } from "../../store";
 import { isPopout } from "../../windowKind";
+import { shortcutHint } from "../../shortcuts";
 
 export function Frame() {
   const chatSidebarOpen = useStore((s) => s.chatSidebarOpen);
@@ -25,7 +26,7 @@ export function Frame() {
         <div
           data-tauri-drag-region
           className="h-9 shrink-0 flex items-center relative select-none"
-          title={isPopout ? "Drag to move window" : "Drag to move window — Ctrl+Shift+F to exit fullscreen chat"}
+          title={isPopout ? "Drag to move window" : `Drag to move window — ${shortcutHint("view.fullscreen")} to exit fullscreen chat`}
         >
           <div className="px-2 flex items-center relative z-10">
             {!chatSidebarOpen && (
@@ -33,7 +34,7 @@ export function Frame() {
                 onClick={toggleChatSidebar}
                 data-el="chats-sidebar-open"
                 className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
-                title="Show chats (Ctrl+B)"
+                title={`Show chats (${shortcutHint("view.files")})`}
               >
                 <PanelLeftOpen className="h-3.5 w-3.5" />
               </button>

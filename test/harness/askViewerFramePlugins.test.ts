@@ -309,5 +309,5 @@ test("live copies of the viewer and the chat build with the new parts", async ()
   assert.match(v.code, /Keep mine/, "the pane is the copy's own");
   const c = await buildLiveCopy("chat");
   assert.ok(c.shared.includes("src/ChatPane"), "the frame mounts the app's pane");
-  assert.match(c.code, /Show chats \(Ctrl\+B\)/, "the frame is the copy's own");
+  assert.match(c.code, /Show chats \(\$\{/, "the frame is the copy's own");
 });

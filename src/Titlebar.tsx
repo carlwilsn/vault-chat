@@ -17,6 +17,7 @@ import { VaultPicker } from "./VaultPicker";
 import { WindowControls } from "./WindowControls";
 import * as titlebarPlugin from "./plugins/titlebar";
 import { Bar } from "./plugins/titlebar/Bar";
+import { shortcutHint } from "./shortcuts";
 
 // The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
 placeModule(TITLEBAR_PLUGIN, () => titlebarPlugin);
@@ -41,7 +42,7 @@ export function TitlebarFallback({ info }: { info: PluginFallbackInfo }) {
   return (
     <div data-tauri-drag-region data-el="titlebar-fallback" className="h-9 flex items-center bg-card border-b border-border select-none shrink-0 relative">
       <div className="flex items-center gap-1 px-2" style={isMac ? { paddingLeft: 76 } : undefined}>
-        <button onClick={toggleLeft} className={`${BTN} ${leftCollapsed ? "text-muted-foreground" : "text-foreground/90"}`} title={`${leftCollapsed ? "Show" : "Hide"} file panel (Ctrl+B)`}>
+        <button onClick={toggleLeft} className={`${BTN} ${leftCollapsed ? "text-muted-foreground" : "text-foreground/90"}`} title={`${leftCollapsed ? "Show" : "Hide"} file panel (${shortcutHint("view.files")})`}>
           <PanelLeft className="h-3.5 w-3.5" />
         </button>
         <VaultPicker />
@@ -62,7 +63,7 @@ export function TitlebarFallback({ info }: { info: PluginFallbackInfo }) {
           onClick={toggleRight}
           disabled={popoutOpen}
           className={`${BTN} mr-1 disabled:opacity-40 disabled:cursor-not-allowed ${rightCollapsed ? "text-muted-foreground" : "text-foreground/90"}`}
-          title={popoutOpen ? "Chat is popped out — close the popout window to dock" : `${rightCollapsed ? "Show" : "Hide"} chat panel (Ctrl+Shift+B)`}
+          title={popoutOpen ? "Chat is popped out — close the popout window to dock" : `${rightCollapsed ? "Show" : "Hide"} chat panel (${shortcutHint("view.chat")})`}
         >
           <PanelRight className="h-3.5 w-3.5" />
         </button>

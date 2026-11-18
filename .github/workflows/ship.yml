@@ -379,7 +379,7 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.has_changes == 'true'
     continue-on-error: true
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
     runs-on: macos-15
@@ -604,6 +604,65 @@ jobs:
           cat "$SUM" >> "$GITHUB_STEP_SUMMARY"
           cat "$SUM"
           [ "$failed" = 0 ]
+
+      # The full tour, recorded (tour.mov in the proof): test/selftest/tour.json
+      # drives every surface with the platform's keys (Mod = Cmd here, so these
+      # are the Cmd shortcuts): file tree create / rename / delete, Cmd+L ask,
+      # Cmd+K edit, two files split side by side, a PDF and a marquee box, a chat
+      # message and its streamed reply, full-screen chat in and out, the pop-out
+      # window opened and closed, Settings. The model is a local fake
+      # (test/selftest/fake-anthropic.mjs) behind the real Claude Code CLI, so no
+      # account or key. Per-step results: tour/result.json and tour/steps.md.
+      - name: Self-test tour, recorded
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set +e -u
+          OUT="$RUNNER_TEMP/mac-proof"; T="$OUT/tour"; mkdir -p "$T"
+          APP=$(ls -d src-tauri/target/release/bundle/macos/*.app | head -1)
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          pkill -9 -x "$EXE" 2>/dev/null; sleep 1
+          HOME_T="$RUNNER_TEMP/tour-home"; VAULT="$RUNNER_TEMP/Tour Vault"
+          rm -rf "$HOME_T" "$VAULT"; mkdir -p "$HOME_T"; cp -R test/selftest/tour-vault "$VAULT"
+          jq --arg v "$VAULT" '{vault: $v} + .' test/selftest/tour.json > "$T/steps.json"
+          CLI="$GITHUB_WORKSPACE/node_modules/@anthropic-ai/claude-agent-sdk-darwin-$( [ "$(uname -m)" = arm64 ] && echo arm64 || echo x64 )/claude"
+          "$CLI" --version > "$T/claude-version.txt" 2>&1 || echo "::warning::the Claude Code CLI did not run: $(cat "$T/claude-version.txt")"
+          node test/selftest/fake-anthropic.mjs 18765 "$T/fake-api.log" > "$T/fake-api.out" 2>&1 & FAKE=$!
+          sleep 1
+          screencapture -v -V 900 -x "$OUT/tour.mov" > "$T/video.log" 2>&1 & REC=$!
+          sleep 2
+          t0=$(date +%s)
+          HOME="$HOME_T" VC_SELFTEST="$T/steps.json" VC_SELFTEST_OUT="$T/result.json" VC_SELFTEST_TIMEOUT=840 \
+            ANTHROPIC_BASE_URL=http://127.0.0.1:18765 ANTHROPIC_API_KEY=sk-ant-not-a-real-key VC_CLAUDE_BIN="$CLI" \
+            VC_TITLE_MODEL=off VC_AUTO_TITLE=off \
+            "$APP/Contents/MacOS/$EXE" > "$T/app.log" 2>&1 & PID=$!
+          ( sleep 900; kill -9 "$PID" ) > /dev/null 2>&1 & GUARD=$!
+          wait "$PID"; code=$?
+          kill "$GUARD" 2>/dev/null
+          sleep 2; kill -INT "$REC" 2>/dev/null
+          for _ in $(seq 1 30); do kill -0 "$REC" 2>/dev/null || break; sleep 1; done
+          kill -9 "$REC" "$FAKE" 2>/dev/null
+          took=$(( $(date +%s) - t0 ))
+          find "$HOME_T" -maxdepth 7 -type f \( -name '*.log' -o -name '*.jsonl' -o -name '*.json' \) -size -5M -print0 2>/dev/null \
+            | xargs -0 -I{} sh -c 'mkdir -p "$1/$(dirname "${2#$3/}")" && cp "$2" "$1/${2#$3/}"' _ "$T/home" {} "$HOME_T" || true
+          ls -la "$OUT/tour.mov" >> "$T/video.log" 2>&1
+          {
+            echo
+            echo "## Recorded tour (tour.mov, ${took} s, exit $code)"
+            echo
+            echo "| # | step | result | ms | note |"
+            echo "|---|---|---|---|---|"
+            if [ -s "$T/result.json" ]; then
+              jq -r '.steps[] | "| \(.i) | \(.action) | \(if .ok then "pass" else "FAIL" end) | \(.ms) | \((.error // .note // "") | gsub("[|\\n]"; " ") | .[0:120]) |"' "$T/result.json"
+              jq -r 'if .error then "\nerror: \(.error)" else "" end' "$T/result.json"
+            else
+              echo "| - | no results file | FAIL | - | exit $code |"
+            fi
+          } > "$T/steps.md"
+          cat "$T/steps.md" | tee -a "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          tail -n 40 "$T/app.log"
+          [ -s "$T/result.json" ] && [ "$(jq -r .ok "$T/result.json")" = true ] && [ "$code" = 0 ] \
+            || { echo "::error::the recorded tour failed (see tour/steps.md)"; exit 1; }
 
       # After the launch check, so a Finder-scripting hiccup in the DMG layout
       # never hides whether the app itself runs.

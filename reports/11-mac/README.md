@@ -326,3 +326,24 @@ has a key). On the box it runs from server/voicePipeline.ts; the Mac has no mana
 - **Traffic lights**: measured 3.5 px low on the real Mac shot (button centre 17.5, bar 0–28 → centre 14);
   `trafficLightPosition.y` 16 → 12. `scripts/macos-traffic-lights.py` (pure Python) measures window.png in
   build_macos and fails over 1 px; numbers go to checks.txt. The fresh-HOME self-test is recorded as `selftest.mov`.
+## mac-6: Cmd shortcuts on a Mac, the recorded full tour
+
+- **Cmd, not Ctrl, on a Mac** (`src/shortcuts.ts`): `isMod(e)` is the platform's mod key (Cmd on a Mac, metaKey
+  only; Ctrl or the Windows key elsewhere, as before) and `chordMatches` treats both `Mod` and `Ctrl` chords as Cmd
+  on a Mac, so Ctrl+D voice and Ctrl+Shift+M mute are Cmd+D / Cmd+Shift+M there and Ctrl+A/E/K/N/B/T stay the Mac's
+  own text-editing keys in every field. Option+letter chords match the physical key (Option+L types "¬"). The raw
+  `ctrlKey || metaKey` checks (App.tsx, ChatWindow.tsx, laptopPerf.ts) use `isMod`. CodeMirror's `Mod` and Monaco's
+  `CtrlCmd` were already Cmd on a Mac; `cmKey` / `monacoKeys` map a Ctrl chord to them there. Cmd+C/V/Z/A stay
+  native (no app chord uses them). Hints: `shortcutHint(id)` / `chordText` ("Ctrl+B" / "⌘B") in every tooltip and
+  on-screen line that said "Ctrl+…" (a harness test fails on a new hard-coded one). Windows/Linux unchanged.
+- **The tour** (`test/selftest/tour.json`, vault `test/selftest/tour-vault`): file tree create / rename / delete,
+  Mod+K edit on a selection in the editor, Mod+E, Mod+L ask on a selection in the view, a second file dragged to
+  the right edge (split), the PDF and a Mod+M marquee box (it opens the ask box), Mod+Shift+B the chat panel, a chat
+  message and its reply streaming in, Mod+Shift+F full-screen chat in and out, the pop-out window opened and closed,
+  Settings. `pace: 700` ms after every step so the recording can be followed. New step kinds: `drag` (pointer drag,
+  a move per frame, points as box fractions), `rightClick`, `select` (DOM range; CodeMirror takes it), `Mod` in
+  `press` = the platform key; self-test only: `label`, `pace`, `closeWindow`, `expect {noFile | gone | window}`.
+  The model is `test/selftest/fake-anthropic.mjs` (plain Node, streams a word at a time) behind the real Claude Code
+  CLI (`VC_CLAUDE_BIN` = the SDK's darwin binary, `ANTHROPIC_BASE_URL` + a made-up `ANTHROPIC_API_KEY`).
+  build_macos runs it under `screencapture -v` → `tour.mov` + `tour/steps.md` + `tour/result.json` in mac-proof.zip.
+  Proven first on Linux/Xvfb with Ctrl: 85/85 steps. On Xvfb (no compositor) the pop-out window draws black.

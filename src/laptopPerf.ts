@@ -1,7 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { afterVaultReady, hasBootMark } from "./bootTiming";
 import { boxLinkFor, boxPost } from "./boxChat";
-import { hit } from "./shortcuts";
+import { hit, isMod } from "./shortcuts";
 import { useStore } from "./store";
 import { VoiceLogShipper } from "./voiceShip";
 import type { PerfBatch, PerfSample } from "./laptopPerfProtocol";
@@ -144,7 +144,7 @@ export function installLaptopPerf({ popout = false }: { popout?: boolean } = {})
   window.addEventListener("keydown", e => {
     if (!e.isTrusted) return;
     const eventAt = e.timeStamp >= performance.timeOrigin ? e.timeStamp - performance.timeOrigin : e.timeStamp;
-    if (!e.repeat && (e.ctrlKey || e.metaKey)) {
+    if (!e.repeat && isMod(e)) {
       if (hit(e, "view.fullscreen")) fullscreenKeyAt = eventAt;
       if (hit(e, "view.chat")) panelKeyAt = eventAt;
       // Store shortcut actions run in this dispatch; do not reuse an old unrelated key.
