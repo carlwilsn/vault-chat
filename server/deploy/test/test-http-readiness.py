@@ -621,6 +621,45 @@ if a[0] == "kill":
             self.assertEqual((self.state / "current").readlink(), Path("versions/1.0.1"))
             self.assertIn(b"actual box readiness", result.stdout)
 
+    def test_workers_a_server_resumes_hold_it_minutes_not_hours_and_it_hands_over(self):
+        # 2026-11-17 22:28: six workers held an update 2 h, then systemd's stop killed them with nothing said. A server
+        # that resumes its workers on the next one (busy.resumesWork) is waited for only WORKERS_MAX_S, then asked to
+        # hand over (it accepts: it saves them) — never stopped, and no "updating anyway".
+        busy = [{"runs": 0, "workers": 6, "inputs": 0, "resumesWork": True}]
+        with self.front_fixture(busy) as fixture:
+            start = time.monotonic()
+            result, calls = self.run_update(fixture, VC_UPDATE_WORKERS_MAX_S="2")
+            out = result.stdout.decode()
+            self.assertEqual(result.returncode, 0, out + result.stderr.decode())
+            self.assertLess(time.monotonic() - start, 10)
+            self.assertIn("6 background workers still running after 2s: handing over anyway; the next server resumes them in their chats", out)
+            self.assertNotIn("updating anyway", out)
+            kills = [c for c in calls if c[1] == "kill"]
+            self.assertEqual([c[-1] for c in kills], ["vault-chat-server@8851.service"])
+            self.assertFalse([c for c in calls if c[1] in ("stop", "restart")])
+            self.assertEqual((self.state / "active-backend").read_text(), "8852")
+            self.assertEqual((self.state / "current").readlink(), Path("versions/1.0.1"))
+
+    def test_workers_of_a_server_that_cannot_resume_them_still_hold_it(self):
+        # A server from before resumesWork would end its workers with nothing said: the old wait holds for it.
+        (self.root / "decline").write_text("1000")
+        with self.front_fixture([{"runs": 0, "workers": 3, "inputs": 0}]) as fixture:
+            result, calls = self.run_update(fixture, VC_UPDATE_WORKERS_MAX_S="0", VC_UPDATE_BUSY_MAX_S="2")
+            out = result.stdout.decode()
+            self.assertNotIn("handing over anyway", out)
+            self.assertIn("still busy after 2s (0 runs, 3 background workers, 0 surfaces in use): updating anyway", out)
+
+    def test_a_run_still_holds_it_on_a_server_that_resumes_workers(self):
+        # Only workers are passed over: a run (an agent turn, a voice call) is waited for as before.
+        with self.front_fixture([{"runs": 1, "workers": 2, "inputs": 0, "resumesWork": True}, {"runs": 0, "workers": 2, "inputs": 0, "resumesWork": True}]) as fixture:
+            result, calls = self.run_update(fixture, VC_UPDATE_WORKERS_MAX_S="0")
+            out = result.stdout.decode()
+            self.assertEqual(result.returncode, 0, out)
+            self.assertIn("handing over anyway", out)
+            # The poll with the run was waited past: the hand-over came only on the next one.
+            self.assertGreaterEqual(fixture.polls, 2)
+            self.assertIn("server busy (1 runs, 2 background workers, 0 surfaces in use)", out)
+
     def test_new_server_that_never_stands_by_never_takes_traffic(self):
         with self.front_fixture([{"runs": 0, "workers": 0, "inputs": 0}]) as fixture:
             result, calls = self.run_update(fixture, T_NO_STANDBY="1")

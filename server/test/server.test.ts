@@ -241,7 +241,7 @@ describe("missing key", () => {
       expect(h.keyNames).toEqual(["api.anthropic"]);
       // Nothing running: not busy (a live call counts: server/voiceBrain.ts activeVoiceSessions, tested there).
       // No background worker either (busy.workers: the updater waits for 0 before it restarts the box).
-      expect(h.busy).toEqual({ runs: 0, agent: 0, voice: 0, workers: 0, inputs: 0, input: {} });
+      expect(h.busy).toEqual({ runs: 0, agent: 0, voice: 0, workers: 0, resumesWork: true, inputs: 0, input: {} });
     } finally {
       await srv.stop();
       cleanup(home);

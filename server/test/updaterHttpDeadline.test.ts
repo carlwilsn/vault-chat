@@ -43,6 +43,11 @@ it.each([
   "Front.test_new_server_that_never_stands_by_never_takes_traffic",
   // Past the maximum wait an old server that keeps declining is stopped (systemd's stop) and the stand-by serves.
   "Front.test_old_server_that_keeps_declining_is_stopped_after_the_maximum_wait",
+  // Workers a server resumes on the next one (busy.resumesWork) hold it minutes, not hours; a run still holds it;
+  // an older server's workers hold it as before (it would end them with nothing said).
+  "Front.test_workers_a_server_resumes_hold_it_minutes_not_hours_and_it_hands_over",
+  "Front.test_workers_of_a_server_that_cannot_resume_them_still_hold_it",
+  "Front.test_a_run_still_holds_it_on_a_server_that_resumes_workers",
   // A fallback is only a release that supports the front (2026-11-16: 0.8.91 crash-looped on 8848), `current` stays
   // on what serves, marks carry their reason, and a reasonless (older) mark is retried once.
   "Front.test_fallback_never_starts_a_release_from_before_the_front",

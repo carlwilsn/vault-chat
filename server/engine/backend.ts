@@ -44,6 +44,9 @@ export type BackendEvent =
   /** One thread's runtime died mid-turn while the rest of the runtime is fine (pi: one process per thread).
    * The engine marks that turn cut and resumes it, as it does for all turns on "down". */
   | { kind: "threadLost"; threadId: string }
+  /** A thread's runtime ended (a crash, a kill) while background work of its own ran: that work is gone with it.
+   * The engine has the conversation take it up again (engine.ts recordCutWork). */
+  | { kind: "workCut"; threadId: string; work: CutWork }
   /**
    * The API refused this box's sign-in. Raised the moment it is known — which is
    * on the runtime's first RETRY, because a runtime retries a 401 (measured: 8
@@ -52,6 +55,10 @@ export type BackendEvent =
    * refused.
    */
   | { kind: "signInRefused"; threadId: string; error: string | null };
+
+/** Background work a thread's runtime took with it when it ended: Agent-tool workers (resumable from their
+ *  transcripts, SendMessage), background shell commands and monitors, BoardMake workers (neither resumable). */
+export type CutWork = { workers: { id: string; title: string }[]; commands: { id: string; title: string }[]; boards: { id: string; title: string }[] };
 
 /** resumeThread throws this when the thread belongs to another runtime (or is gone): the engine starts a fresh one. */
 export class ThreadUnknownError extends Error {
@@ -234,6 +241,9 @@ export type EngineBackend = {
   health(): Record<string, unknown>;
   /** Background workers started and not finished (health's busy.workers: the updater waits for 0). */
   liveWorkers?(): number;
+  /** The server is going down (an update's hand-over, a stop): the background work each thread has running now,
+   *  taken once (a later end of that runtime reports nothing more), for the next server to take up. */
+  takeCutWork?(): { threadId: string; work: CutWork }[];
 
   // -- threads
   /** Open a session for a conversation and return the engine's handle on it (`ref`: where its transcript lives).

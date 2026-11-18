@@ -530,6 +530,18 @@ export class ClaudeTranslator {
     return [...this.running].filter((id) => !this.silent.has(id)).map((id) => ({ id, title: this.tasks.get(id) ?? id }));
   }
 
+  /**
+   * Every background task still live, workers (resumable: SendMessage) and shell commands or monitors (not), and
+   * forget them: this session's process is ending under them (a server update, a crash), so the host says so once
+   * and has its chat take them up again (backend.ts takeCutWork, engine.ts recordCutWork).
+   */
+  takeRunning(): { workers: { id: string; title: string }[]; commands: { id: string; title: string }[] } {
+    const out = { workers: [] as { id: string; title: string }[], commands: [] as { id: string; title: string }[] };
+    for (const id of this.running) (this.silent.has(id) ? out.commands : out.workers).push({ id, title: this.tasks.get(id) || id });
+    this.running.clear();
+    return out;
+  }
+
   private workerNotice(m: any): Emit[] {
     const taskId = String(m.task_id ?? "");
     const status = String(m.status ?? "");

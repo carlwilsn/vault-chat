@@ -14,7 +14,11 @@
 #      Then it updates anyway, with one log line: behind the front an old server that still
 #      declines the hand-over is stopped. (Waiting with no bound starved every update on
 #      2026-11-16: a box with agents at work around the clock never goes idle, and systemd
-#      killed each pass at 3 h, from 05:58 on.);
+#      killed each pass at 3 h, from 05:58 on.) Background workers alone hold it for at most
+#      WORKERS_MAX_S (10 min) when the server says it resumes them (busy.resumesWork): on its
+#      hand-over it saves them, and the next server has their chats resume them right after it
+#      takes over, saying so in one line (Engine.saveCutWork). (Waiting 2 h for them and then
+#      stopping the server killed six workers with nothing said, 2026-11-17 22:28.);
 #   4. swap the `current` symlink to versions/<ver> and hand over (behind the front,
 #      vault-chat-front.service on 8848): the new version starts in the other slot
 #      (vault-chat-server@8851/8852), reads ahead and stands by; the old one is asked to
@@ -59,6 +63,8 @@ SLOT_A=8851
 SLOT_B=8852
 BUSY_MAX_S="${VC_UPDATE_BUSY_MAX_S:-7200}"
 BUSY_POLL_S="${VC_UPDATE_BUSY_POLL_S:-30}"
+# How long background workers alone hold an update when the server resumes them on the next one (busy.resumesWork).
+WORKERS_MAX_S="${VC_UPDATE_WORKERS_MAX_S:-600}"
 HEALTH_WAIT_S="${VC_UPDATE_HEALTH_WAIT_S:-90}"
 HEALTH_POLL_S="${VC_UPDATE_HEALTH_POLL_S:-3}"
 # How long a new server may take to read ahead and stand by beside the serving one.
@@ -145,18 +151,31 @@ serving_unit() { if front_on; then slot_unit "$(active_slot)"; else echo "$UNIT"
 # an old server that still declines). A server that does not answer is waited for (unless it is not running at all).
 BUSY_DEADLINE=""
 BUSY_OVER=0
+# Background workers that ran past WORKERS_MAX_S on a server that resumes them no longer hold this pass.
+WORKERS_DEADLINE=""
+WORKERS_PASSED=0
 wait_idle() {
-  local said=0 h runs workers inputs
+  local said=0 h runs workers inputs resumes held
   [ "$BUSY_OVER" = 1 ] && return 0
   [ -n "$BUSY_DEADLINE" ] || BUSY_DEADLINE=$(( $(date +%s) + BUSY_MAX_S ))
   while :; do
-    runs="" workers="" inputs=""
+    runs="" workers="" inputs="" resumes=""
     if h="$(health)"; then
       runs="$(printf '%s' "$h" | json_field busy.runs)"
       # A server that predates the field does not report it: that is 0.
       workers="$(printf '%s' "$h" | json_field busy.workers)"
       inputs="$(printf '%s' "$h" | json_field busy.inputs)"
-      if [ "${runs:-0}" = 0 ] && [ "${workers:-0}" = 0 ]; then
+      resumes="$(printf '%s' "$h" | json_field busy.resumesWork)"
+      if [ "${workers:-0}" != 0 ] && [ "$resumes" = "true" ] && [ "$WORKERS_PASSED" = 0 ]; then
+        [ -n "$WORKERS_DEADLINE" ] || WORKERS_DEADLINE=$(( $(date +%s) + WORKERS_MAX_S ))
+        if [ "$(date +%s)" -ge "$WORKERS_DEADLINE" ]; then
+          log "${workers} background workers still running after ${WORKERS_MAX_S}s: handing over anyway; the next server resumes them in their chats"
+          WORKERS_PASSED=1
+        fi
+      fi
+      held="${workers:-0}"
+      [ "$WORKERS_PASSED" = 1 ] && held=0
+      if [ "${runs:-0}" = 0 ] && [ "$held" = 0 ]; then
         [ "${inputs:-0}" = 0 ] && return 0
         [ "$(date +%s)" -ge "$BUSY_DEADLINE" ] && { log "surfaces used recently, but nothing runs: going ahead (nothing is cut)"; BUSY_OVER=1; return 0; }
       fi

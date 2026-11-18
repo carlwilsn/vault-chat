@@ -33,6 +33,7 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   ThreadUnknownError,
   type BackendEvent,
+  type CutWork,
   type Detached,
   type Effort,
   type EngineBackend,
@@ -108,6 +109,8 @@ type Worker = {
   stopped: boolean;
   endedAt: number;
   state: string;
+  /** Already handed to the next server as cut work (takeCutWork). */
+  cutTaken?: boolean;
 };
 
 /**
@@ -438,6 +441,25 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     return n;
   }
 
+  /**
+   * The server is going down: every live session's background tasks and the BoardMake workers still running, taken
+   * once (the sessions' own ends then report nothing more), so the next server has their chats take them up again.
+   */
+  takeCutWork(): { threadId: string; work: CutWork }[] {
+    const by = new Map<string, CutWork>();
+    const of = (threadId: string) => by.get(threadId) ?? (by.set(threadId, { workers: [], commands: [], boards: [] }), by.get(threadId)!);
+    for (const [threadId, live] of this.live) {
+      const t = live.translator.takeRunning();
+      if (t.workers.length || t.commands.length) Object.assign(of(threadId), t);
+    }
+    for (const w of this.workers.values()) {
+      if (w.endedAt || w.cutTaken) continue;
+      w.cutTaken = true;
+      of(w.parent).boards.push({ id: w.id, title: w.title });
+    }
+    return [...by].map(([threadId, work]) => ({ threadId, work }));
+  }
+
   /** Idle flags already given, so each stall is said once. */
   private flagged = new Set<string>();
 
@@ -499,7 +521,8 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     // left to finish, and the next one it starts has it.
     if (o.effort !== t.effort) {
       t.effort = o.effort;
-      if (!this.live.get(threadId)?.turnId) this.closeLive(threadId);
+      const l = this.live.get(threadId);
+      if (!l?.turnId && !l?.translator.workers()) this.closeLive(threadId);
     }
     this.save();
     await this.open(threadId);
@@ -1171,6 +1194,10 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     this.live.delete(threadId);
     void live?.revoke?.().catch(() => undefined);
     if (error) this.log(`thread ${threadId} ended: ${error.message}`);
+    // Its background workers and commands ended with it (a crash, a kill; on a server's own shutdown they were
+    // taken before, takeCutWork): the chat is told and takes the workers up again (engine.ts recordCutWork).
+    const cut = live?.translator.takeRunning();
+    if (cut && (cut.workers.length || cut.commands.length)) this.ev({ kind: "workCut", threadId, work: { ...cut, boards: [] } });
     if (!live?.turnId) return;
     // It died mid-turn: the engine marks that turn cut and resumes it, as it does for pi.
     this.ev({ kind: "threadLost", threadId });
@@ -1184,7 +1211,8 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   private makeRoom(): void {
     const max = this.o.maxSessions ?? 4;
     while (this.live.size >= max) {
-      const oldest = [...this.live.values()].filter((l) => !l.turnId).sort((a, b) => a.lastUsed - b.lastUsed)[0];
+      // A session with background work running is never closed for room: closing it would end that work.
+      const oldest = [...this.live.values()].filter((l) => !l.turnId && !l.translator.workers()).sort((a, b) => a.lastUsed - b.lastUsed)[0];
       if (!oldest) return; // every session is in a turn: the cap bends rather than cutting work short
       this.closeLive(oldest.id);
     }
@@ -1225,7 +1253,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     } catch (e) {
       this.log(`idle worker check: ${(e as Error).message}`);
     }
-    for (const live of [...this.live.values()]) if (!live.turnId && now - live.lastUsed > idle) this.closeLive(live.id);
+    for (const live of [...this.live.values()]) if (!live.turnId && !live.translator.workers() && now - live.lastUsed > idle) this.closeLive(live.id);
   }
 
   private closeLive(threadId: string): void {

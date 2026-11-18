@@ -322,7 +322,9 @@ async function main(): Promise<void> {
         const agent = activeRuns().length;
         const voice = activeVoiceSessions();
         const input = recentInput();
-        return { runs: agent + voice, agent, voice, workers: engine.workers?.() ?? 0, inputs: Object.keys(input).length, input };
+        // resumesWork: this server's hand-over saves its background workers and the next server resumes them in their
+        // chats (Engine.saveCutWork), so the updater waits for workers only a while (WORKERS_MAX_S), never hours.
+        return { runs: agent + voice, agent, voice, workers: engine.workers?.() ?? 0, resumesWork: !!engine.saveCutWork, inputs: Object.keys(input).length, input };
       })(),
       conversations: convLog(cfg.vault).rows().length,
       // The laptop app's core bundle (server/coreBundles.ts): which one the box offers, and its newest build.
@@ -464,6 +466,14 @@ async function main(): Promise<void> {
     console.log(`[vault-chat-server] ${sig} — shutting down`);
     // pi's processes die with the server: not a crash. Their turns stay "running" for the next boot to resume once.
     engineShuttingDown();
+    // Background work (Claude Code's workers and shells, BoardMake) ends with this server's processes: each chat gets
+    // a durable wake, so the next server resumes its workers right after it takes over and says so in the chat.
+    try {
+      const cut = engine.saveCutWork?.() ?? 0;
+      if (cut) console.log(`[vault-chat-server] ${cut} background task(s) running: saved for the next server to resume`);
+    } catch (e) {
+      console.error(`[vault-chat-server] could not save the running background work: ${(e as Error).message}`);
+    }
     // A write in flight (a board save, a message) finishes and gets its answer; long polls are cut (their clients
     // reconnect). Nothing is left half-open: whatever is still running at the grace's end is closed, so its client
     // sees an error and retries.
@@ -483,14 +493,14 @@ async function main(): Promise<void> {
     });
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
-  // The updater's hand-over (server/deploy/vault-chat-update.sh): this server goes only when no agent turn, voice call
-  // or background worker (Claude Code's subagents and shells, BoardMake) runs here. Running work finishes on
-  // the server it started on. Busy: it stays and keeps serving, and the updater asks again (after its maximum wait, 2 h,
-  // the updater stops this slot instead: vault-chat-update.sh handover).
+  // The updater's hand-over (server/deploy/vault-chat-update.sh): this server goes only when no agent turn or voice
+  // call runs here. Busy: it stays and keeps serving, and the updater asks again (after its maximum wait, 2 h, the
+  // updater stops this slot instead: vault-chat-update.sh handover). Background workers do not hold it (the updater
+  // gives them a while to finish first): shutdown saves them and the next server resumes them (Engine.saveCutWork).
   process.on("SIGUSR2", () => {
-    const busy = { agent: activeRuns().length, voice: activeVoiceSessions(), workers: engine.workers?.() ?? 0 };
-    if (busy.agent || busy.voice || busy.workers) {
-      console.log(`[vault-chat-server] hand-over declined: still running ${JSON.stringify(busy)}`);
+    const busy = { agent: activeRuns().length, voice: activeVoiceSessions() };
+    if (busy.agent || busy.voice) {
+      console.log(`[vault-chat-server] hand-over declined: still running ${JSON.stringify({ ...busy, workers: engine.workers?.() ?? 0 })}`);
       return;
     }
     shutdown("hand-over");

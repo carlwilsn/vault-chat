@@ -1,0 +1,176 @@
+// An update never loses running agent work. On 2026-11-17 22:28 the updater waited 2 h for six background workers
+// (Agent-tool subagents of live chats), then stopped the old server: every Claude Code process exited 143 and the
+// workers were gone with nothing said. Now the old server hands over with workers running: its shutdown saves them
+// as a durable wake per chat (Engine.saveCutWork), and the next server, right after it takes over, has that chat
+// resume each worker from its transcript (SendMessage) and says so in one line.
+//
+// This runs the real thing: two real servers in the blue-green slots, the real Claude Code CLI against the scripted
+// API, a real background worker in the middle of a long command when the old server goes.
+import { describe, it, expect, afterAll } from "vitest";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmp, cleanup, makeVault, makeKeyStore, startServer, waitFor, freePort, type Running } from "./helpers";
+import { fakeAnthropic, chatText, lastToolResult, type FakeApi } from "./claudeFakeApi";
+import { cutShown, cutText } from "../engine/engine";
+
+const UNIT = (port: number) => `/user.slice/user-1000.slice/user@1000.service/app.slice/vault-chat-server@${port}.service`;
+const descendants = (pid: number): number[] => {
+  const kids = spawnSync("pgrep", ["-P", String(pid)], { encoding: "utf8" }).stdout.split("\n").map(Number).filter((n) => n > 0);
+  return kids.flatMap((k) => [k, ...descendants(k)]);
+};
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const MARK = `vc-cut-worker-${process.pid}`;
+
+/** The text of a request's first user message: whose request it is (the chat's, or the worker's own). */
+const firstUser = (body: any): string => chatText({ messages: (body?.messages ?? []).filter((m: any) => m.role === "user").slice(0, 1) });
+
+/** Every file under `dir` whose name matches. */
+function find(dir: string, re: RegExp): string[] {
+  const out: string[] = [];
+  const walk = (d: string) => {
+    let names: import("node:fs").Dirent[] = [];
+    try {
+      names = readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const n of names) {
+      const p = join(d, n.name);
+      if (n.isDirectory()) walk(p);
+      else if (re.test(n.name)) out.push(p);
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+describe("what the chat is told", () => {
+  it("one line, and a resume per worker with what could not be resumed named", () => {
+    const work = { workers: [{ id: "a1b2-c3", title: "Fix the updater" }], commands: [{ id: "b9", title: "npm run dev" }], boards: [] };
+    expect(cutShown(work)).toBe('The box restarted (an update) while background work ran: resuming 1 background worker ("Fix the updater"); 1 background command ended ("npm run dev")');
+    const text = cutText(work);
+    expect(text).toContain('SendMessage {to: "a1b2-c3", message: ');
+    expect(text).toContain('"npm run dev"');
+    expect(text).not.toContain("BoardMake");
+  });
+});
+
+describe.skipIf(process.platform !== "linux")("a hand-over with a background worker running", () => {
+  let home = "";
+  const running: Running[] = [];
+  let api: FakeApi | null = null;
+  afterAll(async () => {
+    for (const s of running) await s.stop().catch(() => {});
+    await api?.close().catch(() => {});
+    if (home) cleanup(home);
+  });
+
+  it("the old server hands over at once, the next one resumes the worker in its chat, and the worker finishes", async () => {
+    home = tmp();
+    const vault = makeVault(join(home, "vault"));
+    const secrets = await makeKeyStore(join(home, "secrets"), { "service.claude-code": "sk-ant-oat01-canary-not-real" });
+    mkdirSync(join(home, "state"), { recursive: true });
+    api = await fakeAnthropic();
+    let workerResumedWith = "";
+    api.respond = (body) => {
+      const mine = firstUser(body);
+      const all = chatText(body);
+      const result = lastToolResult(body);
+      if (mine.includes("WORKER-TASK")) {
+        // The worker: one long command; after the restart it is resumed with the host's words and reports.
+        if (all.includes("The box restarted under you")) {
+          workerResumedWith = all;
+          return { text: "WORKER DONE: checked, and finished after the restart." };
+        }
+        if (result === null) return { toolCall: { name: "Bash", args: { command: `node -e 'setTimeout(() => {}, 600000)' ${MARK}`, description: "a long step", timeout: 600000 } } };
+        return { text: "WORKER DONE early (never expected)." };
+      }
+      // The chat. Taking up the cut work: load SendMessage, send it, then one line.
+      const cut = /SendMessage \{to: "([^"]+)"/.exec(all);
+      if (cut) {
+        const msgs: any[] = body.messages ?? [];
+        const at = msgs.map((m) => chatText({ messages: [m] })).findLastIndex((t) => t.includes("background work of this chat was running"));
+        const calls = msgs.slice(at + 1).filter((m) => m.role === "assistant" && (m.content ?? []).some?.((x: any) => x?.type === "tool_use")).length;
+        if (calls === 0) return { toolCall: { name: "ToolSearch", args: { query: "select:SendMessage", max_results: 1 } } };
+        if (calls === 1) return { toolCall: { name: "SendMessage", args: { to: cut[1], message: "The box restarted under you (an update): continue where you stopped." } } };
+        return { text: "Resumed the worker." };
+      }
+      if (mine.includes("Start the slow worker") && !all.includes("Started it.") && result === null) {
+        return { toolCall: { name: "Agent", args: { description: "slow worker", prompt: "WORKER-TASK: run the long step, then report.", subagent_type: "general-purpose", run_in_background: true } } };
+      }
+      return { text: "Started it." };
+    };
+
+    // Slot A serves, as the unit's own server (systemd started it, on its own port): its hand-over ends its unit's
+    // processes, Claude Code and the worker's command with them, exactly as on the box.
+    const [pub, pa, pb] = [await freePort(), await freePort(), await freePort()];
+    const fs = join(home, "cgroup");
+    mkdirSync(join(fs, UNIT(pa)), { recursive: true });
+    const selfCgroup = join(home, "self-cgroup");
+    writeFileSync(selfCgroup, `0::${UNIT(pa)}\n`);
+    const slot = (port: number, own: boolean) => ({
+      home,
+      vault,
+      secrets,
+      anthropic: api!.url,
+      extra: {
+        VC_PORT: String(pub),
+        VC_BACKEND_PORT: String(port),
+        ...(own ? { VC_TEST_CGROUP_FS: fs, VC_TEST_SELF_CGROUP: selfCgroup, VC_TEST_PARENT_COMM: "systemd" } : {}),
+      },
+    });
+    const a = await startServer(slot(pa, true));
+    running.push(a);
+    const A = `http://127.0.0.1:${pa}`;
+
+    const sent = await (await fetch(A + "/message", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "Start the slow worker." }) })).json();
+    expect(sent.ok).toBe(true);
+    // The chat's turn ends; its worker runs on, in the middle of its long command.
+    let sleeper = 0;
+    await waitFor(async () => {
+      const h = await (await fetch(A + "/api/v1/health")).json();
+      sleeper = Number(spawnSync("pgrep", ["-f", `setTimeout.*${MARK}`], { encoding: "utf8" }).stdout.split("\n").find((p) => p && descendants(a.proc.pid!).includes(Number(p))) ?? 0);
+      return h.busy.runs === 0 && h.busy.workers > 0 && h.busy.resumesWork === true && sleeper > 0;
+    }, 90_000, 200).catch(async (e) => {
+      throw new Error(`${e.message}\n${a.logs().slice(-4000)}\n${JSON.stringify(api!.calls.map((c) => [firstUser(c).slice(-200), lastToolResult(c)?.slice(0, 300)]))}`);
+    });
+
+    // The next server stands by; the old one is asked to hand over and does at once, worker and all.
+    const nextP = startServer(slot(pb, false));
+    await waitFor(() => existsSync(join(home, "state", "standby")), 60_000, 50);
+    writeFileSync(join(fs, UNIT(pa), "cgroup.procs"), [a.proc.pid!, ...descendants(a.proc.pid!)].join("\n") + "\n");
+    a.proc.kill("SIGUSR2");
+    expect(await a.exited).toBe(0);
+    expect(a.logs()).not.toContain("hand-over declined");
+    expect(a.logs()).toMatch(/1 background task\(s\) running: saved for the next server to resume/);
+    await waitFor(() => !alive(sleeper), 5000, 50);
+    const b = await nextP;
+    running.push(b);
+    expect(b.logs()).toContain("[owner] took over");
+
+    // Right after it takes over, B has the chat resume the worker; the worker answers its resume and reports.
+    await waitFor(() => !!workerResumedWith, 90_000, 200).catch((e) => {
+      throw new Error(`${e.message}\n${b.logs().slice(-4000)}`);
+    });
+    expect(workerResumedWith).toContain("WORKER-TASK");
+    // Its transcript carries on (the same worker, its context kept) and ends in its report.
+    const transcripts = find(home, /^agent-.*\.jsonl$/).filter((f) => readFileSync(f, "utf8").includes("WORKER-TASK"));
+    expect(transcripts.length).toBe(1);
+    await waitFor(() => readFileSync(transcripts[0]!, "utf8").includes("WORKER DONE: checked"), 30_000, 200);
+    // The chat was told in one line (the wake B fired), and the worker's report came back to it.
+    expect(b.logs()).toMatch(/wake w-[\w-]+ → main: The box restarted \(an update\) while background work ran: resuming 1 background worker \("slow worker"\)/);
+    expect(a.logs()).toMatch(/1 background task\(s\) of main ended with their process: wake w-[\w-]+ takes them up/);
+    await waitFor(() => api!.calls.some((c) => firstUser(c).includes("Start the slow worker") && chatText(c).includes("WORKER DONE: checked")), 60_000, 200).catch((e) => {
+      throw new Error(`${e.message}\n${b.logs().slice(-3000)}`);
+    });
+  }, 240_000);
+});

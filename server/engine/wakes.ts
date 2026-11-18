@@ -5,13 +5,16 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { renameRetry } from "../atomic";
+import type { CutWork } from "./backend";
 
 /** `byCarl`: set by a turn Carl started (its finish may buzz his phone, server/pushGate.ts). */
 /** `limit`: not a ScheduleWake but the conversation's work held for Carl's usage limit (engine.ts
  *  holdForLimit): it fires once, after the reset, as one turn that takes up what got no reply. */
 /** `retry`: a turn that failed on something passing (the API overloaded, a dropped connection: engine.ts retryLater),
  *  tried again by itself at this time; `tries` counts the retries, which stop at engine.ts AUTO_RETRIES. */
-export type Wake = { conv: string; at: number; reason: string; id: string; byCarl?: boolean; limit?: { tries: number }; retry?: { tries: number } };
+/** `cut`: background work a restart of the server (or of the chat's runtime) ended: the chat resumes its workers and
+ *  is told in one line (`reason`); engine.ts saveCutWork / recordCutWork. */
+export type Wake = { conv: string; at: number; reason: string; id: string; byCarl?: boolean; limit?: { tries: number }; retry?: { tries: number }; cut?: CutWork };
 
 export function wakesPath(vault: string): string {
   return join(vault, ".vault-chat", "local", "wakes.json");

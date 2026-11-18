@@ -17,7 +17,7 @@ import { chatVaults, ownerVault } from "../convlog/log";
 import { appendFileSync, existsSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { LIVE_LIMITS, allowRate, liveAskText } from "../../src/liveBridge";
 import { holdRun, registerRun, unregisterRun } from "../../src/runRegistry";
-import type { BackendEvent, EngineBackend, ToolSpec, HostLoadout, Interaction } from "./backend";
+import type { BackendEvent, CutWork, EngineBackend, ToolSpec, HostLoadout, Interaction } from "./backend";
 import {
   withVault,
   contextToolSpecs,
@@ -232,6 +232,39 @@ const AUTO_RETRY_TEXT =
   "Your last reply failed before it finished (the API was overloaded or erroring, or the connection dropped), and the host is trying again by itself. Continue from where you were; re-check anything a command may have left half done.";
 const AUTO_RETRY_SHOWN = "Trying again by itself: the last reply failed before it finished";
 const ARCHIVED = "This is an archived mission thread (the old missions system): readable, never run. Start a new chat.";
+/** A runtime that died by itself: its chat takes up the cut work this long after (a shutdown's is the next server's). */
+const CUT_WAKE_DELAY_MS = 5_000;
+
+const titles = (xs: { title: string }[]) => xs.map((x) => `"${x.title.replace(/\s+/g, " ").trim().slice(0, 60)}"`).join(", ");
+
+/** The one line the chat shows when the box takes up background work its restart ended. */
+export function cutShown(w: CutWork): string {
+  const parts = [
+    w.workers.length ? `resuming ${w.workers.length} background worker${w.workers.length > 1 ? "s" : ""} (${titles(w.workers)})` : "",
+    w.commands.length ? `${w.commands.length} background command${w.commands.length > 1 ? "s" : ""} ended (${titles(w.commands)})` : "",
+    w.boards.length ? `${w.boards.length} whiteboard make${w.boards.length > 1 ? "s" : ""} ended (${titles(w.boards)})` : "",
+  ].filter(Boolean);
+  return `The box restarted (an update) while background work ran: ${parts.join("; ")}`.slice(0, 400);
+}
+
+/** What the chat's model is told to do about it: resume every worker now, say what could not be resumed. */
+export function cutText(w: CutWork): string {
+  const lines = ["The box's server restarted (an update) while background work of this chat was running; those processes ended."];
+  if (w.workers.length) {
+    lines.push(
+      "Resume each of these Agent-tool workers NOW, in this turn, one SendMessage call each (a send resumes it from its transcript, with its whole context; load SendMessage first with ToolSearch {query: \"select:SendMessage\"} if you do not have it):",
+      ...w.workers.map((x) => `- SendMessage {to: "${x.id}", message: "${RESUME_WORKER}"}  (${x.title.slice(0, 120)})`),
+      "If one says it cannot be found or already finished, check JobList and go on. Their reports arrive as usual: do not wait for them.",
+    );
+  }
+  if (w.commands.length) lines.push(`Background commands that ended (a shell cannot be resumed; start one again only if it is still needed): ${titles(w.commands)}.`);
+  if (w.boards.length) lines.push(`Whiteboard makes that ended before they finished (run BoardMake again only if still wanted): ${titles(w.boards)}.`);
+  lines.push("Then end your turn with at most one short line; nothing else needs saying.");
+  return lines.join("\n");
+}
+
+const RESUME_WORKER = "The box restarted under you (an update): the command you were running may have been killed. Re-check its effect, then continue your task where you stopped.";
+
 const INTERRUPTED_TEXT = "⚠️ Interrupted by a restart — the command it was running was killed and may not have finished.";
 
 /**
@@ -1029,6 +1062,36 @@ export class Engine {
       wakes: readWakes(this.d.vault).length,
       log: { latest: logOf(this.d.vault).latest(), epoch: logOf(this.d.vault).epoch },
     };
+  }
+
+  /**
+   * The server is going down (an update's hand-over, a stop): the background work running in this vault's chats
+   * ends with it. Each chat gets a durable wake (wakes.json), so the next server, right after it takes over, has
+   * that chat resume its workers from their transcripts (SendMessage) and says so in one line. Never silent.
+   */
+  saveCutWork(): number {
+    let n = 0;
+    for (const { threadId, work } of this.d.backend.takeCutWork?.() ?? []) n += this.recordCutWork(threadId, work, Date.now());
+    return n;
+  }
+
+  /** One chat's cut work as a wake (see saveCutWork); the number of tasks it holds. */
+  private recordCutWork(threadId: string, work: CutWork, at: number): number {
+    const n = work.workers.length + work.commands.length + work.boards.length;
+    if (!n) return 0;
+    const convId = this.byThread.get(threadId);
+    if (!convId) {
+      this.log(`background work of thread ${threadId} ended with its process, and no chat holds that thread: ${n} task(s) not taken up`);
+      return 0;
+    }
+    try {
+      const wake = addWake(this.d.vault, { conv: convId, at, reason: cutShown(work), cut: work });
+      this.log(`${n} background task(s) of ${convId} ended with their process: wake ${wake.id} takes them up`);
+    } catch (e) {
+      this.log(`could not save ${convId}'s cut background work: ${(e as Error).message}`);
+      return 0;
+    }
+    return n;
   }
 
   /** Background workers of this vault's engine that a restart would kill (health's busy.workers). */
@@ -2554,6 +2617,12 @@ export class Engine {
   }
 
   private onEvent(e: BackendEvent): void {
+    if (e.kind === "workCut") {
+      // A thread's runtime died with background work running (a crash, a kill): taken up again in a moment, by
+      // this server, or by the next one when this one is going down (the wake is durable).
+      this.recordCutWork(e.threadId, e.work, Date.now() + CUT_WAKE_DELAY_MS);
+      return;
+    }
     const parent = this.childOf.get(e.threadId);
     if (parent) {
       // A subagent's own stream: never mixed into its parent's transcript.
@@ -3528,6 +3597,10 @@ export class Engine {
     this.log(`wake ${w.id} → ${w.conv}: ${w.reason}`);
     if (w.limit) {
       await this.run(w.conv, LIMIT_TEXT, "resume", { byCarl: !!w.byCarl, shown: LIMIT_SHOWN, ownTurn: true, limitTries: w.limit.tries }).catch((e) => this.log(`limit retry failed: ${e}`));
+      return;
+    }
+    if (w.cut) {
+      await this.run(w.conv, cutText(w.cut), "resume", { byCarl: !!w.byCarl, shown: w.reason, ownTurn: true }).catch((e) => this.log(`taking up cut work failed: ${e}`));
       return;
     }
     if (w.retry) {
