@@ -529,7 +529,9 @@ jobs:
             # The fresh-HOME run on video (selftest.mov in the proof): the note made, typed into, saved.
             local rec=""
             if [ "$name" = fresh-home ]; then
-              screencapture -v -V 300 -x "$OUT/selftest.mov" > "$OUT/selftest-video.log" 2>&1 &
+              # A fixed length that ends by itself, as launch.mov does: a recording stopped by a signal
+              # left no file on the runner.
+              screencapture -v -V 60 -x "$OUT/selftest.mov" > "$OUT/selftest-video.log" 2>&1 &
               rec=$!
             fi
             # (Detached from the step's output, so a leftover sleep never holds the log open.)
@@ -538,9 +540,9 @@ jobs:
             wait "$pid"; code=$?
             kill "$guard" 2>/dev/null || true
             if [ -n "$rec" ]; then
-              sleep 2; kill -INT "$rec" 2>/dev/null   # ends the recording and writes the file
-              for _ in $(seq 1 20); do kill -0 "$rec" 2>/dev/null || break; sleep 1; done
+              for _ in $(seq 1 75); do kill -0 "$rec" 2>/dev/null || break; sleep 1; done   # its 60 s, then it writes
               kill -9 "$rec" 2>/dev/null || true
+              [ -s "$OUT/selftest.mov" ] || echo "::warning::no selftest.mov (see selftest-video.log)"
             fi
             local took="$(( $(date +%s) - t0 )) s"
             # What the app and its local server wrote under that HOME.

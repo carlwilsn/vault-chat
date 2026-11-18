@@ -281,9 +281,6 @@ mod pty {
             if libc::grantpt(m) != 0 || libc::unlockpt(m) != 0 {
                 return Err(format!("could not prepare the pty: {}", errno()));
             }
-            if libc::ioctl(m, libc::TIOCSWINSZ as _, &ws) != 0 {
-                return Err(format!("could not size the pty: {}", errno()));
-            }
             let name = libc::ptsname(m);
             if name.is_null() {
                 return Err(format!("could not name the pty: {}", errno()));
@@ -292,11 +289,18 @@ mod pty {
             if s < 0 {
                 return Err(format!("could not open the pty's other end: {}", errno()));
             }
+            let slave = std::fs::File::from_raw_fd(s);
+            // Sized through the terminal end: macOS refuses TIOCSWINSZ on the
+            // master ("Inappropriate ioctl for device", seen on the Mac CI
+            // runner); Linux takes it either way.
+            if libc::ioctl(s, libc::TIOCSWINSZ as _, &ws) != 0 {
+                return Err(format!("could not size the pty: {}", errno()));
+            }
             let flags = libc::fcntl(m, libc::F_GETFL);
             if flags < 0 || libc::fcntl(m, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
                 return Err(format!("could not set the pty non-blocking: {}", errno()));
             }
-            Ok((master, std::fs::File::from_raw_fd(s)))
+            Ok((master, slave))
         }
     }
 
@@ -577,6 +581,42 @@ Use this token by setting: export CLAUDE_CODE_OAUTH_TOKEN=<token>"
         let asked = |k: &str| (k == "VC_CLAUDE_SIGNIN").then(|| "1".to_string());
         assert_eq!(enabled_with(none), cfg!(target_os = "macos"));
         assert_eq!(enabled_with(asked), cfg!(unix));
+    }
+
+    /// The real pty, end to end, with the self-test's fake `claude` (which
+    /// refuses to run without a terminal): its token comes back whole.
+    #[cfg(unix)]
+    #[test]
+    fn the_pty_runs_a_terminal_program_and_its_token_comes_back() {
+        use std::io::Read;
+        let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("../test/selftest/fake-claude");
+        let cfg = std::env::temp_dir().join(format!("vc-signin-pty-{}", std::process::id()));
+        std::fs::create_dir_all(&cfg).unwrap();
+        let (mut master, slave) = pty::open(PTY_COLS, PTY_ROWS).expect("a pty");
+        let mut child = pty::spawn(&fake, &child_env("/usr/bin:/bin", &cfg), slave).expect("it starts");
+        let o = watch(
+            |seen| {
+                let mut buf = [0u8; 4096];
+                loop {
+                    match master.read(&mut buf) {
+                        Ok(0) => return false,
+                        Ok(n) => seen.extend_from_slice(&buf[..n]),
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return true,
+                        Err(_) => return false,
+                    }
+                }
+            },
+            Duration::from_secs(20),
+            || false,
+            |_| {},
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        std::fs::remove_dir_all(&cfg).ok();
+        match o {
+            Outcome::Token(t) => assert!(t.starts_with("sk-ant-oat01-SELFTEST-fake-token")),
+            Outcome::Failed(why) => panic!("no token: {why}"),
+        }
     }
 
     fn feed(chunks: Vec<Vec<u8>>, end_alive: bool) -> impl FnMut(&mut Vec<u8>) -> bool {
