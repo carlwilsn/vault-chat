@@ -1,0 +1,4 @@
+# The local voice (voice-pipeline/local_voice.py): installed by the server only when a call speaks locally, so an
+# install that uses the ElevenLabs voice plugin keeps its environment (requirements.txt) untouched.
+pipecat-ai[kokoro,whisper]==1.12.0; sys_platform != "darwin" or platform_machine != "arm64"
+pipecat-ai[kokoro,mlx-whisper]==1.12.0; sys_platform == "darwin" and platform_machine == "arm64"

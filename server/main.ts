@@ -7,7 +7,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { activeVoiceSessions, voiceLiveIn } from "./voiceBrain";
-import { pipelineState, stopPipeline, wantPipeline } from "./voicePipeline";
+import { localVoiceReady, pipelineState, stopPipeline, wantPipeline } from "./voicePipeline";
+import { ELEVENLABS_VOICE_PLUGIN, voiceProvider } from "./voiceProvider";
 
 import { configureChangeDelivery, currentDeliveryHealth } from "./changeDelivery";
 import { observeReleaseVoiceHealth, type BoxReleaseHealth } from "./releaseHealth";
@@ -20,7 +21,7 @@ import { endOwnProcesses, promote, takeOwnership } from "./owner";
 import type { FileLocalStorage } from "./shims/globals";
 import { legacySource } from "./convlog/importer";
 import { macGitStatus, prepareMacEnv, type GitState } from "./macEnv";
-import { supervisorOf } from "./supervisor";
+import { pluginStopped, supervisorOf } from "./supervisor";
 import { CORE_PART } from "../src/coreBundle";
 
 function fatal(msg: string, code = 2): never {
@@ -417,6 +418,8 @@ async function main(): Promise<void> {
       engine: async () => engineOf(v),
       elKey: () => useStore.getState().serviceKeys.elevenlabs || null,
       voiceId: () => String(readSetting("voice") ?? "nPczCjzI2devNBz1zQrb"),
+      elevenlabsPluginOn: () => !pluginStopped(cfg.vault, ELEVENLABS_VOICE_PLUGIN),
+      localVoiceReady,
       pipelineState,
       pipelineReady: async () => {
         const p = pipelineState();
@@ -494,7 +497,8 @@ async function main(): Promise<void> {
   });
   // The New voice's pipeline runs as this server's child (server/voicePipeline.ts).
   if (process.env.VC_VOICE_PIPELINE !== "off")
-    void wantPipeline({ stateDir: cfg.stateDir, serverPort: cfg.publicPort, port: cfg.voicePort, log: (s) => console.log(s) }, true).catch(() => {}); // failure is retained in health/UI
+    void wantPipeline({ stateDir: cfg.stateDir, serverPort: cfg.publicPort, port: cfg.voicePort, log: (s) => console.log(s),
+      wantsLocal: () => voiceProvider({ elevenlabsPluginOn: !pluginStopped(cfg.vault, ELEVENLABS_VOICE_PLUGIN), elKey: useStore.getState().serviceKeys.elevenlabs || null }) === "local" }, true).catch(() => {}); // failure is retained in health/UI
   process.on("exit", () => stopPipeline());
   process.on("SIGINT", () => shutdown("SIGINT"));
 }

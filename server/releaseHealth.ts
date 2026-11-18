@@ -101,7 +101,7 @@ export async function observeReleaseVoiceHealth(o: {
     const response = await fetch(`http://127.0.0.1:${o.port}/health`, { signal: AbortSignal.timeout(3000) });
     if (!response.ok) return waiting();
     const body = await response.json() as { ok?: boolean; brain?: string; stt?: string; tts?: string };
-    if (body.ok !== true || body.brain !== "pi" || body.stt !== "elevenlabs" || body.tts !== "elevenlabs") return { ...base, state: "failed", error: "Owned voice child reported an unexpected brain/speech runtime mode" };
+    if (body.ok !== true || body.brain !== "pi" || body.stt !== "auto" || body.tts !== "auto") return { ...base, state: "failed", error: "Owned voice child reported an unexpected brain/speech runtime mode" };
     // Close the process/HTTP handoff race: the same managed child must still own every observed socket
     // after the response, and the port must still expose exactly those listener inode(s).
     const afterStart = readFileSync(`/proc/${bots[0]}/stat`, "utf8").split(") ")[1]!.split(" ")[19];

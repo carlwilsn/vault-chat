@@ -12,7 +12,11 @@ The brain is one of:
         speak channel and is said when Carl is quiet.
   echo  says back what it heard (step 1: proves transport, turn-taking and barge-in).
 
-STT and TTS are swappable (VC_STT / VC_TTS): ElevenLabs now; local CPU models can drop in later.
+STT and TTS: chosen per call by the server (server/voiceProvider.ts, call["provider"]): "local" (Kokoro TTS, voice
+af_heart, and Whisper STT, all on this machine: free, no key) or "elevenlabs" (the ElevenLabs voice plugin with the
+key from Keys). VC_STT / VC_TTS (kokoro|whisper|elevenlabs) pin one for tests; unset ("auto") the call decides.
+Local models download once, on first need, into VC_VOICE_MODELS (the app's data dir), progress on stdout as
+"[voice models] ..." lines (the server copies them to voice-pipeline.log).
 
 Signalling: POST /offer on 127.0.0.1 (the vault-chat server forwards the device's offer, with the
 call's secrets, from its tailnet route). Keys arrive in that request, never on argv or in logs.
@@ -83,10 +87,12 @@ from pipecat.transports.smallwebrtc.request_handler import (
 )
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 
+import local_voice
+
 PORT = int(os.environ["VC_VOICE_PORT"])
 BRAIN = os.environ.get("VC_VOICE_BRAIN_MODE", "pi")  # pi | echo
-STT = os.environ.get("VC_STT", "elevenlabs")
-TTS = os.environ.get("VC_TTS", "elevenlabs")
+STT = os.environ.get("VC_STT", "auto")  # auto | whisper | elevenlabs
+TTS = os.environ.get("VC_TTS", "auto")  # auto | kokoro | elevenlabs
 LOG = os.environ.get("VC_VOICE_LOG")  # a JSONL file: one line per measured turn
 # Silence before the turn model is asked (Smart Turn v3 decides the rest).
 VAD_STOP_SECS = float(os.environ.get("VC_VAD_STOP_SECS", "0.2"))
@@ -111,16 +117,28 @@ def jlog(**o: Any) -> None:
 # ---------------------------------------------------------------- services (swappable)
 
 
+def providers(call: dict) -> tuple[str, str]:
+    """(stt, tts) for this call: a pinned VC_STT / VC_TTS, else the server's word, else local."""
+    word = call.get("provider")
+    stt = STT if STT != "auto" else ("elevenlabs" if word == "elevenlabs" else "whisper")
+    tts = TTS if TTS != "auto" else ("elevenlabs" if word == "elevenlabs" else "kokoro")
+    return stt, tts
+
+
 def make_stt(call: dict):
-    if STT == "elevenlabs":
+    stt, _ = providers(call)
+    if stt == "elevenlabs":
         from pipecat.services.elevenlabs.stt import ElevenLabsRealtimeSTTService
 
         return ElevenLabsRealtimeSTTService(api_key=call["elKey"])
-    raise ValueError(f"unknown STT {STT}")
+    if stt == "whisper":
+        return local_voice.stt()
+    raise ValueError(f"unknown STT {stt}")
 
 
 def make_tts(call: dict):
-    if TTS == "elevenlabs":
+    _, tts = providers(call)
+    if tts == "elevenlabs":
         from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
         from pipecat.services.tts_service import TextAggregationMode
 
@@ -132,7 +150,11 @@ def make_tts(call: dict):
             # second round of sentence buffering here (it held a first clause until the sentence ended).
             text_aggregation_mode=TextAggregationMode.TOKEN if BRAIN == "pi" else TextAggregationMode.SENTENCE,
         )
-    raise ValueError(f"unknown TTS {TTS}")
+    if tts == "kokoro":
+        from pipecat.services.tts_service import TextAggregationMode
+
+        return local_voice.tts(text_aggregation_mode=TextAggregationMode.TOKEN if BRAIN == "pi" else TextAggregationMode.SENTENCE)
+    raise ValueError(f"unknown TTS {tts}")
 
 
 def make_brain(call: dict):
@@ -573,6 +595,10 @@ def user_aggregator_params(vad_analyzer) -> LLMUserAggregatorParams:
 
 
 async def run_call(connection, call: dict):
+    stt, tts = providers(call)
+    # Local models: downloaded and loaded once per process (a first call waits for them; later calls start at once).
+    if stt == "whisper" or tts == "kokoro":
+        await asyncio.to_thread(local_voice.ensure, stt == "whisper", tts == "kokoro")
     transport = SmallWebRTCTransport(
         webrtc_connection=connection,
         params=TransportParams(audio_in_enabled=True, audio_out_enabled=True),
@@ -630,7 +656,7 @@ async def run_call(connection, call: dict):
     async def _gone(_t, _c):
         await task.cancel()
 
-    jlog(ev="call.start", call=call["id"], brain=BRAIN, stt=STT, tts=TTS)
+    jlog(ev="call.start", call=call["id"], brain=BRAIN, stt=stt, tts=tts)
     try:
         await PipelineRunner(handle_sigint=False).run(task)
     finally:
@@ -678,8 +704,12 @@ async def offer(request: web.Request) -> web.Response:
     call = b.get("call") or {}
     if BRAIN == "pi" and not (call.get("id") and call.get("token") and call.get("base")):
         return web.json_response({"error": "call id, token and base required"}, status=400)
-    if not call.get("elKey") and "elevenlabs" in (STT, TTS):
+    if not call.get("elKey") and "elevenlabs" in providers(call):
         return web.json_response({"error": "no ElevenLabs key"}, status=400)
+    if "whisper" in providers(call) or "kokoro" in providers(call):
+        missing = local_voice.missing_packages()
+        if missing:
+            return web.json_response({"error": f"local voice not installed ({missing})"}, status=503)
     call.setdefault("id", f"echo-{int(time.time() * 1000)}")
 
     async def started(connection):
@@ -697,7 +727,12 @@ def main():
     app.router.add_post("/offer", offer)
     if os.environ.get("VC_VOICE_TEST") == "1":
         app.router.add_post("/test/drop-transcripts", test_drop)
-    app.router.add_get("/health", lambda _r: web.json_response({"ok": True, "brain": BRAIN, "stt": STT, "tts": TTS}))
+    app.router.add_get("/health", lambda _r: web.json_response({"ok": True, "brain": BRAIN, "stt": STT, "tts": TTS, "local": local_voice.status()}))
+    if os.environ.get("VC_VOICE_LOCAL_PREFETCH") == "1":
+        # This install speaks locally: fetch and load the models now, not on the first call.
+        import threading
+
+        threading.Thread(target=local_voice.prefetch, daemon=True).start()
     web.run_app(app, sock=LISTENER, print=lambda _s: print("[voice ready]", flush=True))
 
 

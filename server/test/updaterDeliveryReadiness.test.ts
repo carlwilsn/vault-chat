@@ -86,7 +86,7 @@ describe("voice runtime readiness is owned and schema-checked, not a process-run
   it("observes a real managed Python fixture listener and validates its HTTP schema (not physical voice proof)", async () => {
     const root = mkdtempSync(join(tmpdir(), "vc-owned-runtime-")); roots.push(root);
     const voice = join(root, "voice"); mkdirSync(voice);
-    writeFileSync(join(voice, "health.json"), JSON.stringify({ ok: true, brain: "pi", stt: "elevenlabs", tts: "elevenlabs" }));
+    writeFileSync(join(voice, "health.json"), JSON.stringify({ ok: true, brain: "pi", stt: "auto", tts: "auto" }));
     writeFileSync(join(voice, "bot.py"), `from http.server import BaseHTTPRequestHandler, HTTPServer
 class Handler(BaseHTTPRequestHandler):
  def do_GET(self):
@@ -107,7 +107,7 @@ server.serve_forever()
       });
       const options = { required: true, stateDir: root, port: 19147, startupDeadline: Date.now() + 10000, pipeline: { running: true, settingUp: false, error: null } };
       expect(await observeReleaseVoiceHealth(options)).toMatchObject({ state: "ready", owned: true });
-      writeFileSync(join(voice, "health.json"), JSON.stringify({ ok: true, brain: "pi", stt: "unsupported", tts: "elevenlabs" }));
+      writeFileSync(join(voice, "health.json"), JSON.stringify({ ok: true, brain: "pi", stt: "unsupported", tts: "auto" }));
       expect(await observeReleaseVoiceHealth(options)).toMatchObject({ state: "failed", owned: false });
     } finally {
       child.kill("SIGTERM");

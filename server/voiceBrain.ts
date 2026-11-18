@@ -28,6 +28,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { voiceProvider } from "./voiceProvider";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Speakable, toSpeech } from "./speakable";
 import { isCommentary } from "../src/convlog/commentary";
@@ -52,7 +53,12 @@ export type BrainDeps = {
   engine: () => Promise<BrainEngine>;
   /** The box's ElevenLabs key (the key store); never logged. */
   elKey: () => string | null;
+  /** The ElevenLabs voice's voice id (used only when the call speaks with ElevenLabs). */
   voiceId: () => string;
+  /** Whether the ElevenLabs voice plugin is on (server/voiceProvider.ts); absent: on. */
+  elevenlabsPluginOn?: () => boolean;
+  /** The local voice's packages ready in the pipeline's environment (installing them the first time); absent: ready. */
+  localVoiceReady?: () => { ready: boolean; error: string | null };
   /** The voice Carl picked (Settings → Voice): every device's calls speak with it. */
   setVoiceId?: (id: string) => void;
   /** Where the pipeline listens (loopback). */
@@ -773,7 +779,12 @@ async function offer(d: BrainDeps, b: any): Promise<{ status: number; body: Reco
   const state = d.pipelineState?.();
   if (state && !(await pipelineUp(d))) return { status: 503, body: { error: state.error ?? "This instance’s voice pipeline is not ready", failure: state.failure ?? null } };
   const key = d.elKey();
-  if (!key) return { status: 503, body: { error: "no ElevenLabs key on the box" } };
+  const provider = voiceProvider({ elevenlabsPluginOn: d.elevenlabsPluginOn?.() ?? true, elKey: key });
+  if (provider === "local") {
+    const local = d.localVoiceReady?.() ?? { ready: true, error: null };
+    if (!local.ready) return { status: 503, body: { error: local.error ?? "Setting up the local voice (the first time takes a few minutes)" } };
+  }
+  log(d, { ev: "call.provider", call: c.id, provider });
   try {
     const r = await fetch(`${d.botUrl}/offer`, {
       method: "POST",
@@ -782,7 +793,7 @@ async function offer(d: BrainDeps, b: any): Promise<{ status: number; body: Reco
         sdp: b.sdp,
         type: b.type,
         pc_id: b.pc_id ?? null,
-        call: { id: c.id, token: c.token.toString("base64url"), base: d.selfUrl, elKey: key, voiceId: d.voiceId() },
+        call: { id: c.id, token: c.token.toString("base64url"), base: d.selfUrl, provider, ...(provider === "elevenlabs" ? { elKey: key, voiceId: d.voiceId() } : {}) },
       }),
     });
     const out = (await r.json().catch(() => ({}))) as Record<string, unknown>;

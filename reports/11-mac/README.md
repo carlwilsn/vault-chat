@@ -276,3 +276,26 @@ Later changes (not trivial):
   Tests: test/harness/macEnv.test.ts. Rust side untouched (mac-2 owns local_server.rs changes).
 - Left for later (not blocking boot): StartJob uses systemd-run/systemctl (server/engine/jobs.ts) so jobs fail on a
   Mac; the Rust side's own spawns (e.g. `claude setup-token`) still see launchd's PATH; findings 4-10 stand.
+
+## voice-1: what the local voice needs on a Mac (for the packaging lane)
+
+The core voice is now local (server/voiceProvider.ts: ElevenLabs only when the ElevenLabs voice plugin is on and Keys
+has a key). On the box it runs from server/voicePipeline.ts; the Mac has no managed pipeline yet
+(`wantPipeline` refuses off Linux). To bundle it in the .app:
+
+- Python 3.12+ in the bundle (uv-managed or python-build-standalone), not the system one; `uv` itself if the
+  environment is made on first run (as on the box) rather than shipped prebuilt.
+- requirements.txt + requirements-local.txt; on darwin arm64 the second picks `pipecat-ai[kokoro,mlx-whisper]`
+  (mlx-whisper, Apple silicon only). Intel Macs fall back to faster-whisper (CTranslate2 has macOS x86_64 wheels).
+- Native wheels to check on a fresh macOS runner: onnxruntime (Kokoro + Silero), espeakng-loader (Kokoro's
+  phonemizer ships its own espeak-ng data), mlx / mlx-whisper, av, aiortc (SmallWebRTC). The box needed
+  LD_LIBRARY_PATH for Nix's libstdc++/zlib; macOS needs none, but unsigned dylibs inside an unsigned .app may trip
+  Gatekeeper quarantine: clear com.apple.quarantine on the bundled venv or sign ad hoc (`codesign -s -`).
+- Models are fetched on first need into VC_VOICE_MODELS (set it to ~/Library/Application Support/<app>/voice-models):
+  Kokoro 326 MB + 28 MB from the kokoro-onnx GitHub release; mlx-community/whisper-base.en-mlx (~140 MB) through
+  the Hugging Face cache under VC_VOICE_MODELS/hf. Shipping them inside the .app adds ~500 MB; fetching them in the
+  first-run tutorial's background is the lighter option (progress lines: "[voice models] ..." on the bot's stdout).
+- Mic permission: the bot only receives WebRTC audio from the webview, so the app needs NSMicrophoneUsageDescription
+  (the webview's getUserMedia), not the Python process.
+- Measured on the Linux box (12 cores, under load ~8): Kokoro first audio 1.2–1.5 s per sentence, Whisper base.en
+  0.7–1.3 s per 2 s utterance; an M-series Mac with MLX should be faster, but measure it on the runner.
