@@ -1,7 +1,7 @@
 // The "Change ready" notice (src/changeReady.ts): a plugin's draft waits for Carl. Shaped like "Update ready"
 // (src/UpdateBanner.tsx): Try runs it on his windows only; then Keep or Discard (each a record on the box); Back stops
 // trying. A settings draft of only the box's settings (the model, the voice …) has no Try: Keep / Discard at once. Part of the core, never of the plugin tried, with shortcuts that work whatever the draft does to the screen.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FlaskConical, X, Check, Undo2, Play } from "lucide-react";
 import { Button } from "./ui";
 import { declareOffers } from "./pluginOffers";
@@ -10,6 +10,7 @@ import {
   CHANGES_PLUGIN,
   changeOffers,
   clearOutcome,
+  lastOutcome,
   discardChange,
   keepChange,
   noticeAutoSwitch,
@@ -30,6 +31,9 @@ import { useSupervisorVersion } from "./pluginSupervisorApp";
 
 const tip = (label: string, id: "change.try" | "change.keep" | "change.discard") => `${label} (${chordText(shortcut(id).keys[0]!)})`;
 
+/** How long a good outcome line stays up. */
+export const OUTCOME_MS = 6_000;
+
 export function ChangeReady() {
   const pending = usePendingChanges();
   const outcome = useOutcome();
@@ -46,6 +50,32 @@ export function ChangeReady() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => startChangeReady(), []);
+  // A good outcome ("Kept.", "Now running the new frontend …") closes by itself after OUTCOME_MS, not while the pointer
+  // is on the card; a failure stays until dismissed. Switch back stays reachable by asking (app/changes' back offer).
+  const hovering = useRef(false);
+  const [hoverTick, setHoverTick] = useState(0);
+  useEffect(() => {
+    if (!outcome?.ok) return;
+    const t = setTimeout(() => {
+      if (!hovering.current && lastOutcome() === outcome) clearOutcome();
+    }, OUTCOME_MS);
+    return () => clearTimeout(t);
+  }, [outcome, hoverTick]);
+  // Trial mode: while a change is tried, what it touches glows (its Look selectors), else the whole window frame; Keep,
+  // Discard and Back clear it (src/corePointer.ts).
+  const auraKey = trying && shown ? `${shown.plugin}@${shown.version}|${(shown.looks ?? []).map((l) => l.selector ?? "").join("\u0000")}` : "";
+  useEffect(() => {
+    if (!auraKey || !shown) return;
+    let undo: (() => void) | null = null;
+    let gone = false;
+    void import("./corePointer").then((m) => {
+      if (!gone) undo = m.trialAura((shown.looks ?? []).flatMap((l) => (l.selector ? [l.selector] : [])));
+    });
+    return () => {
+      gone = true;
+      undo?.();
+    };
+  }, [auraKey]);
   // A migration tried before a restart (or in another window): run it on the copy again for this notice's summary.
   useEffect(() => {
     if (trying && shown?.migration && !mig) void tryMigration(shown.plugin, shown.version);
@@ -97,7 +127,14 @@ export function ChangeReady() {
   if (hidden && !outcome) return null;
 
   return (
-    <div data-el="change-ready" data-vc-trying={trying ? "1" : undefined} className="fixed top-12 right-4 w-80 z-50 rounded-lg border border-border bg-card shadow-xl overflow-hidden">
+    <div
+      data-el="change-ready"
+      onMouseEnter={() => (hovering.current = true)}
+      onMouseLeave={() => {
+        hovering.current = false;
+        setHoverTick((n) => n + 1);
+      }}
+      data-vc-trying={trying ? "1" : undefined} className={`fixed top-12 right-4 w-80 z-50 rounded-lg border bg-card shadow-xl overflow-hidden ${trying ? "border-[hsl(270_85%_66%)] ring-2 ring-[hsl(270_85%_66%/0.35)]" : "border-border"}`}>
       {!hidden && shown && (
         <>
           <div className="flex items-start gap-2.5 p-3 border-b border-border bg-gradient-to-br from-accent/40 to-transparent">
@@ -106,7 +143,7 @@ export function ChangeReady() {
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-[12px] font-semibold text-foreground/95" data-el="change-ready-title">
-                Change ready: {shown.what || (shown.added ? `new plugin ${shown.name}` : shown.name)}
+                {trying ? "Trying" : "Change ready"}: {shown.what || (shown.added ? `new plugin ${shown.name}` : shown.name)}
               </div>
               {!!shown.changes?.length && (
                 <ul data-el="change-ready-changes" className="mt-1 space-y-0.5 text-[11px] text-foreground/85 leading-snug list-disc pl-3.5">
@@ -130,7 +167,11 @@ export function ChangeReady() {
           <div className="p-3 space-y-2.5">
             {trying && !shown.migration && (
               <div className="text-[11.5px] text-muted-foreground/90 leading-relaxed">
-                {shown.core ? "This laptop runs the new frontend now. Keep makes it stay; Back returns to your current version." : "Trying it on this laptop's windows. Nothing on the box changes until you keep it."}
+                {shown.core
+                  ? shown.looks?.some((l) => l.selector)
+                    ? "The glowing parts are new and not kept yet. Keep makes them stay; Switch back returns to your current version."
+                    : "This laptop runs the new frontend now, not kept yet. Keep makes it stay; Switch back returns to your current version."
+                  : "Trying it on this laptop's windows (the glowing frame): nothing on the box changes until you keep it."}
               </div>
             )}
             {trying && shown.migration && (
@@ -175,8 +216,9 @@ export function ChangeReady() {
                     Discard
                   </Button>
                   {trying && (
-                    <Button size="sm" variant="ghost" data-el="change-back" disabled={busy} onClick={doTry} title={tip("Back to the current one", "change.try")}>
-                      <Undo2 className="h-3 w-3" />
+                    <Button size="sm" variant="ghost" data-el="change-back" disabled={busy} onClick={doTry} title={tip("Switch back to the current one", "change.try")}>
+                      <Undo2 className="h-3 w-3 mr-1" />
+                      Switch back
                     </Button>
                   )}
                 </>

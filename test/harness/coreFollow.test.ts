@@ -246,3 +246,23 @@ test("Try only for what Carl can see: behind-the-scenes fixes get Keep only; a c
   assert.equal(r.text, "Now running the new frontend: Model menu lists Fable. Look: the model menu lists Fable. Keep makes it stay; Back returns to your current version.");
   assert.deepEqual(r.looks, [look]);
 });
+
+test("trial mode: what a tried change touches glows (else the whole window frame) until Keep, Discard or Back clears it", async () => {
+  const { trialAura, clearTrialAura } = await import("../../src/corePointer.ts");
+  const { parseHTML } = await import("linkedom");
+  const G = globalThis as { document?: unknown };
+  const had = G.document;
+  G.document ??= parseHTML("<!doctype html><html><head></head><body></body></html>").document;
+  const undo = trialAura(['[data-el="composer"]', "not a ((selector"]);
+  const css = document.getElementById("vc-trial-aura")?.textContent ?? "";
+  assert.match(css, /\[data-el="composer"\]\{outline:2px solid hsl\(270 85% 66%\) !important;outline-offset:3px !important;animation:vc-trial-glow/);
+  assert.doesNotMatch(css, /not a/);
+  assert.equal(document.getElementById("vc-trial-frame"), null, "an element named: no frame");
+  undo();
+  assert.equal(document.getElementById("vc-trial-aura"), null);
+  trialAura([]);
+  assert.ok(document.getElementById("vc-trial-frame"), "nothing named: the whole window frame glows");
+  clearTrialAura();
+  assert.equal(document.getElementById("vc-trial-frame"), null);
+  G.document = had;
+});
