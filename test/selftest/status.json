@@ -1,0 +1,7 @@
+{
+  "steps": [
+    { "waitFor": "#root > *", "timeout": 30000 },
+    { "expect": { "health": "server", "timeout": 120000 } },
+    { "expect": { "status": { "app": "vault-chat", "schema": 1, "vaultOpen": true, "vault": "$vault", "signedIn": false, "server": { "healthy": true } }, "timeout": 60000 } }
+  ]
+}

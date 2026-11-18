@@ -117,6 +117,14 @@ if (isDriveWindow) {
     .then(() => import("./coreFollow"))
     .then((m) => m.startCoreFollow())
     .catch(() => {});
+  // For a new user's installing agent (src/appStatus.ts, src-tauri/src/first_run.rs): the vault it picked opens on
+  // the first launch, and the status file (`vault-chat --status`) says how far setup has got.
+  void import("./appStatus")
+    .then(async (m) => {
+      await m.openSetupVault();
+      m.installAppStatus();
+    })
+    .catch((e) => console.warn("[status]", e));
   // Reconcile "run in background" (always-on tray daemon) with the Rust
   // close-to-tray gate and the OS login item. Main window only; popouts must
   // never register autostart or hold the app alive on close.

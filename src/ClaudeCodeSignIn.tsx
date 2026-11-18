@@ -8,16 +8,25 @@
 // a pty, and it broke four different ways on his Windows laptop before he said
 // to stop. There is no other way in ("I don't want the other sign on options").
 //
+// On a Mac a new user pastes nothing: "Sign in with Claude" runs that command
+// in the app (src-tauri/src/claude_signin.rs), the browser opens, one Authorize
+// click, and the token goes from the command's output straight into the
+// keychain without ever reaching this webview's screen. If that cannot finish
+// (no `claude`, a refusal, a timeout, Cancel) the paste flow below shows with
+// the one-line reason. Windows and Linux keep the paste flow only.
+//
 // Either way the token is kept in this machine's keychain like every other key
 // and travels to the box the same way (src/keystore.ts), where only the Claude
 // Code process is given it — never anything the agent runs (src/keyEnv.ts
 // NOT_FOR_COMMANDS). Signing out removes it from the keychain and from the
 // store, and the key push that follows removes it from the box too (the box
 // makes its store exactly what is pushed: src/boxKeys.ts).
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Button, Input } from "./ui";
+import { openUrl } from "./opener";
+import { IS_MAC } from "./shortcuts";
 import { useStore } from "./store";
 import { boxLinkFor } from "./boxChat";
 import { pushKeysToBox } from "./boxKeys";
@@ -42,7 +51,34 @@ export type SignInIo = {
   push: () => Promise<string | null>;
   /** Take the token off this machine (signing out). */
   forget: () => Promise<void>;
+  /** macOS: run `claude setup-token` in the app and keep its token in the
+   *  keychain (never handed back here). Throws the one-line reason it could not. */
+  runSignIn?: () => Promise<void>;
 };
+
+/** Token-shaped text taken out of anything shown. */
+export const redactTokens = (s: string): string => s.replace(/sk-ant-[A-Za-z0-9_-]+/g, "[redacted]");
+
+/**
+ * The one-click path: the native side runs the command and keeps the token; this
+ * reads it back from the keychain into the store (what the box push reads) and
+ * pushes, exactly as a pasted token would be. `why` is one line to show above
+ * the paste flow; no answer carries the token.
+ */
+export async function signInWithClaude(io: SignInIo): Promise<{ ok: true; pushError?: string } | { ok: false; why: string }> {
+  if (!io.runSignIn) return { ok: false, why: "not available here" };
+  try {
+    await io.runSignIn();
+  } catch (e) {
+    const line = redactTokens(why(e)).split("\n")[0].trim().slice(0, 300);
+    return { ok: false, why: line || "the sign-in did not finish" };
+  }
+  const token = await io.storedToken().catch(() => null);
+  if (!token) return { ok: false, why: "the sign-in finished but nothing was kept in the keychain" };
+  io.remember(token);
+  const err = await io.push().catch(why);
+  return err ? { ok: true, pushError: redactTokens(err) } : { ok: true };
+}
 
 const why = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -76,6 +112,25 @@ export async function signOut(io: SignInIo): Promise<string | null> {
   return err ? `signed out here, but the box kept its copy: ${err}` : null;
 }
 
+// The one-click run's state, shared by every SignInFlow on screen (the chat's
+// prompt, Settings, voice): a surface that mounts or remounts mid-run (the
+// composer swaps its fallback for the plugin) shows the same run, not a fresh
+// button.
+type RunState = { state: "idle" | "running" | "failed"; why: string | null; url: string | null };
+let runState: RunState = { state: "idle", why: null, url: null };
+const runSubs = new Set<() => void>();
+function setRunState(next: RunState | ((r: RunState) => RunState)): void {
+  runState = typeof next === "function" ? next(runState) : next;
+  runSubs.forEach((f) => f());
+}
+function useRunState(): RunState {
+  return useSyncExternalStore(
+    (f) => (runSubs.add(f), () => void runSubs.delete(f)),
+    () => runState,
+    () => runState,
+  );
+}
+
 /** The sign-in driven over Tauri, for the real app. */
 function liveIo(vault: string | null, remember: (token: string) => void, forget: () => void): SignInIo {
   const push = async () => {
@@ -87,6 +142,7 @@ function liveIo(vault: string | null, remember: (token: string) => void, forget:
   };
   return {
     ensureCli: () => invoke<{ cli: string; version: string }>("claude_cli_ensure"),
+    runSignIn: () => invoke<void>("claude_signin_run"),
     storedToken: () => keychainGet(KEY.claudeCode),
     remember,
     push,
@@ -147,6 +203,37 @@ function SignInFlow({ onDone }: { onDone?: () => void }) {
     };
   }, []);
 
+  // macOS: the one-click sign-in (src-tauri/src/claude_signin.rs); elsewhere the
+  // paste flow is all there is. The platform answers at once (no flash of the
+  // other flow); the native side has the last word.
+  const [auto, setAuto] = useState<boolean>(IS_MAC);
+  const run = useRunState();
+  const setRun = setRunState;
+  const [pasteChosen, setPasteChosen] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void invoke<boolean>("claude_signin_available")
+      .then((r) => alive && setAuto(r === true))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const signInHere = async () => {
+    if (runState.state === "running") return;
+    setRun({ state: "running", why: null, url: null });
+    setError(null);
+    const off = await listen<string>("claude-signin-url", (e) => setRun((r) => (r.state === "running" ? { ...r, url: e.payload } : r))).catch(() => null);
+    const r = await signInWithClaude(io).finally(() => off?.());
+    void import("./appStatus").then((m) => m.noteSignInError(r.ok ? null : r.why)).catch(() => {});
+    if (!r.ok) return setRun({ state: "failed", why: r.why, url: null });
+    setRun({ state: "idle", why: null, url: null });
+    forgetClaudeHealth();
+    if (r.pushError) setError(`saved on this machine, but the box did not take it: ${r.pushError}`);
+    onDone?.();
+  };
+
   const command = setupCommandFor(cli.path);
 
   const copy = () => {
@@ -186,8 +273,55 @@ function SignInFlow({ onDone }: { onDone?: () => void }) {
     onDone?.();
   };
 
+  // The one click, before anything about terminals or tokens.
+  if (auto && run.state !== "failed" && !pasteChosen) {
+    return (
+      <div className="space-y-1.5" data-el="claude-signin-flow">
+        {run.state === "running" ? (
+          <>
+            <p className="text-[11.5px] text-foreground/90" data-el="claude-signin-waiting">
+              Waiting for you to click Authorize in your browser…
+            </p>
+            <div className="flex items-center gap-3 text-[10.5px] text-muted-foreground">
+              {run.url && (
+                <button onClick={() => void openUrl(run.url!).catch(() => {})} className="underline hover:text-foreground" data-el="claude-signin-open-page">
+                  Browser didn't open? Open the sign-in page
+                </button>
+              )}
+              <button onClick={() => void invoke("claude_signin_cancel").catch(() => {})} className="underline hover:text-foreground" data-el="claude-signin-cancel">
+                Cancel
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <Button size="sm" onClick={() => void signInHere()} data-el="claude-signin-auto">
+              {SIGN_IN_BUTTON}
+            </Button>
+            <p className="text-[10.5px] text-muted-foreground">
+              Opens your browser: click Authorize there. Nothing to copy or paste.{" "}
+              <button onClick={() => setPasteChosen(true)} className="underline hover:text-foreground" data-el="claude-signin-paste-instead">
+                Paste a token instead
+              </button>
+            </p>
+          </>
+        )}
+        {error && <p className="text-[10.5px] text-amber-500/90 break-words">{error}</p>}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-1.5" data-el="claude-signin-flow">
+      {run.state === "failed" && (
+        <p className="text-[11px] text-amber-500/90 break-words" data-el="claude-signin-auto-failed">
+          Couldn't sign in automatically: {run.why}.{" "}
+          <button onClick={() => void signInHere()} className="underline hover:text-foreground" data-el="claude-signin-retry">
+            Try again
+          </button>{" "}
+          or paste a token:
+        </p>
+      )}
       <p className="text-[11px] text-muted-foreground">
         Run this in a terminal, sign in in the browser it opens, then paste the token it prints.
       </p>

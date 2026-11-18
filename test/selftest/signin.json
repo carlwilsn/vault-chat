@@ -1,0 +1,12 @@
+{
+  "steps": [
+    { "waitFor": "#root > *", "timeout": 30000 },
+    { "expect": { "health": "server", "timeout": 120000 } },
+    { "waitFor": "[data-el=claude-signin-auto]", "timeout": 30000 },
+    { "click": "[data-el=claude-signin-auto]" },
+    { "expect": { "key": "service.claude-code", "sha256": "66ddb547ccfee0479946c96bd74fe889128cf227e239d54d700bb9597146c699", "timeout": 60000 } },
+    { "expect": { "status": { "signedIn": true, "vaultOpen": true, "signInError": null }, "timeout": 30000 } },
+    { "expect": { "notText": "sk-ant-" } },
+    { "expect": { "notText": "Couldn't sign in automatically" } }
+  ]
+}

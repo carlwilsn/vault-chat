@@ -54,6 +54,10 @@ tiny_http = "0.12"
 # (not through Tauri's webview manager) so it carries none of the app's IPC or protocols. Same version Tauri uses.
 wry = { version = "0.54", default-features = false }
 
+# The pty `claude setup-token` needs for the one-click sign-in (src/claude_signin.rs).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
 

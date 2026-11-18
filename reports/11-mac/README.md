@@ -222,7 +222,7 @@ Artifacts (PNGs, self-test JSON, app logs) are uploaded so the box agent can fet
 ## Findings from mac-1
 
 Done in mac-1 (step 1 of the build steps, plus the CI check): `src-tauri/tauri.macos.conf.json` (decorations on,
-Overlay title bar, hidden title, traffic lights at x 14 / y 16 so they end at ~68 px, inside the bars' 76 px inset;
+Overlay title bar, hidden title, traffic lights at x 14 / y 16 (y 12 since mac-5) so they end at ~68 px, inside the bars' 76 px inset;
 ad-hoc signature; macOS resources), `src-tauri/Info.plist` (microphone usage string), the downloaders fetch
 the darwin Node/Tectonic for the build machine's arch instead of the Linux ones, and `ship.yml` `build_macos`
 (macos-15, arm64): builds .app + .dmg with no updater artifacts, launches it with a fresh HOME, checks the window
@@ -299,3 +299,30 @@ has a key). On the box it runs from server/voicePipeline.ts; the Mac has no mana
   (the webview's getUserMedia), not the Python process.
 - Measured on the Linux box (12 cores, under load ~8): Kokoro first audio 1.2–1.5 s per sentence, Whisper base.en
   0.7–1.3 s per 2 s utterance; an M-series Mac with MLX should be faster, but measure it on the runner.
+## mac-5: one-click Claude sign-in, status for an installing agent, setup handoff
+
+- **Sign in with Claude, no paste (macOS only)** — `src-tauri/src/claude_signin.rs`, UI in `src/ClaudeCodeSignIn.tsx`.
+  Measured on the CLI (2.1.276): `claude setup-token` opens the browser itself (`$BROWSER`, else `open`) at the
+  authorize page with `redirect_uri=http://localhost:<port>/callback` and listens there, so the user's one Authorize
+  click finishes it; no code to paste back. On pipes it prints nothing and never exits, so the app gives it a pty
+  (400 columns, no wrapping), a throwaway `CLAUDE_CONFIG_DIR`, and the login shell's PATH (+ Homebrew, ~/.local/bin)
+  because a Finder launch has launchd's bare PATH. The token is matched only once whole, stored with
+  `keychain_store` (the paste flow's entry `service.claude-code`), never returned to the webview, logged or put in an
+  error (`redact`); the webview reads it back from the keychain and pushes as a paste would. A refusal ("OAuth
+  error: …"), no `claude`, Cancel or 5 min without a click shows the paste flow with that one-line reason.
+  Windows/Linux: unchanged (paste only); `VC_CLAUDE_SIGNIN=1` turns it on for a Unix test launch.
+- **Status for an agent**: `<app dir>/status.json` (macOS `~/Library/Application Support/vault-chat/status.json`,
+  Linux `~/.config/vault-chat/`), or `vault-chat --status` (the app binary; prints it with `running` and exits
+  without starting the app): version, platform, signedIn, vaultOpen + vault, server {healthy, url without
+  query/userinfo}, git + needsCommandLineTools + gitHelp, signInError. Fields whitelisted and redacted in Rust.
+- **Setup handoff**: before first launch write `<app dir>/setup.json` = `{"vault": "~/vault-chat"}` (or launch with
+  `VC_SETUP_VAULT=<path>`); the first main window with no vault opens it (made if missing) and renames the file
+  `setup.used.json`. No vault named → `~/vault-chat`; `~/Documents`, `~/Desktop`, `~/Downloads`, `~/Library` are never
+  used (→ `~/vault-chat`).
+- **Self-tests** (`test/selftest/status.json`, `signin.json` + `fake-claude`, `signin-refused.json` +
+  `fake-claude-refused`; new checks `expect {status}`, `{key, sha256}` (match/no match only), `{notText}`), run by
+  build_macos; the job fails if the fake token appears anywhere in the proof. A real Claude sign-in needs a human's
+  Authorize click in a browser, so CI cannot run one: the first real one is on a person's Mac.
+- **Traffic lights**: measured 3.5 px low on the real Mac shot (button centre 17.5, bar 0–28 → centre 14);
+  `trafficLightPosition.y` 16 → 12. `scripts/macos-traffic-lights.py` (pure Python) measures window.png in
+  build_macos and fails over 1 px; numbers go to checks.txt. The fresh-HOME self-test is recorded as `selftest.mov`.

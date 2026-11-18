@@ -7,8 +7,8 @@
 // before he said to stop; that driver is gone and this is what is left of it —
 // which `claude` is here, and what version it is.
 //
-// The token's keychain entry is src/keychain.ts KEY.claudeCode; nothing in Rust
-// names it any more, now that nothing here captures a token.
+// On a Mac the app can also run that command itself and keep the token with no
+// paste: src/claude_signin.rs (which uses `candidates` from here).
 
 fn home_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME")
@@ -17,7 +17,7 @@ fn home_dir() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
-fn candidates() -> Vec<String> {
+pub(crate) fn candidates() -> Vec<String> {
     let home = home_dir();
     let state = std::env::var("VC_STATE_DIR")
         .ok()

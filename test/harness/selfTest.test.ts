@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { parseSelfTest, runSelfTest, selfTestResult, type SelfTestDeps } from "../../src/selfTest.ts";
+import { parseSelfTest, runSelfTest, selfTestResult, sha256Hex, statusMismatch, type SelfTestDeps } from "../../src/selfTest.ts";
 
 function deps(over: Partial<SelfTestDeps> = {}): SelfTestDeps & { ran: unknown[]; clock: { t: number } } {
   const clock = { t: 0 };
@@ -96,4 +96,50 @@ test("the smoke steps the Mac job reuses are a valid steps file", () => {
   const file = path.join(import.meta.dirname, "../selftest/smoke.json");
   const plan = parseSelfTest(JSON.parse(fs.readFileSync(file, "utf8")));
   assert.equal(typeof plan, "object", String(plan));
+});
+
+test("the sign-in and status checks: key by hash only, status in part, text that must not show", async () => {
+  assert.match(String(parseSelfTest([{ expect: { key: "service.x", sha256: "abc" } }])), /sha256/);
+  assert.match(String(parseSelfTest([{ expect: { status: [1] } }])), /object of values/);
+  assert.match(String(parseSelfTest([{ expect: { notText: "" } }])), /notText needs text/);
+  const secret = "sk-ant-oat01-not-for-results";
+  const hash = await sha256Hex(secret);
+  assert.match(hash, /^[0-9a-f]{64}$/);
+  const d = deps({
+    keyHash: async (k) => (k === "service.claude-code" ? hash : null),
+    status: async () => ({ signedIn: true, vault: "/v", server: { healthy: true, url: "http://x" } }),
+    vault: "/v",
+    text: () => "Signed in to Claude",
+  });
+  const r = await runSelfTest(
+    [
+      { expect: { key: "service.claude-code", sha256: hash } },
+      { expect: { status: { signedIn: true, vault: "$vault", server: { healthy: true } } } },
+      { expect: { notText: "sk-ant-" } },
+    ],
+    d,
+  );
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.ok(!JSON.stringify(r).includes(secret), "the value never reaches the results");
+  const bad = await runSelfTest([{ expect: { key: "service.other", sha256: hash, timeout: 10 } }], d);
+  assert.match(String(bad.steps[0]!.error), /nothing is kept under service.other/);
+  const shows = await runSelfTest([{ expect: { notText: "Signed in" } }], d);
+  assert.match(String(shows.steps[0]!.error), /is on screen/);
+  assert.equal(statusMismatch({ server: { healthy: true } }, { server: { healthy: false } }), "status server.healthy is false, not true");
+  assert.equal(statusMismatch({ vault: "$vault" }, { vault: "/v" }, "/v"), null);
+  assert.match(String(statusMismatch({ signedIn: true }, {})), /signedIn is missing/);
+});
+
+test("the Mac job's sign-in and status steps files stay valid", () => {
+  for (const f of ["status.json", "signin.json", "signin-refused.json"]) {
+    const plan = parseSelfTest(JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "../selftest", f), "utf8")));
+    assert.notEqual(typeof plan, "string", `${f}: ${plan}`);
+  }
+});
+
+test("signin.json expects the hash of the token the fake claude prints", async () => {
+  const dir = path.join(import.meta.dirname, "../selftest");
+  const token = fs.readFileSync(path.join(dir, "fake-claude"), "utf8").match(/sk-ant-oat01-[A-Za-z0-9_-]+/)![0];
+  const steps = JSON.parse(fs.readFileSync(path.join(dir, "signin.json"), "utf8")).steps as { expect?: { sha256?: string } }[];
+  assert.equal(steps.find((s) => s.expect?.sha256)!.expect!.sha256, await sha256Hex(token));
 });

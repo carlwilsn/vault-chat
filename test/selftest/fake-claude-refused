@@ -1,0 +1,13 @@
+#!/bin/sh
+# A stand-in `claude` whose sign-in is refused, as the real one prints it (test/selftest/signin-refused.json):
+# the app must end the one-click sign-in with Claude's words and offer the paste flow.
+case "$1" in
+  --version) echo "9.9.9 (Claude Code)"; exit 0 ;;
+  setup-token) ;;
+  *) exit 2 ;;
+esac
+[ -t 1 ] || exit 3
+printf ' \302\267 Opening browser to sign in\342\200\246\r\n'
+sleep 1
+printf 'OAuth error: Request failed with status code 400\r\n\r\n Press Enter to retry.\r\n'
+sleep 60

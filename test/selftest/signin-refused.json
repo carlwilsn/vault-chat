@@ -1,0 +1,11 @@
+{
+  "steps": [
+    { "waitFor": "#root > *", "timeout": 30000 },
+    { "expect": { "health": "server", "timeout": 120000 } },
+    { "waitFor": "[data-el=claude-signin-auto]", "timeout": 30000 },
+    { "click": "[data-el=claude-signin-auto]" },
+    { "waitFor": "[data-el=claude-signin-retry]", "timeout": 30000 },
+    { "waitFor": "[data-el=claude-signin-token]" },
+    { "expect": { "status": { "signedIn": false, "signInError": "Claude said: Request failed with status code 400" }, "timeout": 15000 } }
+  ]
+}

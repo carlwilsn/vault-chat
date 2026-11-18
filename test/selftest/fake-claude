@@ -1,0 +1,18 @@
+#!/bin/sh
+# A stand-in `claude` for test/selftest/signin.json: it behaves as `claude setup-token` does after the
+# user's Authorize click (Ink output on a terminal, then the token on its own line) and prints a FAKE token,
+# so the one-click sign-in (src-tauri/src/claude_signin.rs) can be proven with no human and no account.
+# It refuses to run without a terminal, as the real CLI prints nothing there.
+case "$1" in
+  --version) echo "9.9.9 (Claude Code)"; exit 0 ;;
+  setup-token) ;;
+  *) echo "fake claude: only setup-token" >&2; exit 2 ;;
+esac
+[ -t 1 ] || { echo "fake claude: stdout is not a terminal" >&2; exit 3; }
+[ -n "$CLAUDE_CONFIG_DIR" ] || { echo "fake claude: no scratch CLAUDE_CONFIG_DIR" >&2; exit 4; }
+printf '\033[38;5;174mWelcome\033[9Gto\033[12GClaude\033[19GCode\033[39m\r\n \302\267 Opening browser to sign in\342\200\246\r\n'
+sleep 1
+printf '\033[32m\342\234\223 Long-lived authentication token created successfully!\033[39m\r\n'
+printf 'Your OAuth token (valid for 1 year):\r\n\033[33m%s\033[39m\r\n' 'sk-ant-oat01-SELFTEST-fake-token-not-real-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV_-'
+printf 'Store this token securely. You won'"'"'t be able to see it again.\r\n'
+sleep 60

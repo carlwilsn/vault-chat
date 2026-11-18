@@ -11,12 +11,20 @@
 //   {expect: {health: "server", timeout?}}             the app's local server answers /api/v1/health (default 90 s)
 //   {expect: {text: "…", timeout?}}                     the window shows that text (default 5 s)
 //   {expect: {file: "rel/path", contains?: "…", timeout?}}  that file is on disk in the vault (with that text)
+//   {expect: {notText: "…"}}                            the window does NOT show that text (checked once)
+//   {expect: {status: {…}, timeout?}}                   the app's status file (src-tauri/src/first_run.rs) holds these
+//                                                        values (nested objects match in part; "$vault" = the vault)
+//   {expect: {key: "service.x", sha256: "<hex>", timeout?}}  the key store holds a value with that SHA-256 under that
+//                                                        name; only match / no match is ever reported, never the value
 import { checkSteps, runSteps, stepAction, visibleText, type Step, type StepOutcome } from "./driveSteps";
 
 export type Expect =
   | { health: "server"; timeout?: number }
   | { text: string; timeout?: number }
-  | { file: string; contains?: string; timeout?: number };
+  | { file: string; contains?: string; timeout?: number }
+  | { notText: string; timeout?: number }
+  | { status: Record<string, unknown>; timeout?: number }
+  | { key: string; sha256: string; timeout?: number };
 export type SelfTestStep = Step | { expect: Expect };
 export type SelfTestPlan = { vault?: string; steps: SelfTestStep[] };
 export type SelfTestConfig = { steps: unknown; out: string; vault: string; tempVault?: boolean };
@@ -57,8 +65,11 @@ function checkStep(s: unknown): string | null {
     if (!e || typeof e !== "object") return "expect needs {health}, {text} or {file}";
     const o = e as Record<string, unknown>;
     if (o.timeout !== undefined && !(typeof o.timeout === "number" && o.timeout > 0 && o.timeout <= MAX_WAIT_MS)) return `timeout is at most ${MAX_WAIT_MS} ms`;
-    const kinds = ["health", "text", "file"].filter((k) => k in o);
-    if (kinds.length !== 1) return "expect needs exactly one of health, text, file";
+    const kinds = ["health", "text", "file", "notText", "status", "key"].filter((k) => k in o);
+    if (kinds.length !== 1) return "expect needs exactly one of health, text, file, notText, status, key";
+    if ("notText" in o && !(typeof o.notText === "string" && o.notText.trim())) return "expect.notText needs text";
+    if ("status" in o && !(o.status && typeof o.status === "object" && !Array.isArray(o.status))) return "expect.status needs an object of values";
+    if ("key" in o && !(typeof o.key === "string" && o.key.trim() && typeof o.sha256 === "string" && /^[0-9a-f]{64}$/.test(o.sha256))) return "expect.key needs a key name and a sha256 (64 hex digits)";
     if ("health" in o && o.health !== "server") return 'expect.health is "server"';
     if ("text" in o && !(typeof o.text === "string" && o.text.trim())) return "expect.text needs text";
     if ("file" in o) {
@@ -75,7 +86,7 @@ function checkStep(s: unknown): string | null {
 }
 
 export function selfTestAction(s: SelfTestStep): string {
-  if ("expect" in s) return `expect ${Object.keys(s.expect).find((k) => k !== "timeout" && k !== "contains")}`;
+  if ("expect" in s) return `expect ${Object.keys(s.expect).find((k) => k !== "timeout" && k !== "contains" && k !== "sha256")}`;
   return stepAction(s);
 }
 
@@ -88,6 +99,12 @@ export type SelfTestDeps = {
   /** A vault file's text, or null when it isn't there. */
   readFile: (rel: string) => Promise<string | null>;
   text: () => string;
+  /** The app's status file, or null when there is none yet. */
+  status?: () => Promise<unknown>;
+  /** SHA-256 (hex) of the value the key store holds under that name, or null. Never the value. */
+  keyHash?: (name: string) => Promise<string | null>;
+  /** What "$vault" in an expected status stands for. */
+  vault?: string;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
 };
@@ -124,6 +141,10 @@ export async function runSelfTest(steps: SelfTestStep[], deps: SelfTestDeps): Pr
 }
 
 async function expect(e: Expect, deps: SelfTestDeps, sleep: (ms: number) => Promise<void>, now: () => number): Promise<string | undefined> {
+  if ("notText" in e) {
+    if (deps.text().includes(e.notText)) throw new Error(`"${e.notText}" is on screen`);
+    return undefined;
+  }
   const limit = e.timeout ?? ("health" in e ? 90_000 : 5_000);
   const end = now() + limit;
   let last = "";
@@ -135,6 +156,15 @@ async function expect(e: Expect, deps: SelfTestDeps, sleep: (ms: number) => Prom
     } else if ("text" in e) {
       if (deps.text().includes(e.text)) return undefined;
       last = `"${e.text}" is not on screen`;
+    } else if ("status" in e) {
+      const st = await (deps.status ?? (async () => null))().catch(() => null);
+      const miss = st == null ? "there is no status file yet" : statusMismatch(e.status, st, deps.vault);
+      if (!miss) return undefined;
+      last = miss;
+    } else if ("key" in e) {
+      const h = await (deps.keyHash ?? (async () => null))(e.key).catch(() => null);
+      if (h === e.sha256) return `the value kept under ${e.key} matches`;
+      last = h === null ? `nothing is kept under ${e.key}` : `a different value is kept under ${e.key}`;
     } else {
       const body = await deps.readFile(e.file).catch(() => null);
       if (body !== null && (e.contains === undefined || body.includes(e.contains))) return `${body.length} chars`;
@@ -143,6 +173,29 @@ async function expect(e: Expect, deps: SelfTestDeps, sleep: (ms: number) => Prom
     if (now() >= end) throw new Error(`${last} (waited ${limit} ms)`);
     await sleep(Math.min(250, Math.max(0, end - now())));
   }
+}
+
+/** Why `actual` does not hold `want` (objects in part, "$vault" = the vault), or null. Names the field, never more
+ * than the expected value. */
+export function statusMismatch(want: Record<string, unknown>, actual: unknown, vault?: string, at = ""): string | null {
+  const a = actual && typeof actual === "object" ? (actual as Record<string, unknown>) : {};
+  for (const [k, w] of Object.entries(want)) {
+    const path = at ? `${at}.${k}` : k;
+    if (w && typeof w === "object" && !Array.isArray(w)) {
+      const m = statusMismatch(w as Record<string, unknown>, a[k], vault, path);
+      if (m) return m;
+      continue;
+    }
+    const expected = w === "$vault" && vault !== undefined ? vault : w;
+    if (JSON.stringify(a[k]) !== JSON.stringify(expected)) return `status ${path} is ${JSON.stringify(a[k]) ?? "missing"}, not ${JSON.stringify(expected)}`;
+  }
+  return null;
+}
+
+/** SHA-256 of a string, hex. */
+export async function sha256Hex(s: string): Promise<string> {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /** The result the native side writes. */
@@ -204,6 +257,12 @@ export async function startSelfTestIfAsked(): Promise<void> {
       },
       readFile: (rel) => invoke<string>("read_text_file", { path: `${vault}${sep}${rel}` }).catch(() => null),
       text: () => visibleText(document, 1_000_000),
+      status: () => invoke<unknown>("app_status_read"),
+      keyHash: async (name) => {
+        const v = await invoke<string | null>("keychain_get", { key: name }).catch(() => null);
+        return v ? sha256Hex(v) : null;
+      },
+      vault,
     });
     await finish(selfTestResult({ ok: r.ok, vault, steps: r.steps, errors, text: visibleText(document), ms: performance.now() - began }));
   } catch (e) {

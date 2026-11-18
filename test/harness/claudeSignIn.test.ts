@@ -15,7 +15,8 @@ import { installFakeTauri, makeTempVault } from "./fakes.ts";
 // panelayout.test.ts. Nothing below reaches Tauri: every flow is driven through
 // its injected io.
 installFakeTauri(makeTempVault("vc-claude-signin-"));
-const { saveTypedToken, setupCommandFor, signOut } = await import("../../src/ClaudeCodeSignIn.tsx");
+const { saveTypedToken, setupCommandFor, signOut, signInWithClaude, redactTokens } = await import("../../src/ClaudeCodeSignIn.tsx");
+const { statusReport } = await import("../../src/appStatus.ts");
 type SignInIo = import("../../src/ClaudeCodeSignIn.tsx").SignInIo;
 
 const TOKEN = "sk-ant-oat01-NeverSaidOutLoud-0123456789" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCdEfGhIjKlMnOpQr";
@@ -134,4 +135,51 @@ test("the command Carl copies names the claude that will run it", () => {
   assert.equal(setupCommandFor(null), "claude setup-token");
   assert.equal(setupCommandFor("/home/carl/.local/share/vault-chat/claude"), "/home/carl/.local/share/vault-chat/claude setup-token");
   assert.equal(setupCommandFor("C:\\Users\\Carl Wilson\\AppData\\claude.exe"), '"C:\\Users\\Carl Wilson\\AppData\\claude.exe" setup-token');
+});
+
+// The one-click sign-in (macOS, src-tauri/src/claude_signin.rs): the native side keeps the token; this side only reads
+// it back from the keychain, as a pasted one would be kept, and no answer ever carries it.
+test("one click: the kept token is read back, remembered and pushed", async () => {
+  const { io, calls, remembered } = rig((c) => ({ runSignIn: async () => void c.push("run") }));
+  assert.deepEqual(await signInWithClaude(io), { ok: true });
+  assert.deepEqual(calls, ["run", "read", "remember", "push"]);
+  assert.deepEqual(remembered, [TOKEN]);
+});
+
+test("one click: every failure is one line with no token, and nothing is remembered", async () => {
+  const cases: [Over, RegExp][] = [
+    [() => ({ runSignIn: async () => { throw `Claude said: bad ${TOKEN}\nmore`; } }), /^Claude said: bad \[redacted\]$/],
+    [() => ({ runSignIn: async () => { throw new Error("Claude Code (claude) isn't installed on this computer"); } }), /isn't installed/],
+    [() => ({ runSignIn: async () => { throw ""; } }), /did not finish/],
+    [() => ({ runSignIn: undefined }), /not available/],
+  ];
+  for (const [over, want] of cases) {
+    const { io, remembered } = rig(over);
+    const r = await signInWithClaude(io);
+    assert.equal(r.ok, false);
+    assert.match((r as { why: string }).why, want);
+    assert.ok(!JSON.stringify(r).includes("sk-ant"), JSON.stringify(r));
+    assert.deepEqual(remembered, []);
+  }
+  // It said it kept one, but the keychain has none: not signed in.
+  const { io } = rig(() => ({ runSignIn: async () => {} }), null);
+  assert.match((await signInWithClaude(io) as { why: string }).why, /nothing was kept/);
+  // Kept, but the box did not take it: signed in here, said so, no token in the words.
+  const pushFails = rig(() => ({ runSignIn: async () => {}, push: async () => `refused ${TOKEN}` }));
+  const r = await signInWithClaude(pushFails.io);
+  assert.equal(r.ok, true);
+  assert.ok(!JSON.stringify(r).includes("sk-ant"));
+});
+
+test("redaction takes out every token shape", () => {
+  assert.equal(redactTokens(`a ${TOKEN} b sk-ant-api03-x`), "a [redacted] b [redacted]");
+});
+
+test("the status report for an installing agent holds no secret and reads health right", () => {
+  const health = { ok: true, git: "needs-command-line-tools", gitHelp: "run xcode-select --install", keys: { claudeCode: true }, engines: {} };
+  const r = statusReport({ laptopKey: TOKEN, vault: "/Users/f/vault-chat", health, serverUrl: "http://127.0.0.1:5001" });
+  assert.deepEqual(r, { signedIn: true, vault: "/Users/f/vault-chat", serverHealthy: true, serverUrl: "http://127.0.0.1:5001", git: "needs-command-line-tools", gitHelp: "run xcode-select --install", signInError: null });
+  assert.ok(!JSON.stringify(r).includes("sk-ant"));
+  const none = statusReport({ laptopKey: null, vault: null, health: null, serverUrl: "http://x" });
+  assert.deepEqual(none, { signedIn: false, vault: null, serverHealthy: false, serverUrl: null, git: null, gitHelp: null, signInError: null });
 });

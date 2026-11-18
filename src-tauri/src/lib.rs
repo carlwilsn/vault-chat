@@ -1,5 +1,7 @@
 mod claude_cli;
 mod claude_login;
+mod claude_signin;
+mod first_run;
 mod local_server;
 mod voice_server;
 mod boot_watch;
@@ -4910,7 +4912,7 @@ async fn keychain_delete(key: String) -> Result<(), String> {
 // git-syncs to another box and the agent's vault-scoped file tools can't read it.
 
 /// Machine-local directory for app secrets that must not live in a vault.
-fn fallback_secret_dir() -> Option<PathBuf> {
+pub(crate) fn fallback_secret_dir() -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     {
         std::env::var_os("XDG_CONFIG_HOME")
@@ -6119,6 +6121,11 @@ macro_rules! shell_commands {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // `vault-chat --status` (src/first_run.rs): print the app's status for an
+    // installing agent and exit, without starting the app.
+    if std::env::args().skip(1).any(|a| a == "--status") {
+        std::process::exit(first_run::print_status());
+    }
     boot_watch::mark_process_start();
     // WebKitGTK's sandboxed WebProcess can't resolve GStreamer plugins on this
     // stack unless the system plugin dir is on GST_PLUGIN_SYSTEM_PATH. Without
@@ -6185,6 +6192,12 @@ pub fn run() {
             open_terminal,
             open_box_terminal,
             claude_login::claude_setup_token_cli,
+            claude_signin::claude_signin_available,
+            claude_signin::claude_signin_run,
+            claude_signin::claude_signin_cancel,
+            first_run::app_status_write,
+            first_run::app_status_read,
+            first_run::setup_take,
             claude_cli_ensure,
             git_init_if_needed,
             git_commit_all,
