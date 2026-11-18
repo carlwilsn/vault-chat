@@ -33,6 +33,10 @@ const MARK = `vc-cut-worker-${process.pid}`;
 /** The text of a request's first user message: whose request it is (the chat's, or the worker's own). */
 const firstUser = (body: any): string => chatText({ messages: (body?.messages ?? []).filter((m: any) => m.role === "user").slice(0, 1) });
 
+/** The request's history already holds a call of this tool (a retried or re-asked request never calls it twice). */
+const called = (body: any, tool: string): boolean =>
+  (body?.messages ?? []).some((m: any) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((b: any) => b?.type === "tool_use" && b.name === tool));
+
 /** Every file under `dir` whose name matches. */
 function find(dir: string, re: RegExp): string[] {
   const out: string[] = [];
@@ -81,6 +85,8 @@ describe.skipIf(process.platform !== "linux")("a hand-over with a background wor
     mkdirSync(join(home, "state"), { recursive: true });
     api = await fakeAnthropic();
     let workerResumedWith = "";
+    /** What the worker got back from its long step, when that ended before the hand-over (never expected). */
+    let workerEarly = "";
     api.respond = (body) => {
       const mine = firstUser(body);
       const all = chatText(body);
@@ -91,7 +97,8 @@ describe.skipIf(process.platform !== "linux")("a hand-over with a background wor
           workerResumedWith = all;
           return { text: "WORKER DONE: checked, and finished after the restart." };
         }
-        if (result === null) return { toolCall: { name: "Bash", args: { command: `node -e 'setTimeout(() => {}, 600000)' ${MARK}`, description: "a long step", timeout: 600000 } } };
+        if (!called(body, "Bash")) return { toolCall: { name: "Bash", args: { command: `'${process.execPath}' -e 'setTimeout(() => {}, 600000)' ${MARK}`, description: "a long step", timeout: 600000 } } };
+        workerEarly = result ?? chatText({ messages: body.messages.slice(-1) });
         return { text: "WORKER DONE early (never expected)." };
       }
       // The chat. Taking up the cut work: load SendMessage, send it, then one line.
@@ -104,7 +111,7 @@ describe.skipIf(process.platform !== "linux")("a hand-over with a background wor
         if (calls === 1) return { toolCall: { name: "SendMessage", args: { to: cut[1], message: "The box restarted under you (an update): continue where you stopped." } } };
         return { text: "Resumed the worker." };
       }
-      if (mine.includes("Start the slow worker") && !all.includes("Started it.") && result === null) {
+      if (mine.includes("Start the slow worker") && !called(body, "Agent")) {
         return { toolCall: { name: "Agent", args: { description: "slow worker", prompt: "WORKER-TASK: run the long step, then report.", subagent_type: "general-purpose", run_in_background: true } } };
       }
       return { text: "Started it." };
@@ -141,7 +148,7 @@ describe.skipIf(process.platform !== "linux")("a hand-over with a background wor
       sleeper = Number(spawnSync("pgrep", ["-f", `setTimeout.*${MARK}`], { encoding: "utf8" }).stdout.split("\n").find((p) => p && descendants(a.proc.pid!).includes(Number(p))) ?? 0);
       return h.busy.runs === 0 && h.busy.workers > 0 && h.busy.resumesWork === true && sleeper > 0;
     }, 90_000, 200).catch(async (e) => {
-      throw new Error(`${e.message}\n${a.logs().slice(-4000)}\n${JSON.stringify(api!.calls.map((c) => [firstUser(c).slice(-200), lastToolResult(c)?.slice(0, 300)]))}`);
+      throw new Error(`${e.message}\n${a.logs().slice(-4000)}\nworker's step ended early: ${workerEarly.slice(0, 1500)}\n${api!.calls.length} calls; last: ${JSON.stringify(api!.calls.slice(-4).map((c) => [firstUser(c).slice(-120), chatText({ messages: c.messages.slice(-1) }).slice(0, 600)]))}`);
     });
 
     // The next server stands by; the old one is asked to hand over and does at once, worker and all.
