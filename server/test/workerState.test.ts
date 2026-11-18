@@ -1,7 +1,7 @@
 // What an Agent-tool worker is doing, derived from its transcript and the task notices (claude/workers.ts):
 // running / waiting on a tool / waiting on its own background work / idle / finished / interrupted.
 import { describe, expect, it, afterAll } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deriveState, formatWorker, formatWorkers, readWorkers, transcriptFacts, type TaskView } from "../engine/claude/workers";
@@ -70,13 +70,17 @@ describe("readWorkers over fixture transcripts", () => {
   afterAll(() => rmSync(root, { recursive: true, force: true }));
   const dir = join(root, "projects", "-some-cwd", "sess-1", "subagents");
   mkdirSync(dir, { recursive: true });
-  const put = (id: string, raw: string, title: string) => {
-    writeFileSync(join(dir, `agent-${id}.jsonl`), raw);
+  // Each transcript's file time is its last entry's, on the fixture's clock: readWorkers counts a
+  // file touched after its last entry as activity, so the real "now" of the run must not leak in.
+  const put = (id: string, raw: string, title: string, lastS: number) => {
+    const file = join(dir, `agent-${id}.jsonl`);
+    writeFileSync(file, raw);
+    utimesSync(file, new Date(at(lastS)), new Date(at(lastS)));
     writeFileSync(join(dir, `agent-${id}.meta.json`), JSON.stringify({ description: title }));
   };
-  put("run0000000000001", working, "Still going");
-  put("old0000000000002", pendingTool, "Cut by restart");
-  put("fin0000000000003", finished, "Shipped");
+  put("run0000000000001", working, "Still going", 10);
+  put("old0000000000002", pendingTool, "Cut by restart", 20);
+  put("fin0000000000003", finished, "Shipped", 30);
   const tasks: Record<string, TaskView> = { run0000000000001: view("running"), fin0000000000003: view("stopped", "worker_restart") };
 
   it("lists each with its state, and the resume line for the interrupted one", () => {

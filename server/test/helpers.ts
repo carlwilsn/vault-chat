@@ -127,14 +127,29 @@ ${xref}
   return Buffer.from(out, "latin1");
 }
 
-export function freePort(): Promise<number> {
-  return new Promise((resolve) => {
+// A port for a server a test starts later (its own process binds it). Never one the OS hands out by itself:
+// a port from bind(0) is in the ephemeral range, and between closing it here and the server's listen any
+// outgoing connection (a fetch, the CLI calling the stand-in API) may take it as its local port, or another
+// file's bind(0) may get it again — the server then dies at boot with EADDRINUSE (the "fetch failed" and
+// "expected 1 to be null" gate flakes). So: below the ephemeral range (Linux 32768+, which connect and
+// bind(0) draw from), each vitest worker in its own block, walked in order, each port handed out once, and
+// skipped if anything listens on it now.
+const PORT_LOW = 10_000, PORT_BLOCK = 2_500, PORT_BLOCKS = 8; // 10000–29999, under the ephemeral range
+const portBlock = (Number(process.env.VITEST_POOL_ID) || 0) % PORT_BLOCKS;
+// Runs outside a gate (two suites at once on a dev box) share blocks: start at a place of this process's own.
+let portNext = (process.pid * 7919) % PORT_BLOCK;
+const portBindable = (port: number) =>
+  new Promise<boolean>((resolve) => {
     const s = createServer();
-    s.listen(0, "127.0.0.1", () => {
-      const p = (s.address() as any).port;
-      s.close(() => resolve(p));
-    });
+    s.once("error", () => resolve(false));
+    s.listen(port, "127.0.0.1", () => s.close(() => resolve(true)));
   });
+export async function freePort(): Promise<number> {
+  for (let tried = 0; tried < PORT_BLOCK; tried++) {
+    const port = PORT_LOW + portBlock * PORT_BLOCK + (portNext++ % PORT_BLOCK);
+    if (await portBindable(port)) return port;
+  }
+  throw new Error("no free test port in this worker's block");
 }
 
 export type Running = {
@@ -207,21 +222,26 @@ export async function startServer(e: ServerEnv & { bundle?: string }): Promise<R
   proc.stdout!.on("data", (d) => (out += d));
   proc.stderr!.on("data", (d) => (out += d));
   const exited = new Promise<number | null>((r) => proc.on("exit", (c) => r(c)));
+  let up = false;
   await new Promise<void>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`server did not start:\n${out}`)), 60_000);
     const check = setInterval(() => {
       // Listening, and the engine started (or said why not), unless it is off.
       const engineReady = env.VC_ENGINE === "0" || /engine (up|not running|failed)/.test(out);
       if (out.includes("listening on") && engineReady) {
+        up = true;
         clearTimeout(t);
         clearInterval(check);
         resolve();
       }
     }, 50);
-    void exited.then(() => {
+    // Gone before it was up: say so with its output, never hand the test a dead server to fetch from.
+    void exited.then((code) => {
+      if (up) return;
       clearTimeout(t);
       clearInterval(check);
-      resolve();
+      void ownApi?.close();
+      reject(new Error(`server exited at boot (code ${code}) on port ${port}:\n${out.slice(-4000)}`));
     });
   });
   return {

@@ -180,7 +180,7 @@ export function ChangeReady() {
             {outcome.name}: {outcome.text}
           </span>
           {outcome.ok && /^Kept/.test(outcome.text) && (
-            <button data-el="change-switch-back" className="underline hover:text-foreground shrink-0" onClick={() => void act(() => switchBack(outcome.plugin))}>
+            <button data-el="change-switch-back" disabled={busy} className="underline hover:text-foreground shrink-0 disabled:opacity-50" onClick={() => void act(() => switchBack(outcome.plugin))}>
               Switch back
             </button>
           )}

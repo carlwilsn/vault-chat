@@ -65,9 +65,12 @@ async function waitFor(what: string, fn: () => boolean, ms = 8000): Promise<void
   }
 }
 const text = (c: any) => String(c?.textContent ?? "");
+// As Carl's click: on the button once it takes clicks. The notice holds Keep / Discard disabled while Carl's last word is
+// still with the box (its post and the settings read back after it), and a click then does nothing.
 const click = async (c: any, el: string) => {
+  assert.ok(c.querySelector(`[data-el="${el}"]`), `${el} is there`);
+  await waitFor(`${el} takes clicks`, () => !c.querySelector(`[data-el="${el}"]`)?.hasAttribute("disabled"));
   const b = c.querySelector(`[data-el="${el}"]`);
-  assert.ok(b, `${el} is there`);
   await act(async () => {
     b.dispatchEvent(new (lw as any).Event("click", { bubbles: true }));
   });
@@ -83,6 +86,9 @@ before(async () => {
   await S().loadConversations();
   await waitFor("box chat online", () => S().boxChat?.on === true && S().boxChat?.reachable === true);
   await waitFor("the laptop polls the feed", () => box.seen.some((x) => x.route === "GET /poll"));
+  // The box's settings read on connect (src/settings.ts loadBoxSettings) lands on its own time and writes the
+  // first-paint copy: the tests start once it has, or it lands in the middle of one.
+  await waitFor("the box's settings read and applied", () => box.seen.some((x) => x.route === "GET /api/v2/settings") && localStorage.getItem("vault_chat_theme") === "graphite");
   notice = document.createElement("div") as unknown as HTMLElement;
   root = createRoot(notice);
   await act(async () => root.render(createElement(ChangeReady)));
@@ -130,6 +136,8 @@ test("the agent's own theme idea: Change ready, Try on this laptop only, Back, K
   await click(notice, "change-switch-back");
   await waitFor("switched back on the box and here", () => readSettings().values.theme === "graphite" && S().theme === "graphite");
   assert.equal(changes().at(-1).change, "switch");
+  // The switch is done once the notice says so (after its settings read back); only then is its outcome cleared.
+  await waitFor("the notice says switched back", () => /Settings: switched the settings back/.test(text(notice)));
   CR.clearOutcome();
 });
 
