@@ -1,0 +1,19 @@
+{
+  "steps": [
+    { "waitFor": "#root > *", "timeout": 30000 },
+    { "expect": { "health": "server", "timeout": 120000 } },
+    { "waitFor": "[data-el=file-tree]", "timeout": 30000 },
+    { "click": "[data-el=file-tree] button[title='Add to vault']" },
+    { "click": { "text": "New file" } },
+    { "waitFor": "input[placeholder=filename]" },
+    { "type": "selftest-note", "into": "input[placeholder=filename]" },
+    { "press": "Enter" },
+    { "expect": { "file": "selftest-note.md", "timeout": 10000 } },
+    { "waitFor": ".cm-content", "timeout": 15000 },
+    { "click": ".cm-content" },
+    { "type": "Hello from the self-test", "into": ".cm-content" },
+    { "expect": { "file": "selftest-note.md", "contains": "Hello from the self-test", "timeout": 15000 } },
+    { "expect": { "text": "selftest-note" } },
+    { "shot": "after-save" }
+  ]
+}

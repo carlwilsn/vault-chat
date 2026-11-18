@@ -36,6 +36,9 @@ struct Live {
 }
 
 static LIVE: Mutex<Option<HashMap<String, Live>>> = Mutex::new(None);
+/// Servers still booting, by process id: stop_all takes these too, so an app
+/// that quits while one starts (a short self-test, a quick close) leaves none behind.
+static STARTING: Mutex<Option<HashMap<u32, Child>>> = Mutex::new(None);
 
 /// A port nobody is on. Bound and dropped: the server races nothing else here,
 /// because it is started immediately after.
@@ -170,20 +173,35 @@ pub fn ensure(vault: &str, state_dir: &Path, resource_dir: Option<&Path>, node: 
 
     let url = format!("http://127.0.0.1:{port}");
     let started = Instant::now();
-    let mut child = child;
+    let pid = child.id();
+    STARTING.lock().map_err(|_| "local server registry is poisoned".to_string())?.get_or_insert_with(HashMap::new).insert(pid, child);
+    // The booting child, out of STARTING (None: stop_all already took and killed it).
+    let take = || STARTING.lock().ok().and_then(|mut g| g.as_mut().and_then(|m| m.remove(&pid)));
     loop {
-        if let Ok(Some(status)) = child.try_wait() {
-            return Err(format!("the server stopped while starting ({status})"));
+        {
+            let mut guard = STARTING.lock().map_err(|_| "local server registry is poisoned".to_string())?;
+            let Some(c) = guard.as_mut().and_then(|m| m.get_mut(&pid)) else {
+                return Err("the app stopped while the server was starting".to_string());
+            };
+            if let Ok(Some(status)) = c.try_wait() {
+                if let Some(m) = guard.as_mut() {
+                    m.remove(&pid);
+                }
+                return Err(format!("the server stopped while starting ({status})"));
+            }
         }
         if health_ok(&url) {
             break;
         }
         if started.elapsed() > READY_WAIT {
-            let _ = child.kill();
+            if let Some(mut c) = take() {
+                let _ = c.kill();
+            }
             return Err("the server did not answer in time".to_string());
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+    let child = take().ok_or_else(|| "the app stopped while the server was starting".to_string())?;
 
     let mut guard = LIVE.lock().map_err(|_| "local server registry is poisoned".to_string())?;
     guard
@@ -195,6 +213,13 @@ pub fn ensure(vault: &str, state_dir: &Path, resource_dir: Option<&Path>, node: 
 /// Stop every server this app started. Called when the app exits, so a run does
 /// not leave a server behind holding the vault.
 pub fn stop_all() {
+    if let Ok(mut guard) = STARTING.lock() {
+        if let Some(map) = guard.as_mut() {
+            for (_, mut child) in map.drain() {
+                let _ = child.kill();
+            }
+        }
+    }
     if let Ok(mut guard) = LIVE.lock() {
         if let Some(map) = guard.as_mut() {
             for (_, mut live) in map.drain() {

@@ -8,6 +8,7 @@ mod box_sync;
 mod master;
 mod vault_page;
 mod web_embed;
+mod self_test;
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -6129,16 +6130,23 @@ pub fn run() {
         }
     }
 
-    tauri::Builder::default()
-        // FIRST plugin, per the single-instance docs: a second launch (user
-        // double-click while one sits in the tray, updater overlap, etc.)
-        // exits immediately and focuses the existing window instead of racing
-        // it for the embedded server port, the scheduler, and git sync. The
-        // port race is exactly how "voice broke": the loser's voice/phone
-        // server died at bind (os error 10048) and stayed dead all session.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    let builder = tauri::Builder::default();
+    // FIRST plugin, per the single-instance docs: a second launch (user
+    // double-click while one sits in the tray, updater overlap, etc.)
+    // exits immediately and focuses the existing window instead of racing
+    // it for the embedded server port, the scheduler, and git sync. The
+    // port race is exactly how "voice broke": the loser's voice/phone
+    // server died at bind (os error 10048) and stayed dead all session.
+    // A self-test (self_test.rs) is its own run: it must never hand its
+    // steps to an app already open and "pass" without running them.
+    let builder = if self_test::plan().is_none() {
+        builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
+    } else {
+        builder
+    };
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -6188,6 +6196,10 @@ pub fn run() {
         })
         .setup(|app| {
             use tauri::Manager;
+
+            // VC_SELFTEST in the environment: load its steps and start its
+            // watchdog (self_test.rs). Nothing otherwise.
+            self_test::start(app.handle());
 
             // A Claude Code this app fetched before is the one it uses: the
             // sign-in driver and any server it starts both read VC_CLAUDE_BIN.
@@ -6413,7 +6425,9 @@ pub fn run() {
             voice_tool_respond,
             set_run_in_background,
             boot_timing,
-            app_ready
+            app_ready,
+            self_test::selftest_config,
+            self_test::selftest_finish
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
@@ -6422,6 +6436,10 @@ pub fn run() {
             // would hold the vault after the window is gone (local_server.rs).
             if matches!(event, tauri::RunEvent::Exit) {
                 local_server::stop_all();
+                // A finished self-test ends the process with its own code (0 passed, 1 failed).
+                if let Some(code) = self_test::exit_code() {
+                    std::process::exit(code);
+                }
             }
         });
 }

@@ -100,6 +100,9 @@ if (isDriveWindow) {
   // Which build this launch runs, told to the box once the first screen is interactive (src/hostBuild.ts): a chat
   // waiting for a new laptop build is woken by it.
   void import("./hostBuild").then((m) => m.reportBuildAtLaunch()).catch(() => {});
+  // A self-test launch (VC_SELFTEST in the environment, src-tauri/src/self_test.rs): run its steps in this window
+  // and exit. Every other launch: the native side says no and nothing happens.
+  void import("./selfTest").then((m) => m.startSelfTestIfAsked()).catch((e) => console.warn("[selftest]", e));
   // Reconcile "run in background" (always-on tray daemon) with the Rust
   // close-to-tray gate and the OS login item. Main window only; popouts must
   // never register autostart or hold the app alive on close.

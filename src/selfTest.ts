@@ -1,0 +1,212 @@
+// Self-test mode (src-tauri/src/self_test.rs): the real built app drives itself, with no box, so CI on a fresh
+// machine can check the artifact that ships. Only the launch environment turns it on (VC_SELFTEST=<steps.json>):
+// the main window asks the native side for the steps (`selftest_config`, null in every normal launch), opens the
+// vault they name (or a fresh temp one: as any vault with no box, that starts the app's own local server), runs the
+// steps with the Drive step engine (src/driveSteps.ts) in this window — writable, unlike the Drive copy — and hands
+// the outcome to `selftest_finish`, which writes the results JSON and exits 0 or 1.
+//
+// Steps file: `{"vault"?: "/path", "steps": [...]}` or just the list. Each step is a Drive step
+// (click/hover/type/press/wait/waitFor/scroll), `shot` (a no-op here: native screenshots are taken outside the app,
+// e.g. screencapture on macOS), or one check:
+//   {expect: {health: "server", timeout?}}             the app's local server answers /api/v1/health (default 90 s)
+//   {expect: {text: "…", timeout?}}                     the window shows that text (default 5 s)
+//   {expect: {file: "rel/path", contains?: "…", timeout?}}  that file is on disk in the vault (with that text)
+import { checkSteps, runSteps, stepAction, visibleText, type Step, type StepOutcome } from "./driveSteps";
+
+export type Expect =
+  | { health: "server"; timeout?: number }
+  | { text: string; timeout?: number }
+  | { file: string; contains?: string; timeout?: number };
+export type SelfTestStep = Step | { expect: Expect };
+export type SelfTestPlan = { vault?: string; steps: SelfTestStep[] };
+export type SelfTestConfig = { steps: unknown; out: string; vault: string; tempVault?: boolean };
+export type SelfTestResult = {
+  schema: 1;
+  ok: boolean;
+  error?: string;
+  vault?: string;
+  steps: StepOutcome[];
+  errors: string[];
+  text: string;
+  ms: number;
+};
+
+export const SELFTEST_MAX_STEPS = 200;
+const MAX_WAIT_MS = 180_000;
+
+/** The steps file, checked: the list of steps (and the vault it names), or why not. */
+export function parseSelfTest(raw: unknown): SelfTestPlan | string {
+  const obj = Array.isArray(raw) ? { steps: raw } : raw;
+  if (!obj || typeof obj !== "object") return "the steps file must be a list of steps or {steps: [...]}";
+  const { steps, vault } = obj as { steps?: unknown; vault?: unknown };
+  if (vault !== undefined && typeof vault !== "string") return "vault must be a path";
+  if (!Array.isArray(steps) || !steps.length) return "steps must be a non-empty list";
+  if (steps.length > SELFTEST_MAX_STEPS) return `at most ${SELFTEST_MAX_STEPS} steps`;
+  for (const [i, s] of steps.entries()) {
+    const why = checkStep(s);
+    if (why) return `step ${i + 1}: ${why}`;
+  }
+  return { ...(vault ? { vault } : {}), steps: steps as SelfTestStep[] };
+}
+
+function checkStep(s: unknown): string | null {
+  if (!s || typeof s !== "object") return "not an object";
+  if ("expect" in s) {
+    if (Object.keys(s).length !== 1) return "expect is a step of its own";
+    const e = (s as { expect: unknown }).expect;
+    if (!e || typeof e !== "object") return "expect needs {health}, {text} or {file}";
+    const o = e as Record<string, unknown>;
+    if (o.timeout !== undefined && !(typeof o.timeout === "number" && o.timeout > 0 && o.timeout <= MAX_WAIT_MS)) return `timeout is at most ${MAX_WAIT_MS} ms`;
+    const kinds = ["health", "text", "file"].filter((k) => k in o);
+    if (kinds.length !== 1) return "expect needs exactly one of health, text, file";
+    if ("health" in o && o.health !== "server") return 'expect.health is "server"';
+    if ("text" in o && !(typeof o.text === "string" && o.text.trim())) return "expect.text needs text";
+    if ("file" in o) {
+      if (!(typeof o.file === "string" && o.file.trim())) return "expect.file needs a vault-relative path";
+      if (o.file.startsWith("/") || /^[a-z]:/i.test(o.file) || o.file.split(/[\\/]/).includes("..")) return "expect.file must stay inside the vault";
+      if (o.contains !== undefined && typeof o.contains !== "string") return "expect.contains needs text";
+    }
+    return null;
+  }
+  // `shot` is accepted however many there are: here it draws nothing.
+  if ("shot" in s && Object.keys(s).length === 1) return typeof (s as { shot: unknown }).shot === "string" ? null : "shot needs a name";
+  const checked = checkSteps([s]);
+  return typeof checked === "string" ? checked.replace(/^step 1(: | )/, "") : null;
+}
+
+export function selfTestAction(s: SelfTestStep): string {
+  if ("expect" in s) return `expect ${Object.keys(s.expect).find((k) => k !== "timeout" && k !== "contains")}`;
+  return stepAction(s);
+}
+
+/** What a run needs from the app; tests pass their own. */
+export type SelfTestDeps = {
+  /** One Drive step in the window. */
+  runStep: (s: Step) => Promise<StepOutcome>;
+  /** The local server's health body, or why not (no server yet, an HTTP error). */
+  health: () => Promise<{ ok: true; body: string } | { ok: false; why: string }>;
+  /** A vault file's text, or null when it isn't there. */
+  readFile: (rel: string) => Promise<string | null>;
+  text: () => string;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+};
+
+const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Run the steps in order; the first failing step stops the run. */
+export async function runSelfTest(steps: SelfTestStep[], deps: SelfTestDeps): Promise<{ ok: boolean; steps: StepOutcome[] }> {
+  const sleep = deps.sleep ?? realSleep;
+  const now = deps.now ?? (() => performance.now());
+  const out: StepOutcome[] = [];
+  for (const [n, s] of steps.entries()) {
+    const i = n + 1;
+    const action = selfTestAction(s);
+    const t0 = now();
+    let r: StepOutcome;
+    try {
+      if ("expect" in s) {
+        const note = await expect(s.expect, deps, sleep, now);
+        r = { i, action, ok: true, ms: Math.round(now() - t0), ...(note ? { note } : {}) };
+      } else if ("shot" in s) {
+        r = { i, action, ok: true, ms: 0, note: "no picture in self-test: the job takes native screenshots outside the app" };
+      } else {
+        r = { ...(await deps.runStep(s)), i, action };
+      }
+    } catch (e) {
+      r = { i, action, ok: false, ms: Math.round(now() - t0), error: String((e as Error)?.message ?? e) };
+    }
+    out.push(r);
+    console.info(`[selftest] ${i} ${action} ${r.ok ? "ok" : `FAILED: ${r.error}`}`);
+    if (!r.ok) break;
+  }
+  return { ok: out.length === steps.length && out.every((r) => r.ok), steps: out };
+}
+
+async function expect(e: Expect, deps: SelfTestDeps, sleep: (ms: number) => Promise<void>, now: () => number): Promise<string | undefined> {
+  const limit = e.timeout ?? ("health" in e ? 90_000 : 5_000);
+  const end = now() + limit;
+  let last = "";
+  for (;;) {
+    if ("health" in e) {
+      const h = await deps.health().catch((err) => ({ ok: false as const, why: String((err as Error)?.message ?? err) }));
+      if (h.ok) return h.body.replace(/\s+/g, " ").slice(0, 200);
+      last = h.why;
+    } else if ("text" in e) {
+      if (deps.text().includes(e.text)) return undefined;
+      last = `"${e.text}" is not on screen`;
+    } else {
+      const body = await deps.readFile(e.file).catch(() => null);
+      if (body !== null && (e.contains === undefined || body.includes(e.contains))) return `${body.length} chars`;
+      last = body === null ? `${e.file} is not on disk` : `${e.file} does not contain "${e.contains}"`;
+    }
+    if (now() >= end) throw new Error(`${last} (waited ${limit} ms)`);
+    await sleep(Math.min(250, Math.max(0, end - now())));
+  }
+}
+
+/** The result the native side writes. */
+export function selfTestResult(o: { ok: boolean; vault?: string; steps: StepOutcome[]; errors: string[]; text: string; ms: number; error?: string }): SelfTestResult {
+  return {
+    schema: 1,
+    ok: o.ok && !o.error,
+    ...(o.error ? { error: o.error } : {}),
+    ...(o.vault ? { vault: o.vault } : {}),
+    steps: o.steps,
+    errors: o.errors.slice(0, 50),
+    text: o.text,
+    ms: Math.round(o.ms),
+  };
+}
+
+/** The page's errors from now on: thrown errors, unhandled rejections, console.error. */
+function collectErrors(): string[] {
+  const errors: string[] = [];
+  const push = (s: string) => errors.length < 200 && errors.push(s.slice(0, 400));
+  window.addEventListener("error", (e) => push(String(e.message || e.error || "error")));
+  window.addEventListener("unhandledrejection", (e) => push(`unhandled rejection: ${String((e.reason as Error)?.message ?? e.reason)}`));
+  const orig = console.error;
+  console.error = (...a: unknown[]) => {
+    push(a.map((x) => (x instanceof Error ? x.message : typeof x === "string" ? x : (() => { try { return JSON.stringify(x); } catch { return String(x); } })())).join(" "));
+    orig.apply(console, a);
+  };
+  return errors;
+}
+
+/** In the main window at launch: run the self-test when the environment asked for one; otherwise nothing. */
+export async function startSelfTestIfAsked(): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const cfg = await invoke<SelfTestConfig | null>("selftest_config").catch(() => null);
+  if (!cfg) return;
+  const errors = collectErrors();
+  const began = performance.now();
+  const finish = (r: SelfTestResult) => invoke("selftest_finish", { result: r }).catch((e) => console.warn("[selftest] finish:", e));
+  const plan = parseSelfTest(cfg.steps);
+  if (typeof plan === "string") {
+    await finish(selfTestResult({ ok: false, error: `bad steps file: ${plan}`, steps: [], errors, text: "", ms: 0 }));
+    return;
+  }
+  const vault = cfg.vault;
+  try {
+    const [{ openVaultAt }, bc] = await Promise.all([import("./openVault"), import("./boxChat")]);
+    await openVaultAt(vault);
+    const sep = vault.endsWith("/") ? "" : "/";
+    const r = await runSelfTest(plan.steps, {
+      runStep: async (s) => {
+        const one = await runSteps(document, [s]);
+        return one.steps[0] ?? { i: 1, action: stepAction(s), ok: false, ms: 0, error: one.aborted ?? "the step did not run" };
+      },
+      health: async () => {
+        const link = bc.localServerLink(vault) ?? (await bc.boxLinkFor(vault));
+        if (!link) return { ok: false, why: "the app has no server for this vault yet" };
+        const h = await invoke<{ status: number; body: string }>("box_get_json", { url: `${link.url}/api/v1/health`, token: link.token, timeoutMs: 5000 });
+        return h.status >= 200 && h.status < 300 ? { ok: true, body: `${link.url} ${h.body}` } : { ok: false, why: `health answered HTTP ${h.status}` };
+      },
+      readFile: (rel) => invoke<string>("read_text_file", { path: `${vault}${sep}${rel}` }).catch(() => null),
+      text: () => visibleText(document, 1_000_000),
+    });
+    await finish(selfTestResult({ ok: r.ok, vault, steps: r.steps, errors, text: visibleText(document), ms: performance.now() - began }));
+  } catch (e) {
+    await finish(selfTestResult({ ok: false, vault, error: String((e as Error)?.message ?? e), steps: [], errors, text: visibleText(document), ms: performance.now() - began }));
+  }
+}
