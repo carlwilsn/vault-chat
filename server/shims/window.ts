@@ -24,3 +24,11 @@ export class WebviewWindow {
     return Promise.resolve(() => {});
   }
 }
+/** A plain point (src/sync.ts places the Mac popout's traffic lights with one). */
+export class LogicalPosition {
+  readonly type = "Logical";
+  constructor(
+    readonly x: number,
+    readonly y: number,
+  ) {}
+}

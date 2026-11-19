@@ -1,6 +1,6 @@
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { LogicalPosition } from "@tauri-apps/api/dpi";
+import { LogicalPosition } from "@tauri-apps/api/window";
 import { useStore, type ChatMessage, type FileEntry, type LiveTool, type Theme } from "./store";
 import { sendMessage, stopAgent, interruptAndSend, sendNow, takeBack } from "./chat-controller";
 import type { Conversation } from "./conversations";
