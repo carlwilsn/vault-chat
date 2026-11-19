@@ -121,6 +121,13 @@ export function Pane() {
           <span>Keyboard shortcuts</span>
           <span className="text-[11px] text-muted-foreground">{chordText("Mod+/")}</span>
         </button>
+        <button
+          onClick={() => window.dispatchEvent(new Event("vc:check-updates"))}
+          className="w-full flex items-center justify-between rounded px-2 py-1.5 -mx-2 text-[12px] text-foreground/90 hover:bg-accent/60"
+          data-el="settings-check-updates"
+        >
+          <span>Check for updates</span>
+        </button>
       </div>
     </div>
   );

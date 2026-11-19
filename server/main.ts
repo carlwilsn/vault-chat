@@ -127,6 +127,10 @@ async function main(): Promise<void> {
       changes: () => supervisorOf(cfg.vault).changes(CORE_PART),
     });
   }
+  // The Mac friend channel (server/macFriend.ts): every few hours the box looks whether a release passed every Mac check
+  // and soaked 24 h on Carl's laptop with no new app errors, and at most every 7 days points the friend's manifest at it
+  // (a pushed tag that .github/workflows/mac-promote.yml turns into latest-mac.json). Box only (Linux + the repo).
+  (await import("./macFriend")).startMacFriend({ stateDir: cfg.stateDir, repo: (await import("./coreBundles")).coreRepo() });
   // Carl's settings are records in the main vault's log (server/settings.ts); what the box kept in its localStorage
   // file moves there once, backed up first (outside the vault).
   {

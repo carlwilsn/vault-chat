@@ -50,8 +50,9 @@ import { layoutTool, LAYOUT_DESCRIPTION, LAYOUT_SCHEMA } from "../layoutTool";
 import { pluginOfferTool, pluginOfferToolSpecs } from "../pluginOffersTool";
 import { screenTool, SCREEN_DESCRIPTION, SCREEN_SCHEMA } from "../screenTool";
 import { laptopBuildTool, LAPTOP_BUILD_DESCRIPTION, LAPTOP_BUILD_SCHEMA } from "../hostBuild";
+import { macFriendTool, MAC_FRIEND_DESCRIPTION, MAC_FRIEND_SCHEMA } from "../macFriend";
 import { supervisorOf } from "../supervisor";
-import { coreVault } from "../coreBundles";
+import { coreRepo, coreVault } from "../coreBundles";
 import { CORE_PART } from "../../src/coreBundle";
 import { driveTool, DRIVE_DESCRIPTION, DRIVE_SCHEMA } from "../driveTool";
 import { actTool, ACT_DESCRIPTION, ACT_SCHEMA } from "../actTool";
@@ -479,6 +480,12 @@ export const ENGINE_TOOL_SPECS = [
     name: "LaptopBuild",
     description: LAPTOP_BUILD_DESCRIPTION,
     inputSchema: LAPTOP_BUILD_SCHEMA as unknown as Record<string, unknown>,
+  },
+  {
+    type: "function",
+    name: "MacFriend",
+    description: MAC_FRIEND_DESCRIPTION,
+    inputSchema: MAC_FRIEND_SCHEMA as unknown as Record<string, unknown>,
   },
   {
     type: "function",
@@ -3295,6 +3302,10 @@ export class Engine {
         }
         case "Timing": {
           const r = await timingTool({ vault, stateDir: loadConfig().stateDir, emit: (ev) => this.d.broadcast?.(ev) }, a);
+          return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
+        }
+        case "MacFriend": {
+          const r = await macFriendTool({ stateDir: loadConfig().stateDir, repo: coreRepo() }, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "LaptopBuild": {

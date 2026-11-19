@@ -347,3 +347,22 @@ has a key). On the box it runs from server/voicePipeline.ts; the Mac has no mana
   CLI (`VC_CLAUDE_BIN` = the SDK's darwin binary, `ANTHROPIC_BASE_URL` + a made-up `ANTHROPIC_API_KEY`).
   build_macos runs it under `screencapture -v` → `tour.mov` + `tour/steps.md` + `tour/result.json` in mac-proof.zip.
   Proven first on Linux/Xvfb with Ctrl: 85/85 steps. On Xvfb (no compositor) the pop-out window draws black.
+
+## friend-1: the friend channel (built)
+- `build_macos` (mac-check.yml) packs the tested .app into `vault-chat_<v>_<arch>.app.tar.gz` before its checks run, and
+  only if every step passed sets `passed=true` and hands it (plus the .dmg) on. `mac_publish` (Linux, Apple Silicon runs
+  only: the Intel fallback proves but publishes nothing; the existing updater key via
+  `tauri signer sign`; the key never reaches the Mac runner) attaches the bundle, its .sig, the .dmg and, last,
+  `mac-update.json`. latest.json still never names a Mac file (test/harness/releaseResources.test.ts).
+- The Mac app's updater reads only `releases/download/mac-stable/latest-mac.json` (tauri.macos.conf.json); it never
+  installs by itself (even in background mode); Settings → Check for updates checks now.
+- Promotion on the box (server/macFriend.ts): every 6 h, at most once per 7 days (the `MacFriend` tool's promote, when
+  Carl asks, skips only the wait): the newest release with mac-update.json whose native version Carl's laptop first
+  reported ≥ 24 h ago with no NEW laptop app error since (signatures the friend's version already lived with, and
+  transport noise, don't count; any new one holds it and every older version still exposed to it).
+- Why a tag: the box has only the deploy key (git push), no GitHub token. It pushes `mac-friend-v<version>` on GitHub's
+  main; `.github/workflows/mac-promote.yml` (its own GITHUB_TOKEN) re-checks (published, mac-update.json, darwin-only,
+  URLs in that release, never the same or older) and writes latest-mac.json on the `mac-stable` prerelease (never
+  "latest"). No new secret, no Actions cron reading box data.
+- Not yet proven: a real Mac updating A → B from the friend manifest (the "install vN, update to vN+1, relaunch" CI
+  test of section 5) and the first real `mac-promote` run on GitHub.

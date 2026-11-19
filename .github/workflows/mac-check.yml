@@ -3,8 +3,14 @@ name: mac-check
 # The Mac check: build the .app/.dmg on a real Mac, prove it launches with its
 # native window buttons, self-test it (fresh HOME, path hazards, sign-in), run
 # the recorded tour, and attach the proof to the release as mac-proof.zip.
-# A check only: it publishes NOTHING to Mac users (no installer upload, no
+# The check itself publishes NOTHING to Mac users (no installer upload, no
 # darwin entry in latest.json, no signing keys: createUpdaterArtifacts is off).
+# It packs the very .app it tests into an updater .app.tar.gz; only when EVERY
+# step passed on Apple Silicon does mac_publish (Linux, the updater key) sign it
+# and attach it, the .dmg and, last, mac-update.json to the release: the Mac
+# friend channel's only source. Nobody's updater reads that file where it lies:
+# the Mac app reads latest-mac.json on the mac-stable release, which only a
+# promotion writes (the box, server/macFriend.ts, then mac-promote.yml).
 #
 # ship.yml calls it for every release (build_macos, runner macos-15 = arm64);
 # nothing in ship.yml waits for it, so Windows/Linux ship exactly as before.
@@ -89,6 +95,13 @@ jobs:
     permissions:
       contents: read
     runs-on: ${{ needs.pick.outputs.runner }}
+    # A job-level continue-on-error makes a failed Mac job look successful to
+    # `needs`, so mac_publish reads these: `passed` is set by the last step,
+    # which runs only when every step before it passed.
+    outputs:
+      passed: ${{ steps.passed.outputs.passed }}
+      bundle: ${{ steps.pack_update.outputs.bundle }}
+      arch: ${{ steps.pack_update.outputs.arch }}
     env:
       NODE_OPTIONS: --max-old-space-size=4096
     steps:
@@ -133,6 +146,25 @@ jobs:
         id: build_app
         timeout-minutes: 60
         run: npx tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      # The updater bundle is the .app the checks below run, packed before they
+      # run: what the friend gets is byte for byte what passed. The same file is
+      # also the curl install (curl does not quarantine, reports/11-mac 5).
+      - name: Pack the updater bundle (.app.tar.gz, handed on only if every check passes)
+        id: pack_update
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -eu
+          APP=$(ls -d src-tauri/target/release/bundle/macos/*.app | head -1)
+          VERSION=$(node -p 'require("./package.json").version')
+          ARCH=$( [ "$(uname -m)" = arm64 ] && echo aarch64 || echo x64 )
+          NAME="vault-chat_${VERSION}_${ARCH}.app.tar.gz"
+          mkdir -p "$RUNNER_TEMP/mac-update"
+          COPYFILE_DISABLE=1 tar -czf "$RUNNER_TEMP/mac-update/$NAME" -C "$(dirname "$APP")" "$(basename "$APP")"
+          echo "$ARCH" > "$RUNNER_TEMP/mac-update/arch.txt"
+          ls -la "$RUNNER_TEMP/mac-update"
+          { echo "bundle=$NAME"; echo "arch=$ARCH"; } >> "$GITHUB_OUTPUT"
 
       # A runner's screen is 1024x768 at 1x by default: the app's 1400x900
       # window gets squeezed onto a tiny old monitor. Ask for a MacBook-like
@@ -457,6 +489,26 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      # Only past every check (success(): no step before failed or timed out).
+      - name: Hand on the passing updater bundle and .dmg
+        if: success()
+        shell: bash
+        run: cp src-tauri/target/release/bundle/dmg/*.dmg "$RUNNER_TEMP/mac-update/"
+
+      - name: Upload the passing Mac update
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-update
+          path: ${{ runner.temp }}/mac-update
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Every Mac check passed
+        id: passed
+        if: success()
+        run: echo "passed=true" >> "$GITHUB_OUTPUT"
+
   # The proof where anyone can read it: the workflow artifact needs a GitHub
   # login, so the same files are zipped and attached to the release as
   # mac-proof.zip (plain anonymous HTTP once the release is published):
@@ -552,3 +604,71 @@ jobs:
           else
             echo "The Mac job had a runner (or this was already $FALLBACK): nothing to re-run."
           fi
+
+  # The Mac update, only from a Mac job that passed every check on Apple
+  # Silicon (an Intel fallback run proves the code but publishes nothing: the
+  # friend manifest names one arch, and a Mac whose arch it lacks would fail
+  # its update check). Signs the tested .app.tar.gz with the same updater key as
+  # Windows/Linux (`tauri signer sign`; the key never reaches the Mac runner;
+  # ship.yml passes secrets to this workflow) and attaches it, its .sig, the
+  # .dmg and LAST mac-update.json (scripts/build-mac-manifest.mjs) to the
+  # published release. That file's presence is what "this version passed the
+  # Mac checks" means to the box (server/macFriend.ts).
+  mac_publish:
+    needs: [pick, build_macos]
+    if: needs.build_macos.outputs.passed == 'true' && needs.build_macos.outputs.arch == 'aarch64'
+    continue-on-error: true
+    timeout-minutes: 75
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.pick.outputs.ref }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-update
+          path: mac-update
+
+      - name: Sign the updater bundle
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          BUNDLE: ${{ needs.build_macos.outputs.bundle }}
+        run: |
+          test -s "mac-update/$BUNDLE"
+          npx tauri signer sign "mac-update/$BUNDLE"
+          test -s "mac-update/$BUNDLE.sig"
+
+      - name: Write mac-update.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.pick.outputs.version }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DIR: mac-update
+        run: |
+          # The release is a draft until the ship run's manifest job publishes it.
+          for _ in $(seq 1 60); do
+            gh api "repos/$REPO/releases/tags/v$VERSION" --jq .id > /dev/null 2>&1 && break
+            sleep 60
+          done
+          NOTES=$(gh api "repos/$REPO/releases/tags/v$VERSION" --jq .body) node scripts/build-mac-manifest.mjs
+
+      - name: Attach the Mac files, mac-update.json last
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.pick.outputs.version }}
+          BUNDLE: ${{ needs.build_macos.outputs.bundle }}
+        run: |
+          gh release upload "v$VERSION" --repo "${{ github.repository }}" --clobber "mac-update/$BUNDLE" "mac-update/$BUNDLE.sig" mac-update/*.dmg
+          gh release upload "v$VERSION" --repo "${{ github.repository }}" --clobber mac-update/mac-update.json

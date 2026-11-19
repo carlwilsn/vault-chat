@@ -1,0 +1,57 @@
+name: mac-promote
+
+# The Mac friend channel's one writer. The box (server/macFriend.ts) decides that
+# a release passed every Mac check and soaked on Carl's laptop, and pushes the
+# tag mac-friend-v<version> with its deploy key (it has no GitHub token); this
+# turns that tag into latest-mac.json on the fixed `mac-stable` release, the
+# only manifest the Mac app's updater reads (src-tauri/tauri.macos.conf.json).
+# It re-checks what GitHub can see: the release is published, carries
+# mac-update.json (written only when build_macos passed), every entry is darwin
+# and points into that release, and the friend never goes back a version.
+# mac-stable is a prerelease and never "latest", so releases/latest (the
+# Windows/Linux updater and the box) is untouched.
+on:
+  push:
+    tags: ["mac-friend-v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mac-promote
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+
+      - name: Write latest-mac.json on mac-stable
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#mac-friend-v}"
+          DRAFT=$(gh release view "v$VERSION" --repo "$REPO" --json isDraft --jq .isDraft)
+          [ "$DRAFT" = false ] || { echo "::error::v$VERSION is not published"; exit 1; }
+          mkdir -p cand cur
+          gh release download "v$VERSION" --repo "$REPO" --pattern mac-update.json --dir cand
+          gh release download mac-stable --repo "$REPO" --pattern latest-mac.json --dir cur 2>/dev/null || echo "no friend manifest yet"
+          node scripts/mac-promote.mjs "$VERSION" cand/mac-update.json cur/latest-mac.json
+          # Every file it names is there.
+          for url in $(jq -r '.platforms[].url' latest-mac.json | sort -u); do curl -fsIL -o /dev/null "$url" || { echo "::error::missing $url"; exit 1; }; done
+          if ! gh release view mac-stable --repo "$REPO" >/dev/null 2>&1; then
+            gh release create mac-stable --repo "$REPO" --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "vault-chat for Mac (friend channel)" \
+              --notes "The Mac app's update manifest (latest-mac.json). Moved only by the box's promotion, rarely: a version that passed every Mac check and ran 24 h on Carl's laptop with no new errors."
+          fi
+          gh release upload mac-stable --repo "$REPO" --clobber latest-mac.json
+          echo "friend channel -> v$VERSION" >> "$GITHUB_STEP_SUMMARY"

@@ -18,6 +18,13 @@
       }
     ]
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/carlwilsn/vault-chat/releases/download/mac-stable/latest-mac.json"
+      ]
+    }
+  },
   "bundle": {
     "resources": [
       "binaries/tectonic",
