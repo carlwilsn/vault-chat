@@ -1,13 +1,18 @@
 // Generates papers/attention-survey.pdf: a 320-page, text-dense invented
 // "survey" — big enough that the PdfExtract tool's whole-document read blows
 // past the 200k context window, which is what the PDF scenario shows.
-//   node preview/fixtures/synthetic/make-big-pdf.mjs
+//   node preview/fixtures/synthetic/make-big-pdf.mjs [--pages N --out file.pdf]
+// (--pages/--out: the PDF typing check, server/test/pdfTyping.test.ts, makes a 640-page book.)
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const OUT = join(dirname(fileURLToPath(import.meta.url)), "vault", "papers", "attention-survey.pdf");
-const PAGES = 320;
+const arg = (k) => {
+  const i = process.argv.indexOf(`--${k}`);
+  return i > 0 ? process.argv[i + 1] : undefined;
+};
+const OUT = arg("out") ?? join(dirname(fileURLToPath(import.meta.url)), "vault", "papers", "attention-survey.pdf");
+const PAGES = Number(arg("pages") ?? 320);
 const LINES = 52;
 
 // Deterministic PRNG so the fixture is byte-stable.
@@ -48,7 +53,7 @@ for (let p = 1; p <= PAGES; p++) {
   const lines = [];
   if (p === 1) {
     lines.push(["B", "A Survey of Efficient Attention (preview fixture)"]);
-    lines.push(["R", "Invented text for the vault-chat preview harness. 320 pages."]);
+    lines.push(["R", `Invented text for the vault-chat preview harness. ${PAGES} pages.`]);
     lines.push(["R", ""]);
   }
   if (p % 12 === 1) lines.push(["B", `${Math.ceil(p / 12)}. ${pick(SUBJ)}`]);

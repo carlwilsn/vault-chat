@@ -48,3 +48,5 @@ Limits: this is Chromium, a fake backend and a synthetic conversation, not WebVi
 ## Tests
 
 `server/test/perfBaseline.test.ts` (runs in `npm run test:server`): statistics, filters, merge, compare flags and exit codes over records written by the box's own `recordLaptopPerf`, and the typing tool's URL guard. The browser run itself is not in the test suite.
+
+`server/test/pdfTyping.test.ts` (runs in `npm run test:server`, serial, so in the ship gates): the preview harness in headless Chromium at a laptop's speed (CPU 4x throttled, DPR 2), a 640-page PDF in split view beside a note in the editor; composer and editor keystroke-to-paint medians must stay under 50 ms (best of three fresh tries). Skipped without a browser.

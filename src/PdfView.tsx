@@ -21,6 +21,78 @@ const BASE_RENDER_SCALE = 1.5;
 // would otherwise eat several GB of canvas memory.
 const RENDER_SCALE_CAP = 3;
 
+/** A page pdf.js finished drawing into `work`, as a canvas holding a static bitmap (its "bitmaprenderer" context):
+ *  same size, still a canvas (drawImage / toDataURL / the marquee read it as before), but never re-copied by the
+ *  compositor. `work` is freed. Without createImageBitmap or bitmaprenderer, `work` itself. */
+export async function showStatic(work: HTMLCanvasElement): Promise<HTMLCanvasElement> {
+  try {
+    const bitmap = await createImageBitmap(work);
+    const shown = document.createElement("canvas");
+    shown.width = work.width;
+    shown.height = work.height;
+    const ctx = shown.getContext("bitmaprenderer");
+    if (!ctx) {
+      bitmap.close();
+      return work;
+    }
+    ctx.transferFromImageBitmap(bitmap);
+    work.width = work.height = 0;
+    return shown;
+  } catch {
+    return work;
+  }
+}
+
+/** Sampled FNV-1a over a file's bytes (64 KiB spread across it): with the path and length, the text cache's key. */
+function quickHash(data: Uint8Array): string {
+  let h = 0x811c9dc5;
+  const step = Math.max(1, Math.floor(data.length / 65536));
+  for (let i = 0; i < data.length; i += step) h = Math.imul(h ^ data[i]!, 0x01000193);
+  return (h >>> 0).toString(16);
+}
+
+const TEXT_CACHE_DOCS = 4;
+const textCache = new Map<string, string[]>();
+const yieldToInput = () =>
+  new Promise<void>((r) =>
+    typeof requestIdleCallback === "function" ? requestIdleCallback(() => r(), { timeout: 200 }) : setTimeout(r, 0),
+  );
+
+/** Every page's plain text (index = page - 1), a few pages per task, yielding between them; cached per file
+ *  (the last TEXT_CACHE_DOCS). Null when `stop()` says the view went away first. */
+async function pageTexts(
+  key: string,
+  pages: Array<{ getTextContent: () => Promise<{ items: Array<{ str?: string }> }> }>,
+  stop: () => boolean,
+): Promise<string[] | null> {
+  const hit = textCache.get(key);
+  if (hit) {
+    textCache.delete(key);
+    textCache.set(key, hit);
+    return hit;
+  }
+  const out: string[] = new Array(pages.length).fill("");
+  const BATCH = 4;
+  for (let i = 0; i < pages.length; i += BATCH) {
+    if (stop()) return null;
+    await Promise.all(
+      pages.slice(i, i + BATCH).map(async (page, k) => {
+        try {
+          const tc = await page.getTextContent();
+          out[i + k] = tc.items.map((it) => (typeof it.str === "string" ? it.str : "")).join(" ");
+        } catch {
+          /* ignore */
+        }
+      }),
+    );
+    await yieldToInput();
+  }
+  if (stop()) return null;
+  textCache.set(key, out);
+  while (textCache.size > TEXT_CACHE_DOCS) textCache.delete(textCache.keys().next().value!);
+  return out;
+}
+
 function clampZoom(z: number) {
   return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
 }
@@ -83,6 +155,7 @@ export function PdfView({
   >([]);
   const renderPageRef = useRef<((idx: number) => Promise<void>) | null>(null);
   const tearDownPageRef = useRef<((idx: number) => void) | null>(null);
+  const syncWindowRef = useRef<(() => void) | null>(null);
 
   // Ctrl+M fires a `vc-marquee-toggle` window event from the top-level
   // keydown handler; each marquee-capable viewer listens and flips its
@@ -113,7 +186,7 @@ export function PdfView({
     void (async () => {
       // A phrase: the first page whose text holds it (a heading, a term). The text is read just after load.
       if (t.page === undefined && !(t.query && /^(?:page\s*=?\s*)?\d+$|page=\d+/i.test(t.query.trim())))
-        for (let i = 0; i < 30 && !pageTextsRef.current.length; i++) await new Promise((r) => setTimeout(r, 100));
+        for (let i = 0; i < 200 && !pageTextsRef.current.length; i++) await new Promise((r) => setTimeout(r, 100));
       const r = landPdf(t, pages, pageTextsRef.current, path);
       if ("error" in r) {
         reportScroll(path, r.error);
@@ -170,8 +243,9 @@ export function PdfView({
     let doc: { destroy: () => void; numPages: number; getPage(n: number): Promise<PageProxy> } | null = null;
     const wrappers: HTMLDivElement[] = [];
     const pageStates: PageState[] = [];
-    let renderObserver: IntersectionObserver | null = null;
-    let teardownObserver: IntersectionObserver | null = null;
+    let resizeObserver: ResizeObserver | null = null;
+    let syncRaf = 0;
+    let stopSync: (() => void) | null = null;
 
     const renderPage = async (idx: number) => {
       if (cancelled) return;
@@ -191,19 +265,18 @@ export function PdfView({
       state.renderViewport = renderViewport;
 
       const dpr = window.devicePixelRatio || 1;
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.floor(renderViewport.width * dpr);
-      canvas.height = Math.floor(renderViewport.height * dpr);
-      canvas.style.width = `${state.displayViewport.width}px`;
-      canvas.style.height = `${state.displayViewport.height}px`;
-      canvas.className = "pdf-page shadow-md rounded";
-      canvas.dataset.page = String(idx + 1);
-      wrap.appendChild(canvas);
+      // pdf.js draws into a detached canvas: its 2D context is CPU-backed (willReadFrequently, no HWA), and a CPU
+      // canvas on screen is copied into a new compositor resource on every frame the app paints, so a big PDF beside
+      // the composer made each keystroke pay for its page canvases (Carl: 67 ms a key next to a 617-page book).
+      // The finished pixels go on screen as a static bitmap (bitmaprenderer), which the compositor uploads once.
+      const work = document.createElement("canvas");
+      work.width = Math.floor(renderViewport.width * dpr);
+      work.height = Math.floor(renderViewport.height * dpr);
 
       const transform: [number, number, number, number, number, number] =
         dpr === 1 ? [1, 0, 0, 1, 0, 0] : [dpr, 0, 0, dpr, 0, 0];
       const task = state.page.render({
-        canvas,
+        canvas: work,
         viewport: renderViewport,
         transform,
       });
@@ -213,10 +286,25 @@ export function PdfView({
       } catch {
         // RenderingCancelledException — page was torn down mid-render.
         state.renderTask = null;
+        work.width = work.height = 0;
+        return;
+      }
+      if (cancelled || state.renderTask !== task) {
+        work.width = work.height = 0;
+        if (state.renderTask === task) state.renderTask = null;
+        return;
+      }
+      const canvas = await showStatic(work);
+      if (cancelled || state.renderTask !== task) {
+        state.renderTask = state.renderTask === task ? null : state.renderTask;
         return;
       }
       state.renderTask = null;
-      if (cancelled) return;
+      canvas.style.width = `${state.displayViewport.width}px`;
+      canvas.style.height = `${state.displayViewport.height}px`;
+      canvas.className = "pdf-page shadow-md rounded";
+      canvas.dataset.page = String(idx + 1);
+      wrap.appendChild(canvas);
 
       const textLayerDiv = document.createElement("div");
       textLayerDiv.className = "pdf-text-layer";
@@ -294,6 +382,7 @@ export function PdfView({
         // The box's copy while it is ahead of the disk (a live edit), else the file.
         const data = (await readShownBytes(path)).slice();
         if (cancelled) return;
+        const cacheKey = `${path}\u0000${data.length}\u0000${quickHash(data)}`;
         doc = (await pdfjs.getDocument({ data }).promise) as unknown as typeof doc;
         if (cancelled) {
           doc!.destroy();
@@ -353,27 +442,14 @@ export function PdfView({
         renderPageRef.current = renderPage;
         tearDownPageRef.current = tearDownPage;
 
-        // Background: pull all pages' text content for ask-mode context.
-        // Cheap relative to rendering (no rasterization); doesn't block
-        // the UI. Marquee captures still work for visible pages even if
-        // this hasn't completed yet — `textInRect` reads from the live
-        // text-layer DOM, not from `pageTextsRef`.
+        // Background: pull all pages' text content for ask-mode context and phrase targets. A few pages at a
+        // time with the main thread handed back in between (each page's text is decoded on the main thread: all
+        // 617 of a book at once were seconds of work queued in front of every key), and kept per file so a reload
+        // or a reopen does not read it again. Marquee captures still work for visible pages even if this hasn't
+        // completed yet — `textInRect` reads from the live text-layer DOM, not from `pageTextsRef`.
         void (async () => {
-          const allText: string[] = new Array(proxies.length).fill("");
-          await Promise.all(
-            proxies.map(async (page, i) => {
-              if (cancelled) return;
-              try {
-                const tc = await page.getTextContent();
-                const text = tc.items
-                  .map((it) => (typeof it.str === "string" ? it.str : ""))
-                  .join(" ");
-                allText[i] = text;
-              } catch {
-                /* ignore */
-              }
-            }),
-          );
+          const allText = await pageTexts(cacheKey, proxies, () => cancelled);
+          if (!allText) return;
           if (!cancelled) {
             pageTextsRef.current = allText;
             // Publish initial viewport so follow-along voice mode has
@@ -401,36 +477,49 @@ export function PdfView({
           return;
         }
 
-        // Render zone: ~1.2 viewports above + below trigger render.
-        renderObserver = new IntersectionObserver(
-          (entries) => {
-            for (const entry of entries) {
-              if (!entry.isIntersecting) continue;
-              const idx = Number((entry.target as HTMLElement).dataset.page) - 1;
-              if (idx >= 0 && idx < pageStates.length) void renderPage(idx);
-            }
-          },
-          { root: scroller, rootMargin: "1200px 0px 1200px 0px" },
-        );
-
-        // Keep-alive zone: wider margin. Pages outside it get torn down
-        // to free canvas memory. Hysteresis between the two zones means
-        // small scrolls don't churn the recently-rendered set.
-        teardownObserver = new IntersectionObserver(
-          (entries) => {
-            for (const entry of entries) {
-              if (entry.isIntersecting) continue;
-              const idx = Number((entry.target as HTMLElement).dataset.page) - 1;
-              if (idx >= 0 && idx < pageStates.length) tearDownPage(idx);
-            }
-          },
-          { root: scroller, rootMargin: "5000px 0px 5000px 0px" },
-        );
-
-        for (const wrap of wrappers) {
-          renderObserver.observe(wrap);
-          teardownObserver.observe(wrap);
-        }
+        // Which pages have pixels, from the scroll position (no IntersectionObserver: one on every page wrapper of
+        // a 617-page book, twice, was re-measured on every frame the app drew, a key in the composer included).
+        // Render zone: 1200px above + below the view. Keep-alive zone: 5000px; rendered pages outside it are torn
+        // down to free canvas memory. Hysteresis between the two means small scrolls don't churn.
+        const RENDER_MARGIN = 1200;
+        const KEEP_MARGIN = 5000;
+        const syncWindow = () => {
+          syncRaf = 0;
+          if (cancelled || !wrappers.length) return;
+          const sr = scroller.getBoundingClientRect();
+          if (sr.height <= 0 || sr.width <= 0) return;
+          // First page whose bottom reaches the render zone (pages are in document order).
+          let lo = 0;
+          let hi = wrappers.length;
+          const top = sr.top - RENDER_MARGIN;
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (wrappers[mid]!.getBoundingClientRect().bottom < top) lo = mid + 1;
+            else hi = mid;
+          }
+          for (let i = lo; i < wrappers.length; i++) {
+            if (wrappers[i]!.getBoundingClientRect().top > sr.bottom + RENDER_MARGIN) break;
+            void renderPage(i);
+          }
+          for (let i = 0; i < pageStates.length; i++) {
+            if (!pageStates[i]!.rendered) continue;
+            const r = wrappers[i]!.getBoundingClientRect();
+            if (r.bottom < sr.top - KEEP_MARGIN || r.top > sr.bottom + KEEP_MARGIN) tearDownPage(i);
+          }
+        };
+        const scheduleSync = () => {
+          if (!syncRaf && !cancelled) syncRaf = requestAnimationFrame(syncWindow);
+        };
+        scroller.addEventListener("scroll", scheduleSync, { passive: true });
+        resizeObserver = new ResizeObserver(scheduleSync);
+        resizeObserver.observe(scroller);
+        resizeObserver.observe(host);
+        stopSync = () => {
+          scroller.removeEventListener("scroll", scheduleSync);
+          if (syncRaf) cancelAnimationFrame(syncRaf);
+        };
+        syncWindowRef.current = scheduleSync;
+        scheduleSync();
 
         if (keepScroll) scroller.scrollTop = keepScroll;
         setLoading(false);
@@ -444,8 +533,9 @@ export function PdfView({
 
     return () => {
       cancelled = true;
-      if (renderObserver) renderObserver.disconnect();
-      if (teardownObserver) teardownObserver.disconnect();
+      resizeObserver?.disconnect();
+      stopSync?.();
+      syncWindowRef.current = null;
       for (const state of pageStates) {
         if (state.renderTask) {
           try {
@@ -487,6 +577,8 @@ export function PdfView({
           void renderFn(i);
         }
       }
+      // Zooming out brings more pages into view.
+      syncWindowRef.current?.();
     }, 150);
     return () => clearTimeout(timer);
   }, [zoom]);

@@ -5,7 +5,7 @@ import { appCss } from "./appCssGen.mjs";
 import { pageLinkHostJs } from "./pageLinkHostGen.mjs";
 
 /** Timing-sensitive files: they pass alone and race under parallel load. */
-const SERIAL = ["server/test/updaterHttpDeadline.test.ts"];
+const SERIAL = ["server/test/updaterHttpDeadline.test.ts", "server/test/pdfTyping.test.ts"];
 
 const shim = (f: string) => fileURLToPath(new URL(`./shims/${f}`, import.meta.url));
 
