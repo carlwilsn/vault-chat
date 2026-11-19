@@ -84,17 +84,20 @@ test("macOS gets native window buttons over the same window", () => {
   assert.match(read("src/plugins/titlebar/Bar.tsx"), /isMac \? \{ paddingLeft: 76 \}/);
 });
 
+const macCheck = () => yaml.load(read(".github/workflows/mac-check.yml")) as any;
+
 test("the macOS job checks a build and publishes nothing", () => {
   const wf = yaml.load(read(".github/workflows/ship.yml")) as any;
-  const mac = wf.jobs.build_macos;
+  // ship.yml calls the Mac check (mac-check.yml) on arm64, and nothing waits for it.
+  const call = wf.jobs.build_macos;
+  assert.equal(call.uses, "./.github/workflows/mac-check.yml");
+  assert.deepEqual(call.with, { sha: "${{ needs.prepare.outputs.sha }}", version: "${{ needs.prepare.outputs.version }}", runner: "macos-15" });
+  for (const [name, job] of Object.entries<any>(wf.jobs)) assert.ok(![job.needs ?? []].flat().includes("build_macos"), `${name} must never wait for the Mac job`);
+  const mc = macCheck();
+  const mac = mc.jobs.build_macos;
   assert.equal(mac["continue-on-error"], true);
-  assert.match(mac["runs-on"], /^macos-/);
-  for (const [name, job] of Object.entries<any>(wf.jobs)) {
-    const needs = [job.needs ?? []].flat();
-    // Only the proof upload (mac_proof, below) follows it, and nothing follows that.
-    if (name !== "mac_proof") assert.ok(!needs.includes("build_macos"), `${name} must never wait for the Mac job`);
-    assert.ok(!needs.includes("mac_proof"), `${name} must never wait for the Mac proof`);
-  }
+  assert.equal(mc.jobs.mac_proof["continue-on-error"], true);
+  assert.equal(mac["runs-on"], "${{ needs.pick.outputs.runner }}");
   const text = JSON.stringify(mac);
   assert.doesNotMatch(text, /gh release|tauri-action|TAURI_SIGNING|releaseId|latest\.json/);
   assert.match(text, /createUpdaterArtifacts\\":false/);
@@ -102,8 +105,7 @@ test("the macOS job checks a build and publishes nothing", () => {
 });
 
 test("the macOS job self-tests the app on a fresh HOME and the Mac path hazards, and says so in its summary", () => {
-  const wf = yaml.load(read(".github/workflows/ship.yml")) as any;
-  const steps = wf.jobs.build_macos.steps as { name?: string; run?: string; if?: string }[];
+  const steps = macCheck().jobs.build_macos.steps as { name?: string; run?: string; if?: string }[];
   const i = steps.findIndex((s) => /Self-test/.test(s.name ?? ""));
   const launch = steps.findIndex((s) => /^Launch it/.test(s.name ?? ""));
   assert.ok(i > launch && launch >= 0, "the self-test runs after the launch check");
@@ -123,9 +125,8 @@ test("the macOS job self-tests the app on a fresh HOME and the Mac path hazards,
 });
 
 test("the Mac proof is attached to the release as mac-proof.zip, after it is published, and blocks nothing", () => {
-  const wf = yaml.load(read(".github/workflows/ship.yml")) as any;
-  const job = wf.jobs.mac_proof;
-  assert.deepEqual(job.needs, ["prepare", "build_macos", "manifest"]);
+  const job = macCheck().jobs.mac_proof;
+  assert.deepEqual(job.needs, ["pick", "build_macos"]);
   assert.match(job.if, /^always\(\) && /);
   assert.equal(job["continue-on-error"], true);
   assert.equal(job.permissions.contents, "write");
@@ -168,7 +169,7 @@ test("a self-test launch never checks for updates", () => {
 });
 
 test("a hung or runnerless Mac job still yields a readable mac-proof.zip", () => {
-  const wf = yaml.load(read(".github/workflows/ship.yml")) as any;
+  const wf = macCheck();
   const steps = wf.jobs.build_macos.steps as any[];
   // Every long step fails on its own clock, well inside the job's.
   for (const name of [/^Build the \.app/, /^Launch it/, /^Self-test the app/, /^Self-test tour/, /^Package the \.dmg/]) {
@@ -185,11 +186,29 @@ test("a hung or runnerless Mac job still yields a readable mac-proof.zip", () =>
   const run = job.steps.map((s: any) => s.run ?? "").join("\n");
   assert.match(run, /mkdir -p mac-proof/);
   assert.match(run, /never gave this job a macOS runner/);
-  // A Mac job GitHub never ran is re-run once the run is over (cancelled with no runner only).
-  const retry = yaml.load(read(".github/workflows/mac-retry.yml")) as any;
-  assert.deepEqual(retry.on.workflow_run.workflows, [wf.name]);
-  const r = retry.jobs.retry_mac.steps.map((s: any) => s.run).join("\n");
-  assert.match(r, /conclusion" = cancelled \] && \[ "\$\{runner:-0\}" = 0 \]/);
-  assert.match(r, /actions\/jobs\/\$id\/rerun/);
-  assert.doesNotMatch(r, /release upload|workflow run|dispatch/);
+  // No arm64 runner: the same check is dispatched on Intel for the same tag, once (never from the Intel run).
+  const fb = job.steps.find((s: any) => /Intel/.test(s.name ?? ""));
+  assert.equal(fb.env.FALLBACK, "macos-15-intel");
+  assert.match(fb.run, /grep -q "\^runner: NONE" mac-proof\/job\.txt && \[ "\$RUNNER_LABEL" != "\$FALLBACK" \]/);
+  assert.match(fb.run, /gh workflow run mac-check\.yml --repo "\$REPO" --ref main -f tag="v\$VERSION" -f runner="\$FALLBACK"/);
+  assert.equal(job.permissions.actions, "write");
+  assert.ok(wf.on.workflow_dispatch.inputs.runner.options.includes("macos-15-intel"));
+  // The proof says which runner and arch it ran on.
+  assert.match(JSON.stringify(steps[status]), /runner label \$RUNNER_LABEL.*arch \$\(uname -m\)/);
+  assert.match(run, /runner label: %s/);
+});
+
+test("the Mac job asks for a MacBook-like display before the launch, and says what it got", () => {
+  const steps = macCheck().jobs.build_macos.steps as any[];
+  const d = steps.findIndex((s) => s.id === "display");
+  const launch = steps.findIndex((s) => s.id === "launch");
+  assert.ok(d >= 0 && d < launch);
+  assert.equal(steps[d]["continue-on-error"], true);
+  assert.match(steps[d].run, /system_profiler SPDisplaysDataType/);
+  assert.match(steps[launch].run, /display-final\.txt.*checks\.txt/);
+  const pick = (list: string) => execFileSync("python3", [join(root, "scripts/macos-pick-display-mode.py")], { input: list, encoding: "utf8" }).trim();
+  const head = "Persistent screen id: S1\nResolutions for rotation 0:\n  mode 0: res:1024x768 hz:60 color_depth:8 <-- current mode\n";
+  assert.equal(pick(head + "  mode 1: res:1920x1080 hz:60 color_depth:8\n  mode 2: res:1440x900 hz:60 color_depth:8 scaling:on\n"), "id:S1 mode:2");
+  assert.equal(pick(head + "  mode 1: res:1920x1080 hz:60 color_depth:8\n  mode 3: res:1280x800 hz:60 color_depth:8\n"), "id:S1 mode:1");
+  assert.equal(pick(head), "");
 });

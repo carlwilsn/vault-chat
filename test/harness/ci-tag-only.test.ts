@@ -62,6 +62,18 @@ test("CI pins accepted input, pushes ONLY the metadata child tag and builds that
   assert.equal(workflow.jobs.prepare.outputs.sha, "${{ steps.push.outputs.sha }}");
   const pushes: string[] = [];
   for (const [name, job] of Object.entries<any>(workflow.jobs)) {
+    // A called workflow (the Mac check) gets the tagged child as its input and stands on it in each of its jobs.
+    if (job.uses) {
+      assert.equal(job.with.sha, "${{ needs.prepare.outputs.sha }}");
+      const called = yaml.load(read(job.uses.replace(/^\.\//, "")));
+      assert.match(called.jobs.pick.steps[0].run, /echo "ref=\$\{SHA:-\$TAG\}"/);
+      assert.equal(called.jobs.pick.steps[0].env.SHA, "${{ inputs.sha }}");
+      for (const [jn, j] of Object.entries<any>(called.jobs)) {
+        if (jn !== "pick") assert.equal(j.steps.find((s: any) => s.uses?.startsWith("actions/checkout@")).with.ref, "${{ needs.pick.outputs.ref }}");
+        for (const step of j.steps) if (step.run) assert.doesNotMatch(step.run, /git\s+push/);
+      }
+      continue;
+    }
     for (const step of job.steps) if (step.run) {
       assert.doesNotMatch(step.run, /git\s+(?:pull|rebase|merge|reset|branch)|HEAD:main|refs\/heads\/main|push[^\n]*(?:--force|--all|--mirror)/);
       pushes.push(...(step.run.match(/git push[^\n]*/g) ?? []));
