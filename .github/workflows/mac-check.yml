@@ -482,6 +482,13 @@ jobs:
             fi
           } > "$T/steps.md"
           cat "$T/steps.md" | tee -a "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          # The traffic lights' corner (src/macChrome.ts): what the tour measured under them, in full, in checks.txt
+          # (title bar, full-screen chat with and without the chats sidebar). A step that fails fails the tour.
+          if [ -s "$T/result.json" ]; then
+            jq -r '.steps[] | select(.action | test("traffic lights")) | "traffic-light corner: \(.action): \(if .ok then "pass" else "FAIL" end): \(.note // .error // "")"' "$T/result.json" | tee -a "$OUT/checks.txt"
+          else
+            echo "traffic-light corner: FAIL (no tour results)" | tee -a "$OUT/checks.txt"
+          fi
           tail -n 40 "$T/app.log"
           [ -s "$T/result.json" ] && [ "$(jq -r .ok "$T/result.json")" = true ] && [ "$code" = 0 ] \
             || { echo "::error::the recorded tour failed (see tour/steps.md)"; exit 1; }

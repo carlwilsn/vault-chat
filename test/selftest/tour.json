@@ -4,6 +4,7 @@
     { "waitFor": "#root > *", "timeout": 30000, "label": "the window paints" },
     { "expect": { "health": "server", "timeout": 120000 }, "label": "the app's own server answers" },
     { "waitFor": "[data-tree-path$='/Welcome.md']", "timeout": 30000, "label": "the file tree lists the vault" },
+    { "expect": { "clear": "traffic-lights", "timeout": 5000 }, "label": "title bar: nothing under the traffic lights" },
 
     { "click": "[data-el=file-tree] button[title='Add to vault']", "label": "file tree: add" },
     { "click": { "text": "New file" } },
@@ -75,7 +76,14 @@
 
     { "press": "Mod+Shift+F", "label": "Mod+Shift+F: full-screen chat" },
     { "waitFor": "[data-perf-view=fullscreen]", "timeout": 10000 },
+    { "waitFor": "[data-el=chats-sidebar]", "timeout": 10000 },
+    { "expect": { "clear": "traffic-lights", "timeout": 5000 }, "label": "full-screen chat: nothing under the traffic lights" },
     { "wait": 1500 },
+    { "press": "Mod+B", "label": "Mod+B: hide the chats sidebar" },
+    { "waitFor": "[data-el=chats-sidebar-open]", "timeout": 5000 },
+    { "expect": { "clear": "traffic-lights", "timeout": 5000 }, "label": "full-screen chat, no sidebar: nothing under the traffic lights" },
+    { "press": "Mod+B", "label": "Mod+B: the chats sidebar back" },
+    { "waitFor": "[data-el=chats-sidebar]", "timeout": 5000 },
     { "press": "Mod+Shift+F", "label": "Mod+Shift+F: back" },
     { "expect": { "gone": "[data-perf-view=fullscreen]", "timeout": 10000 }, "label": "full-screen chat left" },
 

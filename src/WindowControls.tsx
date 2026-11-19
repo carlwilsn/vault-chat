@@ -4,9 +4,9 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Minus, Square, Copy, X } from "lucide-react";
+import { isMac } from "./macChrome";
 
 export function WindowControls({ className = "" }: { className?: string }) {
-  const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
   const win = getCurrentWindow();
   const [maximized, setMaximized] = useState(false);
   useEffect(() => {

@@ -81,7 +81,12 @@ test("macOS gets native window buttons over the same window", () => {
   const { decorations: _a, hiddenTitle: _b, trafficLightPosition: _c, ...rest } = mac;
   const { decorations: _d, ...baseRest } = base;
   assert.deepEqual(rest, baseRest);
-  assert.match(read("src/plugins/titlebar/Bar.tsx"), /isMac \? \{ paddingLeft: 76 \}/);
+  // Content keeps clear of the traffic lights: the title bar and, with no title bar, the full-screen chat's frame.
+  assert.match(read("src/macChrome.ts"), /TRAFFIC_LIGHTS_INSET = \{ left: 76, top: 36 \}/);
+  assert.match(read("src/macChrome.ts"), /macBarInset[^=]*= isMac \? \{ paddingLeft: TRAFFIC_LIGHTS_INSET\.left \}/);
+  assert.match(read("src/plugins/titlebar/Bar.tsx"), /style=\{macBarInset\}/);
+  assert.match(read("src/Titlebar.tsx"), /style=\{macBarInset\}/);
+  assert.match(read("src/plugins/chat/Frame.tsx"), /height: TRAFFIC_LIGHTS_INSET\.top/);
 });
 
 const macCheck = () => yaml.load(read(".github/workflows/mac-check.yml")) as any;

@@ -18,6 +18,7 @@ import { openTerminal, subscribeTerminalNote, terminalBoxName, terminalTitle } f
 import { subscribeTitlebarItems, titlebarItems, type TitlebarItem, type TitlebarSide } from "../../titlebarItems";
 import { closeHidden, openHidden, refreshTree, toggleSelected, unhide, useBar } from "./model";
 import { shortcutHint } from "../../shortcuts";
+import { macBarInset } from "../../macChrome";
 
 /** With the chat closed: "1 running" while the agent's background tasks work; a click opens the chat. */
 function TasksRunning({ hidden, onOpen }: { hidden: boolean; onOpen: () => void }) {
@@ -64,9 +65,6 @@ export function Bar() {
 
   // The mic button; Ctrl+D (App.tsx, so it works in fullscreen chat too) runs
   // the same toggleVoice.
-  const isMac =
-    typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
-
   return (
     <>
     <div
@@ -77,7 +75,7 @@ export function Bar() {
       <VoiceCockpit />
       <div
         className="flex items-center gap-1 px-2"
-        style={isMac ? { paddingLeft: 76 } : undefined}
+        style={macBarInset}
       >
         <button
           onClick={toggleLeft}
