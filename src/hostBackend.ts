@@ -11,6 +11,7 @@ import { registerTitlebarItem, titlebarItems } from "./titlebarItems";
 import { chatMenuItems, registerChatMenuItem } from "./chatMenuItems";
 import { describeViewers, registerViewer } from "./viewerRegistry";
 import { registerTranslator, type Translator } from "./convlog/translators";
+import { shortcutHint, SHORTCUTS, type ShortcutId } from "./shortcuts";
 import type { HostBackend, HostState, HostSelection } from "./hostApi";
 
 /** Commands a plugin may run by id (host.runCommand). */
@@ -81,7 +82,9 @@ export const appHostBackend: HostBackend = {
   theme: () => hostTheme(),
   async openFile(path, anchor, origin) {
     const s = useStore.getState();
-    const p = origin ? boxPathOf(path.startsWith("/") ? path : `${origin}/${path}`) : path;
+    // A vault-relative path (no origin) is the open vault's file.
+    const abs = /^([a-zA-Z]:)?[\\/]/.test(path) || path.startsWith("box:") || !s.vaultPath ? path : `${s.vaultPath.replace(/[\\/]+$/, "")}/${path}`;
+    const p = origin ? boxPathOf(path.startsWith("/") ? path : `${origin}/${path}`) : abs;
     if (isUnreadableAsText(p)) s.setCurrentFile(p, "");
     else s.setCurrentFile(p, await readTextAt(p));
     if (anchor) useStore.getState().requestScrollAnchor(p, anchor);
@@ -148,4 +151,37 @@ export const appHostBackend: HostBackend = {
     if (store.rightCollapsed) store.toggleRight();
     return true;
   },
+  async readFile(rel) {
+    const vault = useStore.getState().vaultPath;
+    if (!vault) return null;
+    return readTextAt(`${vault.replace(/[\\/]+$/, "")}/${rel}`).catch(() => null);
+  },
+  shortcut: (id) => (SHORTCUTS.some((s) => s.id === id) ? shortcutHint(id as ShortcutId) : ""),
+  speak: (text) => speakLocal(text),
+  async boardPaired() {
+    const { boxGet, boxLinkFor } = await import("./boxChat");
+    const link = await boxLinkFor(useStore.getState().vaultPath).catch(() => null);
+    if (!link) return false;
+    const h = (await boxGet(link, "/api/v1/health", 5_000).catch(() => null)) as { links?: { board?: { control?: string; lastAnswer?: string | null; chatLast?: string | null } } } | null;
+    const b = h?.links?.board;
+    return !!b && (b.control === "up" || !!b.lastAnswer || !!b.chatLast);
+  },
 };
+
+/** One line in the local voice (POST /api/v1/brain/say: Kokoro af_heart on the voice pipeline, as WAV), played here.
+ *  False at once when the server has no local voice ready; never waits more than ~25 s in all. */
+async function speakLocal(text: string): Promise<boolean> {
+  const { boxPost, boxLinkFor } = await import("./boxChat");
+  const link = await boxLinkFor(useStore.getState().vaultPath).catch(() => null);
+  if (!link) return false;
+  const r = await Promise.race([boxPost(link, "/api/v1/brain/say", { text }), new Promise<null>((ok) => setTimeout(() => ok(null), 15_000))]);
+  const wav = r && r.ok && typeof r.data?.wav === "string" ? r.data.wav : null;
+  if (!wav) return false;
+  return new Promise<boolean>((done) => {
+    const audio = new Audio(`data:audio/wav;base64,${wav}`);
+    const t = setTimeout(() => done(false), 30_000);
+    audio.onended = () => (clearTimeout(t), done(true));
+    audio.onerror = () => (clearTimeout(t), done(false));
+    audio.play().catch(() => (clearTimeout(t), done(false)));
+  });
+}

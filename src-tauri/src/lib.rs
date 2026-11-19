@@ -2,6 +2,7 @@ mod claude_cli;
 mod claude_login;
 mod claude_signin;
 mod first_run;
+mod first_run_tutorial;
 mod local_server;
 mod voice_server;
 mod boot_watch;
@@ -6200,6 +6201,7 @@ pub fn run() {
             first_run::app_status_write,
             first_run::app_status_read,
             first_run::setup_take,
+            first_run_tutorial::first_run_seed,
             claude_cli_ensure,
             git_init_if_needed,
             git_commit_all,

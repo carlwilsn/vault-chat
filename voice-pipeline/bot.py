@@ -722,9 +722,39 @@ async def offer(request: web.Request) -> web.Response:
     return web.json_response(answer)
 
 
+async def say(request: web.Request) -> web.Response:
+    """One line in the local voice (Kokoro, VC_KOKORO_VOICE), as base64 WAV: the first-run tutorial's narration.
+    Only when the model is already loaded: 503 at once otherwise (never a download or a load on this path)."""
+    if request.remote not in ("127.0.0.1", "::1"):
+        return web.json_response({"error": "loopback only"}, status=403)
+    b = await request.json()
+    text = " ".join(str(b.get("text") or "").split())[:400]
+    if not text:
+        return web.json_response({"error": "text required"}, status=400)
+    k = local_voice._kokoro
+    if k is None:
+        return web.json_response({"error": f"the local voice is {local_voice._state.get('kokoro', 'absent')}"}, status=503)
+    import base64
+    import io
+    import wave
+
+    import numpy as np
+
+    samples, rate = await asyncio.to_thread(k.create, text, voice=local_voice.KOKORO_VOICE, speed=1.0, lang="en-us")
+    pcm = (np.clip(np.asarray(samples, dtype=np.float32), -1.0, 1.0) * 32767).astype("<i2").tobytes()
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(int(rate))
+        w.writeframes(pcm)
+    return web.json_response({"wav": base64.b64encode(buf.getvalue()).decode("ascii")})
+
+
 def main():
     app = web.Application()
     app.router.add_post("/offer", offer)
+    app.router.add_post("/say", say)
     if os.environ.get("VC_VOICE_TEST") == "1":
         app.router.add_post("/test/drop-transcripts", test_drop)
     app.router.add_get("/health", lambda _r: web.json_response({"ok": True, "brain": BRAIN, "stt": STT, "tts": TTS, "local": local_voice.status()}))

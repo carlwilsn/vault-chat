@@ -103,3 +103,35 @@ test("without a backend the host is inert, and the Notes plugin imports no store
     assert.doesNotMatch(readFileSync(file, "utf8"), /from ["'][./]+\/store["']|useStore/, file);
   }
 });
+
+test("first-run helpers: vault files inside the vault only, shortcut labels, voice and board never throw", async () => {
+  const f = fake();
+  const read: string[] = [];
+  const b: HostBackend = {
+    ...f.b,
+    readFile: async (rel) => (read.push(rel), rel === "Welcome/note.md" ? "# Note" : null),
+    shortcut: (id) => (id === "edit.inline" ? "⌘K" : ""),
+    speak: async () => { throw new Error("no voice"); },
+    boardPaired: async () => true,
+  };
+  const h = await mountWith(b, `globalThis.__h9 = api.host;`);
+  const host = (globalThis as any).__h9;
+  assert.equal(await host.readFile("Welcome/note.md"), "# Note");
+  assert.equal(await host.readFile("./Welcome/note.md"), "# Note");
+  for (const bad of ["/etc/passwd", "C:/x", "../x.md", "a/../../x"]) assert.equal(await host.readFile(bad), null, bad);
+  assert.deepEqual(read, ["Welcome/note.md", "Welcome/note.md"]);
+  assert.equal(host.shortcut("edit.inline"), "⌘K");
+  assert.equal(await host.speak("Hi"), false, "a voice failure is false, never a throw");
+  assert.equal(await host.speak("  "), false);
+  assert.equal(await host.boardPaired(), true);
+  h.unmount();
+  assert.equal(await host.readFile("Welcome/note.md"), null, "a stopped run reads nothing");
+  // A backend without them (the phone, a test): empty answers.
+  const h2 = await mountWith(f.b, `globalThis.__h10 = api.host;`);
+  const bare = (globalThis as any).__h10;
+  assert.equal(await bare.readFile("a.md"), null);
+  assert.equal(bare.shortcut("edit.inline"), "");
+  assert.equal(await bare.speak("Hi"), false);
+  assert.equal(await bare.boardPaired(), false);
+  h2.unmount();
+});

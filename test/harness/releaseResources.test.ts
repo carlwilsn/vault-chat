@@ -178,7 +178,7 @@ test("a hung or runnerless Mac job still yields a readable mac-proof.zip", () =>
   const wf = macCheck();
   const steps = wf.jobs.build_macos.steps as any[];
   // Every long step fails on its own clock, well inside the job's.
-  for (const name of [/^Build the \.app/, /^Launch it/, /^Self-test the app/, /^Self-test tour/, /^Package the \.dmg/]) {
+  for (const name of [/^Build the \.app/, /^Launch it/, /^Self-test the app/, /^Self-test tour/, /^Self-test tutorial/, /^Package the \.dmg/]) {
     const s = steps.find((x) => name.test(x.name ?? ""));
     assert.ok(s && s["timeout-minutes"] > 0 && s["timeout-minutes"] < wf.jobs.build_macos["timeout-minutes"], String(name));
   }
@@ -233,6 +233,22 @@ test("the tour is recorded in pieces that end by themselves, never stopped by a 
   assert.doesNotMatch(tour, /kill -INT "\$REC"/);
 });
 
+test("the first-run tutorial runs on a fresh HOME's new vault and is recorded like the tour", () => {
+  const run = (macCheck().jobs.build_macos.steps as any[]).find((s) => s.id === "tutorial").run as string;
+  assert.match(run, /HOME_T="\$RUNNER_TEMP\/tutorial-home"; VAULT="\$HOME_T\/vault-chat"/);
+  assert.match(run, /rm -rf "\$HOME_T"; mkdir -p "\$HOME_T"/);
+  assert.match(run, /test\/selftest\/tutorial\.json/);
+  assert.match(run, /f="\$OUT\/tutorial\.mov"/);
+  assert.match(run, /screencapture -v -V 180 -x "\$f"/);
+  const steps = JSON.parse(read("test/selftest/tutorial.json"));
+  assert.equal(steps.firstRun, true);
+  const labels = steps.steps.map((s: any) => s.label ?? "").join("\n");
+  for (const n of [1, 2, 3, 4]) assert.match(labels, new RegExp(`step ${n} passed by itself`));
+  assert.doesNotMatch(JSON.stringify(steps), /data-tutorial=skip/);
+  assert.match(labels, /the tutorial is off the screen/);
+  assert.match(labels, /Welcome\/sample-paper\.pdf stays/);
+});
+
 test("a Mac update is published only from a Mac job where every check passed on Apple Silicon, signed off the Mac runner", () => {
   const ship = yaml.load(read(".github/workflows/ship.yml")) as any;
   assert.equal(ship.jobs.build_macos.secrets, "inherit", "mac-check's mac_publish needs the updater key");
@@ -243,7 +259,7 @@ test("a Mac update is published only from a Mac job where every check passed on 
   const passed = steps.findIndex((s) => s.id === "passed");
   assert.equal(passed, steps.length - 1);
   assert.equal(steps[passed].if, "success()");
-  for (const id of [/^Self-test the app/, /^Self-test tour/, /^Launch it/, /^Package the \.dmg/]) assert.ok(steps.findIndex((s) => id.test(s.name ?? "")) < passed, String(id));
+  for (const id of [/^Self-test the app/, /^Self-test tour/, /^Self-test tutorial/, /^Launch it/, /^Package the \.dmg/]) assert.ok(steps.findIndex((s) => id.test(s.name ?? "")) < passed, String(id));
   const handOn = steps.filter((s) => s.uses?.startsWith("actions/upload-artifact") && s.with.name === "macos-update");
   assert.equal(handOn.length, 1);
   assert.equal(handOn[0].if, "success()");

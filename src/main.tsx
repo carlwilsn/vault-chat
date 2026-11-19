@@ -122,6 +122,9 @@ if (isDriveWindow) {
   void import("./appStatus")
     .then(async (m) => {
       await m.openSetupVault();
+      // An install that already has a vault open ends its first run here: the tutorial never comes to it.
+      const [{ firstRunSeed }, { useStore }] = await Promise.all([import("./openVault"), import("./store")]);
+      void firstRunSeed(useStore.getState().vaultPath);
       m.installAppStatus();
     })
     .catch((e) => console.warn("[status]", e));

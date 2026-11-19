@@ -16,6 +16,10 @@
 //   capture    host.capture(target?) a PNG of the app's own window or one column (the laptop's `capture` service,
 //              src/screenCapture.ts; the agent's Screen tool draws through the same function)
 //   events     host.on("file-opened" | "chat-message" | "selection-changed", fn) → off
+//   first run  host.readFile(rel) a vault file's text (null: not there), host.shortcut(id) a shortcut's label for this
+//              platform ("⌘K" on a Mac, "Ctrl+K" elsewhere; src/shortcuts.ts), host.speak(text) one line in the app's
+//              local voice (Kokoro af_heart; false when it is not available: never waits long), host.boardPaired()
+//              whether an iPad board has ever connected to this vault's server (the first-run tutorial uses them)
 // This module imports nothing from the app: the app binds a HostBackend (src/hostBackend.ts) to the store, tests bind a
 // fake. Every subscription a plugin makes through it is an Effect of its run (src/pluginSupervisor.ts): disabling the
 // plugin removes the listeners, and a stopped run's api is inert.
@@ -93,6 +97,14 @@ export type HostBackend = {
   registerViewer?(type: string, mount: ViewerMount, by: string, opts?: ViewerOptions): () => void;
   /** The viewers of each type now. */
   viewers?(): readonly HostViewerKey[];
+  /** A vault file's text (vault-relative), or null when it is not there. Absent: no files here. */
+  readFile?(rel: string): Promise<string | null>;
+  /** A shortcut's label for this platform (src/shortcuts.ts shortcutHint), or "" for an unknown id. */
+  shortcut?(id: string): string;
+  /** Say one line in the app's local voice; true once it played, false when there is no local voice now. */
+  speak?(text: string): Promise<boolean>;
+  /** Whether an iPad board has connected to this vault's server. */
+  boardPaired?(): Promise<boolean>;
 };
 /** A chat translator: the messages an event of its type shows ([] none), or null to hand it to the next in line (next()
  *  gives that answer). event.item is the log's item: {id, kind, status, at, text?, via?, name?, args?, result?, level?, ...}. */
@@ -166,6 +178,15 @@ export type HostApi = {
   viewers(): readonly HostViewerKey[];
   /** A PNG of the app's own window ("window", default) or its "viewer" / "chat" column; rejects with why it can't. */
   capture(target?: CaptureTarget): Promise<Capture>;
+  /** A vault file's text (vault-relative, inside the vault), or null when it is not there or cannot be read. */
+  readFile(rel: string): Promise<string | null>;
+  /** A shortcut's label for this platform: shortcut("edit.inline") is "⌘K" on a Mac, "Ctrl+K" elsewhere ("" unknown). */
+  shortcut(id: string): string;
+  /** Say one line in the app's local voice (Kokoro, af_heart). Resolves true once it played, false when there is no
+   *  local voice now (not installed, still loading, no server) or it took too long; never rejects. */
+  speak(text: string): Promise<boolean>;
+  /** Whether an iPad board has connected to this vault's server (false when it cannot tell). */
+  boardPaired(): Promise<boolean>;
 };
 
 /** An inert backend: what a plugin mounted without the app's store sees. */
@@ -337,5 +358,13 @@ export function createHostApi(b: HostBackend, fx: Effects, alive: () => boolean,
     },
     viewers: () => (b.viewers?.() ?? []).map((k) => ({ key: k.key, active: k.active, viewers: k.viewers.map((v) => ({ id: v.id, name: v.name, by: v.by, builtin: v.builtin, enabled: v.enabled })) })),
     capture: (target = "window") => (!alive() ? Promise.reject(new Error("this plugin is stopped")) : b.capture ? b.capture(target) : Promise.reject(new Error("no screen here"))),
+    readFile: (rel) => {
+      const r = String(rel ?? "").replace(/\\/g, "/").replace(/^\.\//, "");
+      if (!alive() || !b.readFile || !r || r.startsWith("/") || /^[a-z]:/i.test(r) || r.split("/").includes("..")) return Promise.resolve(null);
+      return b.readFile(r).catch(() => null);
+    },
+    shortcut: (sid) => b.shortcut?.(String(sid)) ?? "",
+    speak: (text) => (alive() && b.speak && String(text ?? "").trim() ? b.speak(String(text).slice(0, 400)).catch(() => false) : Promise.resolve(false)),
+    boardPaired: () => (alive() && b.boardPaired ? b.boardPaired().catch(() => false) : Promise.resolve(false)),
   };
 }

@@ -803,6 +803,19 @@ async function offer(d: BrainDeps, b: any): Promise<{ status: number; body: Reco
   }
 }
 
+/** The pipeline's /say: { wav } (base64) or why not. Never waits for an install or a model download. */
+export async function sayLocal(d: Pick<BrainDeps, "botUrl" | "pipelineState" | "pipelineReady">, text: string): Promise<{ status: number; body: Record<string, unknown> }> {
+  if (!(await pipelineUp(d as BrainDeps))) return { status: 503, body: { error: "the voice pipeline is not running" } };
+  try {
+    const r = await fetch(`${d.botUrl}/say`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }), signal: AbortSignal.timeout(12_000) });
+    const out = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!r.ok || typeof out.wav !== "string") return { status: 503, body: { error: String(out.error ?? `the voice pipeline answered ${r.status}`) } };
+    return { status: 200, body: { wav: out.wav } };
+  } catch (e) {
+    return { status: 503, body: { error: `no local voice (${(e as Error).message})` } };
+  }
+}
+
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
   res.end(JSON.stringify(body));
@@ -847,6 +860,16 @@ export async function brainRoute(
   const end = /^\/api\/v1\/brain\/call\/([^/]+)\/end$/.exec(path);
   if (end && method === "POST") {
     json(res, 200, { ok: endCall(d, decodeURIComponent(end[1]!)) });
+    return true;
+  }
+  // One line in the local voice (the first-run tutorial's narration, src/hostBackend.ts speakLocal): Kokoro af_heart on
+  // the running pipeline, as base64 WAV. 503 at once when the pipeline or its local voice is not ready: nothing is
+  // installed or loaded for it (a caller falls back to silent text).
+  if (path === "/api/v1/brain/say" && method === "POST") {
+    const text = String((await readJson())?.text ?? "").replace(/\s+/g, " ").trim().slice(0, 400);
+    if (!text) return json(res, 400, { error: "text required" }), true;
+    const r = await sayLocal(d, text);
+    json(res, r.status, r.body);
     return true;
   }
   if (path === "/api/v1/brain/offer" && method === "POST") {

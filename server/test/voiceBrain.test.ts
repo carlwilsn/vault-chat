@@ -9,7 +9,7 @@ const logDir = mkdtempSync(join(tmpdir(), "vc-brain-test-"));
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { speechReady } from "../speakMath";
 import { toSpeech } from "../speakable";
-import { HOLD_MS, NO_SPOIL_NOTE, OPENER_MS, STOP_RE, isThinkingAloud, workCalibration, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
+import { HOLD_MS, NO_SPOIL_NOTE, OPENER_MS, STOP_RE, isThinkingAloud, workCalibration, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, sayLocal, type BrainDeps, type BrainEngine } from "../voiceBrain";
 
 type Fake = BrainEngine & { emit(ev: any): void; messages: any[]; talker: any; interrupted: number; running: boolean; stopped: number };
 
@@ -791,4 +791,26 @@ it("same thread IDs in different owner roots neither replace nor follow one anot
   expect(vb.liveCalls().map(c => c.convId)).toEqual(["conv-123456", "main"]);
   vb.endCall({ logDir: null }, String(second.body.callId));
   expect(vb.liveCalls().map(c => c.id)).toEqual([first.id]);
+});
+
+describe("one line in the local voice (the first-run tutorial's narration)", () => {
+  it("says no at once when the pipeline is not running, and hands back the pipeline's WAV when it is", async () => {
+    const off = await sayLocal({ botUrl: "http://127.0.0.1:9", pipelineState: () => ({ running: false }) as any }, "Hi");
+    expect(off.status).toBe(503);
+    const bot: Server = createServer((req, res) => {
+      let raw = "";
+      req.on("data", (d) => (raw += d));
+      req.on("end", () => {
+        const { text } = JSON.parse(raw);
+        res.writeHead(text === "Hi" ? 200 : 503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(text === "Hi" ? { wav: "UklGRg==" } : { error: "the local voice is absent" }));
+      });
+    });
+    await new Promise<void>((r) => bot.listen(0, "127.0.0.1", r));
+    const url = `http://127.0.0.1:${(bot.address() as AddressInfo).port}`;
+    const on = { botUrl: url, pipelineState: () => ({ running: true }) as any };
+    expect(await sayLocal(on, "Hi")).toEqual({ status: 200, body: { wav: "UklGRg==" } });
+    expect((await sayLocal(on, "other")).status).toBe(503);
+    bot.close();
+  });
 });

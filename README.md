@@ -1,63 +1,81 @@
 # vault-chat
 
-A desktop app for your markdown notes with Claude (or GPT, or Gemini, or any OpenRouter model) wired into the editor, the PDF viewer, and the chat. Heavily inspired by Obsidian (any folder is a vault), Cursor (inline edit on selections), and Claude Code (a real local-file agent with Read / Write / Bash). Drag a box on any PDF and ask about the region — it sends the pixels, not just text, so math / handwriting / diagrams actually work.
-
-The same agent also runs work in the background — kick off a long task, schedule a recurring brief, or drive the whole thing from your phone — so the desktop isn't the only surface. See [Background work](#background-work-missions-schedules--the-cockpit) below.
+vault-chat is a desktop app for a folder of notes and PDFs (your "vault") with an AI agent built in: it sees what you
+are reading, writes and edits your files, and can change the app itself when you ask it to.
 
 ![vault-chat demo](assets/demo.gif)
 
-## Try it (Windows)
+## Install on Windows
 
-Grab the latest installer:
+1. Download the installer from the [latest release](https://github.com/carlwilsn/vault-chat/releases/latest): `vault-chat_X.X.X_x64-setup.exe`.
+2. Run it. The installer is not code-signed yet, so Windows shows **Windows protected your PC**: click **More info**,
+   then **Run anyway** (once). After that the app checks for updates by itself and offers **Install & restart**.
+3. In the app, click **Open folder** in the title bar and pick a new, empty folder: that is your vault. On the app's
+   first run a new, empty vault gets a five-minute tutorial (a card in the corner, a sample paper in `Welcome/`).
+4. Sign in with your Claude account: Settings shows the line to sign in. On Windows you run `claude setup-token` in a
+   terminal (it needs [Claude Code](https://docs.anthropic.com/en/docs/claude-code)) and paste the token it prints.
 
-→ **[Download the latest release](https://github.com/carlwilsn/vault-chat/releases/latest)** (look for `vault-chat_X.X.X_x64-setup.exe`)
+## Install on a Mac
 
-When you run it, Windows will show:
+Apple Silicon Macs only (no Intel build is published). There is no notarized download: the simplest way in is to let
+your own Claude Code install it, because a download made with `curl` is not quarantined and opens without the
+"damaged / unidentified developer" dialog. Open Claude Code in a terminal and say:
 
-> **Windows protected your PC**
-> Microsoft Defender SmartScreen prevented an unrecognized app from starting…
+> Install vault-chat for me: follow the "If you are an AI agent installing this for someone" section of
+> https://github.com/carlwilsn/vault-chat
 
-This is normal — the installer isn't code-signed yet, so SmartScreen hasn't seen it before. Click the small **More info** link, then **Run anyway**. You only do this once. From then on, vault-chat checks for updates on launch and shows a small "Install & restart" banner in the corner when a new release is available — click to install, or "Later" to skip.
+It downloads the app into `/Applications`, makes your vault at `~/vault-chat`, opens the app, and asks you for one
+click: **Authorize** in your browser, to sign the app in with your Claude account. The first time the app opens, the
+tutorial starts in the corner.
 
-When it opens: gear icon → paste an API key → open a folder as your vault → start asking.
+## If you are an AI agent installing this for someone
 
-## Try it (Linux)
+Mac (Apple Silicon) only. Run each step, check its result, and tell the user plainly what you did and anything they
+must do. Never put the vault in `~/Documents`, `~/Desktop` or `~/Downloads` (macOS asks for permission there; the app
+refuses them and uses `~/vault-chat` instead).
 
-Grab the `.AppImage` from the [latest release](https://github.com/carlwilsn/vault-chat/releases/latest):
-
-```bash
-chmod +x vault-chat_*.AppImage
-./vault-chat_*.AppImage
-```
-
-No install needed. Auto-updates work the same as Windows — a small banner appears in the corner when a new release is available.
-
-### Mac
-
-No prebuilt installer yet — see [Build from source](#build-from-source) below.
-
-### New here? Try the demo vault
-
-Don't have a folder of markdown notes yet? Grab the demo vault — eight short notes that walk you through every feature hands-on (inline edit, PDF marquee, agentic file ops, undo, skill creation), plus a sample PDF to drag a box on. Ten minutes end-to-end.
-
-→ **[Download demo-vault.zip](https://github.com/carlwilsn/vault-chat/releases/latest/download/demo-vault.zip)**
-
-Unzip anywhere, then in vault-chat: titlebar → folder icon → pick the unzipped `demo-vault` folder. Start with `00 - Welcome.md`.
-
-### Try it free (no credit card)
-
-You don't need to spend a cent to try it — Google's Gemini API has a generous free tier that's enough to kick the tires.
-
-1. Go to [aistudio.google.com/apikey](https://aistudio.google.com/apikey), sign in with a Google account, click **Create API key**, copy the value.
-2. In vault-chat: gear icon → paste it into the **Google** field → **Save**.
-3. In the model dropdown (top of the chat pane) pick a Gemini model — `gemini-2.5-flash` is fine for everyday use.
-4. Open any folder as a vault and start chatting.
-
-That's it — Read / Write / Edit / Bash / PDF marquee / inline edit all work on the free tier. Anthropic and OpenAI require prepaid credits and are worth adding once you know you like the app; the same gear-icon flow applies.
-
-**Optional: WebSearch.** The agent's `WebSearch` tool is powered by [Tavily](https://app.tavily.com/), which also has a free tier (1000 searches/month). Grab a key from your Tavily dashboard, then in vault-chat: gear icon → **Tavily (web search)** field → paste → **Save**. `WebFetch` (loading a specific URL) needs no key and works out of the box.
-
-**Optional: voice mode.** Voice mode is powered by [ElevenLabs](https://elevenlabs.io/) and needs a Conversational AI plan key (free tier includes 15 min/month). Grab a key, then in vault-chat: gear icon → **ElevenLabs (voice mode)** field → paste → **Save**. Toggle voice mode anytime with `Ctrl+D`.
+1. **Check the machine.** `uname -m` must print `arm64`. `claude --version` must work: the app's sign-in runs
+   `claude setup-token` (you are probably that `claude`).
+2. **Download the newest Mac build.** A Mac build is published only from a check where every Mac test passed, and
+   its release then carries `mac-update.json`. Take the newest release that has one, and the app bundle it names:
+   ```sh
+   MANIFEST=$(curl -fsSL "https://api.github.com/repos/carlwilsn/vault-chat/releases?per_page=50" \
+     | grep -o 'https://github.com/carlwilsn/vault-chat/releases/download/[^"]*/mac-update.json' | head -1)
+   URL=$(curl -fsSL "$MANIFEST" | grep -o 'https://[^"]*\.app\.tar\.gz' | head -1)
+   echo "$URL"   # vault-chat_<version>_aarch64.app.tar.gz
+   ```
+   (The same release also has a `.dmg`; use the `.app.tar.gz`: it needs no mounting.)
+3. **Install it to /Applications with curl** (curl does not quarantine, so there is no Gatekeeper dialog):
+   ```sh
+   curl -fsSL "$URL" -o /tmp/vault-chat.app.tar.gz
+   rm -rf /Applications/vault-chat.app
+   tar -xzf /tmp/vault-chat.app.tar.gz -C /Applications
+   ```
+4. **Pick the vault before the first launch.** Write the setup file; the app's first window opens that folder (making
+   it if missing) and reads the file once (it is renamed `setup.used.json`). Leave `~/vault-chat` empty or let the app
+   make it: a new, empty vault on the app's first run gets the tutorial.
+   ```sh
+   mkdir -p ~/Library/Application\ Support/vault-chat
+   printf '{"vault": "~/vault-chat"}\n' > ~/Library/Application\ Support/vault-chat/setup.json
+   ```
+   (Or launch once with the environment variable `VC_SETUP_VAULT=~/vault-chat`.)
+5. **Launch it:** `open /Applications/vault-chat.app`.
+6. **Sign in (the user's one click).** Ask the user to click **Sign in with Claude** in the app (at the top of
+   Settings, or where the chat asks for it). The app runs `claude setup-token` itself and opens their browser; they
+   click **Authorize** once. Nothing is pasted, and the token goes straight into the macOS keychain: never ask for
+   it, never print it. If it cannot finish, the app shows the reason and a paste field instead.
+7. **Read the status** (it never contains a token or key):
+   ```sh
+   /Applications/vault-chat.app/Contents/MacOS/vault-chat --status
+   ```
+   It prints the app's status file (`~/Library/Application Support/vault-chat/status.json`) with `running` added,
+   and exits without starting a second app. Done means `"running": true`, `"signedIn": true`,
+   `"vaultOpen": true` with `"vault"` = their `~/vault-chat`, and `"server": {"healthy": true}`. The app rewrites the
+   file every 10 s until it is signed in with a healthy server, so read it again after the user's click.
+   If `"needsCommandLineTools": true`, git needs macOS's Command Line Tools: tell the user to run
+   `xcode-select --install` and click Install (`gitHelp` says the same). `"signInError"` says why a sign-in failed.
+8. **Report** to the user: the version installed, where the vault is, whether they are signed in, and that a short
+   tutorial is waiting in the corner of the window ("delete the tutorial" removes it when they are done).
 
 ## What's in it
 
@@ -136,7 +154,7 @@ Reach out to me (Carl) at [carlwilson2027@u.northwestern.edu](mailto:carlwilson2
 
 ## Build from source
 
-If you want to hack on it, run unreleased changes, or you're on Mac/Linux: clone the repo, install the prereqs once, and launch it from your terminal.
+If you want to hack on it, run unreleased changes, or you're on Linux: clone the repo, install the prereqs once, and launch it from your terminal.
 
 ### 1. Install prerequisites (one-time)
 

@@ -95,6 +95,12 @@ pub fn plan() -> Option<&'static Plan> {
     PLAN.get_or_init(|| plan_from(|k| std::env::var(k).ok())).as_ref()
 }
 
+/// Whether this self-test asked for the first-run path (`"firstRun": true` in its steps file): only then does a
+/// self-test launch seed the tutorial into its new vault (src-tauri/src/first_run_tutorial.rs).
+pub fn wants_first_run() -> bool {
+    CONFIG.get().map(|c| c.steps.get("firstRun").and_then(|v| v.as_bool()) == Some(true)).unwrap_or(false)
+}
+
 /// What the main window gets: the steps file as written, where the results go
 /// and the vault to open.
 #[derive(serde::Serialize, Clone, Debug)]

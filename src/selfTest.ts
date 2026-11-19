@@ -13,7 +13,8 @@
 // name for it in the results.
 //   {expect: {health: "server", timeout?}}             the app's local server answers /api/v1/health (default 90 s)
 //   {expect: {text: "…", timeout?}}                     the window shows that text (default 5 s)
-//   {expect: {file: "rel/path", contains?: "…", timeout?}}  that file is on disk in the vault (with that text)
+//   {expect: {file: "rel/path", contains?: "…", timeout?}}  that file is on disk in the vault (with that text; a binary
+//                                                        file such as a PDF counts as there, with no text)
 //   {expect: {notText: "…"}}                            the window does NOT show that text (checked once)
 //   {expect: {status: {…}, timeout?}}                   the app's status file (src-tauri/src/first_run.rs) holds these
 //                                                        values (nested objects match in part; "$vault" = the vault)
@@ -356,7 +357,11 @@ export async function startSelfTestIfAsked(): Promise<void> {
         const h = await invoke<{ status: number; body: string }>("box_get_json", { url: `${link.url}/api/v1/health`, token: link.token, timeoutMs: 5000 });
         return h.status >= 200 && h.status < 300 ? { ok: true, body: `${link.url} ${h.body}` } : { ok: false, why: `health answered HTTP ${h.status}` };
       },
-      readFile: (rel) => invoke<string>("read_text_file", { path: `${vault}${sep}${rel}` }).catch(() => null),
+      // A file that is not text (a PDF) is there with no text: "" (null only when it is not on disk).
+      readFile: (rel) =>
+        invoke<string>("read_text_file", { path: `${vault}${sep}${rel}` }).catch(async () =>
+          (await invoke<boolean>("path_exists", { path: `${vault}${sep}${rel}` }).catch(() => false)) ? "" : null,
+        ),
       text: () => visibleText(document, 1_000_000),
       status: () => invoke<unknown>("app_status_read"),
       keyHash: async (name) => {

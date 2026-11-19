@@ -1,6 +1,6 @@
 import { EditorWrites } from "./editorWrites";
 import { isBoxPath, readTextAt, writeTextAt } from "./boxFiles";
-import { boxLinkFor, boxPost } from "./boxChat";
+import { boxLinkFor, boxPost, localServerLink } from "./boxChat";
 import { pushEditorWrites } from "./vaultSync";
 
 export const editorWrites = new EditorWrites({ read: readTextAt, write: writeTextAt });
@@ -15,6 +15,12 @@ export async function saveBeforeSend(vault: string): Promise<void> {
   if (local.length) {
     const link = await boxLinkFor(vault);
     if (!link) throw new Error("Edited files are saved locally, but no box is connected");
+    // No box: the app's own server (src-tauri/src/local_server.rs) reads this same disk, so the saved files are
+    // already where the agent reads them; there is no git push or flush to wait for (it would report "no box").
+    if (link === localServerLink(vault)) {
+      editorWrites.acknowledge(writes);
+      return;
+    }
     await pushEditorWrites(vault);
     const root = vault.replace(/\\/g, "/").replace(/\/+$/, "") + "/";
     const files = await Promise.all(local.map(async w => {

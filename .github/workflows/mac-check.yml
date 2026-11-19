@@ -91,7 +91,7 @@ jobs:
   build_macos:
     needs: pick
     continue-on-error: true
-    timeout-minutes: 150
+    timeout-minutes: 170
     permissions:
       contents: read
     runs-on: ${{ needs.pick.outputs.runner }}
@@ -492,6 +492,71 @@ jobs:
           tail -n 40 "$T/app.log"
           [ -s "$T/result.json" ] && [ "$(jq -r .ok "$T/result.json")" = true ] && [ "$code" = 0 ] \
             || { echo "::error::the recorded tour failed (see tour/steps.md)"; exit 1; }
+
+      # The first-run tutorial, recorded (tutorial.mov in the proof): test/selftest/tutorial.json on a fresh HOME
+      # whose new vault (~/vault-chat, made by the run) is the account's first, so the app seeds the tutorial
+      # (src-tauri/src/first_run_tutorial.rs: .vault-chat/plugins/tutorial.js, Welcome.md, Welcome/sample-paper.pdf).
+      # Steps 1-5 are driven as a new user would, each passing by its own check (no Skip): Cmd+L on the PDF, the note
+      # beside it, a Cmd+K edit accepted, a flashcard tool asked for and answered, then "delete the tutorial"; the
+      # tutorial must be gone and Welcome/ kept. The agent is the real Claude Code CLI on the local fake model
+      # (test/selftest/fake-anthropic.mjs plays the tutorial's asks with real tool calls). Results: tutorial/steps.md.
+      - name: Self-test tutorial, recorded
+        id: tutorial
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set +e -u
+          OUT="$RUNNER_TEMP/mac-proof"; T="$OUT/tutorial"; mkdir -p "$T"
+          APP=$(ls -d src-tauri/target/release/bundle/macos/*.app | head -1)
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          pkill -9 -x "$EXE" 2>/dev/null; sleep 1
+          HOME_T="$RUNNER_TEMP/tutorial-home"; VAULT="$HOME_T/vault-chat"
+          rm -rf "$HOME_T"; mkdir -p "$HOME_T"
+          jq --arg v "$VAULT" '{vault: $v} + .' test/selftest/tutorial.json > "$T/steps.json"
+          CLI="$GITHUB_WORKSPACE/node_modules/@anthropic-ai/claude-agent-sdk-darwin-$( [ "$(uname -m)" = arm64 ] && echo arm64 || echo x64 )/claude"
+          node test/selftest/fake-anthropic.mjs 18766 "$T/fake-api.log" > "$T/fake-api.out" 2>&1 & FAKE=$!
+          sleep 1
+          t0=$(date +%s)
+          HOME="$HOME_T" VC_SELFTEST="$T/steps.json" VC_SELFTEST_OUT="$T/result.json" VC_SELFTEST_TIMEOUT=780 \
+            ANTHROPIC_BASE_URL=http://127.0.0.1:18766 ANTHROPIC_API_KEY=sk-ant-not-a-real-key VC_CLAUDE_BIN="$CLI" \
+            VC_TITLE_MODEL=off VC_AUTO_TITLE=off \
+            "$APP/Contents/MacOS/$EXE" > "$T/app.log" 2>&1 & PID=$!
+          ( n=1; while kill -0 "$PID" 2>/dev/null; do
+              f="$OUT/tutorial.mov"; [ "$n" -gt 1 ] && f="$OUT/tutorial-$n.mov"
+              screencapture -v -V 180 -x "$f" >> "$T/video.log" 2>&1; n=$((n+1))
+            done ) > /dev/null 2>&1 & REC=$!
+          ( sleep 840; kill -9 "$PID" ) > /dev/null 2>&1 & GUARD=$!
+          wait "$PID"; code=$?
+          kill "$GUARD" 2>/dev/null
+          for _ in $(seq 1 200); do kill -0 "$REC" 2>/dev/null || break; sleep 1; done
+          kill -9 "$REC" "$FAKE" 2>/dev/null
+          took=$(( $(date +%s) - t0 ))
+          ls -la "$OUT"/tutorial*.mov >> "$T/video.log" 2>&1
+          ls -laR "$VAULT" > "$T/vault-after.txt" 2>&1
+          {
+            echo
+            echo "## Recorded first-run tutorial (tutorial.mov, ${took} s, exit $code)"
+            echo
+            echo "| # | step | result | ms | note |"
+            echo "|---|---|---|---|---|"
+            if [ -s "$T/result.json" ]; then
+              jq -r '.steps[] | "| \(.i) | \(.action) | \(if .ok then "pass" else "FAIL" end) | \(.ms) | \((.error // .note // "") | gsub("[|\\n]"; " ") | .[0:120]) |"' "$T/result.json"
+              jq -r 'if .error then "\nerror: \(.error)" else "" end' "$T/result.json"
+            else
+              echo "| - | no results file | FAIL | - | exit $code |"
+              grep '^\[selftest\]' "$T/app.log" | tail -n 8
+            fi
+          } > "$T/steps.md"
+          cat "$T/steps.md" | tee -a "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          if [ -s "$T/result.json" ]; then
+            jq -r '.steps[] | select(.action | test("passed by itself|tutorial|stays")) | "tutorial: \(.action): \(if .ok then "pass" else "FAIL" end)"' "$T/result.json" | tee -a "$OUT/checks.txt"
+          else
+            echo "tutorial: FAIL (no results)" | tee -a "$OUT/checks.txt"
+          fi
+          tail -n 40 "$T/app.log"
+          [ -s "$T/result.json" ] && [ "$(jq -r .ok "$T/result.json")" = true ] && [ "$code" = 0 ] \
+            || { echo "::error::the recorded tutorial failed (see tutorial/steps.md)"; exit 1; }
 
       # After the launch check, so a Finder-scripting hiccup in the DMG layout
       # never hides whether the app itself runs.
