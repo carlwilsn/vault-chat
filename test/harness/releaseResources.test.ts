@@ -212,6 +212,14 @@ test("the Mac job asks for a MacBook-like display before the launch, and says wh
   assert.equal(pick(head + "  mode 1: res:1920x1080 hz:60 color_depth:8\n  mode 2: res:1440x900 hz:60 color_depth:8 scaling:on\n"), "id:S1 mode:2");
   assert.equal(pick(head + "  mode 1: res:1920x1080 hz:60 color_depth:8\n  mode 3: res:1280x800 hz:60 color_depth:8\n"), "id:S1 mode:1");
   assert.equal(pick(head), "");
+  // The picker is fetched from the workflow's own commit when the checked tag predates it.
+  assert.match(steps[d].run, /\$GITHUB_WORKFLOW_SHA\/scripts\/macos-pick-display-mode\.py/);
+});
+
+test("the tour is recorded in pieces that end by themselves, never stopped by a signal", () => {
+  const tour = (macCheck().jobs.build_macos.steps as any[]).find((s) => s.id === "tour").run as string;
+  assert.match(tour, /screencapture -v -V 180 -x "\$f"/);
+  assert.doesNotMatch(tour, /kill -INT "\$REC"/);
 });
 
 test("a Mac update is published only from a Mac job where every check passed on Apple Silicon, signed off the Mac runner", () => {

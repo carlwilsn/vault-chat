@@ -184,7 +184,10 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install jakehilborn/jakehilborn/displayplacer >> "$OUT/display-brew.log" 2>&1
           if command -v displayplacer > /dev/null; then
             displayplacer list > "$OUT/displayplacer-list.txt" 2>&1
-            ARG=$(python3 scripts/macos-pick-display-mode.py < "$OUT/displayplacer-list.txt")
+            # The picker as of this workflow's commit (a dispatched check builds an older tag that may not have it).
+            PICK=scripts/macos-pick-display-mode.py
+            [ -f "$PICK" ] || { PICK="$RUNNER_TEMP/pick-display-mode.py"; curl -fsSL -o "$PICK" "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_WORKFLOW_SHA/scripts/macos-pick-display-mode.py"; }
+            ARG=$(python3 "$PICK" < "$OUT/displayplacer-list.txt")
             echo "## displayplacer ${ARG:-(no better mode offered)}" >> "$D"
             [ -n "$ARG" ] && displayplacer "$ARG" >> "$D" 2>&1
             sleep 3
@@ -192,9 +195,12 @@ jobs:
             echo "## displayplacer could not be installed (display-brew.log)" >> "$D"
           fi
           { echo "## after"; system_profiler SPDisplaysDataType; } >> "$D" 2>&1
-          RES=$(system_profiler SPDisplaysDataType 2>/dev/null | sed -n 's/^ *Resolution: *//p' | head -1)
-          LOOKS=$(system_profiler SPDisplaysDataType 2>/dev/null | sed -n 's/^ *UI Looks like: *//p' | head -1)
-          echo "display: ${RES:-unknown}${LOOKS:+, looks like $LOOKS}${ARG:+ (set: $ARG)}${ARG:- (could not be changed: no better mode offered or no displayplacer)}" | tee "$OUT/display-final.txt"
+          # The runner's paravirtual display tells system_profiler nothing; displayplacer reads the mode in use.
+          displayplacer list > "$OUT/displayplacer-after.txt" 2>&1
+          RES=$(sed -n 's/^Resolution: *//p' "$OUT/displayplacer-after.txt" | head -1)
+          SCALING=$(sed -n 's/^Scaling: *//p' "$OUT/displayplacer-after.txt" | head -1)
+          [ "$SCALING" = on ] && SCALE="2x HiDPI" || SCALE="1x (this display offers no HiDPI modes)"
+          echo "display: ${RES:-unknown} at ${SCALE}${ARG:+ (set: $ARG)}${ARG:- (could not be changed: no better mode offered or no displayplacer)}" | tee "$OUT/display-final.txt"
 
       - name: Launch it with a fresh HOME and check its window
         id: launch
@@ -414,23 +420,26 @@ jobs:
           "$CLI" --version > "$T/claude-version.txt" 2>&1 || echo "::warning::the Claude Code CLI did not run: $(cat "$T/claude-version.txt")"
           node test/selftest/fake-anthropic.mjs 18765 "$T/fake-api.log" > "$T/fake-api.out" 2>&1 & FAKE=$!
           sleep 1
-          screencapture -v -V 900 -x "$OUT/tour.mov" > "$T/video.log" 2>&1 & REC=$!
-          sleep 2
           t0=$(date +%s)
           HOME="$HOME_T" VC_SELFTEST="$T/steps.json" VC_SELFTEST_OUT="$T/result.json" VC_SELFTEST_TIMEOUT=840 \
             ANTHROPIC_BASE_URL=http://127.0.0.1:18765 ANTHROPIC_API_KEY=sk-ant-not-a-real-key VC_CLAUDE_BIN="$CLI" \
             VC_TITLE_MODEL=off VC_AUTO_TITLE=off \
             "$APP/Contents/MacOS/$EXE" > "$T/app.log" 2>&1 & PID=$!
+          # On video in fixed-length pieces that end by themselves (tour.mov, then tour-2.mov ... while the
+          # app still runs): screencapture stopped by a signal leaves no file on the runner (v0.9.58's tour.mov).
+          ( n=1; while kill -0 "$PID" 2>/dev/null; do
+              f="$OUT/tour.mov"; [ "$n" -gt 1 ] && f="$OUT/tour-$n.mov"
+              screencapture -v -V 180 -x "$f" >> "$T/video.log" 2>&1; n=$((n+1))
+            done ) > /dev/null 2>&1 & REC=$!
           ( sleep 900; kill -9 "$PID" ) > /dev/null 2>&1 & GUARD=$!
           wait "$PID"; code=$?
           kill "$GUARD" 2>/dev/null
-          sleep 2; kill -INT "$REC" 2>/dev/null
-          for _ in $(seq 1 30); do kill -0 "$REC" 2>/dev/null || break; sleep 1; done
+          for _ in $(seq 1 200); do kill -0 "$REC" 2>/dev/null || break; sleep 1; done   # the last piece's 180 s, then it writes
           kill -9 "$REC" "$FAKE" 2>/dev/null
           took=$(( $(date +%s) - t0 ))
           find "$HOME_T" -maxdepth 7 -type f \( -name '*.log' -o -name '*.jsonl' -o -name '*.json' \) -size -5M -print0 2>/dev/null \
             | xargs -0 -I{} sh -c 'mkdir -p "$1/$(dirname "${2#$3/}")" && cp "$2" "$1/${2#$3/}"' _ "$T/home" {} "$HOME_T" || true
-          ls -la "$OUT/tour.mov" >> "$T/video.log" 2>&1
+          ls -la "$OUT"/tour*.mov >> "$T/video.log" 2>&1
           {
             echo
             echo "## Recorded tour (tour.mov, ${took} s, exit $code)"
