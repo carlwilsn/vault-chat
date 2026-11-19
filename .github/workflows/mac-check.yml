@@ -166,12 +166,15 @@ jobs:
           ls -la "$RUNNER_TEMP/mac-update"
           { echo "bundle=$NAME"; echo "arch=$ARCH"; } >> "$GITHUB_OUTPUT"
 
-      # A runner's screen is 1024x768 at 1x by default: the app's 1400x900
-      # window gets squeezed onto a tiny old monitor. Ask for a MacBook-like
-      # display (HiDPI ~1440x900, else the closest mode the app fits on) with
-      # displayplacer (scripts/macos-pick-display-mode.py picks from what the
-      # virtual display offers). Best effort: whatever it ends up as is in
-      # display.txt and checks.txt, and nothing here fails the job.
+      # A runner's screen is a paravirtual 1024x768 at 1x that offers no HiDPI
+      # modes (v0.9.58: displayplacer lists 640x480 .. 1920x1080, all 1x): the
+      # app's 1400x900 window was squeezed onto a tiny old monitor. First choice:
+      # a virtual 1440x900-point HiDPI (2x) display made the main one
+      # (scripts/macos-virtual-display.m, CGVirtualDisplay), so the window and
+      # the videos look like a 14" MacBook. If that cannot be made or draws
+      # nothing, the runner's own screen in its best mode (displayplacer +
+      # scripts/macos-pick-display-mode.py: 1600x900 there). Best effort: what
+      # it ends up as is in display.txt and checks.txt; nothing here fails the job.
       - name: Give the runner a realistic display
         id: display
         continue-on-error: true
@@ -180,27 +183,47 @@ jobs:
         run: |
           set +e
           OUT="$RUNNER_TEMP/mac-proof"; mkdir -p "$OUT"; D="$OUT/display.txt"
-          { echo "## before"; system_profiler SPDisplaysDataType; } > "$D" 2>&1
+          # Helpers as of this workflow's commit (a dispatched check builds an older tag that may not have them).
+          helper() { [ -f "scripts/$1" ] && echo "scripts/$1" && return; curl -fsSL -o "$RUNNER_TEMP/$1" "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_WORKFLOW_SHA/scripts/$1" && echo "$RUNNER_TEMP/$1"; }
           HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install jakehilborn/jakehilborn/displayplacer >> "$OUT/display-brew.log" 2>&1
-          if command -v displayplacer > /dev/null; then
-            displayplacer list > "$OUT/displayplacer-list.txt" 2>&1
-            # The picker as of this workflow's commit (a dispatched check builds an older tag that may not have it).
-            PICK=scripts/macos-pick-display-mode.py
-            [ -f "$PICK" ] || { PICK="$RUNNER_TEMP/pick-display-mode.py"; curl -fsSL -o "$PICK" "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_WORKFLOW_SHA/scripts/macos-pick-display-mode.py"; }
+          displayplacer list > "$OUT/displayplacer-list.txt" 2>&1
+          # 1. The virtual HiDPI display (it lives as long as its process: the job's end takes it down).
+          VIRTUAL=""
+          VD=$(helper macos-virtual-display.m)
+          if [ -n "$VD" ] && clang -fobjc-arc -framework Foundation -framework CoreGraphics "$VD" -o "$RUNNER_TEMP/vdisplay" > "$OUT/vdisplay.log" 2>&1; then
+            nohup "$RUNNER_TEMP/vdisplay" 1440 900 >> "$OUT/vdisplay.log" 2>&1 &
+            VPID=$!
+            for _ in $(seq 1 15); do grep -q "^virtual display" "$OUT/vdisplay.log" && break; kill -0 "$VPID" 2>/dev/null || break; sleep 1; done
+            sleep 3
+            # A display that draws nothing compresses to almost nothing: then take it away again.
+            screencapture -x "$OUT/display-check.png"
+            size=$(stat -f %z "$OUT/display-check.png" 2>/dev/null || echo 0)
+            if grep -q "main: yes" "$OUT/vdisplay.log" && [ "$size" -gt 20000 ]; then
+              VIRTUAL=$(grep "^virtual display" "$OUT/vdisplay.log" | head -1)
+            else
+              echo "virtual display not used (main display capture $size bytes)" >> "$OUT/vdisplay.log"
+              kill "$VPID" 2>/dev/null; sleep 3
+            fi
+          fi
+          cat "$OUT/vdisplay.log" >> "$D" 2>/dev/null
+          # 2. Otherwise the runner's own screen in its best mode.
+          ARG=""
+          if [ -z "$VIRTUAL" ] && command -v displayplacer > /dev/null; then
+            PICK=$(helper macos-pick-display-mode.py)
             ARG=$(python3 "$PICK" < "$OUT/displayplacer-list.txt")
             echo "## displayplacer ${ARG:-(no better mode offered)}" >> "$D"
             [ -n "$ARG" ] && displayplacer "$ARG" >> "$D" 2>&1
             sleep 3
-          else
-            echo "## displayplacer could not be installed (display-brew.log)" >> "$D"
           fi
-          { echo "## after"; system_profiler SPDisplaysDataType; } >> "$D" 2>&1
-          # The runner's paravirtual display tells system_profiler nothing; displayplacer reads the mode in use.
           displayplacer list > "$OUT/displayplacer-after.txt" 2>&1
-          RES=$(sed -n 's/^Resolution: *//p' "$OUT/displayplacer-after.txt" | head -1)
-          SCALING=$(sed -n 's/^Scaling: *//p' "$OUT/displayplacer-after.txt" | head -1)
-          [ "$SCALING" = on ] && SCALE="2x HiDPI" || SCALE="1x (this display offers no HiDPI modes)"
-          echo "display: ${RES:-unknown} at ${SCALE}${ARG:+ (set: $ARG)}${ARG:- (could not be changed: no better mode offered or no displayplacer)}" | tee "$OUT/display-final.txt"
+          cat "$OUT/displayplacer-after.txt" >> "$D"
+          if [ -n "$VIRTUAL" ]; then
+            echo "display: 1440x900 points at 2x HiDPI ($VIRTUAL)" | tee "$OUT/display-final.txt"
+          else
+            # The paravirtual display tells system_profiler nothing; displayplacer reads the mode in use.
+            RES=$(sed -n 's/^Resolution: *//p' "$OUT/displayplacer-after.txt" | head -1)
+            echo "display: ${RES:-unknown} at 1x (no HiDPI: the virtual display failed, see vdisplay.log; the runner's screen offers no HiDPI modes)${ARG:+ (set: $ARG)}" | tee "$OUT/display-final.txt"
+          fi
 
       - name: Launch it with a fresh HOME and check its window
         id: launch

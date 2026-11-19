@@ -205,7 +205,7 @@ test("the Mac job asks for a MacBook-like display before the launch, and says wh
   const launch = steps.findIndex((s) => s.id === "launch");
   assert.ok(d >= 0 && d < launch);
   assert.equal(steps[d]["continue-on-error"], true);
-  assert.match(steps[d].run, /system_profiler SPDisplaysDataType/);
+  assert.match(steps[d].run, /displayplacer list/);
   assert.match(steps[launch].run, /display-final\.txt.*checks\.txt/);
   const pick = (list: string) => execFileSync("python3", [join(root, "scripts/macos-pick-display-mode.py")], { input: list, encoding: "utf8" }).trim();
   const head = "Persistent screen id: S1\nResolutions for rotation 0:\n  mode 0: res:1024x768 hz:60 color_depth:8 <-- current mode\n";
@@ -213,7 +213,13 @@ test("the Mac job asks for a MacBook-like display before the launch, and says wh
   assert.equal(pick(head + "  mode 1: res:1920x1080 hz:60 color_depth:8\n  mode 3: res:1280x800 hz:60 color_depth:8\n"), "id:S1 mode:1");
   assert.equal(pick(head), "");
   // The picker is fetched from the workflow's own commit when the checked tag predates it.
-  assert.match(steps[d].run, /\$GITHUB_WORKFLOW_SHA\/scripts\/macos-pick-display-mode\.py/);
+  assert.match(steps[d].run, /\$GITHUB_WORKFLOW_SHA\/scripts\/\$1/);
+  assert.match(steps[d].run, /helper macos-virtual-display\.m/);
+  assert.match(steps[d].run, /helper macos-pick-display-mode\.py/);
+  // The virtual display asks for a 1440x900-point HiDPI screen and makes it the main one.
+  const vd = read("scripts/macos-virtual-display.m");
+  assert.match(vd, /s\.hiDPI = 1;/);
+  assert.match(vd, /CGConfigureDisplayOrigin\(cfg, vid, 0, 0\)/);
 });
 
 test("the tour is recorded in pieces that end by themselves, never stopped by a signal", () => {
