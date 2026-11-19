@@ -54,6 +54,7 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     Frame,
+    InputAudioRawFrame,
     InterimTranscriptionFrame,
     InterruptionFrame,
     LLMContextFrame,
@@ -61,6 +62,7 @@ from pipecat.frames.frames import (
     LLMFullResponseStartFrame,
     LLMTextFrame,
     TranscriptionFrame,
+    TTSAudioRawFrame,
     TTSSpeakFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
@@ -345,9 +347,11 @@ class AfterStt(FrameProcessor):
 
     MISSED = "Sorry, I didn't catch that."
 
-    def __init__(self, quiet: "Quiet"):
+    def __init__(self, quiet: "Quiet", stats: "CallStats | None" = None, call_id: str | None = None):
         super().__init__()
         self.quiet = quiet
+        self.stats = stats
+        self.call_id = call_id
         self.watch = SttWatch()
         self.task: PipelineTask | None = None
         self.loop: asyncio.Task | None = None
@@ -360,7 +364,7 @@ class AfterStt(FrameProcessor):
         while True:
             await asyncio.sleep(0.25)
             if self.task and self.watch.due(time.monotonic(), self.quiet.gate.bot):
-                jlog(ev="stt.miss")
+                jlog(ev="stt.miss", call=self.call_id)
                 await self.task.queue_frame(TTSSpeakFrame(self.MISSED))
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -372,6 +376,8 @@ class AfterStt(FrameProcessor):
             self.quiet.gate.on_frame(frame, now)
         if isinstance(frame, VADUserStartedSpeakingFrame):
             self.watch.voice_start(now)
+            if self.stats:
+                self.stats.add("vad")
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
             self.watch.voice_stop(now)
         elif isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)) and direction == FrameDirection.DOWNSTREAM:
@@ -383,6 +389,72 @@ class AfterStt(FrameProcessor):
             if text != frame.text:
                 frame.text = text
             self.watch.words()
+        await self.push_frame(frame, direction)
+
+
+class CallStats:
+    """What one call's pipeline did, stage by stage, said once in its call.end line (voice-turns.jsonl). A call that
+    stays silent (2026-11-19: connected, his mic moving, no reply and nothing in any log) then says where it stopped:
+    no audio from the device (audio_in), audio but never his voice (vad), his voice but no words (partials / finals:
+    the STT), words but no request (requests: the turn), a request but no audio out (tts_audio: the TTS), or a
+    provider's own error (errors, at most MAX_ERRORS, the call's secrets cut out). Pure (tested in test_gate.py)."""
+
+    STAGES = ("audio_in", "vad", "partials", "finals", "requests", "replies", "speak", "tts_audio", "bot_spoke")
+    MAX_ERRORS = 5
+
+    def __init__(self, secrets: tuple = ()):
+        self.n = {k: 0 for k in self.STAGES}
+        self.errors: list[dict] = []
+        self._secrets = [s for s in secrets if isinstance(s, str) and len(s) >= 4]
+
+    def add(self, stage: str, k: int = 1) -> None:
+        self.n[stage] += k
+
+    def error(self, where: str, message: str) -> None:
+        if len(self.errors) >= self.MAX_ERRORS:
+            return
+        text = str(message)
+        for s in self._secrets:
+            text = text.replace(s, "***")
+        e = {"where": where, "error": text[:200]}
+        if e not in self.errors:  # a reconnect loop repeats itself: each distinct error once
+            self.errors.append(e)
+
+    def silent_at(self) -> str | None:
+        """The first stage nothing reached, when the call never spoke (None: it spoke). "vad" also covers a call he
+        never talked in."""
+        n = self.n
+        if n["bot_spoke"]:
+            return None
+        if not n["audio_in"]:
+            return "audio_in"
+        if not n["vad"]:
+            return "vad"
+        if not (n["partials"] or n["finals"]):
+            return "stt"
+        if not n["requests"] and not n["speak"]:
+            return "turn"
+        return "tts"
+
+    def summary(self) -> dict:
+        return {**self.n, "silent_at": self.silent_at(), "errors": self.errors}
+
+
+class StageCount(FrameProcessor):
+    """Counts the frames of the given kinds passing downstream into CallStats; passes everything on."""
+
+    def __init__(self, stats: CallStats, kinds: dict):
+        super().__init__()
+        self.stats = stats
+        self.kinds = kinds
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if direction == FrameDirection.DOWNSTREAM:
+            for kind, stage in self.kinds.items():
+                if isinstance(frame, kind):
+                    self.stats.add(stage)
+                    break
         await self.push_frame(frame, direction)
 
 
@@ -604,26 +676,34 @@ async def run_call(connection, call: dict):
         params=TransportParams(audio_in_enabled=True, audio_out_enabled=True),
     )
     context = LLMContext()
-    pair = LLMContextAggregatorPair(
-        context,
-        user_params=user_aggregator_params(SileroVADAnalyzer(
-            params=VADParams(start_secs=VAD_START_SECS, stop_secs=VAD_STOP_SECS),
-        )),
-    )
+    # The VAD and turn models load off the event loop: 2026-11-19 11:15 this process was swapped out (memory.high on the
+    # server's cgroup) and the call's setup took 27 s from offer to call.start; loaded in the loop, nothing else (the
+    # device's ICE, /health) is answered meanwhile, and the device's reconnect was refused as "not ready".
+    user_params = await asyncio.to_thread(lambda: user_aggregator_params(SileroVADAnalyzer(
+        params=VADParams(start_secs=VAD_START_SECS, stop_secs=VAD_STOP_SECS),
+    )))
+    pair = LLMContextAggregatorPair(context, user_params=user_params)
+    stats = CallStats((call.get("elKey"), call.get("token")))
     quiet = Quiet()
-    after_stt = AfterStt(quiet)
+    after_stt = AfterStt(quiet, stats, call["id"])
     pipeline = Pipeline(
         [
             transport.input(),
+            StageCount(stats, {InputAudioRawFrame: "audio_in"}),
             make_stt(call),
+            StageCount(stats, {TranscriptionFrame: "finals", InterimTranscriptionFrame: "partials"}),
             after_stt,
             pair.user(),
             quiet,
+            StageCount(stats, {LLMContextFrame: "requests"}),
             make_brain(call),
             ReplyEnd(quiet),
             ReplyHold(quiet),
+            StageCount(stats, {LLMFullResponseEndFrame: "replies", TTSSpeakFrame: "speak"}),
             make_tts(call),
+            StageCount(stats, {TTSAudioRawFrame: "tts_audio"}),
             transport.output(),
+            StageCount(stats, {BotStartedSpeakingFrame: "bot_spoke"}),
             pair.assistant(),
         ]
     )
@@ -642,6 +722,12 @@ async def run_call(connection, call: dict):
         observers=[latency],
         idle_timeout_secs=None,  # silence is Carl working, never a reason to end
     )
+
+    @task.event_handler("on_pipeline_error")
+    async def _error(_task, frame):
+        # A provider's error (an STT refusing the key, a TTS out of quota) used to go only to the discarded stderr.
+        stats.error(getattr(getattr(frame, "processor", None), "name", None) or "pipeline", getattr(frame, "error", frame))
+
     side = asyncio.create_task(speak_channel(call, task, quiet)) if BRAIN == "pi" else None
     after_stt.start(task)
     # The device offered this call again (its connection dropped and it reconnected): this pipeline replaces the old
@@ -667,7 +753,7 @@ async def run_call(connection, call: dict):
         replaced = RUNS.get(call["id"]) is not task
         if not replaced:
             RUNS.pop(call["id"], None)
-        jlog(ev="call.end", call=call["id"], replaced=replaced)
+        jlog(ev="call.end", call=call["id"], replaced=replaced, stages=stats.summary())
         # The device is gone: the call ends on the box too (its turns go back to the conversation's own model) —
         # unless a reconnect took it over.
         if call.get("base") and not replaced:

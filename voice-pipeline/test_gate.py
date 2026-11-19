@@ -20,7 +20,7 @@ from pipecat.frames.frames import (  # noqa: E402
     VADUserStoppedSpeakingFrame,
 )
 
-from bot import Gate, ResultFlow, SttWatch, clean_noise, turn_settled  # noqa: E402
+from bot import CallStats, Gate, ResultFlow, SttWatch, clean_noise, turn_settled  # noqa: E402
 
 Q = Gate.QUIET_SECS
 
@@ -196,6 +196,34 @@ def test_gate_counts_his_turns():
     g.on_frame(UserStoppedSpeakingFrame(), 2.0)
     g.on_frame(UserStartedSpeakingFrame(), 3.0)
     assert g.user_turns == 2
+
+
+def test_a_silent_call_says_where_it_stopped():
+    # 2026-11-19: connected, his mic moving, no reply, and no log said which stage died.
+    s = CallStats()
+    assert s.silent_at() == "audio_in"
+    s.add("audio_in", 500)
+    assert s.silent_at() == "vad"
+    s.add("vad")
+    assert s.silent_at() == "stt"
+    s.add("partials", 3)
+    assert s.silent_at() == "turn"
+    s.add("requests")
+    assert s.silent_at() == "tts"
+    s.add("bot_spoke")
+    assert s.silent_at() is None and s.summary()["silent_at"] is None
+
+
+def test_a_providers_error_is_kept_without_the_calls_secrets():
+    s = CallStats(("sk_live_secret_key", "callToken123", None))
+    s.error("ElevenLabsTTSService#0", "1008 Invalid API key sk_live_secret_key for callToken123")
+    s.error("ElevenLabsTTSService#0", "1008 Invalid API key sk_live_secret_key for callToken123")
+    for i in range(10):
+        s.error("stt", f"error {i}")
+    errors = s.summary()["errors"]
+    assert errors[0] == {"where": "ElevenLabsTTSService#0", "error": "1008 Invalid API key *** for ***"}
+    assert len(errors) == CallStats.MAX_ERRORS
+    assert "secret" not in repr(errors) and "Token" not in repr(errors)
 
 
 if __name__ == "__main__":
