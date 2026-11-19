@@ -31,6 +31,8 @@ tauri-plugin-autostart = "2"
 # One process per machine: a second launch focuses the existing window instead
 # of racing it for the embedded server port / scheduler / git sync.
 tauri-plugin-single-instance = "2"
+# The fixed Undo of the last change (src-tauri/src/safety.rs): Ctrl+Alt+Z works whatever a change did to the page.
+tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 walkdir = "2"

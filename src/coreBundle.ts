@@ -146,7 +146,7 @@ export function missingNeeds(needs: CoreNeeds, shell: { commands: readonly strin
 /** The native commands and shell plugins a source tree uses: invoke("<command>") / invoke<T>("<command>") calls and
  *  `@tauri-apps/plugin-<name>` imports. Pure (the build script reads the files). */
 /** Commands the source calls that no shell has, each call guarded (it works without them): not needs. */
-export const OPTIONAL_COMMANDS: readonly string[] = ["phone_push_legacy_enabled", "phone_push_result"];
+export const OPTIONAL_COMMANDS: readonly string[] = ["phone_push_legacy_enabled", "phone_push_result", "safety_beat"];
 export function scanNeeds(sources: Iterable<string>): { commands: string[]; plugins: string[] } {
   const commands = new Set<string>();
   const plugins = new Set<string>();

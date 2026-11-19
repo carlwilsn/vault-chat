@@ -25,7 +25,7 @@ import { CORE_PART } from "../src/coreBundle";
 import { boxPluginRequest, boxPluginsStatus } from "./boxPlugins";
 import { BOX_TRY_HEADER } from "../src/pluginDrafts";
 import { surfaceOff, surfaceOffPage } from "./surfaces";
-import { changesRoute } from "./changesPending";
+import { changesRoute, offerRoute, undoLastRoute } from "./changesPending";
 import { appPluginStateRoute } from "./pluginState";
 import { tryMigration } from "./migrations";
 import { APP_STYLES_HREF, HTML_CSP, inlineHtmlDocument, isHtmlSrc } from "../src/inlineHtml";
@@ -773,6 +773,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // Change ready on the phone and the board (server/changesPending.ts): the drafts waiting for Carl, read from the box.
   if (path === "/api/v2/changes" && method === "GET") {
     const out = changesRoute(vault, url.searchParams);
+    return json(res, out.status, out.body);
+  }
+  // The Try redesign (src/changeFlow.ts): a waiting change's "Try it?" line in Main; the native shell's Undo.
+  if (path === "/api/v2/changes/offer" && method === "POST") {
+    const out = await offerRoute(vault, await jsonBody(req));
+    return json(res, out.status, out.body);
+  }
+  if (path === "/api/v2/changes/undo-last" && method === "POST") {
+    const out = await undoLastRoute(vault, await jsonBody(req));
     return json(res, out.status, out.body);
   }
   // A migration draft's Try (server/migrations.ts): migrate on a copy of the plugin's real state; nothing is written.

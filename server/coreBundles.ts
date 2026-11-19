@@ -100,7 +100,10 @@ export function coreLanding(stateDir: string, changes: readonly ChangeRecord[], 
   const now = landing(changes)?.version ?? BUILT_IN;
   const known = (v: string) => v === BUILT_IN || !!readCoreManifest(stateDir, v);
   if (change === "switch") {
-    const to = version || landing(changes)?.from || BUILT_IN;
+    // An auto-revert names the copy it undoes (as for a plugin's switch): that is the core now, so it goes back to what
+    // the newest landing replaced, never "to" the core it already is.
+    const l = landing(changes);
+    const to = version && !(version === now && l?.version === now) ? version : l?.from || BUILT_IN;
     if (!known(to)) return { ok: false, status: 404, error: `no core bundle ${to} on this box` };
     if (to === now) return { ok: false, status: 409, error: `the core is ${now} already` };
     return { ok: true, version: to, from: now, text: `the core is ${to === BUILT_IN ? "the installed app's own" : to} now (was ${now})` };
@@ -278,7 +281,7 @@ export function publishTick(d: PublisherDeps): string {
     running.version = r.version;
     writePublisher(d.stateDir, st);
     pruneCores(d.stateDir, d.changes());
-    return `built core ${r.version} (main ${running.commit.slice(0, 12)}): Change ready on the laptop`;
+    return `built core ${r.version} (main ${running.commit.slice(0, 12)}): offered on the laptop (applied quietly when nothing on screen changes, else "Try it?" in Main)`;
   }
   // A new main: one build at a time, MAX_TRIES per commit.
   const tried = st.attempts.filter((a) => a.commit === main);

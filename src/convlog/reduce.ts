@@ -47,6 +47,8 @@ export type Item = {
   partial?: string;
   // notice
   level?: "info" | "warn" | "error";
+  /** A change's line (src/changeFlow.ts): the change it is about, and what it offers (Undo, Try). */
+  change?: { plugin: string; version: string; offer?: "undo" | "try" };
   rollover?: boolean;
   // compaction: the context's size before it and right after it (the runtime's figures, when it reported them)
   tokensBefore?: number;
@@ -295,8 +297,15 @@ function onEntry(d: Draft, r: Extract<LogRecord, { type: "entry" }>): void {
       return;
     }
     if (data.kind === "divider") place(d, [{ id: r.clientId ?? data.clientId ?? e.id, kind: "compaction", status: "done", text: String(data.text ?? ""), ...(data.rollover ? { rollover: true } : {}), at: r.at }]);
-    else place(d, [{ id: r.clientId ?? data.clientId ?? e.id, kind: "notice", status: "done", text: String(data.text ?? ""), level: data.level === "error" ? "error" : data.level === "warn" ? "warn" : "info", at: r.at }]);
+    else place(d, [{ id: r.clientId ?? data.clientId ?? e.id, kind: "notice", status: "done", text: String(data.text ?? ""), level: data.level === "error" ? "error" : data.level === "warn" ? "warn" : "info", ...changeOfNote(data.change), at: r.at }]);
   }
+}
+
+/** A notice's change (src/changeFlow.ts), when it names one. */
+function changeOfNote(c: unknown): { change?: NonNullable<Item["change"]> } {
+  const x = c as { plugin?: unknown; version?: unknown; offer?: unknown } | null;
+  if (!x || typeof x.plugin !== "string" || typeof x.version !== "string") return {};
+  return { change: { plugin: x.plugin, version: x.version, ...(x.offer === "undo" || x.offer === "try" ? { offer: x.offer } : {}) } };
 }
 
 /** One of pi's live events, by pi's streaming rule. */

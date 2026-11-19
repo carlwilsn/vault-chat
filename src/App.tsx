@@ -22,7 +22,7 @@ import * as askPlugin from "./plugins/ask";
 import { bindContextSource } from "./contextSource";
 import { ChatsPanel } from "./ChatsPanel";
 import { UpdateBanner } from "./UpdateBanner";
-import { ChangeReady } from "./ChangeReadyNotice";
+import { ChangeKeeper } from "./ChangeKeeper";
 import { isDriveWindow } from "./windowKind";
 import { ShortcutSheet } from "./ShortcutSheet";
 import { hit, isMod } from "./shortcuts";
@@ -475,8 +475,8 @@ export default function App() {
       {/* Voice: a plugin (src/plugins/voice): its text box here, its controls in the title bar and the composer. */}
       <VoiceSlot />
       {!isDriveWindow && <UpdateBanner />}
-      {/* Change ready (src/changeReady.ts): a plugin's draft to Try, then Keep or Discard. Core, never a plugin. */}
-      {!isDriveWindow && <ChangeReady />}
+      {/* Changes reach Carl as lines in a chat (src/changeFlow.ts); this keeps what they stand on. Core, never a plugin. */}
+      {!isDriveWindow && <ChangeKeeper />}
       <ShortcutSheet />
       {/* The chat list's overlay: a plugin (src/plugins/chats), with a built-in fallback (src/ChatsPanel.tsx). */}
       <ChatsPanel />

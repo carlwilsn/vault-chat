@@ -108,6 +108,8 @@ export const miscCommands: Record<string, (a: Record<string, any>) => unknown> =
 
   // ---- boot timing (src/bootTiming.ts): no main-thread watcher in a browser ----
   boot_timing: () => ({ uptime_ms: Math.round(performance.now()), stalls: [] }),
+  // ---- the shell's dead-man's switch for a change (src-tauri/src/safety.rs): no shell in a browser ----
+  safety_beat: () => null,
 
   // ---- voice / phone host (inert: no server, no audio) ----
   voice_server_start: ({ port }) => port ?? 8848,

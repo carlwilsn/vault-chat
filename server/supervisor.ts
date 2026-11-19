@@ -13,7 +13,7 @@
 import { signal, signalLog, type ConvLog } from "./convlog/log";
 import { budgetSignal, desiredSignal, offLine, pluginIdOf, Supervisor, type Desired, type SupervisorRecord } from "../src/pluginSupervisor";
 import type { LogRecord } from "../src/convlog/protocol";
-import { changeSignal } from "../src/pluginDrafts";
+import { changeSignal, stagedSignal } from "../src/pluginDrafts";
 import { landChange, landPreset, slotOf } from "./pluginDrafts";
 import { PRESET_PLUGIN_ID, presetSignal, type PresetInEffect } from "../src/appPreset";
 import { SETTINGS_DRAFT_ID } from "../src/settingsRecords";
@@ -120,6 +120,7 @@ export function setPluginChange(vault: string, b: Record<string, unknown> | null
     if (!landed.ok) return { status: landed.status, error: landed.error };
     followed(signalLog(main));
     const rec = signal(main, { ...sig, plugin, version: landed.version, from: landed.from });
+    if (rec) tellAuto(main, plugin, sig.change, landed.version, who, sig.reason, sig.conv);
     return rec ? { status: 200, seq: rec.seq, text: landed.text } : { status: 500, error: "the log could not be written" };
   }
   const slot = slotOf(plugin);
@@ -128,7 +129,31 @@ export function setPluginChange(vault: string, b: Record<string, unknown> | null
   if (!landed.ok) return { status: landed.status, error: landed.error };
   followed(signalLog(vault));
   const rec = signal(vault, { ...sig, plugin, version: landed.version, ...(landed.from ? { from: landed.from } : {}) });
+  if (rec) tellAuto(vault, plugin, sig.change, landed.version, who, sig.reason, sig.conv);
   return rec ? { status: 200, seq: rec.seq, text: landed.text } : { status: 500, error: "the files moved but the log could not be written" };
+}
+
+/** The draft gate passed a draft nobody asked for that Carl can see ({plugin, version, what?, conv?}): it may reach him
+ *  now (src/pluginDrafts.ts plugin.staged). Only the gate (or the agent) writes it. */
+export function setPluginStaged(vault: string, b: Record<string, unknown> | null, by: string): ({ status: 200; seq: number; text: string }) | { status: number; error: string } {
+  const sig = stagedSignal(b, by, Date.now());
+  if ("error" in sig) return sig;
+  const plugin = pluginIdOf(sig.plugin);
+  followed(signalLog(vault));
+  const rec = signal(vault, { ...sig, plugin });
+  return rec ? { status: 200, seq: rec.seq, text: `${plugin} ${sig.version} is staged: Carl sees it as "Try it?" in Main` } : { status: 500, error: "the log could not be written" };
+}
+
+/** A change that went back by itself (a switch or discard by "auto"): the chat that asked for it says so. */
+function tellAuto(vault: string, plugin: string, change: string, version: string, by: string, reason: string | undefined, conv: string | undefined): void {
+  if (by !== "auto" || (change !== "switch" && change !== "discard")) return;
+  const sup = supervisorOf(vault);
+  const changes = sup.changes(plugin);
+  // A switch names what it took away (`from`); a discard, its own version.
+  const last = [...changes].reverse().find((c) => c.change === change && c.by === "auto");
+  const v = change === "switch" ? (last?.from ?? version) : version;
+  if (!v) return;
+  void import("./changeNotices").then((m) => m.autoUndone(vault, { plugin, version: v, reason: reason ?? null, conv: conv ?? null }, changes, [...sup.staged(plugin)])).catch(() => {});
 }
 
 /** Each plugin's gateway calls in the last minute (vault + plugin → times). */
@@ -190,6 +215,11 @@ export async function supervisorRoute(vault: string, method: string, query: URLS
     const who = typeof body.by === "string" && CHANGE_BY.has(body.by) ? body.by : "carl";
     const m = await migrationChange(vault, body, who);
     return "error" in m ? { status: m.status, body: { error: m.error } } : { status: 200, body: { ok: true, seq: m.seq, text: m.text, ...(m.summary ? { summary: m.summary } : {}) } };
+  }
+  if (body && body.change === "stage") {
+    const who = typeof body.by === "string" && CHANGE_BY.has(body.by) ? body.by : "carl";
+    const st = setPluginStaged(vault, body, who);
+    return "error" in st ? { status: st.status, body: { error: st.error } } : { status: 200, body: { ok: true, seq: st.seq, text: st.text } };
   }
   const w = body && "change" in body ? setPluginChange(vault, body, "carl") : body && "callsPerMinute" in body ? setPluginBudget(vault, body, "carl") : setPluginDesired(vault, body, "carl");
   if ("error" in w) return { status: w.status, body: { error: w.error } };

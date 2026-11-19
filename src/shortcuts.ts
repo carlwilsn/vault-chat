@@ -100,10 +100,6 @@ export const SHORTCUTS = [
     ],
   },
 
-  { id: "change.try", keys: ["Mod+Alt+T"], label: "Try a change", group: "Views & windows", where: "while a Change ready notice shows", files: ["src/ChangeReadyNotice.tsx"] },
-  { id: "change.keep", keys: ["Mod+Alt+K"], label: "Keep the change", group: "Views & windows", where: "while trying a change", files: ["src/ChangeReadyNotice.tsx"] },
-  { id: "change.discard", keys: ["Mod+Alt+D"], label: "Discard the change", group: "Views & windows", where: "while a Change ready notice shows", files: ["src/ChangeReadyNotice.tsx"] },
-
   // ---- Editing
   { id: "edit.inline", keys: ["Mod+K"], label: "Ask or edit", group: "Editing", where: "an editor", files: ["src/LiveEditor.tsx", "src/MonacoEditor.tsx"] },
   { id: "edit.ask", keys: ["Mod+L"], label: "Ask or edit", group: "Editing", where: "a file", files: ["src/LiveEditor.tsx", "src/MonacoEditor.tsx", "src/plugins/viewer/Pane.tsx"] },
@@ -117,6 +113,7 @@ export const SHORTCUTS = [
   { id: "video.forward", keys: ["ArrowRight"], label: "Forward 5 seconds", group: "Views & windows", where: "a video with focus", files: ["src/VideoPlayer.tsx"] },
   { id: "video.mute", keys: ["M"], label: "Mute video", group: "Views & windows", where: "a video with focus", files: ["src/VideoPlayer.tsx"] },
   { id: "video.full", keys: ["F"], label: "Video full screen", group: "Views & windows", where: "a video with focus", files: ["src/VideoPlayer.tsx"] },
+  { id: "change.undo", keys: ["Mod+Alt+Z"], label: "Undo last change", group: "Views & windows", where: "anywhere: the app's shell undoes it, even when a change broke the screen", files: ["src/changeSafety.ts", "src-tauri/src/safety.rs"] },
 
   // ---- Files
   { id: "files.note", keys: ["Mod+N"], label: "New note", group: "Files", where: "anywhere, with a vault", files: ["src/App.tsx"] },

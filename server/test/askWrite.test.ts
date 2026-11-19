@@ -112,7 +112,7 @@ describe("Ctrl+L can change the app", () => {
     script = async (call) => ((out = await call("PluginWrite", { path: ".vault-chat/plugins/hi-cursor.draft.js", content: CURSOR("hey") })), out.text);
     await ask("draft a hey cursor for me to try");
     expect(out.ok).toBe(true);
-    expect(out.text).toMatch(/Change ready/);
+    expect(out.text).toMatch(/Nothing reaches Carl yet: Plugins submit runs it through the gate/);
     expect(readFileSync(join(plugins(), "hi-cursor.js"), "utf8")).toContain("// hi");
   });
 

@@ -19,13 +19,13 @@ export const settingsToolSpecs = [
       "Read or change Carl's app settings, the same ones his Settings, the composer's model picker and the phone's drawer change: theme, model, effort, voice, pushAutomatic, chatSidebar, corePublish. " +
       "No key: lists every setting with its value, what it takes and who set it. key + value: sets it (value null: back to its default); it shows at once in every open app and on the phone. " +
       "Use it when Carl asks for a lighter theme, another model or effort, another voice, automatic pushes on or off. Not for keys or secrets. " +
-      "A change that is your own idea, not Carl asking for that setting: draft: true; nothing is set, it waits for him as Change ready on his laptop (Try shows it on his windows only, Keep sets it, Discard drops it).",
+      "A change that is your own idea, not Carl asking for that setting: draft: true; nothing is set, it waits for him as a \"Try it?\" line in Main (Try shows it on his windows only, Keep sets it, Undo drops it).",
     inputSchema: {
       type: "object",
       properties: {
         key: { type: "string", enum: SETTING_KEYS, description: "The setting; left out: list them all." },
         value: { type: ["string", "boolean", "null"], description: "Its new value (see what it takes in the list); null: its default." },
-        draft: { type: "boolean", description: "Your own idea, not Carl's ask: propose it as Change ready instead of setting it." },
+        draft: { type: "boolean", description: "Your own idea, not Carl's ask: propose it as a \"Try it?\" line in Main instead of setting it." },
         what: { type: "string", description: "draft: one line for the notice (why)." },
       },
       additionalProperties: false,
@@ -44,7 +44,7 @@ export function settingsTool(a: Record<string, unknown>): { ok: boolean; text: s
       return `${k} = ${show(s.values[k])}${set ? ` (set by ${set.by})` : " (default)"}\n  takes ${settingTakes(k)}. ${SETTINGS[k].description}`;
     });
     const d = pendingSettingsDraft(s);
-    if (d) lines.push(`A draft waits for Carl (Change ready, ${SETTINGS_DRAFT_ID} ${d.version}): ${describeValues(d.values)}${d.what && d.what !== describeValues(d.values) ? ` (${d.what})` : ""}.`);
+    if (d) lines.push(`A draft waits for Carl (\"Try it?\" in Main, ${SETTINGS_DRAFT_ID} ${d.version}): ${describeValues(d.values)}${d.what && d.what !== describeValues(d.values) ? ` (${d.what})` : ""}.`);
     return { ok: true, text: lines.join("\n") };
   }
   if (!isSettingKey(a.key)) return { ok: false, text: `No setting "${String(a.key).slice(0, 60)}"; nothing changed. The settings are: ${SETTING_KEYS.join(", ")}.` };
@@ -55,7 +55,7 @@ export function settingsTool(a: Record<string, unknown>): { ok: boolean; text: s
     if (!d.ok) return { ok: false, text: `${d.error}; nothing drafted.` };
     const carried = Object.keys(d.carried).length ? ` It carries the draft that was waiting (${describeValues(d.carried)}).` : "";
     const tryLine = triable(d.values) ? "Try shows it on his windows only" : "it is the box's, so there is no Try: Keep sets it";
-    return { ok: true, text: `Drafted, nothing set: ${describeValues(d.values)} (${d.version}). It waits for Carl as Change ready on his laptop: ${tryLine}, Discard drops it.${carried} PluginRead app/changes says whether he is trying it.` };
+    return { ok: true, text: `Drafted, nothing set: ${describeValues(d.values)} (${d.version}). It waits for Carl as a \"Try it?\" line in Main: ${tryLine}, Undo drops it.${carried} PluginRead app/changes says whether he is trying it.` };
   }
   const r = setSetting(key, a.value, "agent");
   if (!r.ok) return { ok: false, text: `${r.error}; nothing changed.` };

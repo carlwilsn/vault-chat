@@ -12,6 +12,7 @@ mod vault_page;
 mod web_embed;
 mod self_test;
 mod core_loader;
+mod safety;
 mod mac_menu;
 
 use serde::Serialize;
@@ -6256,7 +6257,8 @@ pub fn run() {
             core_loader::core_boot_error,
             core_loader::core_install,
             core_loader::core_use,
-            core_loader::core_events_sent
+            core_loader::core_events_sent,
+            safety::safety_beat
     ];
     let mut context = tauri::generate_context!();
     // stringify! of a path is `module :: name`: the command's name is its last segment.
@@ -6333,6 +6335,9 @@ pub fn run() {
         })
         .setup(|app| {
             core_loader::setup(app.handle());
+            // The shell's own Undo and dead-man's switch for a change (src-tauri/src/safety.rs): outside the page.
+            safety::start(app.handle().clone());
+            safety::register_shortcut(app.handle());
             use tauri::Manager;
 
             // VC_SELFTEST in the environment: load its steps and start its
@@ -6374,14 +6379,16 @@ pub fn run() {
                 let tray_result = (|| -> Result<(), Box<dyn std::error::Error>> {
                     let show_i =
                         MenuItem::with_id(app, "show", "Show vault-chat", true, None::<&str>)?;
+                    let undo_i = MenuItem::with_id(app, "undo", "Undo last change", true, None::<&str>)?;
                     let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-                    let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+                    let menu = Menu::with_items(app, &[&show_i, &undo_i, &quit_i])?;
                     let mut builder = TrayIconBuilder::with_id("main")
                         .tooltip("vault-chat")
                         .menu(&menu)
                         .show_menu_on_left_click(false)
                         .on_menu_event(|app, event| match event.id.as_ref() {
                             "show" => show_main_window(app),
+                            "undo" => safety::undo(app, "carl", "Undo last change (the tray)"),
                             "quit" => app.exit(0),
                             _ => {}
                         })

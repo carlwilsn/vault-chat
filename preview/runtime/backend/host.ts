@@ -10,7 +10,8 @@ import { answerComplete } from "../llm";
 import { parseLiveNeeds } from "../../../src/liveBridge";
 import { foldPluginState, logSignal, stateQuery, stateSignal, type PluginState } from "../../../src/pluginRecords";
 import { budgetSignal, desiredSignal, Supervisor } from "../../../src/pluginSupervisor";
-import { changeSignal } from "../../../src/pluginDrafts";
+import { BUILT_IN, changeSignal, landing, stagedSignal } from "../../../src/pluginDrafts";
+import { autoUndoText, changeLineId, offerText, plainWhat, plainWhy } from "../../../src/changeFlow";
 import { coreBoxGet, coreChange, coreCommands, coreSignals, setCoreConfig, type CoreConfig } from "./core";
 import { converseAfter, converseIntent } from "../../../src/pluginConverse";
 import { catalogAppPlugins, catalogPlugin, catalogReads, catalogServices } from "../../../src/pluginCatalog";
@@ -248,6 +249,12 @@ export function boxPlay(st: BoxStep): void {
 /** The fake box's disk beyond the vault (checks read what the laptop wrote there). */
 export function fakeBoxDisk(): Map<string, string | null> {
   return boxDisk;
+}
+/** The fake box's supervisor, folded from its log now. */
+function supervisorNow(): Supervisor {
+  const sup = new Supervisor();
+  for (const r of box.recs) if (r.conv === null) sup.fold(r as any);
+  return sup;
 }
 export function fakeBoxLog(): MemoryBox {
   return box;
@@ -618,12 +625,65 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
         const rec = box.emit(null, { type: "signal", signal: cc.sig } as any);
         return { status: 200, body: JSON.stringify({ ok: true, seq: rec.seq, text: `the core is ${cc.sig.version} now (was ${cc.sig.from})` }) };
       }
+      // The gate staged a draft (src/pluginDrafts.ts plugin.staged): a record, as the box writes it.
+      if (b?.change === "stage") {
+        const st = stagedSignal(b, typeof b.by === "string" ? b.by : "gate", Date.now());
+        if ("error" in st) return { status: st.status, body: JSON.stringify({ error: st.error }) };
+        const rec = box.emit(null, { type: "signal", signal: st } as any);
+        return { status: 200, body: JSON.stringify({ ok: true, seq: rec.seq }) };
+      }
       // Carl's word on a plugin (server/supervisor.ts): a record in the fake box's log, on /poll like the box's.
       // Carl's word on a draft (change by asking): only the record here; the app runs a kept draft from the record.
       const sig = b && "change" in b ? changeSignal(b, typeof b.by === "string" ? b.by : "carl", Date.now()) : b && "callsPerMinute" in b ? budgetSignal(b, "carl", Date.now()) : desiredSignal(b, "carl", Date.now());
       if ("error" in sig) return { status: sig.status, body: JSON.stringify({ error: sig.error }) };
+      if ("change" in sig) {
+        // As the box lands it (server/pluginDrafts.ts landChange): a keep names what it replaced; a switch goes back to
+        // that, naming what it took away.
+        const land = landing(supervisorNow().changes(sig.plugin));
+        if (sig.change === "keep") (sig as any).from = land?.version ?? BUILT_IN;
+        if (sig.change === "switch") {
+          if (!land || land.change !== "keep") return { status: 409, body: JSON.stringify({ error: "nothing to switch back to" }) };
+          (sig as any).version = land.from ?? BUILT_IN;
+          (sig as any).from = land.version;
+        }
+      }
       const rec = box.emit(null, { type: "signal", signal: sig } as any);
+      // A change that went back by itself: the chat that asked for it says so (server/changeNotices.ts autoUndone).
+      if ("change" in sig && sig.by === "auto" && (sig.change === "switch" || sig.change === "discard")) {
+        const changes = supervisorNow().changes(sig.plugin);
+        const v = sig.change === "switch" ? ((sig as any).from as string) : sig.version;
+        const kept = [...changes].reverse().find((c) => c.version === v && (c.what || c.conv));
+        const what = plainWhat(kept?.what ?? "", sig.plugin.split("/").pop()?.replace(/\.m?js$/, ""));
+        const conv = kept?.conv ?? "main";
+        if (box.picture(conv)) box.note(conv, changeLineId("auto", sig.plugin, v), { kind: "notice", text: autoUndoText(what, plainWhy(sig.reason ?? "")), level: "error", change: { plugin: sig.plugin, version: v } });
+      }
       return { status: 200, body: JSON.stringify({ ok: true, seq: rec.seq }) };
+    }
+    if (path === "/api/v2/changes/offer") {
+      // A change waiting for Carl gets its "Try it?" line in Main (server/changesPending.ts offerRoute).
+      const plugin = String(b?.plugin ?? "");
+      const version = String(b?.version ?? "");
+      const id = changeLineId("offer", plugin, version);
+      if (box.picture("main") && !box.picture("main")!.items.some((x) => x.id === id)) box.note("main", id, { kind: "notice", text: offerText(plainWhat(String(b?.what ?? ""), plugin.split("/").pop())), change: { plugin, version, offer: "try" } });
+      return { status: 200, body: JSON.stringify({ ok: true }) };
+    }
+    if (path === "/api/v2/changes/undo-last") {
+      // The shell's Undo (server/changeNotices.ts undoLast): the newest applied change switches back.
+      const sup = supervisorNow();
+      let best: { plugin: string; at: number } | null = null;
+      for (const plugin of sup.changedPlugins()) {
+        const l = landing(sup.changes(plugin));
+        if (l && l.change === "keep" && (!best || l.at > best.at)) best = { plugin, at: l.at };
+      }
+      if (!best) return { status: 200, body: JSON.stringify({ ok: true, text: "Nothing to undo: no change applied in the last day.", undone: [] }) };
+      const l = landing(sup.changes(best.plugin))!;
+      const sw = changeSignal({ plugin: best.plugin, change: "switch", by: String(b?.by ?? "carl") }, String(b?.by ?? "carl"), Date.now());
+      if ("error" in sw) return { status: 500, body: "{}" };
+      box.emit(null, { type: "signal", signal: { ...sw, version: l.from ?? BUILT_IN, from: l.version } } as any);
+      const what = plainWhat(l.what ?? "", best.plugin.split("/").pop());
+      const conv = l.conv ?? "main";
+      if (box.picture(conv)) box.note(conv, changeLineId("auto", best.plugin, l.version), { kind: "notice", text: `Undid ${what} (Ctrl+Alt+Z).`, change: { plugin: best.plugin, version: l.version } });
+      return { status: 200, body: JSON.stringify({ ok: true, text: `Undid ${what}.`, undone: [{ plugin: best.plugin, what }] }) };
     }
     // Live pages (server/liveProxy.ts): the manifest from the vault's file, a token, and the side protocol through the gateway.
     if (path === "/api/v2/live/manifest" || path === "/api/v2/live/token") {

@@ -3,6 +3,7 @@
 // each row with the renderer the registry names for its kind. A plugin's renderer (a vault plugin's
 // api.host.chat.row(kind, render)) draws into a plain block element; a renderer that throws falls back, for that row
 // only, to the built-in and then to the plain fallback row, so the chat always stands.
+import { ChangeLine } from "../../ChangeLine";
 import { Component, memo, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ComponentPropsWithoutRef, type ComponentType, type ReactNode } from "react";
 import { ChevronDown, Wrench, Mic, AlertCircle, Info, Loader2, FileText } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
@@ -296,7 +297,10 @@ function NoticeRow({ message, index, onRetry }: RowProps) {
   return (
     <div className={cn("flex items-start gap-1.5 text-[11px] leading-snug", message.failed ? "text-destructive/90" : "text-muted-foreground")} data-el="notice" {...rowAttr(index)}>
       {message.failed ? <AlertCircle className="h-3 w-3 mt-px shrink-0" /> : <Info className="h-3 w-3 mt-px shrink-0" />}
-      <span className="break-words min-w-0">{message.content}</span>
+      <span className="break-words min-w-0">
+        {message.content}
+        {message.change?.offer && <ChangeLine change={message.change} />}
+      </span>
       {message.retry && onRetry && (
         <button type="button" data-el="retry" onClick={onRetry} className="shrink-0 ml-1 underline underline-offset-2 hover:text-foreground">
           Try again

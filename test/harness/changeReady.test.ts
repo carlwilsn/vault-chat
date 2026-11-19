@@ -1,7 +1,8 @@
-// Change by asking (reports/07 point 4; src/pluginDrafts.ts, src/changeReady.ts, src/ChangeReadyNotice.tsx): a plugin's draft
-// never runs by itself. The laptop shows "Change ready: <what>" in the core; Try runs it on Carl's windows only (no box
-// data changes), Keep / Discard are plugin.change records written by the box's real route (server/supervisor.ts), which
-// moves the files; undo is Switch back. A draft that fails or slows typing while tried discards itself and says why.
+// Change by asking (reports/07 point 4; src/pluginDrafts.ts, src/changeReady.ts, src/ChangeLine.tsx; the Try redesign,
+// src/changeFlow.ts): a plugin's draft never runs by itself, and reaches Carl only once the gate staged it. Its line in
+// the chat ("<what> — Try it?") has Try, which runs it on Carl's windows only (no box data changes), then Keep / Undo:
+// plugin.change records written by the box's real route (server/supervisor.ts), which moves the files; a kept change's
+// Undo is the switch back. A draft that fails or slows typing while tried discards itself.
 // The state and actions are offers (app/changes). The draft check (scripts/draft-check.ts) judges a side-by-side run.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
@@ -72,7 +73,17 @@ fake.setHandler("box_post_json", async ({ url, body }: any) => {
 
 const { useStore } = await import("../../src/store.ts");
 useStore.setState({ vaultPath: vault } as any);
-const { ChangeReady } = await import("../../src/ChangeReadyNotice.tsx");
+const { TestLines, lineStateOf } = await import("./changeLinesHelper.ts");
+const { CHANGES_PLUGIN: CR_OFFERS } = await import("../../src/changeReady.ts");
+const ChangeReady = TestLines;
+// The offers the app's ChangeKeeper declares (PluginRead app/changes), for the tests that read them without lines.
+(await import("../../src/pluginOffers.ts")).declareOffers(CR_OFFERS.id, CR_OFFERS.name, (await import("../../src/changeReady.ts")).changeOffers());
+/** The gate staged a draft (scripts/draft-check.ts: passed, not asked for, something on screen changes). */
+const stage = async (plugin: string, version: string) => {
+  const out = await supervisorRoute(vault, "POST", new URLSearchParams(), { plugin, change: "stage", version, by: "gate" });
+  assert.equal(out.status, 200, JSON.stringify(out.body));
+  await loadSupervisor(true);
+};
 const { AppPluginMount } = await import("../../src/PluginMount.tsx");
 const { loadSupervisor, _appReconciler } = await import("../../src/pluginSupervisorApp.ts");
 const { refreshLiveCopies, _resetLiveCopies, _setLiveLoad } = await import("../../src/appPluginLiveHost.ts");
@@ -154,7 +165,7 @@ const click = async (c: any, el: string) => {
   });
 };
 
-test("Change ready end to end: the notice, Try on this laptop's windows only, Keep and Switch back as records, Discard, the offers", async () => {
+test("a change end to end: unstaged it reaches nobody; staged, its line offers Try on this laptop's windows only, then Keep / Undo as records; a kept one's Undo switches back; the offers", async () => {
   _resetLiveCopies();
   CR._resetChangeReady();
   await loadSupervisor(true);
@@ -170,70 +181,81 @@ test("Change ready end to end: the notice, Try on this laptop's windows only, Ke
   });
   await refreshLiveCopies();
   await waitFor("the live copy", () => text(plugin) === "live");
-  assert.equal(notice.querySelector('[data-el="change-ready"]'), null, "nothing waiting: no notice");
+  assert.equal(lineStateOf(notice), null, "nothing waiting: no line");
 
   const v = write("context.draft.js", "draft", "the context strip shows the selection");
   await act(async () => void (await refreshLiveCopies()));
-  await waitFor("the notice", () => !!notice.querySelector('[data-el="change-ready"]'));
-  assert.match(text(notice.querySelector('[data-el="change-ready-title"]')), /^Change ready: the context strip shows the selection$/);
+  await tick(100);
+  assert.equal(lineStateOf(notice), null, "the gate has not passed it: it reaches nobody");
+  assert.deepEqual(CR.pendingChanges().map((p) => p.plugin), []);
+  await act(async () => void (await stage("app/context", v)));
+  await waitFor("its line", () => lineStateOf(notice) === "offered");
+  assert.match(text(notice.querySelector('[data-el="test-line"]')), /^the context strip shows the selection — Try it\?Try$/);
   assert.equal(text(plugin), "live", "the draft waits for Carl");
-  // The agent sees it waiting (PluginRead app/changes), not tried.
+  // The agent sees it staged and untried (PluginRead app/changes).
   const reach = pluginReach(() => true);
   assert.ok(reach.list().some((p: any) => p.id === "app/changes"), "the core's offers are live");
   const read = (await reach.read("app/changes", "changes")) as any;
   assert.match(JSON.stringify(read), new RegExp(`"version":"${v}","added":false,"trying":false`));
+  assert.match(JSON.stringify(await reach.read("app/changes", "untried")), new RegExp(`"version":"${v}"`));
 
   // Try: this laptop's windows run the draft; the box is not told.
   const before = posts.length;
   await click(notice, "change-try");
-  await waitFor("tried", () => text(plugin) === "draft");
-  assert.equal(notice.querySelector('[data-el="change-ready"]')!.getAttribute("data-vc-trying"), "1");
+  await waitFor("tried", () => text(plugin) === "draft" && lineStateOf(notice) === "trying");
   assert.equal(posts.length, before, "Try changes nothing on the box");
   assert.match(JSON.stringify(await reach.read("app/changes", "trying")), /"plugin":"app\/context".*"trying":true/);
-  // Back (the shortcut's toggle), and Try again with the shortcut.
-  await click(notice, "change-back");
+  assert.deepEqual(((await reach.read("app/changes", "untried")) as any).state.untried, [], "tried: nothing to remind him of");
+  // Stop trying (the agent's offer), and Try again.
+  CR.stopTrying("app/context");
   await waitFor("back", () => text(plugin) === "live");
-  await act(async () => fire("keydown", { key: "t", ctrlKey: true, altKey: true, shiftKey: false, metaKey: false, preventDefault() {}, stopPropagation() {} }));
-  await waitFor("tried by the shortcut", () => text(plugin) === "draft");
+  await click(notice, "change-try");
+  await waitFor("tried again", () => text(plugin) === "draft");
 
-  // Keep: the box's record, the files moved; the kept copy runs; Switch back is another record.
+  // Keep: the box's record, the files moved; the kept copy runs; its Undo is another record.
   await click(notice, "change-keep");
   await waitFor("kept", () => fs.readFileSync(path.join(DIR, "context.js"), "utf8").endsWith("\ndraft"));
   assert.deepEqual(posts.at(-1), { plugin: "app/context", change: "keep", version: v, by: "carl" });
   assert.ok(!fs.existsSync(path.join(DIR, "context.draft.js")));
   await act(async () => void (await refreshLiveCopies()));
-  await waitFor("the kept copy runs, the notice says so", () => text(plugin) === "draft" && /Kept/.test(text(notice)));
+  await waitFor("the kept copy runs, the line says so", () => text(plugin) === "draft" && lineStateOf(notice) === "kept" && /Kept\./.test(text(notice)) && CR.triedVersion("app/context") === null);
   assert.equal(CR.triedVersion("app/context"), null);
-  await click(notice, "change-switch-back");
+  await click(notice, "change-undo");
   await waitFor("switched back", () => fs.readFileSync(path.join(DIR, "context.js"), "utf8").endsWith("\nlive"));
   await act(async () => void (await refreshLiveCopies()));
-  await waitFor("the old copy runs", () => text(plugin) === "live");
+  await waitFor("the old copy runs, the line says undone", () => text(plugin) === "live" && lineStateOf(notice) === "undone" && /Undone\./.test(text(notice)));
   const recs = (await supervisorRoute(vault, "GET", new URLSearchParams(), null)).body as any;
-  assert.deepEqual(recs.records.map((r: any) => [r.signal.change, r.signal.version, r.signal.from]), [["keep", v, live], ["switch", live, v]]);
+  assert.deepEqual(recs.records.filter((r: any) => r.signal.type === "plugin.change").map((r: any) => [r.signal.change, r.signal.version, r.signal.from]), [["keep", v, live], ["switch", live, v]]);
 
-  // Discard: the record and the file gone; the notice goes.
+  // Undo while trying: the record and the file gone; the line says so.
   const v2 = write("context.draft.js", "other");
   await act(async () => void (await refreshLiveCopies()));
-  await waitFor("the notice again", () => !!notice.querySelector('[data-el="change-try"]'));
-  await click(notice, "change-discard");
+  await act(async () => void (await stage("app/context", v2)));
+  await waitFor("the next line", () => lineStateOf(notice) === "offered");
+  await click(notice, "change-try");
+  await waitFor("tried", () => text(plugin) === "other");
+  await click(notice, "change-undo");
   await waitFor("discarded", () => !fs.existsSync(path.join(DIR, "context.draft.js")));
   assert.deepEqual(posts.at(-1), { plugin: "app/context", change: "discard", version: v2, by: "carl" });
   await act(async () => void (await refreshLiveCopies()));
-  await waitFor("no notice", () => !notice.querySelector('[data-el="change-try"]'));
+  await waitFor("undone", () => text(plugin) === "live" && lineStateOf(notice) === "undone");
 
   // Tried and broken: it discards itself (by "auto", with why), the live copy runs again.
   const v3 = write("context.draft.js", "throw", "a broken one");
   await act(async () => void (await refreshLiveCopies()));
-  await waitFor("waiting", () => !!notice.querySelector('[data-el="change-try"]'));
+  await act(async () => void (await stage("app/context", v3)));
+  await waitFor("waiting", () => lineStateOf(notice) === "offered");
   await click(notice, "change-try");
   await waitFor("fell back and discarded itself", () => text(plugin) === "live" && posts.at(-1)?.version === v3);
   assert.deepEqual(posts.at(-1), { plugin: "app/context", change: "discard", version: v3, by: "auto", reason: posts.at(-1).reason });
   assert.match(posts.at(-1).reason, /draft broke/);
-  await waitFor("the notice says why", () => /Discarded by itself: it stopped: .*draft broke/.test(text(notice)));
+  await loadSupervisor(true);
+  await waitFor("the line says it went back by itself", () => /Undone by itself\./.test(text(notice)));
 
   // Slow typing while tried: it discards itself too.
   const v4 = write("context.draft.js", "slow");
   await act(async () => void (await refreshLiveCopies()));
+  await act(async () => void (await stage("app/context", v4)));
   G.requestAnimationFrame = (fn: () => void) => setTimeout(fn, TRY_SLOW_MS);
   G.document.hidden = false;
   CR.tryChange("app/context", v4);
@@ -259,6 +281,8 @@ test("vault plugins: a draft next to a plugin (or alone) is a slot, never a plug
   const l = await scanVaultPlugins(vault);
   assert.deepEqual(l.map((p) => [p.file, p.added ?? false, p.draft !== undefined]), [["new.js", true, true], ["pen.js", false, true]]);
   CR.setVaultSlots(l.map((p) => ({ id: p.id, name: p.name, ...(p.added ? {} : { live: p.code }), draft: p.draft })));
+  assert.deepEqual(CR.pendingChanges({}), [], "not staged by the gate: nobody sees them");
+  for (const p of l) await stage(p.id, versionOf(p.draft!));
   const pending = CR.pendingChanges({});
   assert.deepEqual(pending.map((p) => [p.plugin, p.what, p.added]), [[".vault-chat/plugins/new.js", "", true], [".vault-chat/plugins/pen.js", "thinner", false]]);
   CR._resetChangeReady();
@@ -292,11 +316,12 @@ test("after Keep: the keep is watched for a while, then left alone; the gate lan
   assert.equal(watchedKeep([at(1, "keep", "b", "a", now - 1000), at(2, "discard", "c", null, now)], now)?.version, "b", "a discard of another draft changes nothing");
   // The gate (scripts/draft-check.ts --unasked / --asked).
   const v = (verdict: "pass" | "borderline" | "fail") => ({ verdict, reasons: [verdict === "fail" ? "errors only with the draft: boom" : "fine"] });
-  assert.equal(gateDecision(v("pass"), false)?.change, "keep");
-  assert.equal(gateDecision(v("borderline"), false), null, "borderline: Carl decides");
-  assert.match(gateDecision(v("fail"), false)?.reason ?? "", /failed: errors only with the draft: boom/);
-  assert.equal(gateDecision(v("pass"), true), null, "asked for: Carl judges it");
-  assert.equal(gateDecision(v("fail"), true)?.change, "discard");
+  assert.equal(gateDecision(v("pass"), false).change, "keep", "not asked for, nothing on screen changes: applies silently");
+  assert.equal(gateDecision(v("borderline"), false).change, "stage", "not asked for, something on screen changes: Try it? in Main");
+  assert.match(gateDecision(v("fail"), false).reason, /failed: errors only with the draft: boom/);
+  assert.equal(gateDecision(v("pass"), true).change, "keep", "asked for and passed: it applies (Done + Undo)");
+  assert.equal(gateDecision(v("borderline"), true).change, "keep", "asked for: what he asked to see changes, and it applies");
+  assert.equal(gateDecision(v("fail"), true).change, "discard");
 });
 
 test("a kept copy that breaks or slows typing within the watch switches back by itself (one record by auto, with why), and the notice says so in every window", async () => {
@@ -328,7 +353,7 @@ test("a kept copy that breaks or slows typing within the watch switches back by 
   assert.match(posts.at(-1).reason, /it stopped: .*draft broke/);
   await waitFor("the old copy is live again", () => fs.readFileSync(path.join(DIR, "context.js"), "utf8").endsWith("\nlive"));
   await act(async () => void (await refreshLiveCopies()));
-  await waitFor("it runs, the notice says why", () => text(plugin) === "live" && /Switched back by itself: it stopped: .*draft broke/.test(text(notice)));
+  await waitFor("it runs, the outcome says why", () => text(plugin) === "live" && /Switched back by itself: it stopped: .*draft broke/.test(String(CR.lastOutcome()?.text)));
   const n = posts.length;
   assert.equal(CR.autoRevert("app/context", null, "again"), false, "switched: nothing left to switch back on its own");
   assert.equal(posts.length, n);
@@ -402,12 +427,13 @@ test("the scripts write the same records through the box (app-plugin-live --keep
     assert.ok(fs.existsSync(path.join(DIR, "context.draft.js")));
     // The gate: a clear pass of a fix nobody asked for lands (by gate); borderline waits; a fail drops it.
     const verdict = (verdict: "pass" | "borderline" | "fail") => ({ ...judge("app/context", v2, { errors: [], text: [], ran: true, typingMs: [] }, { errors: [], text: [], ran: true, typingMs: [] }), verdict });
-    assert.match(await landVerdict(vault, verdict("borderline"), false, box), /waits for Carl/);
-    assert.ok(fs.existsSync(path.join(DIR, "context.draft.js")));
-    assert.match(await landVerdict(vault, verdict("pass"), false, box), /^landed: kept/);
+    assert.match((await landVerdict(vault, verdict("borderline"), false, box, { what: "a new look", conv: "c1" })).text, /^staged for Carl's Try/);
+    assert.deepEqual([seen.at(-1).body.change, seen.at(-1).body.by, seen.at(-1).body.version, seen.at(-1).body.what, seen.at(-1).body.conv], ["stage", "gate", v2, "a new look", "c1"]);
+    assert.ok(fs.existsSync(path.join(DIR, "context.draft.js")), "staged: the draft waits for his Try");
+    assert.match((await landVerdict(vault, verdict("pass"), false, box)).text, /^applied: kept/);
     assert.deepEqual([seen.at(-1).body.change, seen.at(-1).body.by, seen.at(-1).body.version], ["keep", "gate", v2]);
     const v3 = write("context.draft.js", "bad");
-    assert.match(await landVerdict(vault, { ...verdict("fail"), version: v3, reasons: ["errors only with the draft: x"] }, false, box), /^dropped/);
+    assert.match((await landVerdict(vault, { ...verdict("fail"), version: v3, reasons: ["errors only with the draft: x"] }, false, box)).text, /^dropped/);
     assert.match(seen.at(-1).body.reason, /draft check failed: errors only with the draft: x/);
     assert.ok(!fs.existsSync(path.join(DIR, "context.draft.js")));
     // Real data by default: without the installed capture helper it says so (and how to opt out), never touching data.
@@ -457,7 +483,7 @@ test("box plugins: the box lists their drafts, Try sends the tried version with 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("migration drafts: the box lists one as Change ready, Try runs it on a copy of the real state and the notice shows before / after, Keep migrates (old records stay), Switch back reads the old shape again", async () => {
+test("migration drafts: the box lists one, its line's Try runs it on a copy of the real state and shows before / after, Keep migrates (old records stay), Switch back reads the old shape again", async () => {
   CR._resetChangeReady();
   await loadSupervisor(true);
   const backups = fs.mkdtempSync(path.join(fs.realpathSync(path.dirname(vault)), "vc-mig-backup-"));
@@ -487,12 +513,11 @@ export function migrate(old) {
   const notice = document.createElement("div") as unknown as HTMLElement;
   const root = createRoot(notice);
   await act(async () => root.render(createElement(ChangeReady)));
-  await waitFor("the notice", () => /plan placement/.test(text(notice.querySelector('[data-el="change-ready-title"]'))));
+  await waitFor("its line", () => /plan placement/.test(text(notice.querySelector('[data-el="test-line"]'))));
   const posted = posts.length;
   await click(notice, "change-try");
-  await waitFor("the summary", () => !!notice.querySelector('[data-el="change-migration-summary"]'));
-  assert.equal(text(notice.querySelector('[data-el="change-migration-summary"]')), "2 keys -> 2 keys (1 changed, 1 the same)");
-  assert.match(text(notice.querySelector('[data-el="change-migration"]')), /opt:plan:placement: "pinned" -> \{"where":"pinned"\}/);
+  await waitFor("the summary", () => /2 keys/.test(text(notice.querySelector('[data-el="change-migration"]'))));
+  assert.equal(text(notice.querySelector('[data-el="change-migration"]')), "2 keys -> 2 keys (1 changed, 1 the same)");
   assert.equal(posts.length, posted, "Try writes nothing");
   assert.deepEqual(readPluginState(vault, P).state, before, "Try ran on a copy");
   const read = (await pluginReach(() => true).read("app/changes", "trying")) as any;
@@ -516,7 +541,7 @@ export function migrate(old) {
   fs.rmSync(backups, { recursive: true, force: true });
 });
 
-test("the app's core: a bundle the box built is a Change ready card; Try has the loader run it in Carl's windows, Keep makes it current, Switch back returns, Discard drops it; a tried bundle that fails is discarded by itself", async () => {
+test("the app's core: a bundle the box built gets a line; Try has the loader run it in Carl's windows, Keep makes it current, Switch back returns, Discard drops it; a tried bundle that fails is discarded by itself", async () => {
   CR._resetChangeReady();
   await loadSupervisor(true);
   const { configureCore, coreOffer } = await import("../../server/coreBundles.ts");
@@ -545,13 +570,14 @@ test("the app's core: a bundle the box built is a Change ready card; Try has the
   const notice = document.createElement("div") as unknown as HTMLElement;
   const root = createRoot(notice);
   await act(async () => root.render(createElement(ChangeReady)));
-  await waitFor("the core's card", () => /frontend from main/.test(text(notice.querySelector('[data-el="change-ready-title"]'))));
+  await waitFor("the core's line", () => !!notice.querySelector('[data-el="change-try"]'));
+  assert.doesNotMatch(text(notice), /[0-9a-f]{12}/, "no hashes in the words Carl reads");
   const posted = posts.length;
   await click(notice, "change-try");
   await waitFor("tried", () => acts.includes(`try ${a.version}`));
   assert.equal(CR.triedVersion(CORE_PART), a.version);
   assert.equal(posts.length, posted, "Try writes nothing");
-  await waitFor("the trying card", () => !!notice.querySelector('[data-el="change-keep"]'));
+  await waitFor("the trying line", () => !!notice.querySelector('[data-el="change-keep"]'));
   await click(notice, "change-keep");
   await waitFor("kept", () => posts.length > posted);
   assert.deepEqual(posts.at(-1), { plugin: CORE_PART, change: "keep", version: a.version, by: "carl" });
@@ -563,10 +589,10 @@ test("the app's core: a bundle the box built is a Change ready card; Try has the
   assert.equal(coreOffer(state, supervisorOf(vault).changes(CORE_PART))?.version, a.version, "the box offers it as current");
   assert.equal(CR.canSwitchBack(CORE_PART), true);
 
-  // Switch back (the outcome's link): a record, and the loader runs what it replaced at once.
-  await waitFor("the switch back link", () => !!notice.querySelector('[data-el="change-switch-back"]'));
+  // Undo (the line's): a record, and the loader runs what it replaced at once.
+  await waitFor("the line's Undo", () => !!notice.querySelector('[data-el="change-undo"]'));
   acts.length = 0;
-  await click(notice, "change-switch-back");
+  await click(notice, "change-undo");
   await waitFor("switched", () => acts.includes("follow now"));
   assert.deepEqual(posts.at(-1), { plugin: CORE_PART, change: "switch", by: "carl" });
   assert.equal(coreOffer(state, supervisorOf(vault).changes(CORE_PART)), null, "back to the installed app's own core");

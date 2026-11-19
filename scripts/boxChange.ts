@@ -6,7 +6,7 @@
 // (8848); --box <url> on the scripts names another. The vault is named by its folder's name (the box's vault name).
 import { basename } from "node:path";
 
-export type BoxChange = { plugin: string; change: "keep" | "discard" | "switch"; version?: string; reason?: string; by?: "agent" | "gate" };
+export type BoxChange = { plugin: string; change: "keep" | "discard" | "switch" | "stage"; version?: string; reason?: string; by?: "agent" | "gate"; what?: string; conv?: string };
 
 /** The box to write to: `box`, else VC_BOX_URL, else this machine's box. */
 export function boxUrl(box?: string): string {

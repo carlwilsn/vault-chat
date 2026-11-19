@@ -613,7 +613,7 @@ export function boxPluginLine(vault: string, name: string): string {
   const pending = draftPending(code, supervisorOf(vault).changes(`box/${name}`));
   const live = p?.live;
   const runs = live ? `${live.kind} ${live.version}${live.stopped ? ` not running (${live.error ?? "unloaded"})` : `, routes ${[...live.routes.keys()].join(", ") || "none"}${live.tools.size ? `, tools ${[...live.tools.keys()].join(", ")}` : ""}${live.prompt ? ", a prompt" : ""}${live.hidden.size ? `, hides ${[...live.hidden].join(", ")}` : ""}`}${!live.stopped && live.error ? `; last error: ${live.error}` : ""}` : "no copy loaded";
-  return `box/${name}: ${runs}${pending ? `; draft ${pending} waits for Carl (Change ready)` : ""}`;
+  return `box/${name}: ${runs}${pending ? `; draft ${pending} waits for Carl (\"Try it?\" in Main)` : ""}`;
 }
 
 /** The box plugins in a vault's folder. */

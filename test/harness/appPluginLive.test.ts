@@ -199,12 +199,14 @@ test("the live copy, else the built-in one; a draft runs only while tried or onc
   await refreshLiveCopies();
   await waitFor("the edit", () => shown(c) === "ok:live v2");
 
-  // A draft waits for Carl: Change ready lists it, and it runs only while he tries it.
+  // A draft waits for Carl: once the gate staged it, it is listed, and it runs only while he tries it.
   copy("draft", "ok:draft");
   await refreshLiveCopies();
   await tick(60);
   assert.equal(shown(c), "ok:live v2", "a draft never runs by itself");
   const v1 = versionOf(fs.readFileSync(path.join(DIR, "context.draft.js"), "utf8"));
+  assert.deepEqual(pendingChanges().map((p) => [p.plugin, p.version]), [], "the gate has not passed it: Carl sees nothing");
+  foldSupervisorRecords([{ seq: 900_001, at: Date.now(), type: "signal", signal: { type: "plugin.staged", plugin: "app/context", version: v1, at: Date.now(), by: "gate" } }]);
   assert.deepEqual(pendingChanges().map((p) => [p.plugin, p.version]), [["app/context", v1]]);
   tryChange("app/context", v1);
   await waitFor("tried: the draft", () => shown(c) === "ok:draft");

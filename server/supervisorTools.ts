@@ -19,7 +19,8 @@ import { withinVault } from "./phoneData";
 import { pluginDesired, setPluginBudget, setPluginChange, setPluginDesired, supervisorOf } from "./supervisor";
 import { slotCode, slotOf } from "./pluginDrafts";
 import { boxPluginLine, boxPluginNames } from "./boxPlugins";
-import { boxPluginName, versionOf, type DraftSlot } from "../src/pluginDrafts";
+import { boxPluginName, draftWhat, versionOf, type DraftSlot } from "../src/pluginDrafts";
+import { gateOutcome, type GateOutcome } from "./changeNotices";
 import { startServiceJob, type JobEnv } from "./engine/jobs";
 import { masterDir } from "./master";
 import { loadConfig } from "./config";
@@ -38,9 +39,9 @@ export const pluginToolSpecs = [
     description:
       "Turn a plugin (a vault .html page, or a part of the app that is a plugin: the Notes panel, \"notes\"; or a whole surface: the phone app, \"phone\", the iPad board, \"board\") off or on everywhere it shows (the viewer, chats, the phone, its own link, the app's window), or from a later time (an end date), set its budget, or list what each plugin is. " +
       "Off: it is taken down in every view and the box gives it nothing; on: it comes back. action: status | disable | enable | budget. plugin: its vault path or its file name (\"html-lab\"), or the app part's name (\"notes\"). " +
-      "A plugin's draft (<name>.draft.js next to it): submit hands it to the draft gate (a side-by-side check on a copy of real data, in the background; asked: false, the default, for a fix Carl did not ask for: a clear pass lands it, a clear fail drops it, borderline waits for him as Change ready; asked: true: only a fail drops it, otherwise he tries it). keep / discard / back write the record Carl's Change ready buttons do (back: switch to the copy the last keep replaced); plugin \"settings-values\": the settings draft (Settings with draft: true). Never move the draft's files yourself. " +
+      "A plugin's draft (<name>.draft.js next to it): submit hands it to the draft gate (a side-by-side check on a copy of real data, in the background; nothing reaches Carl before it passes; asked: true when Carl asked for it: passed, it applies and this chat gets \"Done: <what>\" with Undo, failed, one plain line here says why; asked: false, the default, for a fix he did not ask for: a clear pass applies it silently, a fail drops it, a change he can see waits as \"<what> — Try it?\" in Main). Put a plain one-line `// @vc-change <what>` in the draft: it is the line Carl reads. keep / discard / back write the record his Try / Keep / Undo do (back: switch to the copy the last keep replaced); plugin \"settings-values\": the settings draft (Settings with draft: true). Never move the draft's files yourself. " +
       "Migration drafts (migrate/<name>): when a change needs a plugin's state in a new shape, write .vault-chat/migrations/<name>.draft.js (an ES module: a `// @vc-change <what>` line, export const plugin = \"app/<name>\" | \"box/<name>\" | a page's vault path, export function migrate(oldState) { return newState } over the whole state object). It waits for Carl as Change ready: Try runs it on a copy of the real state and shows before/after; Keep backs up and writes the new state as new records (old ones stay; Switch back reads them again). You may discard or back it; keep is Carl's. Never rewrite plugin.state records yourself. " +
-      "Box plugins (box/<name>): the box's own behaviour, server-side modules .vault-chat/box-plugins/<name>.js exporting activate(box) (box.route(method, path, handler) at /api/v2/box/<name><path>, box.onRecord, box.every, box.readFile, box.state, box.reply, box.log; box.tool({name, description, inputSchema, handler(args, {tried, conv})}) gives you a tool, joining your tools at your next step; box.prompt(text) (at most 1500 characters) is said to you with your turns under the plugin's id; box.hideTool(name) takes one of your vault-chat tools away while it runs (never Plugins); cleanups undone on unload), loaded live by the running box, no release. Write <name>.draft.js: it waits for Carl as Change ready; Try runs it only for his laptop's requests (header x-vc-try: <version> for your own checks over loopback) and a chat he starts while trying it (only there are its tools, prompt and hidden tools in force), a tried draft cannot write state, and one that throws, fails to load, answers slower than 2 s or whose tool throws or runs over 10 s discards itself; a kept one that does so within 24 h switches back by itself.",
+      "Box plugins (box/<name>): the box's own behaviour, server-side modules .vault-chat/box-plugins/<name>.js exporting activate(box) (box.route(method, path, handler) at /api/v2/box/<name><path>, box.onRecord, box.every, box.readFile, box.state, box.reply, box.log; box.tool({name, description, inputSchema, handler(args, {tried, conv})}) gives you a tool, joining your tools at your next step; box.prompt(text) (at most 1500 characters) is said to you with your turns under the plugin's id; box.hideTool(name) takes one of your vault-chat tools away while it runs (never Plugins); cleanups undone on unload), loaded live by the running box, no release. Write <name>.draft.js: Main gets a \"Try it?\" line; Try runs it only for his laptop's requests (header x-vc-try: <version> for your own checks over loopback) and a chat he starts while trying it (only there are its tools, prompt and hidden tools in force), a tried draft cannot write state, and one that throws, fails to load, answers slower than 2 s or whose tool throws or runs over 10 s discards itself; a kept one that does so within 24 h switches back by itself.",
     inputSchema: {
       type: "object",
       properties: {
@@ -176,9 +177,22 @@ function runGate(repo: string, args: string[], signal: AbortSignal, log: (t: str
   });
 }
 
+/** The gate's machine-readable last line (scripts/draft-check.ts GATE_LINE), or null. */
+export function gateResultOf(out: string): { decision: "keep" | "discard" | "stage"; reasons: string[]; what: string } | null {
+  const line = out.split("\n").reverse().find((l) => l.startsWith("VC-GATE "));
+  if (!line) return null;
+  try {
+    const j = JSON.parse(line.slice("VC-GATE ".length));
+    if (j.decision !== "keep" && j.decision !== "discard" && j.decision !== "stage") return null;
+    return { decision: j.decision, reasons: Array.isArray(j.reasons) ? j.reasons.map(String) : [], what: typeof j.what === "string" ? j.what : "" };
+  } catch {
+    return null;
+  }
+}
+
 /** The settings draft (server/settings.ts): keep / discard / back are its records; there is no gate (Carl decides). */
 function settingsDraftAction(vault: string, action: string, a: Record<string, unknown>): { ok: boolean; text: string } {
-  if (action === "submit") return { ok: false, text: "a settings draft has no gate: it already waits for Carl as Change ready (Settings with draft: true)" };
+  if (action === "submit") return { ok: false, text: "a settings draft has no gate: it already waits for Carl as a \"Try it?\" line in Main (Settings with draft: true)" };
   const d = pendingSettingsDraft(readSettings());
   if (action !== "back" && !d) return { ok: false, text: "no settings draft waits" };
   const w = setPluginChange(vault, { plugin: SETTINGS_DRAFT_ID, change: action === "back" ? "switch" : action, ...(action !== "back" ? { version: d!.version } : {}), ...(a.reason ? { reason: a.reason } : {}) }, "agent");
@@ -195,7 +209,7 @@ function draftAction(vault: string, action: string, a: Record<string, unknown>, 
     return "error" in w ? { ok: false, text: w.error } : { ok: true, text: w.text };
   }
   if (draft === undefined) return { ok: false, text: `${slot.plugin} has no draft (${slot.dir}/${slot.draft})` };
-  if (action === "submit" && slot.plugin.startsWith("box/")) return { ok: false, text: `${slot.plugin}: a box plugin's draft has no side-by-side gate yet; it already waits for Carl as Change ready (Try runs it only for his laptop's requests)` };
+  if (action === "submit" && slot.plugin.startsWith("box/")) return { ok: false, text: `${slot.plugin}: a box plugin's draft has no side-by-side gate yet; it already waits for Carl as a \"Try it?\" line in Main (Try runs it only for his laptop's requests)` };
   const version = versionOf(draft);
   if (action === "keep" || action === "discard") {
     const w = setPluginChange(vault, { plugin: slot.plugin, change: action, version, ...(a.reason ? { reason: a.reason } : {}) }, "agent");
@@ -207,18 +221,37 @@ function draftAction(vault: string, action: string, a: Record<string, unknown>, 
   if (!repo) return { ok: false, text: "no vault-chat checkout to run the draft check from (VC_MASTER/projects/vault-chat)" };
   const asked = a.asked === true;
   const box = ctx.box ?? `http://127.0.0.1:${loadConfig().port}`;
-  const args = [slot.plugin, "--vault", vault, asked ? "--asked" : "--unasked", "--box", box];
-  const r = startServiceJob(ctx.jobs, { name: "draft-gate", command: `Draft check of ${slot.plugin} ${version} (${asked ? "asked for" : "not asked for"})`, conv: ctx.convId, byCarl: ctx.byCarl, timeout: "30m" }, (signal, log) => runGate(repo, args, signal, log));
+  const args = [slot.plugin, "--vault", vault, asked ? "--asked" : "--unasked", "--box", box, "--conv", ctx.convId];
+  const what = draftWhat(draft);
+  // The chat lines of its end (server/changeNotices.ts): Done + Undo, or why it did not apply, or "Try it?" in Main.
+  const tell = (o: Pick<GateOutcome, "decision" | "reasons"> & { what?: string }) =>
+    void gateOutcome(vault, { plugin: slot.plugin, version, what: o.what ?? what, asked, conv: ctx.convId, decision: o.decision, reasons: o.reasons }).catch(() => {});
+  const r = startServiceJob(ctx.jobs, { name: "draft-gate", command: `Draft check of ${slot.plugin} ${version} (${asked ? "asked for" : "not asked for"})`, conv: ctx.convId, byCarl: ctx.byCarl, timeout: "30m" }, (signal, log) =>
+    runGate(repo, args, signal, log).then(
+      (out) => {
+        const g = gateResultOf(out);
+        tell(g ? { decision: g.decision, reasons: g.reasons, what: g.what } : { decision: null, reasons: ["the draft check gave no result"] });
+        return out;
+      },
+      (e) => {
+        if (!signal.aborted) tell({ decision: null, reasons: [String((e as Error)?.message ?? e)] });
+        throw e;
+      },
+    ),
+  );
   if (!r.job) return { ok: false, text: r.text };
-  return { ok: true, text: `Checking ${slot.plugin} draft ${version} side by side on a copy of real data (job ${r.job.id}; JobStatus follows it). ${asked ? "A fail drops it; otherwise Carl sees it as Change ready." : "A clear pass lands it (a keep record by gate), a clear fail drops it, borderline waits for Carl as Change ready."}` };
+  return {
+    ok: true,
+    text: `Checking ${slot.plugin} draft ${version} side by side on a copy of real data (job ${r.job.id}; JobStatus follows it). Nothing reaches Carl until it passes. ${asked ? "Passed: it applies and this chat gets \"Done: …\" with Undo; failed: one plain line here says it didn't apply and why." : "A clear pass applies it silently, a clear fail drops it; if something on screen changes, Main gets \"… — Try it?\"."}`,
+  };
 }
 
 /** A migration draft (server/migrations.ts, migrate/<name>): the agent may discard it or switch it back; Keep is Carl's
  *  (Change ready, or app/changes keep on his word), since it reshapes his data. */
 async function migrationAction(vault: string, action: string, a: Record<string, unknown>): Promise<{ ok: boolean; text: string }> {
   const id = pluginIdOf(String(a.plugin ?? "").trim());
-  if (action === "submit") return { ok: false, text: `${id}: a migration has no gate; it waits for Carl as Change ready (Try runs it on a copy of real data)` };
-  if (action === "keep") return { ok: false, text: `${id}: Carl keeps a migration himself (Change ready), or PluginAct app/changes keep when he said so` };
+  if (action === "submit") return { ok: false, text: `${id}: a migration has no gate; it waits for Carl as a \"Try it?\" line in Main (Try runs it on a copy of real data)` };
+  if (action === "keep") return { ok: false, text: `${id}: Carl keeps a migration himself (its line in Main), or PluginAct app/changes keep when he said so` };
   const d = migrationDraft(vault, id);
   if (action === "discard" && !d) return { ok: false, text: `${id} has no draft` };
   const m = await migrationChange(vault, { plugin: id, change: action === "back" ? "switch" : action, ...(action === "discard" ? { version: d!.version } : {}), ...(a.reason ? { reason: a.reason } : {}) }, "agent");

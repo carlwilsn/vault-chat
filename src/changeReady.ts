@@ -30,8 +30,8 @@ import { useMemo, useSyncExternalStore } from "react";
 import { useStore } from "./store";
 import { appPluginFolder, LIVE_APP_PLUGINS } from "./appPluginLive";
 import { liveCopiesNow, useAllLiveCopies, type LiveCopies } from "./appPluginLiveHost";
-import { postPluginChange, supervisorChangesNow, useSupervisorVersion } from "./pluginSupervisorApp";
-import { boxGet, boxLinkFor, provideNewChatTries } from "./boxChat";
+import { postPluginChange, supervisorChangesNow, supervisorStagedNow, useSupervisorVersion } from "./pluginSupervisorApp";
+import { boxGet, boxLinkFor, boxPost, provideNewChatTries } from "./boxChat";
 import { provideBoxTries } from "./liveBridge";
 import { APP_PLUGINS } from "./appPlugins";
 import { PRESET_DRAFT_FILE, PRESET_PLUGIN_ID, parseDraft } from "./appPreset";
@@ -40,9 +40,10 @@ import { onPickWhileTrying, onSettingsDrafts, refreshBoxSettings, setSettingsTry
 import { isMigrationId, summaryLine, type MigrationSummary } from "./migrations";
 import { CORE_NAME, CORE_PART, coreCard, coreChangesSince, type CoreCandidate, type CoreCommit, type CoreLook } from "./coreBundle";
 import { provideCoreTrying } from "./coreFollow";
-import { BUILT_IN, KEEP_WATCH_MS, TRY_SLOW_MS, draftPending, draftWhat, landing, slowMedian, watchedKeep, type ChangeRecord, type SlotCode } from "./pluginDrafts";
+import { UNDO_CHORD, plainWhy } from "./changeFlow";
+import { BUILT_IN, KEEP_TYPING_MS, KEEP_WATCH_MS, TRY_SLOW_MS, draftPending, draftStaged, draftWhat, landing, slowMedian, watchedKeep, type ChangeRecord, type SlotCode } from "./pluginDrafts";
 
-export const CHANGES_PLUGIN = { id: "app/changes", name: "Change ready" } as const;
+export const CHANGES_PLUGIN = { id: "app/changes", name: "Changes" } as const;
 /** What Carl calls the app's preset in the notice. */
 export const PRESET_NAME = "App preset";
 
@@ -129,14 +130,60 @@ export function setTried(plugin: string, version: string | null): void {
   tries = next;
   try {
     if (tryVault) {
-      if (Object.keys(next).length) globalThis.localStorage?.setItem(TRY_KEY + tryVault, JSON.stringify(next));
-      else globalThis.localStorage?.removeItem(TRY_KEY + tryVault);
+      if (Object.keys(next).length) {
+        globalThis.localStorage?.setItem(TRY_KEY + tryVault, JSON.stringify(next));
+        globalThis.localStorage?.setItem(TRY_BOOT_KEY + tryVault, String(Date.now()));
+      } else globalThis.localStorage?.removeItem(TRY_KEY + tryVault);
     }
   } catch {
     /* no storage: this window still tries it */
   }
   watchTyping();
   emitTries();
+}
+
+// ---------------------------------------------------------------- a restart never keeps an untried change
+
+const TRY_BOOT_KEY = "vc.tryBoot:";
+/** When this app's process started (ms), or null when it can't say. Tests replace it. */
+let processStart = async (): Promise<number | null> => {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const t = await invoke<{ uptime_ms: number }>("boot_timing");
+    return typeof t?.uptime_ms === "number" ? Date.now() - t.uptime_ms : null;
+  } catch {
+    return null;
+  }
+};
+/** Tests: when the process started. */
+export function _setProcessStart(fn: typeof processStart): void {
+  processStart = fn;
+}
+
+/**
+ * A restart never keeps an untried change (src/changeFlow.ts): what this vault's windows tried in an earlier run of the
+ * app stops being tried (the copy in effect runs; for the core, the loader runs the core in effect). A window loaded
+ * again in the same run (a core Try loads the new core) keeps it. Returns what was dropped.
+ */
+export async function dropTriesFromBefore(): Promise<string[]> {
+  const cur = followTries();
+  if (!Object.keys(cur).length || !tryVault) return [];
+  const start = await processStart();
+  if (start === null) return [];
+  let at = 0;
+  try {
+    at = Number(globalThis.localStorage?.getItem(TRY_BOOT_KEY + tryVault)) || 0;
+  } catch {
+    return [];
+  }
+  if (at >= start - 2_000) return [];
+  const dropped = Object.keys(followTries());
+  for (const plugin of dropped) {
+    setTried(plugin, null);
+    coreFollowNow(plugin);
+  }
+  console.info(`[changes] a restart: no longer trying ${dropped.join(", ")}`);
+  return dropped;
 }
 
 // ---------------------------------------------------------------- Carl's settings (src/settings.ts)
@@ -242,6 +289,9 @@ const coreFollowNow = (plugin: string) => {
   if (plugin === CORE_PART) void coreActs.followNow().catch((e) => console.warn("[core] follow failed:", e));
 };
 
+/** Core bundles applied by themselves here (nothing on screen changes): once each. */
+const quietKept = new Set<string>();
+
 /** Read the box plugins' drafts from the box. A tried one that is gone stops being tried (discarded by itself: said). */
 export async function refreshBoxDrafts(): Promise<void> {
   const v = useStore.getState().vaultPath;
@@ -264,6 +314,15 @@ export async function refreshBoxDrafts(): Promise<void> {
       // and where to look. Only behind-the-scenes fixes: no Try (nothing to look at), Keep applies it.
       const since = await coreChangesHere(core);
       const card = since ? coreCard(since, core.commit) : null;
+      // Nothing to see on this laptop (behind-the-scenes fixes only): it applies by itself, with a log line.
+      if (card && !card.triable) {
+        if (!quietKept.has(c.version)) {
+          quietKept.add(c.version);
+          console.info(`[changes] the app's core ${c.version} changes nothing on screen here: applying it (${card.changes.join("; ").slice(0, 300)})`);
+          void post({ plugin: CORE_PART, change: "keep", version: c.version, by: "auto", reason: "nothing on screen changes on this laptop" });
+        }
+        continue;
+      }
       list.push({
         plugin: CORE_PART,
         name: CORE_NAME,
@@ -339,7 +398,8 @@ export function pendingChanges(all: LiveCopies = liveCopiesNow(), slots: readonl
   const out: PendingChange[] = [];
   for (const id of LIVE_APP_PLUGINS) {
     const code = appSlotCode(all, appPluginFolder(id)!);
-    const v = draftPending(code, supervisorChangesNow(id));
+    // Only a draft the gate passed reaches Carl (src/changeFlow.ts).
+    const v = draftStaged(id, code, supervisorChangesNow(id), supervisorStagedNow(id));
     if (v) out.push({ plugin: id, name: appName(id), what: draftWhat(code.draft!), version: v, added: false, triable: true });
   }
   // The app's preset (src/appPreset.ts): its draft file waits the same way.
@@ -352,7 +412,7 @@ export function pendingChanges(all: LiveCopies = liveCopiesNow(), slots: readonl
     }
   }
   for (const s of slots) {
-    const v = draftPending(s, supervisorChangesNow(s.id));
+    const v = draftStaged(s.id, s, supervisorChangesNow(s.id), supervisorStagedNow(s.id));
     if (v) out.push({ plugin: s.id, name: s.name, what: draftWhat(s.draft!), version: v, added: s.live === undefined, triable: true });
   }
   // The box's own plugins: the box said which drafts wait; the records here may have decided one since.
@@ -538,6 +598,8 @@ export function autoDiscard(plugin: string, version: string, why: string): void 
 
 /** Every plugin that can have drafts here: the app plugins with live copies and the vault plugins' slots. */
 const slotIds = (): string[] => [...LIVE_APP_PLUGINS, ...vaultSlots.map((s) => s.id), SETTINGS_DRAFT_ID, CORE_PART];
+/** Every plugin a change can apply to here (the slots, the box's own plugins seen): the dead-man's switch watches them. */
+export const changeablePlugins = (): string[] => [...new Set([...slotIds(), ...boxKnown])];
 
 /** The keeps under watch now (src/pluginDrafts.ts watchedKeep): plugin, kept version, when the watch ends. */
 export function keepsUnderWatch(now = Date.now()): { plugin: string; version: string; until: number }[] {
@@ -565,7 +627,11 @@ export function autoRevert(plugin: string, version: string | null, why: string):
   void post({ plugin, change: "switch", version: k.version, by: "auto", reason: short }).then((r) => {
     if (r.ok) coreFollowNow(plugin);
     // Another window switched it first ("already switched"): the same outcome.
-    if (!r.ok && !/already switched/.test(r.text)) return say({ plugin, name: nameOf(plugin), text: `It broke after Keep (${short}) but could not switch back: ${r.text}`, ok: false, at: Date.now() });
+    if (!r.ok && !/already switched/.test(r.text)) {
+      // Plain words for Carl (no versions); the details go to the log. Never a red developer alert.
+      console.warn(`[changes] ${plugin}: wanted to switch back by itself (${short}) but the box said: ${r.text}`);
+      return say({ plugin, name: nameOf(plugin), text: `Couldn't undo it by itself (${plainWhy(short)}). ${UNDO_CHORD} undoes it.`, ok: false, at: Date.now() });
+    }
     // The record this notice tells of: dismissing it here dismisses it in every window.
     const rec = changesOf(plugin).filter((c) => c.change === "switch" && c.by === "auto" && c.seq > k.seq).pop();
     if (rec && outcome?.plugin === plugin && !outcome.seq) say({ ...outcome, seq: rec.seq });
@@ -603,12 +669,24 @@ export function noticeAutoSwitch(now = Date.now()): void {
 
 // ---------------------------------------------------------------- typing while a draft is tried or a keep is watched
 
-let typing: { off: () => void; samples: number[]; until: number } | null = null;
+let typing: { off: () => void; samples: number[]; until: number; layout: string } | null = null;
+
+/** What the screen holds that changes typing speed (the open files and how big, the split, full-screen chat): typing is
+ *  only compared like with like, so a slowdown after Carl opens a 600-page PDF is not blamed on a change. */
+export function layoutKey(): string {
+  const s = useStore.getState() as unknown as { panes?: { file: string; content?: string }[]; splitDirection?: unknown; chatFullscreen?: unknown; rightCollapsed?: unknown };
+  return JSON.stringify([(s.panes ?? []).map((p) => [p.file, Math.round((p.content?.length ?? 0) / 50_000)]), s.splitDirection ?? null, !!s.chatFullscreen, !!s.rightCollapsed]);
+}
+
+/** The keeps whose typing is still judged: applied less than KEEP_TYPING_MS ago (the watch for throwing stays longer). */
+export function keepsForTyping(now = Date.now()): { plugin: string; version: string; until: number }[] {
+  return keepsUnderWatch(now).flatMap((k) => (k.until - KEEP_WATCH_MS + KEEP_TYPING_MS > now ? [{ ...k, until: k.until - KEEP_WATCH_MS + KEEP_TYPING_MS }] : []));
+}
 
 /** Measure composer / Ctrl+K keystroke-to-paint only while something is tried or a keep is under watch (nothing is
  *  listening otherwise). Called again when the records change. */
 export function watchTyping(): void {
-  const keeps = keepsUnderWatch();
+  const keeps = keepsForTyping();
   const any = Object.keys(tries).length > 0 || keeps.length > 0;
   if (!any) {
     typing?.off();
@@ -627,9 +705,16 @@ export function watchTyping(): void {
     if (!t || typeof t.closest !== "function" || !t.closest('[data-perf-target="composer"], [data-perf-target="ctrl-k"]')) return;
     if (document.hidden) return; // a hidden window's frames are throttled: not typing speed
     if (typing && Date.now() > typing.until) return void watchTyping(); // the watch ended: stop listening
+    // Another layout than the samples were taken in (a file opened, the split changed): start over, like with like.
+    const lk = layoutKey();
+    if (typing && typing.layout !== lk) {
+      typing.layout = lk;
+      samples.length = 0;
+    }
     const t0 = performance.now();
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
+        if (typing && typing.layout !== lk) return; // the screen changed while this key painted: not like with like
         samples.push(performance.now() - t0);
         if (samples.length > 40) samples.splice(0, samples.length - 40);
         const m = slowMedian(samples);
@@ -637,12 +722,12 @@ export function watchTyping(): void {
         samples.length = 0;
         const ms = `median ${Math.round(m)} ms a key, the limit is ${TRY_SLOW_MS} ms`;
         for (const [plugin, version] of Object.entries(tries)) autoDiscard(plugin, version, `typing got slow while it was tried (${ms})`);
-        for (const k of keepsUnderWatch()) autoRevert(k.plugin, k.version, `typing got slow after it was kept (${ms})`);
+        for (const k of keepsForTyping()) autoRevert(k.plugin, k.version, `typing got slow after it was kept (${ms})`);
       }),
     );
   };
   window.addEventListener("input", onInput, true);
-  typing = { samples, until, off: () => window.removeEventListener("input", onInput, true) };
+  typing = { samples, until, layout: layoutKey(), off: () => window.removeEventListener("input", onInput, true) };
 }
 
 /** Start following what this app's windows try (the app calls it once at start). */
@@ -717,6 +802,33 @@ export function startChangeReady(): void {
   watchTyping();
 }
 
+// ---------------------------------------------------------------- "Try it?" lines in Main (src/changeFlow.ts)
+
+const offered = new Set<string>();
+/** The box writes "<what> — Try it?" into Main for each change waiting for Carl (once each; the box keeps it to one
+ *  line too). A gated plugin's draft was offered by the gate already; this covers the rest (a core with something to
+ *  see, a box plugin's or migration's draft, a settings draft). Tests replace the poster. */
+let offerPost = async (plugin: string, version: string): Promise<boolean> => {
+  const link = await boxLinkFor(useStore.getState().vaultPath).catch(() => null);
+  if (!link) return false;
+  const r = await boxPost(link, "/api/v2/changes/offer", { plugin, version }).catch(() => null);
+  return !!(r as { ok?: boolean } | null)?.ok;
+};
+export function _setOfferPost(fn: typeof offerPost): void {
+  offerPost = fn;
+}
+export async function offerPending(pending: readonly PendingChange[] = pendingChanges()): Promise<number> {
+  let n = 0;
+  for (const p of pending) {
+    const key = `${p.plugin}@${p.version}`;
+    if (offered.has(key)) continue;
+    offered.add(key);
+    if (await offerPost(p.plugin, p.version).catch(() => false)) n++;
+    else offered.delete(key);
+  }
+  return n;
+}
+
 // ---------------------------------------------------------------- the offers (PluginRead / PluginAct)
 
 const describe = (p: PendingChange) => {
@@ -734,7 +846,8 @@ export function changeOffers() {
   const pluginArg = { type: "object", properties: { plugin: { type: "string", description: "The plugin (app/composer, a vault plugin's path, app/settings-values for Carl's settings); left out: the first waiting draft." } }, additionalProperties: false };
   return {
     state: {
-      changes: { description: "The drafts waiting for Carl (Change ready), each with whether he is trying it now on his laptop windows.", read: () => pendingChanges().map(describe) },
+      changes: { description: "The changes staged for Carl (the gate passed; each has a \"Try it?\" line in Main), each with whether he is trying it now on his laptop. One he has not tried: remind him once.", read: () => pendingChanges().map(describe) },
+      untried: { description: "Staged changes Carl has not tried yet (remind him once, in a word).", read: () => pendingChanges().filter((p) => triedVersion(p.plugin) !== p.version).map(describe) },
       trying: { description: "The drafts Carl is trying now (they run on his windows only; nothing on the box changes until Keep).", read: () => tryingNow().map(describe) },
       last: { description: "What happened last: kept, discarded, or discarded by itself and why.", read: () => outcome },
     },
@@ -763,6 +876,8 @@ export function changeOffers() {
 
 /** Tests: forget what this module holds. */
 export function _resetChangeReady(): void {
+  offered.clear();
+  quietKept.clear();
   typing?.off();
   typing = null;
   tryVault = null;

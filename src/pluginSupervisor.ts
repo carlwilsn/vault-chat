@@ -17,6 +17,9 @@
 //   {type: "plugin.change", plugin, change: "keep" | "discard" | "switch", version, from?, at, by?, reason?}
 //       Carl's word on a draft (change by asking: src/pluginDrafts.ts): which copy of the plugin is in effect.
 //
+//   {type: "plugin.staged", plugin, version, at, by?, what?, conv?}
+//       The draft gate passed a draft nobody asked for that Carl can see (src/pluginDrafts.ts): it may reach him now.
+//
 //   {type: "app.preset", preset, at, by?}
 //       Which plugins mount where, plus their settings (src/appPreset.ts): the newest valid one is in effect.
 //
@@ -25,7 +28,7 @@
 //
 // Plugin id: the page's vault path, "/"-separated (the id its state is kept under).
 
-import { PLUGIN_CHANGE, changeOf, type ChangeRecord } from "./pluginDrafts";
+import { PLUGIN_CHANGE, PLUGIN_STAGED, changeOf, stagedOf, type ChangeRecord, type StagedRecord } from "./pluginDrafts";
 import { APP_PRESET, DAILY_IN_EFFECT, presetOf, type PresetInEffect } from "./appPreset";
 
 export const PLUGIN_DESIRED = "plugin.desired";
@@ -51,6 +54,7 @@ export type Desired = {
 };
 
 const NO_CHANGES: readonly ChangeRecord[] = Object.freeze([]);
+const NO_STAGED: readonly StagedRecord[] = Object.freeze([]);
 const RUNNING: Desired = { state: "running", by: null, reason: null, seq: 0, next: null };
 
 /** A plugin's id, spelled one way whichever host names it (a Windows path, a leading ./). */
@@ -94,6 +98,7 @@ export class Supervisor {
   private words = new Map<string, Word[]>();
   private budgets = new Map<string, { seq: number; callsPerMinute: number | null }>();
   private changeList = new Map<string, ChangeRecord[]>();
+  private stagedList = new Map<string, StagedRecord[]>();
   private raw = new Map<number, SupervisorRecord>();
   private presets: PresetInEffect[] = [];
   /** The highest seq folded. */
@@ -112,9 +117,17 @@ export class Supervisor {
       this.seq = Math.max(this.seq, rec.seq);
       return true;
     }
-    if (!s || (s.type !== PLUGIN_DESIRED && s.type !== PLUGIN_BUDGET && s.type !== PLUGIN_CHANGE) || typeof s.plugin !== "string" || !Number.isFinite(rec.seq)) return false;
+    if (!s || (s.type !== PLUGIN_DESIRED && s.type !== PLUGIN_BUDGET && s.type !== PLUGIN_CHANGE && s.type !== PLUGIN_STAGED) || typeof s.plugin !== "string" || !Number.isFinite(rec.seq)) return false;
     if (this.raw.has(rec.seq)) return false;
     const plugin = pluginIdOf(s.plugin);
+    if (s.type === PLUGIN_STAGED) {
+      const st = stagedOf(rec);
+      if (!st) return false;
+      this.stagedList.set(plugin, [...(this.stagedList.get(plugin) ?? []), { ...st, plugin }].sort((a, b) => a.seq - b.seq));
+      this.raw.set(rec.seq, { seq: rec.seq, at: rec.at, type: "signal", signal: s });
+      this.seq = Math.max(this.seq, rec.seq);
+      return true;
+    }
     if (s.type === PLUGIN_CHANGE) {
       const c = changeOf(rec);
       if (!c) return false;
@@ -162,6 +175,11 @@ export class Supervisor {
     return this.changeList.get(pluginIdOf(plugin)) ?? NO_CHANGES;
   }
 
+  /** The plugin's staged records (the gate passed a draft Carl can see), oldest first. */
+  staged(plugin: string): readonly StagedRecord[] {
+    return this.stagedList.get(pluginIdOf(plugin)) ?? NO_STAGED;
+  }
+
   /** The preset in effect (src/appPreset.ts): the newest valid app.preset record's, else the built-in daily one. */
   preset(): PresetInEffect {
     return this.presets[this.presets.length - 1] ?? DAILY_IN_EFFECT;
@@ -175,6 +193,11 @@ export class Supervisor {
   /** Every plugin a record names. */
   plugins(): string[] {
     return [...new Set([...this.words.keys(), ...this.budgets.keys()])].sort();
+  }
+
+  /** Every plugin with change records (keep / discard / switch). */
+  changedPlugins(): string[] {
+    return [...this.changeList.keys()].sort();
   }
 
   /** The records folded so far, oldest first (what the snapshot route answers; a host folds them the same way). */

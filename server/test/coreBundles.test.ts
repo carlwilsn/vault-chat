@@ -234,7 +234,7 @@ describe("core bundles on the box", () => {
     mkdirSync(join(root, "work", main.slice(0, 12)), { recursive: true }); // the job's shell makes it
     writeFileSync(join(root, "work", main.slice(0, 12), "result.json"), JSON.stringify({ ok: true, version: built.version, sha256: built.sha256, commit: main }));
     running = false;
-    expect(core.publishTick(deps)).toBe(`built core ${built.version} (main cccccccccccc): Change ready on the laptop`);
+    expect(core.publishTick(deps)).toBe(`built core ${built.version} (main cccccccccccc): offered on the laptop (applied quietly when nothing on screen changes, else "Try it?" in Main)`);
     expect(changes().length).toBe(before);
     expect((await getJson("/api/v2/core")).offer).toEqual(offerBefore);
     expect(core.publishTick(deps)).toBe("up to date");

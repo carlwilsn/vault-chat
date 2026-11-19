@@ -198,7 +198,7 @@ describe("drafts: the agent's own idea waits for Carl (Change ready)", () => {
     expect(readSettings().values).toMatchObject({ theme: "graphite", effort: "high" });
     const d = pendingSettingsDraft(readSettings())!;
     expect(d).toMatchObject({ values: { theme: "light", effort: "low" }, by: "agent" });
-    expect(settingsTool({}).text).toMatch(/A draft waits for Carl \(Change ready, app\/settings-values [0-9a-f]{8}\): theme light, effort low/);
+    expect(settingsTool({}).text).toMatch(/A draft waits for Carl \("Try it\?" in Main, app\/settings-values [0-9a-f]{8}\): theme light, effort low/);
     // The drafts ride every feed with the settings: the records are vault-level signals.
     expect((log.after(0).events.at(-1) as any).conv).toBeNull();
 

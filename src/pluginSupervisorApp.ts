@@ -12,7 +12,7 @@ import { boxGet, boxLinkFor, boxPost } from "./boxChat";
 import { useStore } from "./store";
 import { PLUGIN_STOPPED_EVENT } from "./liveBridge";
 import { pluginIdOf, Reconciler, Supervisor, type Desired, type SupervisorRecord } from "./pluginSupervisor";
-import type { ChangeRecord } from "./pluginDrafts";
+import type { ChangeRecord, StagedRecord } from "./pluginDrafts";
 import { DAILY_IN_EFFECT, type PresetInEffect } from "./appPreset";
 
 let vault: string | null = null;
@@ -213,6 +213,12 @@ export function useSupervisorVersion(): number {
 export function supervisorChangesNow(plugin: string): readonly ChangeRecord[] {
   forVault(useStore.getState().vaultPath);
   return sup.changes(plugin);
+}
+
+/** The plugin's staged records (src/pluginDrafts.ts: the gate passed a draft Carl can see). */
+export function supervisorStagedNow(plugin: string): readonly StagedRecord[] {
+  forVault(useStore.getState().vaultPath);
+  return sup.staged(plugin);
 }
 
 /** Carl's word on a draft ({plugin, change, version, reason?, by?}): the box moves the files and writes the record. */

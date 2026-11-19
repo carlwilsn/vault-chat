@@ -90,6 +90,10 @@ describe("Change ready on the phone and the board: the box's list of drafts", ()
     writeFileSync(join(vp, "rows.draft.js"), phoneDraft);
     writeFileSync(join(vp, "pen.draft.js"), `// @vc-change a pen cursor\nexport function mount(){}`);
     expect(draftSettings({ theme: "light", model: "opus" }, "a lighter look", "agent").ok).toBe(true);
+    // A gated draft reaches nobody before the gate staged it (src/changeFlow.ts); the settings draft has no gate.
+    expect((await changes("phone")).body.changes.map((c) => c.plugin)).toEqual(["app/settings-values"]);
+    for (const [plugin, code] of [["app/notes", head("bigger note text")], [".vault-chat/plugins/rows.js", phoneDraft], [".vault-chat/plugins/pen.js", `// @vc-change a pen cursor\nexport function mount(){}`]] as const)
+      expect((await post("/api/v2/supervisor", { plugin, change: "stage", version: versionOf(code), by: "gate" })).status).toBe(200);
 
     const phone = (await changes("phone")).body.changes;
     expect(phone.map((c) => [c.plugin, c.what, c.added, c.tryOn])).toEqual([

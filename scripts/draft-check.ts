@@ -21,10 +21,16 @@
 //   pass        no new errors, the same visible text, typing as fast
 // Exit code: 0 pass, 3 borderline, 1 fail, 2 could not run.
 //
-// Landing it (every change is a plugin.change record the box writes and moves the files for: scripts/boxChange.ts):
-//   --unasked   a fix Carl did not ask for: a clear pass lands it (a keep by "gate"), a clear fail drops it (a discard by
-//               "gate", with why); borderline is left as Change ready for him.
-//   --asked     what Carl asked for: a fail is dropped; otherwise it waits for him as Change ready (he judges it).
+// Landing it (every change is a plugin.change record the box writes and moves the files for: scripts/boxChange.ts; the
+// Try redesign, src/changeFlow.ts):
+//   --asked     what Carl asked for: a fail is dropped (a discard by "gate"); otherwise it applies (a keep by "gate"), and
+//               the chat that asked (--conv) gets "Done: <what>" with Undo.
+//   --unasked   a fix Carl did not ask for: a clear pass applies it silently (nothing on screen changes), a clear fail
+//               drops it; borderline (something on screen changes) is staged (a plugin.staged record): Main gets
+//               "<what> — Try it?".
+// The last line of the output is `VC-GATE {json}` ({plugin, version, what, decision, verdict, reasons}): the box writes
+// the chat lines from it (server/supervisorTools.ts). A real-data capture that fails (the data changed while it copied)
+// is tried again for up to VC_DRAFT_CHECK_CAPTURE_MS (default 20 min), a minute apart: the draft is never dropped for it.
 //   --keep / --discard / --back   the record by hand (the agent's own word), as app-plugin-live.ts writes it.
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -37,6 +43,7 @@ import { TRY_SLOW_MS, appSlot, slowMedian, vaultSlot, versionOf, type DraftSlot 
 // @ts-expect-error a plain .mjs module (no types)
 import { launch, evalIn, stats } from "./typing-bench.mjs";
 import { postBoxChange } from "./boxChange.ts";
+import { draftWhat } from "../src/pluginDrafts.ts";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TEXT = "the quick brown fox jumps over the lazy dog ";
@@ -225,7 +232,13 @@ export function realCopySource(config = process.env.VC_SHIP_CONFIG || join(userI
 export async function captureRealData(vault: string, scratch: string, src = realCopySource()): Promise<string> {
   if ("error" in src) throw new Error(`${src.error}: no real data to check on (--synthetic runs on the synthetic vault, --data <dir> on a copy you name)`);
   let last = "";
-  for (let i = 0; i < 2; i++) {
+  const until = Date.now() + (Number(process.env.VC_DRAFT_CHECK_CAPTURE_MS) || 20 * 60_000);
+  const gap = Number(process.env.VC_DRAFT_CHECK_CAPTURE_GAP_MS) || 60_000;
+  for (let i = 0; i < 2 || Date.now() + gap < until; i++) {
+    if (i >= 2) {
+      console.log(`the real-data capture failed (${last.slice(0, 200)}); trying again in ${Math.round(gap / 1000)} s`);
+      await new Promise((r) => setTimeout(r, gap));
+    }
     const out = join(scratch, `real-capture-${i}`);
     const r = await new Promise<{ code: number | null; text: string }>((res) => {
       const c = spawn(src.python, [src.script, "--home", src.home, "--live", src.live.replace(/\/$/, ""), "--out", out], { cwd: scratch, env: { PATH: process.env.PATH ?? "", HOME: scratch, LANG: "C.UTF-8", __ETC_PROFILE_DONE: "1" }, stdio: ["ignore", "pipe", "pipe"] });
@@ -255,22 +268,26 @@ export async function captureRealData(vault: string, scratch: string, src = real
 
 // ---------------------------------------------------------------- landing by the verdict
 
-/** What the gate writes for a verdict: a fix Carl did not ask for lands on a clear pass and is dropped on a clear fail;
- *  what he asked for is only dropped on a fail. Null: it waits for him as Change ready. Pure, for tests. */
-export function gateDecision(v: Pick<Verdict, "verdict" | "reasons">, asked: boolean): { change: "keep" | "discard"; reason: string } | null {
+/** What the gate writes for a verdict (src/changeFlow.ts): a fail is dropped; what Carl asked for applies otherwise; a
+ *  fix he did not ask for applies on a clear pass (nothing on screen changes) and is staged for his Try when something
+ *  on screen changes (borderline). Pure, for tests. */
+export function gateDecision(v: Pick<Verdict, "verdict" | "reasons">, asked: boolean): { change: "keep" | "discard" | "stage"; reason: string } {
   const why = v.reasons.join("; ").slice(0, 280);
   if (v.verdict === "fail") return { change: "discard", reason: `the draft check failed: ${why}` };
-  if (v.verdict === "pass" && !asked) return { change: "keep", reason: `not asked for; the draft check passed: ${why}` };
-  return null;
+  if (asked) return { change: "keep", reason: `asked for; the draft check passed: ${why}` };
+  if (v.verdict === "pass") return { change: "keep", reason: `not asked for; the draft check passed: ${why}` };
+  return { change: "stage", reason: `not asked for; something on screen changes: ${why}` };
 }
 
-/** Land a verdict (unless it waits for Carl): the record through the box, by "gate". */
-export async function landVerdict(vault: string, v: Verdict, asked: boolean, box?: string): Promise<string> {
+/** Land a verdict: the record through the box, by "gate" (a keep names what it is and the chat that asked). */
+export async function landVerdict(vault: string, v: Verdict, asked: boolean, box?: string, o: { what?: string; conv?: string } = {}): Promise<{ text: string; decision: "keep" | "discard" | "stage" }> {
   const d = gateDecision(v, asked);
-  if (!d) return asked ? "it waits for Carl as Change ready (he tries it, then keeps or discards it)" : "borderline: it waits for Carl as Change ready";
-  const r = await postBoxChange(vault, { plugin: v.plugin, change: d.change, version: v.version, reason: d.reason, by: "gate" }, box);
-  return `${d.change === "keep" ? "landed" : "dropped"}: ${r.text} (record ${r.seq})`;
+  const r = await postBoxChange(vault, { plugin: v.plugin, change: d.change, version: v.version, reason: d.reason, by: "gate", ...(o.what ? { what: o.what } : {}), ...(o.conv ? { conv: o.conv } : {}) }, box);
+  return { text: `${d.change === "keep" ? "applied" : d.change === "stage" ? "staged for Carl's Try" : "dropped"}: ${r.text} (record ${r.seq})`, decision: d.change };
 }
+
+/** The machine-readable last line the box reads (server/supervisorTools.ts gateResultOf). */
+export const GATE_LINE = "VC-GATE ";
 
 export async function draftCheck(o: { plugin: string; vault: string; data?: string; synthetic?: boolean; scenario?: string; steps?: Step[]; keys?: number; runs?: number; port?: number }): Promise<Verdict> {
   const slot = slotFor(o.plugin);
@@ -344,7 +361,7 @@ async function main(argv: string[]): Promise<number> {
     const i = argv.indexOf(f);
     return i >= 0 ? argv[i + 1] : undefined;
   };
-  const takes = new Set(["--vault", "--data", "--scenario", "--steps", "--keys", "--runs", "--port", "--out", "--box", "--reason"]);
+  const takes = new Set(["--vault", "--data", "--scenario", "--steps", "--keys", "--runs", "--port", "--out", "--box", "--reason", "--conv"]);
   const plugin = argv.find((a, i) => !a.startsWith("--") && !takes.has(argv[i - 1] ?? ""));
   const vault = value("--vault");
   if (!plugin || !vault) {
@@ -373,7 +390,14 @@ async function main(argv: string[]): Promise<number> {
   console.log(`typing (composer, median a key): live ${f(v.typing.liveMedianMs)}, draft ${f(v.typing.draftMedianMs)}`);
   if (v.textAdded.length) console.log(`text only with the draft:\n${v.textAdded.slice(0, 20).map((l) => `  + ${l}`).join("\n")}`);
   if (v.textRemoved.length) console.log(`text gone with the draft:\n${v.textRemoved.slice(0, 20).map((l) => `  - ${l}`).join("\n")}`);
-  if (argv.includes("--unasked") || argv.includes("--asked")) console.log(await landVerdict(vault, v, argv.includes("--asked"), value("--box")));
+  if (argv.includes("--unasked") || argv.includes("--asked")) {
+    const slot = slotFor(plugin);
+    const f = join(vault, slot.dir, slot.draft);
+    const what = existsSync(f) ? draftWhat(readFileSync(f, "utf8")) : "";
+    const landed = await landVerdict(vault, v, argv.includes("--asked"), value("--box"), { what, conv: value("--conv") });
+    console.log(landed.text);
+    console.log(GATE_LINE + JSON.stringify({ plugin: v.plugin, version: v.version, what, decision: landed.decision, verdict: v.verdict, reasons: v.reasons }));
+  }
   return v.verdict === "pass" ? 0 : v.verdict === "borderline" ? 3 : 1;
 }
 

@@ -540,6 +540,18 @@ pub fn core_use(app: AppHandle, version: Option<String>) -> Result<(), String> {
     Ok(())
 }
 
+/// The native Undo (src-tauri/src/safety.rs): run the core the last switch replaced (else the installer's own) and
+/// reload every window. False when there is no loader.
+pub fn revert_core(app: &AppHandle) -> bool {
+    let Ok(l) = loader() else { return false };
+    let prev = l.inner.lock().unwrap().state.previous.clone();
+    if l.use_version(prev).is_err() {
+        let _ = l.use_version(None);
+    }
+    reload_all(app);
+    true
+}
+
 #[tauri::command]
 pub fn core_events_sent(n: usize) -> Result<(), String> {
     loader()?.events_sent(n);

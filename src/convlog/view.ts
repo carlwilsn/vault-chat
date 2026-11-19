@@ -188,7 +188,7 @@ registerBuiltinTranslator("compaction", ({ item: it }) => {
 registerBuiltinTranslator("notice", ({ item: it, retry }) => {
   // A failed request pi may still retry (reduce.ts blocksOf): not shown; the quiet "Retrying…" line says it.
   if (it.level === "error" && isOpen(it)) return [];
-  return [{ role: "assistant", system: true, content: it.text ?? "", mid: it.id, ...(it.level === "error" ? { failed: true } : {}), ...(retry ? { retry: true } : {}) }];
+  return [{ role: "assistant", system: true, content: it.text ?? "", mid: it.id, ...(it.level === "error" ? { failed: true } : {}), ...(retry ? { retry: true } : {}), ...(it.change ? { change: it.change } : {}) }];
 });
 
 /** A non-tool item's event type: a worker's line, a user line by how it came in (when that has translators), text

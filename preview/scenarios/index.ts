@@ -17,6 +17,7 @@ import { liveEditScenarios } from "./liveEdit";
 import { backgroundScenarios } from "./background";
 import { projectFolderScenarios } from "./projectFolders";
 import { masterScenarios } from "./master";
+import { tryFlowScenarios } from "./tryFlow";
 import type { Script } from "../runtime/llm";
 
 const MIN = 60_000;
@@ -955,4 +956,5 @@ export const scenarios: Scenario[] = [
   ...backgroundScenarios,
   ...projectFolderScenarios,
   ...masterScenarios,
+  ...tryFlowScenarios,
 ];

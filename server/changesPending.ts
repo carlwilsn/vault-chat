@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { APP_PLUGINS } from "../src/appPlugins";
 import { APP_PLUGIN_LIVE_DIR, LIVE_APP_PLUGINS, appPluginFolder } from "../src/appPluginLive";
 import { PRESET_DRAFT_FILE, PRESET_PLUGIN_ID, parseDraft } from "../src/appPreset";
-import { BOX_PLUGIN_DIR, appSlot, boxPluginName, boxSlot, draftPending, draftWhat, slotFileOf, vaultSlot } from "../src/pluginDrafts";
+import { BOX_PLUGIN_DIR, appSlot, boxPluginName, boxSlot, draftPending, draftStaged, draftWhat, slotFileOf, vaultSlot } from "../src/pluginDrafts";
 import { SETTINGS_DRAFT_ID, SETTINGS_DRAFT_NAME, describeValues, pendingSettingsDraft, triable as settingsTriable, type SettingsState } from "../src/settingsRecords";
 import { VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES, parseVaultPluginMeta, vaultPluginDevices } from "../src/vaultPlugins";
 import { slotCode } from "./pluginDrafts";
@@ -59,7 +59,8 @@ export function pendingOnBox(vault: string, surface: ChangeSurface = "laptop", s
   const out: BoxPendingChange[] = [];
   for (const id of LIVE_APP_PLUGINS) {
     const code = slotCode(vault, appSlot(appPluginFolder(id)!));
-    const v = draftPending(code, sup.changes(id));
+    // A gated draft reaches Carl only once the gate staged it (src/changeFlow.ts).
+    const v = draftStaged(id, code, sup.changes(id), sup.staged(id));
     if (v) out.push({ plugin: id, name: appName(id), what: draftWhat(code.draft!), version: v, added: false, tryOn: ["laptop"] });
   }
   const preset = slotCode(vault, { plugin: PRESET_PLUGIN_ID, dir: APP_PLUGIN_LIVE_DIR, live: "preset.json", draft: PRESET_DRAFT_FILE, prev: "preset.prev.json" }).draft;
@@ -82,7 +83,7 @@ export function pendingOnBox(vault: string, surface: ChangeSurface = "laptop", s
     const slot = vaultSlot(f.base, f.ext);
     const code = slotCode(vault, slot);
     if (code.draft === undefined || code.draft.length > VAULT_PLUGIN_MAX_BYTES) continue;
-    const v = draftPending(code, sup.changes(slot.plugin));
+    const v = draftStaged(slot.plugin, code, sup.changes(slot.plugin), sup.staged(slot.plugin));
     if (!v) continue;
     const phone = vaultPluginDevices(code.draft).includes("phone");
     const tryOn: ChangeSurface[] = ["laptop", ...(phone ? (["phone"] as const) : [])];
@@ -124,6 +125,42 @@ export function pendingOnBox(vault: string, surface: ChangeSurface = "laptop", s
   const sd = settings ? pendingSettingsDraft(settings) : null;
   if (sd) out.push({ plugin: SETTINGS_DRAFT_ID, name: SETTINGS_DRAFT_NAME, what: sd.what || describeValues(sd.values), version: sd.version, added: false, tryOn: settingsTriable(sd.values) ? ["laptop"] : [] });
   return out;
+}
+
+/** POST /api/v2/changes/offer {plugin, version}: a change waiting for Carl gets its "Try it?" line in Main (once). */
+export async function offerRoute(vault: string, body: Record<string, unknown> | null): Promise<{ status: number; body: unknown }> {
+  const plugin = typeof body?.plugin === "string" ? body.plugin : "";
+  const version = typeof body?.version === "string" ? body.version : "";
+  const c = pendingOnBox(vault).find((p) => p.plugin === plugin && p.version === version);
+  if (!c) return { status: 404, body: { error: "no such change waits" } };
+  const { offerChange } = await import("./changeNotices");
+  await offerChange(vault, { plugin: c.plugin, version: c.version, what: c.what, name: c.name });
+  return { status: 200, body: { ok: true } };
+}
+
+/** POST /api/v2/changes/undo-last {by?, reason?, tried?}: the native shell's Undo and its dead-man's switch. */
+export async function undoLastRoute(vault: string, body: Record<string, unknown> | null): Promise<{ status: number; body: unknown }> {
+  const by = body?.by === "auto" ? "auto" : "carl";
+  const reason = typeof body?.reason === "string" && body.reason.trim() ? body.reason.trim().slice(0, 200) : by === "auto" ? "the app stopped responding" : "Undo (Ctrl+Alt+Z)";
+  const tried = Array.isArray(body?.tried) ? (body!.tried as { plugin: string; version: string }[]).slice(0, 20) : [];
+  const { undoLast, sayUndone } = await import("./changeNotices");
+  const { setPluginChange } = await import("./supervisor");
+  const main = coreVault() ?? vault;
+  const sup = supervisorOf(vault);
+  const coreSup = supervisorOf(main);
+  const r = undoLast(
+    {
+      plugins: () => [...new Set([...sup.changedPlugins().filter((p) => p !== CORE_PART), ...(coreSup.changes(CORE_PART).length ? [CORE_PART] : [])])],
+      changes: (p) => (p === CORE_PART ? coreSup.changes(CORE_PART) : sup.changes(p)),
+      write: (b, who) => {
+        const w = setPluginChange(vault, { ...b, by: who }, who);
+        return "error" in w ? { ok: false, text: w.error } : { ok: true, text: w.text };
+      },
+    },
+    { by, reason, tried },
+  );
+  if (by === "carl") for (const u of r.undone) await sayUndone(vault, u);
+  return { status: r.ok ? 200 : 409, body: { ok: r.ok, text: r.text, core: r.undone.some((u) => u.plugin === CORE_PART), undone: r.undone.map((u) => ({ plugin: u.plugin, what: u.what })) } };
 }
 
 /** GET /api/v2/changes (Carl's devices: the box's own auth has passed). */
