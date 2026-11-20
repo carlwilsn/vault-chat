@@ -569,6 +569,8 @@ jobs:
           took=$(( $(date +%s) - t0 ))
           ls -la "$OUT"/tutorial*.mov >> "$T/video.log" 2>&1
           ls -laR "$VAULT" > "$T/vault-after.txt" 2>&1
+          find "$HOME_T" -maxdepth 7 -type f \( -name '*.log' -o -name '*.jsonl' -o -name '*.json' \) -size -5M -print0 2>/dev/null \
+            | xargs -0 -I{} sh -c 'mkdir -p "$1/$(dirname "${2#$3/}")" && cp "$2" "$1/${2#$3/}"' _ "$T/home" {} "$HOME_T" || true
           {
             echo
             echo "## Recorded first-run tutorial (tutorial.mov, ${took} s, exit $code)"

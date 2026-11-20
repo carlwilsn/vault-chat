@@ -124,6 +124,8 @@ function plan(body) {
   if (!script) return { text: REPLY };
   const names = (body.tools ?? []).map((t) => t.name);
   const tools = (script.tools ?? []).map((t) => ({ ...t, name: t.name && names.includes(t.name) ? t.name : names.find((x) => t.suffix && x.endsWith(t.suffix)) })).filter((t) => t.name);
+  // A scripted tool the request does not offer is left out: say which tools it did offer, so a missing one shows.
+  if (tools.length < (script.tools ?? []).length) log(`  missing ${(script.tools ?? []).map((t) => t.name ?? t.suffix).join(",")}; offered: ${names.map((n) => n.replace(/^mcp__[^_]+__/, "")).join(",")}`);
   const done = msgs.slice(u + 1).filter((m) => m.role === "assistant").length;
   return done < tools.length ? { tool: tools[done], script } : { text: script.reply };
 }
