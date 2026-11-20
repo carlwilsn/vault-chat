@@ -165,7 +165,11 @@ pub(crate) fn parse_login_path(out: &str) -> Vec<String> {
 /// The user's login-shell PATH, or [] when the shell fails or is slower than `limit`.
 fn login_shell_path(limit: Duration) -> Vec<String> {
     let shell = std::env::var("SHELL").ok().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "/bin/zsh".into());
-    let Ok(mut child) = std::process::Command::new(&shell)
+    login_shell_path_with(&shell, limit)
+}
+
+fn login_shell_path_with(shell: &str, limit: Duration) -> Vec<String> {
+    let Ok(mut child) = std::process::Command::new(shell)
         .args(["-ilc", &format!("printf '%s%s%s' '{MARK}' \"$PATH\" '{MARK}'")])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -208,6 +212,23 @@ pub(crate) fn merge_path(login: &[String], home: Option<&Path>, current: &str) -
         }
     }
     out.join(":")
+}
+
+/// The PATH a terminal would have, for every `claude` this app runs (the sign-in, Settings' "which claude",
+/// the look for one already installed before fetching): on a Mac (or wherever the no-paste sign-in is on)
+/// the login shell's PATH merged with the usual folders, read once per launch (a Finder/Dock launch has
+/// launchd's bare /usr/bin:/bin:/usr/sbin:/sbin); elsewhere this process's own PATH, unchanged.
+pub(crate) fn user_path() -> String {
+    static PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let current = std::env::var("PATH").unwrap_or_default();
+        if !enabled() {
+            return current;
+        }
+        let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
+        merge_path(&login_shell_path(Duration::from_secs(4)), home.as_deref(), &current)
+    })
+    .clone()
 }
 
 /// An executable file named `name` in the first folder of `path` that has one.
@@ -405,8 +426,7 @@ pub(crate) fn watch(
 fn run_blocking(app: &tauri::AppHandle) -> Result<(), String> {
     use std::io::Read;
     use tauri::Emitter;
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let path = merge_path(&login_shell_path(Duration::from_secs(4)), home.as_deref(), &std::env::var("PATH").unwrap_or_default());
+    let path = user_path();
     let cli = resolve_cli(&path).ok_or("Claude Code (claude) isn't installed on this computer")?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let config_dir = std::env::temp_dir().join(format!("vault-chat-claude-signin-{}-{stamp}", std::process::id()));
@@ -572,6 +592,28 @@ Use this token by setting: export CLAUDE_CODE_OAUTH_TOKEN=<token>"
         let path = format!("{}:{}", a.display(), b.display());
         assert_eq!(find_on_path("claude", &path), Some(b.join("claude")));
         assert_eq!(find_on_path("nope", &path), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A login shell whose rc files print noise and put a folder only they know about on PATH: that folder
+    /// is read; a shell that hangs gives nothing within the limit.
+    #[cfg(unix)]
+    #[test]
+    fn the_login_shells_own_path_is_read_and_a_slow_shell_gives_up() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("vc-loginsh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sh = dir.join("fake-login-shell");
+        std::fs::write(&sh, "#!/bin/sh\necho 'motd from rc'\nPATH=/only/in/my/zprofile:$PATH\nexport PATH\nexec /bin/sh -c \"$2\"\n").unwrap();
+        std::fs::set_permissions(&sh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let got = login_shell_path_with(sh.to_str().unwrap(), Duration::from_secs(4));
+        assert_eq!(got.first().map(String::as_str), Some("/only/in/my/zprofile"));
+        let slow = dir.join("slow-shell");
+        std::fs::write(&slow, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let t0 = Instant::now();
+        assert!(login_shell_path_with(slow.to_str().unwrap(), Duration::from_millis(300)).is_empty());
+        assert!(t0.elapsed() < Duration::from_secs(5));
         std::fs::remove_dir_all(&dir).ok();
     }
 
