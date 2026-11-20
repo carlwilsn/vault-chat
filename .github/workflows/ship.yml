@@ -34,6 +34,11 @@ on:
       - "vite.config.ts"
       - "tsconfig.json"
       - "server/**"
+      # What the release build itself fetches and runs: a fix to these must
+      # ship (a scripts-only fix to the Tectonic download once started no run).
+      - "scripts/download-*.mjs"
+      - "scripts/pack-server-into-app.mjs"
+      - ".github/workflows/ship.yml"
   workflow_dispatch:
 
 # Never cancel a running ship: a second push used to cancel one after the
