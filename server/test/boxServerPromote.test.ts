@@ -63,8 +63,9 @@ describe("box server from the box", () => {
     writeFileSync(join(old, "server-version.json"), JSON.stringify({ version: "0.9.63", rev: "e".repeat(40) }));
     symlinkSync("versions/0.9.63", join(state, "current"));
 
-    // systemd: every unit is "inactive" (no front), everything else succeeds.
-    writeFileSync(join(fake, "systemctl"), `#!/usr/bin/env bash\necho "$*" >> "${root}/systemctl.log"\ncase " $* " in *" is-active "*) exit 3 ;; esac\nexit 0\n`);
+    // systemd: every unit is "inactive" (no front), everything else succeeds. /bin/sh, not /usr/bin/env: the ship
+    // gate's sandbox has no /usr/bin/env, and a fake that cannot start fails every restart (and so every check).
+    writeFileSync(join(fake, "systemctl"), `#!/bin/sh\necho "$*" >> "${root}/systemctl.log"\ncase " $* " in *" is-active "*) exit 3 ;; esac\nexit 0\n`);
     chmodSync(join(fake, "systemctl"), 0o755);
 
     // The server behind `current`: healthy unless its bundle is broken. GitHub's latest release is v0.9.64 (from C1).
