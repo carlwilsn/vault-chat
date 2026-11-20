@@ -15,8 +15,9 @@ import { VoiceSlot } from "./VoiceSlot";
 import { PlaceMount } from "./PluginMount";
 import { placeModule } from "./presetApp";
 import { VaultPlugins } from "./VaultPluginHost";
-import { ASK_PLUGIN, CONTEXT_PLUGIN, NOTES_PLUGIN } from "./appPlugins";
+import { ASK_PLUGIN, CONTEXT_PLUGIN, ELEVENLABS_VOICE_PLUGIN, NOTES_PLUGIN } from "./appPlugins";
 import * as notesPlugin from "./plugins/notes";
+import * as elevenLabsVoicePlugin from "./plugins/elevenlabs-voice";
 import * as contextPlugin from "./plugins/context";
 import * as askPlugin from "./plugins/ask";
 import { bindContextSource } from "./contextSource";
@@ -50,6 +51,7 @@ import "./App.css";
 placeModule(NOTES_PLUGIN, () => notesPlugin);
 placeModule(CONTEXT_PLUGIN, () => contextPlugin);
 placeModule(ASK_PLUGIN, () => askPlugin);
+placeModule(ELEVENLABS_VOICE_PLUGIN, () => elevenLabsVoicePlugin);
 
 export default function App() {
   const toggleMode = useStore((s) => s.toggleMode);

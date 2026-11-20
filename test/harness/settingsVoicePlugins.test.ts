@@ -119,7 +119,11 @@ test("Settings: mounted through the host it draws the pane and offers its state;
   let r = await readOffers("app/settings");
   assert.equal(r.ok, true, r.error);
   assert.deepEqual(r.state.open, { open: false, where: null });
-  assert.equal(r.state.sections[4].id, "box");
+  assert.equal(r.state.sections[3].id, "box");
+  // No voice section: the core voice is local with nothing to pick; the ElevenLabs picker is app/elevenlabs-voice's.
+  assert.ok(!r.state.sections.some((s: any) => s.id === "voice"), "no voice section");
+  assert.equal((host as any).querySelector('[data-settings="voice"]'), null);
+  assert.doesNotMatch(html(host), /Browse the voice library|voice-health|elevenlabs-voice/);
   assert.ok("theme" in r.state.values && typeof r.state.values.theme.takes === "string");
   r = await actOffers("app/settings", "scrollTo", { section: "box" });
   assert.equal(r.ok, false);

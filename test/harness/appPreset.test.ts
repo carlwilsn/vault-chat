@@ -86,6 +86,7 @@ const TODAY: [string, string, string?][] = [
   ["overlay", "app/notes"], // src/App.tsx, in this order
   ["overlay", "app/context"],
   ["overlay", "app/ask"],
+  ["overlay", "app/elevenlabs-voice"],
   ["chats.overlay", "app/chats"], // src/ChatsPanel.tsx
   ["chats.sidebar", "app/chats", "sidebar"],
   ["chat.header", "app/chat"], // src/ChatHeader.tsx

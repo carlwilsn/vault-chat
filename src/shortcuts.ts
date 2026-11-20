@@ -90,6 +90,8 @@ export const SHORTCUTS = [
       "src/plugins/voice/TextPanel.tsx",
       "src/ProjectChip.tsx",
       "src/plugins/settings/Pane.tsx",
+      "src/SearchPicker.tsx",
+      "src/plugins/elevenlabs-voice/Panel.tsx",
       "src/ChatModelPicker.tsx",
       "src/UsagePopover.tsx",
       "src/plugins/composer/Composer.tsx",
@@ -105,7 +107,7 @@ export const SHORTCUTS = [
   { id: "edit.ask", keys: ["Mod+L"], label: "Ask or edit", group: "Editing", where: "a file", files: ["src/LiveEditor.tsx", "src/MonacoEditor.tsx", "src/plugins/viewer/Pane.tsx"] },
   { id: "edit.mode", keys: ["Mod+E"], label: "Edit / view", group: "Editing", where: "an open file", files: ["src/App.tsx"] },
   { id: "edit.marquee", keys: ["Mod+M"], label: "Capture a region", group: "Editing", where: "a PDF, HTML page or image", files: ["src/plugins/viewer/Pane.tsx"] },
-  { id: "edit.confirm", keys: ["Enter"], label: "Confirm a name", group: "Editing", where: "rename, new project, a key", files: ["src/plugins/filetree/Tree.tsx", "src/plugins/chats/ChatsList.tsx", "src/NewProjectForm.tsx", "src/plugins/vaults/Picker.tsx", "src/ProjectChip.tsx", "src/plugins/settings/Pane.tsx", "src/ClaudeCodeSignIn.tsx"] },
+  { id: "edit.confirm", keys: ["Enter"], label: "Confirm a name", group: "Editing", where: "rename, new project, a key", files: ["src/plugins/filetree/Tree.tsx", "src/plugins/chats/ChatsList.tsx", "src/NewProjectForm.tsx", "src/plugins/vaults/Picker.tsx", "src/ProjectChip.tsx", "src/plugins/settings/Pane.tsx", "src/SearchPicker.tsx", "src/ClaudeCodeSignIn.tsx"] },
 
   // ---- A video (the app's own player, src/VideoPlayer.tsx)
   { id: "video.play", keys: [" "], label: "Play / pause", group: "Views & windows", where: "a video with focus", files: ["src/VideoPlayer.tsx"] },

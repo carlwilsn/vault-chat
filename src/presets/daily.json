@@ -7,6 +7,7 @@
     { "place": "overlay", "plugin": "app/notes" },
     { "place": "overlay", "plugin": "app/context" },
     { "place": "overlay", "plugin": "app/ask" },
+    { "place": "overlay", "plugin": "app/elevenlabs-voice" },
     { "place": "chats.overlay", "plugin": "app/chats" },
     { "place": "chats.sidebar", "plugin": "app/chats", "part": "sidebar" },
     { "place": "chat.header", "plugin": "app/chat" },

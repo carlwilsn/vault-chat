@@ -4,7 +4,9 @@
 // the local voice. The plugin's on/off is its supervisor record (Plugins tool, "Turn off"), not a Settings field; with
 // no record a plugin is on, so an install that already has an ElevenLabs key keeps sounding exactly as before.
 
-export const ELEVENLABS_VOICE_PLUGIN = "app/elevenlabs-voice";
+import { ELEVENLABS_VOICE_PLUGIN_ID } from "../src/appPlugins";
+
+export const ELEVENLABS_VOICE_PLUGIN = ELEVENLABS_VOICE_PLUGIN_ID;
 
 export type VoiceProvider = "local" | "elevenlabs";
 

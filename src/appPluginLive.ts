@@ -24,7 +24,7 @@ export const APP_PLUGIN_LIVE_DIR = ".vault-chat/app-plugins";
 export const APP_PLUGIN_LIVE_MAX_BYTES = 4 * 1024 * 1024;
 
 /** The app plugins that can run a live copy (their code is under src/plugins/<name>/, with an index module). */
-export const LIVE_APP_PLUGINS: readonly string[] = ["app/notes", "app/chats", "app/composer", "app/chat-rows", "app/vaults", "app/filetree", "app/titlebar", "app/viewer", "app/chat", "app/settings", "app/voice", "app/context", "app/ask"];
+export const LIVE_APP_PLUGINS: readonly string[] = ["app/notes", "app/chats", "app/composer", "app/chat-rows", "app/vaults", "app/filetree", "app/titlebar", "app/viewer", "app/chat", "app/settings", "app/voice", "app/context", "app/ask", "app/elevenlabs-voice"];
 
 /** live: the copy that runs; draft: a change waiting for Carl (Change ready: it runs only while he tries it, or once
  *  kept); prev: the copy the last Keep replaced (Switch back swaps it with live; src/pluginDrafts.ts). */

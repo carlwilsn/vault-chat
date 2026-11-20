@@ -3,7 +3,7 @@
 // short "Recommended" list on top. Picking one adds it to the account
 // (POST /v1/voices/add/{public_owner_id}/{voice_id}) and selects it like any
 // voice: the id lands in vault_chat_elevenlabs_voice and goes to the box, whose calls speak with it
-// (Settings → Voice, POST /api/v1/brain/voice).
+// (the ElevenLabs voice plugin's panel, POST /api/v1/brain/voice).
 
 const API = "https://api.elevenlabs.io";
 export const VOICE_STORAGE = "vault_chat_elevenlabs_voice";

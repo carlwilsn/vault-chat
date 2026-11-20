@@ -77,7 +77,7 @@ export async function startVoiceCall(): Promise<void> {
   }
   const readiness = await boxGet(link, "/api/v1/brain/engine", 4000).catch(() => null);
   if (!readiness?.pipeline || readiness.error) {
-    reportVoiceError(readiness?.error || "The box’s voice is not ready. Open Settings → Voice → Health.");
+    reportVoiceError(readiness?.error || "The box’s voice is not ready yet; ask the agent why (voice-pipeline.log on the box).");
     return; // Refuse BEFORE microphone access, including enumeration.
   }
   if (myCall !== liveCall || !useStore.getState().voiceMode) return;

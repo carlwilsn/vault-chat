@@ -59,7 +59,7 @@ export type BrainDeps = {
   elevenlabsPluginOn?: () => boolean;
   /** The local voice's packages ready in the pipeline's environment (installing them the first time); absent: ready. */
   localVoiceReady?: () => { ready: boolean; error: string | null };
-  /** The voice Carl picked (Settings → Voice): every device's calls speak with it. */
+  /** The voice Carl picked (the ElevenLabs voice plugin's panel): every device's calls speak with it. */
   setVoiceId?: (id: string) => void;
   /** Where the pipeline listens (loopback). */
   botUrl: string;
@@ -877,7 +877,7 @@ export async function brainRoute(
     json(res, r.status, r.body);
     return true;
   }
-  // Settings → Voice: the voice every call speaks with (an ElevenLabs voice id).
+  // The ElevenLabs voice plugin's pick: the voice every call speaks with (an ElevenLabs voice id).
   if (path === "/api/v1/brain/voice" && method === "POST") {
     const id = String((await readJson())?.voiceId ?? "");
     if (!/^[A-Za-z0-9]{8,40}$/.test(id) || !d.setVoiceId) return json(res, 400, { error: "voiceId required" }), true;

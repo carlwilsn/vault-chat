@@ -1,5 +1,5 @@
 // The Settings plugin (Track 1; src/appPlugins.ts SETTINGS_PLUGIN_ID): the Settings pane (./Pane.tsx: the Claude sign-in,
-// keys, voice, the vault-chat folder, the box, appearance, keyboard shortcuts), mounted through the plugin host under the
+// keys, the vault-chat folder, the box, appearance, keyboard shortcuts), mounted through the plugin host under the
 // supervisor's records like the title bar. src/SettingsPane.tsx mounts it where Settings shows (in the chat pane's place,
 // or the viewer's when the chat is hidden); turned off or failing, a plain pane stands in (back, Keyboard shortcuts, one
 // line that says what happened with Turn on / Reload), and while the records are unknown the pane itself is drawn in the

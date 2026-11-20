@@ -255,7 +255,7 @@ function checkScenario(): Scenario {
     title: "Settings — each picked model is checked for its role",
     group: "Settings",
     notes:
-      "Each role's picker is the chat's search-and-scroll menu. Under it: Passed, or what the model can't do for that role. Try Voice → a Claude model: it can't see PDFs (only Gemini gets the open PDF). Voice: the account's ElevenLabs voices and a Test button.",
+      "Each role's picker is the chat's search-and-scroll menu. Under it: Passed, or what the model can't do for that role. Try Voice → a Claude model: it can't see PDFs (only Gemini gets the open PDF). No voice section: the ElevenLabs voice picker is the ElevenLabs voice plugin's (the chat's ⋯ menu).",
     build: (c: BuildCtx) => world(c),
     host: { sync: { box: BOX }, keys: { "service.tavily": "tvly-PREVIEW-0000", "user.lambda_api_key": "PREVIEW-lambda-0000" } },
     localStorage: {
@@ -266,7 +266,8 @@ function checkScenario(): Scenario {
     open: [{ click: "[title='Settings']" }, { sleep: 600 }],
   };
 }
-/** Settings → Voice: the dropdown shows only the selected Brian (the
+/** The ElevenLabs voice plugin's panel (the chat's ⋯ menu → ElevenLabs voice; Settings has no voice section): the
+ *  dropdown shows only the selected Brian (the
  *  one-time snapshot hides the rest, the other Brian too), then Browse the
  *  voice library…: Recommended on top, a silent preview played, Marcus picked
  *  (added to the fake account, then selected) — and he shows in the dropdown. */
@@ -279,8 +280,8 @@ function voiceLibraryScenario(): Scenario {
       await new Promise((r) => setTimeout(r, 60));
     }
   };
-  const voiceSection = () => [...document.querySelectorAll("h3")].find((h) => h.textContent === "Voice")?.closest("section") as HTMLElement | null;
-  const trigger = () => voiceSection()?.querySelector("button") as HTMLButtonElement | null;
+  const voiceSection = () => document.querySelector<HTMLElement>('[data-el="elevenlabs-voice-section"]');
+  const trigger = () => document.querySelector<HTMLButtonElement>('[data-el="voice-picker"] > div > button');
   // The open menu's rows, by voice id; and no hide control anywhere.
   const rows = (want: string[]) => {
     const got = [...document.querySelectorAll<HTMLElement>("[data-option]")].map((r) => r.dataset.option ?? "").sort();
@@ -289,23 +290,33 @@ function voiceLibraryScenario(): Scenario {
   };
   const openPicker: Step = {
     run: async () => {
-      voiceSection()?.scrollIntoView({ block: "start" });
       await until("the voice picker", () => !!trigger() && trigger()!.textContent !== "Loading voices…");
       trigger()!.click();
     },
   };
   return {
     id: "voice-library",
-    title: "Settings — pick a voice from the ElevenLabs library",
+    title: "ElevenLabs voice plugin — pick a voice from the ElevenLabs library",
     group: "Settings",
     notes:
-      "Settings → Voice: the menu shows only the selected voice (Brian, American): the first load hid the account's other voices once (the British Brian too; by id). Browse the voice library… at its bottom: Recommended (ElevenLabs' featured English conversational voices) on top, then the most used lately; search by name or description, All uses widens past conversational. ▶ plays a voice's preview (silent here); a click adds it to the account and selects it: Marcus becomes the voice, and the menu now holds Brian and Marcus.",
+      "Settings has no voice section (the core voice is local: Kokoro, af_heart). The chat's ⋯ menu → ElevenLabs voice opens the plugin's panel: the menu shows only the selected voice (Brian, American): the first load hid the account's other voices once (the British Brian too; by id). Browse the voice library… at its bottom: Recommended (ElevenLabs' featured English conversational voices) on top, then the most used lately; search by name or description, All uses widens past conversational. ▶ plays a voice's preview (silent here); a click adds it to the account and selects it: Marcus becomes the voice, and the menu now holds Brian and Marcus.",
     build: (c: BuildCtx) => world(c),
     host: { sync: { box: BOX } },
     localStorage: { vault_chat_elevenlabs_voice: "nPczCjzI2devNBz1zQrb" },
     open: [
       { click: "[title='Settings']" },
       { sleep: 600 },
+      {
+        run: async () => {
+          await until("the Settings pane", () => !!document.querySelector('[data-el="settings-pane"]'));
+          if (document.querySelector('[data-settings="voice"]') || voiceSection()) throw new Error("voice-library: Settings still has a voice section");
+        },
+      },
+      { click: "[data-el='settings-back']" },
+      { sleep: 300 },
+      { click: "[data-el='chat-menu-button']" },
+      { click: "[data-el='chat-menu-item']", text: /^ElevenLabs voice/ },
+      { wait: "[data-el='elevenlabs-voice-panel']" },
       openPicker,
       { run: () => rows(["nPczCjzI2devNBz1zQrb"]) },
       { click: "button", text: /^Browse the voice library/ },

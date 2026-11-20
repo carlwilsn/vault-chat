@@ -128,7 +128,7 @@ export const SETTINGS_PLUGIN: AppPluginInfo = {
   name: "Settings",
   mount: "panel",
   description:
-    "The Settings pane: the Claude sign-in, keys, voice, the vault-chat folder, the box (connect, sync, the phone link), appearance and keyboard shortcuts; open or close it, go to a section, read its sections and the app's settings.",
+    "The Settings pane: the Claude sign-in, keys, the vault-chat folder, the box (connect, sync, the phone link), appearance and keyboard shortcuts; open or close it, go to a section, read its sections and the app's settings.",
   words: ["settings", "settings pane", "settings-pane", "settingspane", "preferences", "settings page", "options"],
 };
 
@@ -167,7 +167,20 @@ export const ASK_PLUGIN: AppPluginInfo = {
   words: ["ctrl+k", "ctrl k", "ctrl-k", "ctrl+l", "ctrl l", "ctrl-l", "ask", "ask box", "inline ask", "inline edit", "edit box", "ctrl+k box", "ctrl+k popup", "ask popup", "inline prompt", "edit prompt"],
 };
 
-export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN, FILETREE_PLUGIN, TITLEBAR_PLUGIN, VIEWER_PLUGIN, CHAT_PLUGIN, SETTINGS_PLUGIN, VOICE_PLUGIN, CONTEXT_PLUGIN, ASK_PLUGIN];
+export const ELEVENLABS_VOICE_PLUGIN_ID = "app/elevenlabs-voice";
+
+/** ElevenLabs voice (src/plugins/elevenlabs-voice): the core voice is local (Kokoro, af_heart); on, with an ElevenLabs key
+ *  in Keys, calls speak and hear with ElevenLabs (server/voiceProvider.ts), and its panel picks the voice. */
+export const ELEVENLABS_VOICE_PLUGIN: AppPluginInfo = {
+  id: ELEVENLABS_VOICE_PLUGIN_ID,
+  name: "ElevenLabs voice",
+  mount: "panel",
+  description:
+    "ElevenLabs voice: on, with an ElevenLabs key in Keys, calls speak and hear with ElevenLabs instead of the free local voice (Kokoro, af_heart); its panel (the chat's ⋯ menu, ElevenLabs voice) picks the voice from the account or the ElevenLabs voice library, plays a test line and shows the box's voice health. Off: calls use the local voice.",
+  words: ["elevenlabs", "elevenlabs voice", "elevenlabs-voice", "eleven labs", "eleven labs voice", "voice picker", "voice library", "elevenlabs voices"],
+};
+
+export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN, FILETREE_PLUGIN, TITLEBAR_PLUGIN, VIEWER_PLUGIN, CHAT_PLUGIN, SETTINGS_PLUGIN, VOICE_PLUGIN, CONTEXT_PLUGIN, ASK_PLUGIN, ELEVENLABS_VOICE_PLUGIN];
 
 // The surfaces (Track 2: the phone and the iPad are hosts, apps Carl can switch off). A `plugin.desired` record for one
 // turns the whole app off or on live, no release: off, the box serves the one "turned off" line where its app would
