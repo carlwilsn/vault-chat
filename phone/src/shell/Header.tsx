@@ -1,28 +1,16 @@
-// Top of the page: the header bar, the offline bar and the burger menu.
+// Top of the page: the header bar, the offline bar and the page menu.
 import { Burger, Gear } from "./icons";
 
 export function Header() {
-  // Three columns: the side groups take equal room while there is room, so the title stays centred
-  // over the thread whatever sits on either side of it.
+  // Three columns: the side groups take equal room, so the title stays centred.
   return (
     <div className="hdr">
-      <div className="hside l">
-        <button className="icbtn" id="convBtn" aria-label="conversations">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 8.5h16M4 15.5h11.2" />
-          </svg>
-          <span className="reddot" id="convdot"></span>
-        </button>
-      </div>
+      <div className="hside l"></div>
       <button className="title" id="titleBtn">
         <span className="tx" id="titleTx">connecting…</span>
         <span className="sub" id="titleSub"></span>
       </button>
       <div className="hside r">
-        <button className="vpill" id="vpill">
-          <span className="d"></span> voice
-          <span className="vpwait" id="vpwait"></span>
-        </button>
         <button className="icbtn" id="menuBtn" aria-label="menu">
           <Burger />
           <span className="reddot" id="menudot"></span>
@@ -35,7 +23,7 @@ export function Header() {
 export function OffBar() {
   return (
     <div className="offbar">
-      <b>box unreachable</b> retrying — messages will queue
+      <b>box unreachable</b> retrying…
     </div>
   );
 }
@@ -49,13 +37,6 @@ const RowIco = ({ children }: { children: React.ReactNode }) => (
 export function Menu() {
   return (
     <div className="menu" id="menu">
-      {/* The box's vaults, one row each, filled by boot.ts; only with two or more. */}
-      <button className="mrow" data-page="chat">
-        <RowIco>
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-        </RowIco>
-        <span className="nm">Chat</span>
-      </button>
       <button className="mrow" data-page="alerts">
         <RowIco>
           <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0" />
@@ -69,13 +50,6 @@ export function Menu() {
           <path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z" />
         </RowIco>
         <span className="nm">Notes</span>
-      </button>
-      <button className="mrow" id="voiceRow">
-        <RowIco>
-          <rect x="9" y="2" width="6" height="12" rx="3" />
-          <path d="M5 10v1a7 7 0 0 0 14 0v-1M12 19v3" />
-        </RowIco>
-        <span className="nm">Voice</span>
       </button>
       <button className="mrow" id="settingsRow">
         <Gear />

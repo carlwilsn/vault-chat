@@ -1,4 +1,4 @@
-// pi's Show (server/show.ts): the laptop and phone get a signal on the feed and
+// pi's Show (server/show.ts): the laptop gets a signal on the feed (the phone app shows nothing) and
 // the tool's result is only ever their ack (or an honest "offline" / "didn't
 // confirm"); "here"
 // follows the device in the "you" layer; a place that does not fit the file's
@@ -49,7 +49,7 @@ const emitted: Record<string, unknown>[] = [];
 const deps = (o: Partial<ShowDeps> = {}): ShowDeps => ({
   vault,
   emit: (ev) => emitted.push(ev),
-  ackMs: { laptop: 3000, phone: 3000 },
+  ackMs: { laptop: 3000 },
   ...o,
 });
 /** A client's app: waits for its signal, then acks it as the app would (POST /api/v1/show/<id>/ack). */
@@ -194,9 +194,9 @@ describe("Show's pane: the laptop's split screen", () => {
     const leave = feedOpened(vault, "phone");
     const phone = await show(deps(), { path: "hw/hw4.md", where: "phone", pane: "left" });
     expect(phone).toMatchObject({ ok: false });
-    expect(phone.text).toMatch(/pane is for the laptop's split screen; the phone has no panes/);
+    expect(phone.text).toMatch(/the phone app has only Carl's alerts and notes/);
     const board = await show(deps(), { path: "hw/hw4.md", where: "board", pane: "right" });
-    expect(board.text).toMatch(/where is "laptop", "phone" or "here"/);
+    expect(board.text).toMatch(/where is "laptop" or "here"/);
     const url = await show(deps(), { url: "https://example.org", where: "laptop", pane: "left" });
     expect(url.text).toMatch(/not in a pane/);
     const bad = await show(deps(), { path: "hw/hw4.md", where: "laptop", pane: "top" });
@@ -260,7 +260,7 @@ describe("Show into another registered vault: one call opens X in vault Y", () =
     const missing = await show(deps({ vaults }), { path: "video/none.html", vault: "vault-chat", where: "laptop" });
     expect(missing.text).toMatch(/does not exist in the vault \(vault vault-chat\)/);
     const board = await show(deps({ vaults }), { path: "video/style-quiz.html", vault: "vault-chat", where: "phone" });
-    expect(board.text).toMatch(/opens on the laptop only/);
+    expect(board.text).toMatch(/the phone app has only Carl's alerts and notes/);
     expect(emitted.length).toBe(from);
     leave();
   });
@@ -277,18 +277,13 @@ describe('"here": the authoritative request surface', () => {
     expect(l).toMatchObject({ ok: true, where: "laptop", text: "Shown on the laptop (he is on his laptop): opened hw4.md." });
   });
 
-  it("the phone: its app acks; a place is shown whole and the result says so", async () => {
+  it("the phone: nothing is shown there (alerts and notes only), and the result says why", async () => {
     appendActivity(vault, { kind: "chat", modality: "chat", text: "Carl: send it here", device: "phone" });
-    const leave = feedOpened(vault, "phone");
-    const stop = client("phone", (ev) => {
-      expect(ev.target).toBeUndefined();
-      return { ok: true, landed: "showing hw4.md on the phone" };
-    });
+    const from = emitted.length;
     const r = await show(deps({ device: "phone" }), { path: "hw/hw4.md", heading: "Problem 2" });
-    stop();
-    leave();
-    expect(r.ok).toBe(true);
-    expect(r.text).toMatch(/^Shown on the phone \(he is on his phone\): showing hw4\.md on the phone \(the phone shows it whole; it can't jump to a place\)\.$/);
+    expect(r.ok).toBe(false);
+    expect(r.text).toMatch(/^Not shown \(he is on his phone\): the phone app has only Carl's alerts and notes/);
+    expect(emitted.length).toBe(from);
   });
 });
 

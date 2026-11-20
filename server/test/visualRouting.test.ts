@@ -178,8 +178,15 @@ for (const surface of ["phone", "laptop"] as const) {
       const stop = show.feedOpened(join(root, "reader-other-vault"), "laptop");
       const prev = broadcasts.length;
       const result = await backend.h.toolCall(turn.threadId, "Show", { path: VISUAL });
-      expect(result.ok).toBe(true);
-      expect(broadcasts.slice(prev).find(e => e.type === "show")).toMatchObject({ to: surface, path: VISUAL });
+      if (surface === "phone") {
+        // The phone app has only alerts and notes: nothing is shown there, and nothing goes to the laptop instead.
+        expect(result.ok).toBe(false);
+        expect(out(result)).toContain("the phone app has only Carl's alerts and notes");
+        expect(broadcasts.slice(prev).some(e => e.type === "show")).toBe(false);
+      } else {
+        expect(result.ok).toBe(true);
+        expect(broadcasts.slice(prev).find(e => e.type === "show")).toMatchObject({ to: surface, path: VISUAL });
+      }
       stop(); phone(); laptop();
       await ends({ convId: r.convId, tid: turn.threadId, turnId: turn.turnId });
     });
@@ -207,9 +214,10 @@ it("queued input cannot change here until Pi delivers that exact human input", a
   await engine.message({ convId: t.convId, text: "visualize here", client: "laptop", clientMsgId: id, queue: true });
   expect(engine.picture(t.convId).meta.pending.some((p: any) => p.id === id)).toBe(true);
   expect(backend.h.notifyScope(t.tid).interaction).toEqual({ request: literal, device: "phone" });
+  const n = broadcasts.length;
   const r = await backend.h.toolCall(t.tid, "Show", { path: VISUAL });
-  expect(r.ok).toBe(true);
-  expect(broadcasts.filter(b => b.type === "show").at(-1)).toMatchObject({ to: "phone" });
+  expect(r.ok).toBe(false);
+  expect(broadcasts.slice(n).some(b => b.type === "show")).toBe(false);
   const text = backend.queued.at(-1).texts.join("\n\n");
   const message = { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
   backend.emit("event", { threadId: t.tid, kind: "pi", ev: { type: "message_end", message } });

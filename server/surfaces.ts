@@ -1,7 +1,7 @@
 // The phone app is a surface Carl (or the agent's Plugins tool) can switch off and on live, like any
 // plugin (src/appPlugins.ts SURFACE_PLUGINS; the record is the supervisor's plugin.desired, server/supervisor.ts). This
 // is the box's half: what a surface that is off no longer gets, and the line said where it would have appeared.
-//   phone  no push (server/pushGate.ts), no Show "phone"; /phone serves the off line, an open phone goes to it.
+//   phone  no push (server/pushGate.ts); /phone serves the off line, an open phone goes to it.
 // Turned on again, everything comes back on the next look (the off page looks again every 30 s).
 import { PHONE_SURFACE_ID } from "../src/appPlugins";
 import { pluginDesired } from "./supervisor";

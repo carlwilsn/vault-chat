@@ -14,19 +14,6 @@ after(() => fs.rmSync(vault, { recursive: true, force: true }));
 const root = path.resolve(import.meta.dirname, "../..");
 const intros = /Welcome back!|He returns!|Ready to work\?|Welcome, sir|At your service|Hello,? sir|Ready when you are/;
 
-test("phone empty-state renderer is blank, including the legacy served phone", () => {
-  for (const file of ["phone/src/boot.ts", "src-tauri/assets/phone.html", "src-tauri/assets/phone-demo.html"]) {
-    const source = fs.readFileSync(path.join(root, file), "utf8");
-    const fn = /function showHint\(\) \{([\s\S]*?)\n  \}/.exec(source);
-    assert.ok(fn, file);
-    const msgsEl = { innerHTML: "" };
-    // Execute the production renderer: no hand-written substitute greeting HTML.
-    vm.runInNewContext(fn[0] + ";showHint()", { msgsEl, GREETS: ["At your service."], Math });
-    assert.equal(msgsEl.innerHTML.replace(/<[^>]*>/g, "").trim(), "", file);
-    assert.match(msgsEl.innerHTML, /class="hint"/, "retain the existing empty-thread marker");
-  }
-});
-
 test("actual desktop ChatPane renders no empty-chat intro and preserves ordinary assistant text", async () => {
   const { ChatPane } = await import("../../src/ChatPane.tsx");
   const { useStore } = await import("../../src/store.ts");

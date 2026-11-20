@@ -6,7 +6,7 @@
 // catalog lists them. Shared by the app and the box: no imports.
 //
 // Where it mounts: `export const meta = { devices: "laptop, phone" }` (or an array). Left out: the laptop only, as before.
-// The phone app is a host too (phone/src/plugins.ts): it mounts the plugins that name "phone", with the same api.
+// Only the laptop hosts plugins now (the phone app has only alerts and notes): a phone-only plugin mounts nowhere.
 
 export const VAULT_PLUGIN_DIR = ".vault-chat/plugins";
 export const VAULT_PLUGIN_MAX_BYTES = 1024 * 1024;

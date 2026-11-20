@@ -1,12 +1,9 @@
-// The phone shell. React renders the page's fixed structure once, in the same
-// order and markup phone.html had; the app's behaviour (boot.ts) then drives it
-// by element id, as it always did. Nothing here re-renders.
+// The phone shell: a notification center (Alerts) and a notes app (Notes), and the Box & settings drawer.
+// React renders the page's fixed structure once; the app's behaviour (boot.ts) drives it by element id.
 import { Header, OffBar, Menu } from "./shell/Header";
-import { ConvDrawer } from "./shell/ConvDrawer";
 import { Pages } from "./shell/Pages";
 import { ClaudeDrawer } from "./shell/ClaudeDrawer";
 import { Sheet } from "./shell/Sheet";
-import { Voice } from "./shell/Voice";
 
 export function App() {
   return (
@@ -14,12 +11,10 @@ export function App() {
       <Header />
       <OffBar />
       <Menu />
-      <ConvDrawer />
       <Pages />
       <ClaudeDrawer />
       <div id="toast"></div>
       <Sheet />
-      <Voice />
     </>
   );
 }

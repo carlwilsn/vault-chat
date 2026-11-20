@@ -3154,9 +3154,9 @@ export class Engine {
         case "Show": {
           // On the device he names (or is on): a signal the laptop / phone acks.
           if ((!a.where || a.where === "here") && interaction.device === "laptop" && /\b(?:not|away from)\s+(?:near\s+)?(?:at\s+)?my\s+(?:laptop|computer)\b/i.test(interaction.request)) {
-            return { success: false, contentItems: [{ type: "inputText", text: "Nothing opened: Carl said he is away from his laptop. Keep the visual in the reply or use the destination he explicitly requested." }] };
+            return { success: false, contentItems: [{ type: "inputText", text: "Nothing opened: Carl said he is away from his laptop. Keep it in the reply, or Notify him if he should see it on his phone (it lands in its alerts)." }] };
           }
-          const r = await show({ vault, device: interaction.device, off: (s) => surfaceOff(vault, s), emit: (ev) => this.d.broadcast?.(ev), dev: (port) => this.devUrl(port), vaults: this.d.vaultList }, a);
+          const r = await show({ vault, device: interaction.device, emit: (ev) => this.d.broadcast?.(ev), dev: (port) => this.devUrl(port), vaults: this.d.vaultList }, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "Layout": {

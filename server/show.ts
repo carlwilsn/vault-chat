@@ -13,9 +13,9 @@
 //           `pane` ("left" | "right") puts it in that pane of the split screen,
 //           turning split on (src/paneLayout.ts); the ack then names which pane
 //           holds what.
-//   phone   the same signal to the phone app (its sheet shows markdown and
-//           images, and opens PDFs and pages in the phone's own viewer); acked.
-//   here    the device of the originating human interaction.
+//   here    the device of the originating human interaction (the laptop; the phone
+//           app has only alerts and notes, so nothing is shown there: refused
+//           with why, and Notify is the way to reach Carl on his phone).
 //
 // Targets are src/viewTarget.ts's, per file type (the laptop's viewers land
 // them; a target that does not fit the type is refused here, before anything
@@ -129,8 +129,6 @@ export type ShowDeps = {
   vault: string;
   /** Actual talking surface from this request, never inferred from network presence. */
   device?: Device | null;
-  /** The phone app is switched off (server/surfaces.ts surfaceOff): its line, else null. */
-  off?: (surface: "phone") => string | null;
   /** A vault-level signal on the feed (/poll). */
   emit: (ev: Record<string, unknown>) => void;
   /** How long a client has to ack (default: laptop 20 s — a sync and a PDF load can come first — others 10 s). */
@@ -147,18 +145,17 @@ export type ShowResult = { ok: boolean; text: string; where?: Device };
 const SHOW_KEYS = ["path", "vault", "url", "port", "where", "pane", "page", "line", "endLine", "heading", "text", "anchor", "cell"];
 
 export const SHOW_DESCRIPTION =
-  "Put something in front of Carl: open a vault file (or a web address) on one of his screens, at a place in it. " +
+  "Put something in front of Carl: open a vault file (or a web address) on his laptop, at a place in it. " +
   'where: "laptop" (the laptop app\'s viewer/editor, scrolled to the place; an open file only scrolls — use this to scroll his laptop too), ' +
-  '"phone" (the phone app: markdown and images shown, PDFs and pages opened in the phone\'s viewer), ' +
-  'or "here"/omitted (the device he is on now, from the "you" layer) — the default: things appear where he is talking. ' +
+  'or "here"/omitted (the device he is on now, from the "you" layer). The phone app has only his alerts and notes and shows no files: to reach him on the phone, Notify him (it lands in its alerts). ' +
   'The laptop has a split screen: two files side by side, a left pane and a right pane (the turn prefix and the "you" layer say which file is in which, and whether split is on). ' +
   'A file in another of Carl\'s registered vaults: path (vault-relative) plus vault (its name), or an absolute path inside it; the laptop opens that vault as its workspace first (laptop only). Left out: the vault of this conversation. ' +
   'pane: "left" or "right" (laptop only) puts the file in that pane, turning split on when another file is open; without pane it replaces the file in the active pane. ' +
-  'To set up or rebuild a layout (two files side by side), call Show twice: one file with pane "left", the other with pane "right". The result says which pane holds what. Pick where from what he says ("I\'m not near my laptop"); only show what he asked to see, or work you made for him. ' +
+  'To set up or rebuild a layout (two files side by side), call Show twice: one file with pane "left", the other with pane "right". The result says which pane holds what. Only show what he asked to see, or work you made for him. ' +
   "The place, by file type (one of them): PDF: page (1-based, as PdfRead/PdfPages count) or text (the first page with that phrase). " +
   "Markdown: line (a source line, as read numbers them), heading (its text or slug) or text. Code/plain text: line, or line + endLine (the range is highlighted). " +
   "HTML: anchor (an element id), heading or text. Notebook (.ipynb): cell (1-based) or text. Image: none. " +
-  'A dev server you started with StartJob (vite, a web app): url "http://localhost:5173" (or port: 5173) opens it live on his laptop or phone through the box (only ports a StartJob job listens on; hot reload works). ' +
+  'A dev server you started with StartJob (vite, a web app): url "http://localhost:5173" (or port: 5173) opens it live on his laptop through the box (only ports a StartJob job listens on; hot reload works). ' +
   "The result is the confirmed outcome (the place it landed, or why not, with the valid range or nearest headings) — never assume it opened.";
 
 export const SHOW_SCHEMA = {
@@ -166,9 +163,9 @@ export const SHOW_SCHEMA = {
   properties: {
     path: { type: "string", description: "A file in the vault (vault-relative), or an absolute path inside any registered vault." },
     vault: { type: "string", description: "Laptop only: the registered vault the path is in, by name (e.g. \"vault-chat\"); the laptop switches its workspace to it. Left out: this conversation's vault (or the vault an absolute path is inside)." },
-    url: { type: "string", description: "A web address (laptop: the browser; phone: a link). http://localhost:<port>/… is a dev server you started with StartJob, opened through the box." },
+    url: { type: "string", description: "A web address (the laptop's browser). http://localhost:<port>/… is a dev server you started with StartJob, opened through the box." },
     port: { type: "number", description: "A dev server's port on the box (one a StartJob job listens on): the same as url http://localhost:<port>/." },
-    where: { type: "string", enum: ["laptop", "phone", "here"] },
+    where: { type: "string", enum: ["laptop", "here"] },
     pane: { type: "string", enum: ["left", "right"], description: 'Laptop only: the split-screen pane to open it in (split turns on). Omitted: the active pane, as before.' },
     page: { type: "number" },
     line: { type: "number" },
@@ -206,13 +203,13 @@ async function run(d: ShowDeps, a: Record<string, unknown>): Promise<ShowResult>
   let where: Device;
   let because = "";
   if (asked === "here" || asked === "") {
-    if (!d.device) return fail('Error: I can\'t tell which device Carl is on (nothing recent says). Pass where: "laptop" or "phone".');
+    if (!d.device) return fail('Error: I can\'t tell which device Carl is on (nothing recent says). Pass where: "laptop".');
     where = d.device;
     because = ` (he is on his ${DEVICE_NAME[where]})`;
   } else if (DEVICES.includes(asked as Device)) where = asked as Device;
-  else return fail(`Error: where is "laptop", "phone" or "here", not "${asked}".`);
-  const off = where !== "laptop" ? d.off?.(where) : null;
-  if (off) return fail(`Not shown on the ${DEVICE_NAME[where]}: ${off}`, where);
+  else return fail(`Error: where is "laptop" or "here", not "${asked}".`);
+  // The phone app is a notification center and a notes app: it shows no files or pages.
+  if (where === "phone") return fail(`Not shown${because}: the phone app has only Carl's alerts and notes, it shows no files or pages. Show it on the laptop (where: "laptop"), or Notify him (it lands in the phone's alerts).`, where);
 
   // A pane of the laptop's split screen.
   let pane: "left" | "right" | undefined;
@@ -283,7 +280,7 @@ async function vaultFile(vault: string, p: string): Promise<{ abs: string; rel: 
   return r;
 }
 
-// ---------------------------------------------------------------- laptop / phone: a signal, then the ack
+// ---------------------------------------------------------------- laptop: a signal, then the ack
 
 async function toClient(d: ShowDeps, where: Device, payload: Record<string, unknown>, what: string, because: string): Promise<ShowResult> {
   const dev = DEVICE_NAME[where];
@@ -291,10 +288,6 @@ async function toClient(d: ShowDeps, where: Device, payload: Record<string, unkn
   if (!(feedLive(d.vault, where) || (where === "laptop" && controlLive("laptop")))) {
     const alt = where === "laptop" ? "Put it in your reply instead (an image or a link shows in the chat)." : "Ask Carl: show it on the laptop instead?";
     return fail(`The ${dev} isn't online (the vault-chat app isn't open and connected on it), so nothing was shown${because}. ${alt}`, where);
-  }
-  if (where === "phone" && payload.target) {
-    // The phone has no viewer that moves to a place: it shows the file whole.
-    delete payload.target;
   }
   const id = `show-${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
   const ms = d.ackMs?.[where] ?? (where === "laptop" ? 20_000 : 10_000);
@@ -305,10 +298,9 @@ async function toClient(d: ShowDeps, where: Device, payload: Record<string, unkn
   console.log(`[show] to=${where} ${ack ? (ack.ok ? "ok" : "refused") : "no-ack"} ${Date.now() - t0}ms`);
   if (!ack) return fail(`Sent ${what} to the ${dev}${because}, but it did not confirm within ${Math.round(ms / 1000)} s — it may not have opened. Don't tell Carl it's open; ask him to check (the image in your reply still shows in the chat).`, where);
   if (!ack.ok) return fail(`On the ${dev}${because}: ${ack.error ?? "it could not be shown"}`, where);
-  const phoneNote = where === "phone" && what.includes(" at ") ? " (the phone shows it whole; it can't jump to a place)" : "";
   // An app from before panes opens it in the active pane and does not say a pane: say so, never claim the split.
   // Another vault: an app from before `vault` opens the path in whatever vault it has open; never claim the switch.
   if (payload.vault && ack.vault !== payload.vault) return fail(`The ${dev} app is older and cannot switch vaults from Show: it did not confirm opening ${payload.path} in the vault ${payload.vault} (it said: ${ack.landed ?? "nothing"}). Switch its workspace with PluginAct app/vaults open {name: "${payload.vault}"}, then Show the path without vault.`, where);
   const paneNote = payload.pane && ack.pane !== payload.pane ? ` (this laptop app is older and has no pane control: it opened in the active pane, not the ${payload.pane} pane — Carl can drag it to that side, or update the app)` : "";
-  return { ok: true, where, text: `Shown on the ${dev}${because}: ${ack.landed ?? what}${phoneNote}${paneNote}.` };
+  return { ok: true, where, text: `Shown on the ${dev}${because}: ${ack.landed ?? what}${paneNote}.` };
 }

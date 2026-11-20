@@ -4,7 +4,7 @@ These notes are rebuilt from vault-chat’s code, not AgentOS notes.
 Carl’s instructions live in AGENTS.md.
 
 - pi integration is in server/engine/; server/http.ts serves the box API.
-- src/ is the React/Tauri laptop client; phone/ is a separate client.
+- src/ is the React/Tauri laptop client; phone/ is a separate client (alerts and notes only).
 - voice-pipeline/bot.py handles the only voice transport; server/voiceBrain.ts connects it to pi.
 - Legacy Classic preferences are inert, not migrated or deleted; microphone-off Health still shows pipeline startup failures.
 - src/convlog/ defines shared conversation records and projection code.
@@ -13,9 +13,7 @@ Carl’s instructions live in AGENTS.md.
 - The installed watcher handles ship requests, captures, gates and main promotion.
 
 - Plan cards use visible TodoWrite arguments (`src/planPlace.ts`), not cached conversation todos; Clear stays device-local.
-- Phone Clear lives in each sidebar thread row’s ⋯ action sheet (`phone/src/boot.ts`),
-  alongside project Rename/Delete (Main has Clear only). It stores only this phone’s
-  per-target view cutoff, without selecting that row or deleting shared history.
+- The phone app is only alerts and notes (`phone/src/boot.ts`); chat, voice, Show and plugins are the laptop's.
 - Phone push defaults off in `server/pushGate.ts`, independently of device permission/subscriptions.
   `Notify(push:true)` is one requested event, bound to its originating turn (captured before a worker queues);
   the explicit `vc_push_legacy_automatic=true` server preference alone restores automatic delivery.

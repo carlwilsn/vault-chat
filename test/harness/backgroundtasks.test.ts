@@ -184,15 +184,3 @@ test("a finished task's row is gone from the thread (the reply carries the resul
   assert.match(bubble({ id: "c", name: "x", status: "stopped", failed: false, output: "", task: true }), /Background task stopped/);
 });
 
-test("the phone: one compact line until tapped (count and the running task's latest step); the rows only when opened", async () => {
-  const X = await import("../../phone/src/extras.ts");
-  const closed = X.subagentsHtml([running] as any, "strip");
-  assert.match(closed, /data-el="tasks-summary">1 background task running</);
-  assert.match(closed, /data-el="tasks-lead"> · writing physics\.html · 3 steps · /);
-  assert.doesNotMatch(closed, /data-el="subagent"/);
-  const open = X.subagentsHtml([running] as any, "strip", true);
-  assert.match(open, /data-open="1"/);
-  assert.match(open, /data-el="subagent"[^>]*data-state="running"/);
-  assert.match(open, /data-op="stop"/);
-  assert.equal(X.subagentsHtml([], "strip"), "");
-});

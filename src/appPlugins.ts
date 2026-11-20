@@ -190,17 +190,17 @@ export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN
 
 // The surfaces (Track 2: the phone is a host, an app Carl can switch off). A `plugin.desired` record for it
 // turns the whole app off or on live, no release: off, the box serves the one "turned off" line where its app would
-// open (/phone), pushes to the phone and sends to it (Show) stop and say so, and an app
+// open (/phone) and pushes to the phone stop and say so, and an app
 // already open goes to that line (server/surfaces.ts).
 
 export const PHONE_SURFACE_ID = "app/phone";
 
-/** The phone app (phone/): chats, alerts and pushes on the phone, and the vault plugins it hosts. */
+/** The phone app (phone/): a notification center (alerts, pushes) and a notes app. */
 export const PHONE_SURFACE: AppPluginInfo = {
   id: PHONE_SURFACE_ID,
   name: "Phone app",
   mount: "surface",
-  description: "The phone app: chats, alerts, Show on the phone and phone pushes, and the vault plugins it hosts. Off: /phone shows that it is turned off, no push or Show reaches the phone.",
+  description: "The phone app: Carl's alerts (what Notify sends, with phone pushes) and his notes. Off: /phone shows that it is turned off and no push reaches the phone.",
   words: ["phone", "phone app", "the phone", "the phone app", "iphone", "mobile", "mobile app", "phone surface"],
 };
 

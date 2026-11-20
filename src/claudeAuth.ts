@@ -80,7 +80,6 @@ export const SIGN_IN_BUTTON = "Sign in with Claude";
 export const SIGN_IN_LINE = {
   chat: "Sign in with Claude to chat",
   voice: "Sign in with Claude to talk",
-  phone: "Sign in with Claude to chat",
 } as const;
 
 export type SignInSurface = keyof typeof SIGN_IN_LINE;

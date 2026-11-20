@@ -217,7 +217,6 @@ test("signed out, an AI surface draws one sentence, the command, the token field
 
 test("each surface says what is blocked there, in its own words", async () => {
   for (const [surface, line] of Object.entries(SIGN_IN_LINE)) {
-    if (surface === "phone") continue; // drawn by the phone app, not React
     const html = await render(createElement(ClaudeSignInPrompt, { surface: surface as "chat" }), { box: false });
     assert.match(html, new RegExp(line), `${surface}: ${line}`);
     assert.match(html, new RegExp(`data-surface="${surface}"`));
@@ -323,13 +322,3 @@ test("the sign-in prompt is drawn only by AI surfaces: no full-window gate", () 
   }
 });
 
-test("the phone blocks its AI with the shared words", () => {
-  const boot = readFileSync(join(root, "phone", "src", "boot.ts"), "utf8");
-  // It takes the sentence from the shared table rather than writing its own.
-  assert.match(boot, /SIGN_IN_LINE/, "the phone says the shared sentence");
-  // And it only blocks on an outright false: a dropped health read must not
-  // take the composer or the mic away.
-  assert.match(boot, /claudeSignedIn === false/, "the phone blocks only on a definite no");
-  const pages = readFileSync(join(root, "phone", "src", "shell", "Pages.tsx"), "utf8");
-  assert.match(pages, /id="signin"/, "the phone's prompt sits in the composer's place");
-});

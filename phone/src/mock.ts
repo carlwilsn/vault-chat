@@ -1,4 +1,5 @@
-import { MemoryBox } from "../../src/convlog/memoryBox";
+// The phone app against a fixture box (?mock=1, the dev server and the preview harness): alerts, notes and a
+// chat to read, all in memory. No network.
 export function installMock() {
   const now = Date.now();
   // Auto-play the supervisor m1 working→idle→(stale trailing frame) lifecycle
@@ -175,144 +176,46 @@ export function installMock() {
       ] },
     },
   };
-  // A box with more than one vault (MockDB.vaults): the page shows the vault it names (?vault=).
-  const pick = (() => {
-    try {
-      return new URLSearchParams(location.search).get("vault") || localStorage.getItem("vc_phone_vault") || "";
-    } catch {
-      return "";
-    }
-  })();
-  const DB: MockDB = pick && ROOT.vaults?.[pick] ? ({ ...ROOT, ...ROOT.vaults[pick], vault: pick } as MockDB) : ROOT;
+  const DB: MockDB = ROOT;
   const reply = (obj) => new Response(JSON.stringify(obj), { status: 200, headers: { "Content-Type": "application/json" } });
-  // The preview's UI choices (localStorage switches), before the page reads them.
-  for (const [k, v] of Object.entries(DB.ls ?? {})) {
-    try { localStorage.setItem(k, v); } catch {}
-  }
-  // The box's conversations: its event log (src/convlog/memoryBox.ts — the same
-  // records and fold as the real box). The fixture threads are its history.
-  const box = new MemoryBox();
-  const asFixture = (m: any) => ({
-    ...m,
-    ...(Array.isArray(m.tools) && m.tools.length ? { toolCalls: m.tools.map((name: string, i: number) => ({ id: `${name}-${i}-${Math.random().toString(36).slice(2, 6)}`, name, input: {}, result: "" })) } : {}),
-    ...(typeof m.divider === "string" ? { compaction: { summary: m.divider } } : {}),
-    ...(Array.isArray(m.spawns) && m.spawns.length && !m.tools?.length ? { toolCalls: [{ id: "sub-" + m.spawns.join("-"), name: "subagent", input: {}, result: "", subagents: m.spawns }] } : {}),
-  });
-  for (const [id, t] of Object.entries(DB.threads)) {
-    const row = DB.convs.find((c) => c.id === id) as any;
-    box.import(id, { ...(t as any), title: (t as any).title || row?.title || "New chat", source: (t as any).source || row?.source || "phone", ...(row?.project ? { project: row.project } : {}), lastActivityAt: row?.lastActivityAt, createdAt: row?.lastActivityAt }, ((t as any).messages || []).map(asFixture));
-    if (DB.runs.some((r) => r.convId === id)) box.startTurn(id);
-  }
-  // One main conversation (src/threads.ts), as the box makes it at start: Main and each project's one thread.
-  if (!box.picture("main")) box.create("main", { title: "Main", source: "main", kind: "main" });
-  for (const p of DB.projects || []) if (!box.picture(`project-${p.slug}`)) box.create(`project-${p.slug}`, { title: p.name, source: "project", kind: "project", project: p.slug });
-  /** The list rows the box adds for them (GET /conversations: the fixture's chats are older chats). */
-  const threadRows = () => box.rows().filter((r) => r.kind === "main" || r.kind === "project" || r.kind === "separate").map((r) => ({ id: r.id, title: r.title, lastActivityAt: r.lastActivityAt, source: r.source, kind: r.kind, project: r.project, msgCount: 0, preview: "" }));
-  // A send gets the mock's canned reply (a scripted preview leaves the reply to its script).
-  box.onSend = (conv) => {
-    if (DB.script) return;
-    setTimeout(() => {
-      box.say(conv, "Here's the context on that call — happy to dig into any part of it.", 3);
-      box.endTurn(conv);
-    }, 350);
-  };
-  (window as any).__vcPhoneBox = box;
-  // A scripted box (preview): each __vcPhoneNext() applies one step — what the
-  // box writes for it (its older shapes: messages appended, meta, run states).
-  let scriptAt = 0;
-  window.__vcPhonePosts = [];
-  window.__vcPhoneNext = () => {
-    const st = DB.script?.[scriptAt];
-    if (!st) return false;
-    scriptAt++;
-    for (const [id, m] of Object.entries(st.meta ?? {})) {
-      const row = DB.convs.find((c) => c.id === id);
-      if (row) Object.assign(row, m);
-    }
-    if (st.runs) DB.runs = st.runs;
-    box.applyLegacyStep({ ...st, append: Object.fromEntries(Object.entries(st.append ?? {}).map(([id, ms]) => [id, (ms as any[]).map(asFixture)])) } as any);
-    return true;
-  };
   window.fetch = async (url, opts) => {
     const u = String(url).split("?")[0];
     const q = new URLSearchParams(String(url).split("?")[1] || "");
     const body = opts && opts.body ? JSON.parse(opts.body as string) : {};
-    if (DB.script && u !== "/poll") window.__vcPhonePosts.push({ url: String(url), method: (opts && opts.method) || "GET", body });
-    // Delete / Rename a project: the project list follows (the box's feed takes the thread, below).
-    if (u === "/api/v2/intent" && body.type === "deleteProject") { (DB.deletedProjects = DB.deletedProjects || []).push(...(DB.projects || []).filter((x) => x.slug === body.slug)); DB.projects = (DB.projects || []).filter((x) => x.slug !== body.slug); }
-    if (u === "/api/v2/intent" && body.type === "restoreProject") { const back = (DB.deletedProjects || []).filter((x) => x.slug === body.slug); DB.deletedProjects = (DB.deletedProjects || []).filter((x) => x.slug !== body.slug); (DB.projects = DB.projects || []).push(...back); }
-    if (u === "/api/v2/intent" && body.type === "renameProject") DB.projects = (DB.projects || []).map((x) => (x.slug === body.slug ? { ...x, name: String(body.name || "").trim() || x.name } : x));
-    // A file from "+": kept as the box keeps it (server/attachments.ts), by name under the day's folder.
-    if (u === "/api/v2/attachment") {
-      const size = Math.floor((String(body.dataBase64 || "").length * 3) / 4);
-      if (!size) return new Response(JSON.stringify({ error: "arrived empty" }), { status: 400 });
-      const path = ".vault-chat/attachments/" + new Date().toISOString().slice(0, 10) + "/" + String(body.name || "attachment");
-      (window.__vcPhoneAttachments = window.__vcPhoneAttachments || []).push({ path, name: body.name, size });
-      return reply({ ok: true, path, abs: "/home/box/vault/" + path, name: body.name, size });
-    }
-    // The log's routes: /poll, /api/v2/conversations[/<id>/checkpoint], /api/v2/intent.
-    const routed = await box.route((opts && opts.method) || "GET", u, q, body, DB.script ? 2400 : 2500);
-    if (routed) return new Response(JSON.stringify(routed.body), { status: routed.status, headers: { "Content-Type": "application/json" } });
-    if (DB.script && /^\/api\/v1\/conversations\/[^/]+\/subagents\/[^/]+\/(steer|stop)$/.test(u)) return reply({ ok: true });
-    if (u === "/conversations") return reply({ vault: DB.vault, conversations: [...threadRows(), ...DB.convs.filter((c) => !threadRows().some((t) => t.id === c.id))] });
-    if (u === "/api/v1/vaults") return reply({ vaults: [{ name: ROOT.vault, main: true, syncing: true }, ...Object.keys(ROOT.vaults ?? {}).map((name) => ({ name, main: false, syncing: true }))] });
+    // The feed: nothing new (a long poll that answers after a while, as the box's does).
+    if (u === "/poll") { if (q.get("after") !== "latest") await new Promise((r) => setTimeout(r, 2500)); return reply({ events: [], next: 1, epoch: "mock" }); }
+    if (u === "/api/v1/health") return reply({ version: "0.4.21-mock" });
+    if (u === "/api/v1/attention") return reply({ ok: true });
     if (u === "/conversation") {
       const t = DB.threads[q.get("id")];
       if (!t) return reply({ error: "not found" });
-      // The box's last-n window (refreshConvMeta asks for n=1).
       const n = Number(q.get("n")) || 0;
       return reply(n > 0 ? { ...t, messages: t.messages.slice(-n) } : t);
     }
-    if (u === "/status") return reply({ vault: DB.vault, model: DB.model, version: "0.4.21-mock", runs: DB.runs });
-    if (u === "/schedules") return reply({ schedules: DB.schedules });
     if (u === "/notifications") { const ct = DB.notifClearTs || 0; const ns = DB.notifs.filter((n) => !(n.read && n.ts <= ct)); return reply({ unread: ns.filter((n) => !n.read).length, notifications: ns }); }
     if (u === "/notifications/read") { const n = DB.notifs.find((x) => x.id === body.id); if (n) n.read = true; return reply({ ok: true }); }
     if (u === "/notifications/hide") { DB.notifs = DB.notifs.filter((x) => x.id !== body.id); return reply({ ok: true }); }
     if (u === "/notifications/clear") { DB.notifClearTs = Date.now(); return reply({ ok: true }); }
+    if (u === "/notes" && (opts?.method || "GET") === "POST") {
+      const id = "nt" + Date.now().toString(36);
+      const at = new Date().toISOString();
+      DB.notes.unshift({ id, status: "open", timestamp: at, last_updated: at, user_draft: String(body.text || ""), title: null } as any);
+      return reply({ ok: true, id });
+    }
     if (u === "/notes") { const ns = DB.notes.filter((n) => n.status !== "cleared"); return reply({ open: ns.filter((n) => n.status === "open").length, notes: ns }); }
     if (u === "/notes/status") { const n = DB.notes.find((x) => x.id === body.id); if (n) n.status = body.status === "open" ? "open" : "resolved"; return reply({ ok: true }); }
-    if (u === "/notes/edit") { const n = DB.notes.find((x) => x.id === body.id); if (!n) return reply({ error: "note not found" }); n.user_draft = body.text; n.title = null; n.last_updated = new Date().toISOString(); return reply({ ok: true, id: n.id }); }
+    if (u === "/notes/edit") { const n = DB.notes.find((x) => x.id === body.id); if (!n) return reply({ error: "note not found" }); n.user_draft = body.text; n.title = null; n.last_updated = new Date().toISOString(); return reply({ ok: true }); }
+    if (u === "/notes/delete") { const before = DB.notes.length; DB.notes = DB.notes.filter((x) => x.id !== body.id); return reply(DB.notes.length < before ? { ok: true } : { error: "note not found" }); }
     if (u === "/notes/clear-resolved") { let c = 0; DB.notes.forEach((n) => { if (n.status === "resolved") { n.status = "cleared"; c += 1; } }); return reply({ ok: true, cleared: c }); }
-    if (u === "/projects" && (opts?.method || "GET") === "POST") {
-      const name = String(body.name || "").trim();
-      const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-      if (!slug) return reply({ error: "name required" });
-      if (!(DB.projects || []).some((x) => x.slug === slug)) (DB.projects = DB.projects || []).push({ slug, name });
-      if (!box.picture(`project-${slug}`)) box.create(`project-${slug}`, { title: name, source: "project", kind: "project", project: slug });
-      return reply({ ok: true, slug, name, convId: `project-${slug}` });
-    }
-    if (u === "/projects") return reply({ projects: DB.projects || [] });
-    if (u === "/conversation/project") {
-      const want = String(body.project || "").trim();
-      const slug = want ? want.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : "";
-      if (slug && !(DB.projects || []).some((x) => x.slug === slug)) (DB.projects = DB.projects || []).push({ slug, name: want });
-      const cs = DB.convs.find((c) => c.id === body.convId); if (cs) cs.project = slug || undefined;
-      const th = DB.threads[body.convId]; if (th) (th as any).project = slug || undefined;
-      return reply({ ok: true, project: slug || null });
-    }
-    if (u === "/message") return reply(box.intent({ ...body, type: body.queue ? "queue" : "send", clientId: body.clientMsgId || "m-" + Date.now() }));
-    if (u === "/decision-record") {
-      // Mirror the real box: an inline decision lands in the archive as a
-      // pre-decided ask card (never unread, never pushed).
-      DB.notifs.push({ id: "dec-" + Date.now(), ts: Date.now(), kind: "ask", title: body.title || "Inline decision", intention: "Your call · decided in-conversation", icon: "?", cls: "a", body: body.question || "", convId: body.convId || "", read: true, answeredWith: body.answer, answeredAt: Date.now(), readAt: Date.now() });
-      return reply({ ok: true });
-    }
     if (u === "/answer") {
-      // Mirror the real box: stamp WHICH answer settled the ask (answeredWith)
-      // and mark it read, so the decided-card/dead-sheet states are testable.
       const an = DB.notifs.find((x) => x.id === body.notifId);
       if (an) { an.answeredWith = body.text; an.answeredAt = Date.now(); an.read = true; }
-      if (body.convId && box.picture(body.convId)) box.intent({ type: "answer", convId: body.convId, clientId: body.clientMsgId || "a-" + Date.now(), text: body.text });
       return reply({ ok: true, convId: body.convId, answered: true });
     }
-    if (u === "/kill") { if (body.convId) { DB.runs = DB.runs.filter((r) => r.convId !== body.convId); box.intent({ type: "stop", convId: body.convId }); } return reply({ ok: true, result: "Kill sent." }); }
-    if (u === "/schedule") { if (body.action === "toggle") { const s = DB.schedules.find((x) => x.id === body.id); if (s) s.enabled = body.enabled; } else if (body.action === "delete") { DB.schedules = DB.schedules.filter((x) => x.id !== body.id); } return reply({ ok: true }); }
-    if (u === "/surface") return reply({ ok: true });
+    if (u === "/push/preferences") return reply({ legacyAutomatic: false });
     if (u === "/push/vapid") return reply({ key: "" });
     if (u === "/push/subscribe" || u === "/push/test") return reply({ ok: true });
     if (u === "/file") return new Response("(mock file)", { status: 200 });
-    // The vault plugins that name the phone (server/pluginCatalog.ts devicePlugins): a scenario's own, else none.
-    if (u === "/api/v2/plugin/device") return reply({ device: q.get("device"), plugins: (DB as any).phonePlugins || [] });
     return reply({});
   };
 }

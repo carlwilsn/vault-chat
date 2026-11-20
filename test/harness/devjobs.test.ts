@@ -6,7 +6,6 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createPhoneMarkdown } from "../../phone/src/markdown.ts";
-import { subagentsHtml } from "../../phone/src/extras.ts";
 import { waitInputs } from "../../src/voiceWaitLine.ts";
 import { tasksSummary, taskActivity } from "../../src/backgroundTasks.ts";
 
@@ -27,14 +26,6 @@ test("laptop chip: a job row has Stop and no Steer; a worker keeps both", () => 
   assert.match(rows[1]!, /data-el="task-steer"/);
   assert.equal(tasksSummary([job, worker] as any), "2 background tasks running");
   assert.equal(taskActivity(job as any), "serving localhost:5173");
-});
-
-test("phone chip: the same", () => {
-  const html = subagentsHtml([job, worker] as any, "strip", true);
-  const [, a, b] = html.split('data-el="subagent"');
-  assert.match(a!, /data-op="stop"/);
-  assert.doesNotMatch(a!, /data-op="steer"/);
-  assert.match(b!, /data-op="steer"/);
 });
 
 test("a stopped job is a finished row (no buttons)", () => {

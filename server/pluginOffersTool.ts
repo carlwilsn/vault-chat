@@ -7,12 +7,10 @@
 //               {plugin, state?}        its state (every selector, or one) and its recent events
 //   PluginAct   {plugin, action, args}  run an action; the answer is its result and the plugin's state read back
 //
-// Plugins are mounted in the hosts: the laptop app and the phone app (phone/src/plugins.ts), so the call rides Show's
-// channel (server/show.ts): a {type:"plugin", id, to: "laptop" | "phone", op, ...} signal on the vault's feed, answered
-// by src/pluginOffers.ts answerPluginSignal (src/boxChat.ts on the laptop, phone/src/boot.ts on the phone), acked over
-// POST /api/v1/show/<id>/ack. `device` names the host; left out, a list asks every host that is online and a read or
-// an action goes to the laptop (the phone when only it is online). The result is only ever that ack, or an honest
-// "offline" / "didn't answer". Full trust: no grant.
+// Plugins are mounted in the laptop app (the phone app hosts none: it has only alerts and notes), so the call rides
+// Show's channel (server/show.ts): a {type:"plugin", id, to: "laptop", op, ...} signal on the vault's feed, answered by
+// src/pluginOffers.ts answerPluginSignal (src/boxChat.ts), acked over POST /api/v1/show/<id>/ack. The result is only
+// ever that ack, or an honest "offline" / "didn't answer". Full trust: no grant.
 //
 // Vault pages (a vault .html with `<meta name="vc-capabilities" content="state, log">`) keep their vc.state and vc.log
 // as records in the box's one log (server/pluginState.ts), so PluginRead reads them from the box whether or not the
@@ -45,13 +43,13 @@ export const pluginOfferToolSpecs = [
       "No plugin: lists every live plugin with its offers (use it first to learn a plugin's actions and args), and the vault pages whose state the box keeps. plugin (its id, e.g. app/notes, or its name): reads its state (all of it, or the one `state` named) and its recent events, from the screen now. " +
       "A vault .html page that uses vc.state / vc.log (plugin: its vault path, file name or title; vault: another registered vault's name, or an absolute path) is read from the box even when it is closed: its saved state, last change and recent log records; after (the seq it showed) + wait (seconds, at most 25) waits for its next change, to follow what Carl does in it. " +
       "Any other plugin too: wait (seconds, at most 25) holds the answer until it emits its next event (after: the seq a watch showed; left out: from now), then gives its state and the new events, so you follow what Carl does instead of reading again and again. " +
-      "app/context holds what Carl has selected, hovers and is focused in now. Use it to see a plugin's state or before PluginAct. Plugins run on the laptop app and on the phone app (device: \"laptop\" or \"phone\"; left out: a list covers every device online, a read goes to the laptop, else the phone). Only plugins mounted there now are reachable; a plugin that is off or not open says so. What no plugin offers, Act does in his real laptop window.",
+      "app/context holds what Carl has selected, hovers and is focused in now. Use it to see a plugin's state or before PluginAct. Plugins run in the laptop app (the phone app hosts none). Only plugins mounted there now are reachable; a plugin that is off or not open says so. What no plugin offers, Act does in his real laptop window.",
     inputSchema: {
       type: "object",
       properties: {
         plugin: { type: "string", description: "The plugin's id or name; left out: list every live plugin and what it offers." },
         state: { type: "string", description: "One state name to read (default: all of it)." },
-        device: { type: "string", enum: ["laptop", "phone"], description: "Which host: the laptop app or the phone app (default: every device online for a list; the laptop, else the phone, for a read)." },
+        device: { type: "string", enum: ["laptop"], description: "The host: the laptop app (the only one; the phone app hosts no plugins)." },
         vault: { type: "string", description: "A vault page in another registered vault: that vault's name (default: this conversation's vault)." },
         after: { type: "number", description: "The seq the last read or watch showed (a vault page's record seq, or a plugin's event seq); with wait, answer once it has something newer." },
         wait: { type: "number", description: "Wait up to this many seconds (at most 25) for its next change: a vault page's next state change or log record, any other plugin's next event." },
@@ -71,7 +69,7 @@ export const pluginOfferToolSpecs = [
         plugin: { type: "string", description: "The plugin's id or name." },
         action: { type: "string", description: "One of the actions it offers." },
         args: { type: "object", description: "The action's args, as its schema says." },
-        device: { type: "string", enum: ["laptop", "phone"], description: "Which host runs it: the laptop app (default) or the phone app (PluginRead lists each device's plugins)." },
+        device: { type: "string", enum: ["laptop"], description: "The host: the laptop app (the only one; the phone app hosts no plugins)." },
       },
       required: ["plugin", "action"],
       additionalProperties: false,
@@ -112,22 +110,18 @@ export function offersText(p: OffersDescription): string {
   return lines.join("\n");
 }
 
-const HOSTS = ["laptop", "phone"] as const;
+const HOSTS = ["laptop"] as const;
 type Host = (typeof HOSTS)[number];
-const HOST_NAME: Record<Host, string> = { laptop: "laptop", phone: "phone" };
+const HOST_NAME: Record<Host, string> = { laptop: "laptop" };
 
 type Asked = { ok: false; text: string } | { ok: true; answer: OfferAnswer; error?: string };
 
-/** The hosts a call goes to: the one named, else (list) every one online, else (read / act) the laptop, then the phone. */
-function hostsFor(d: PluginOfferDeps, device: unknown, all: boolean): { hosts: Host[] } | { error: string } {
-  if (device !== undefined && device !== null && device !== "") {
-    const w = String(device).trim().toLowerCase();
-    if (!(HOSTS as readonly string[]).includes(w)) return { error: `device is "laptop" or "phone", not "${String(device)}". Nothing was asked.` };
-    return { hosts: [w as Host] };
+/** The host a call goes to: the laptop (the phone app hosts no plugins). */
+function hostsFor(_d: PluginOfferDeps, device: unknown, _all: boolean): { hosts: Host[] } | { error: string } {
+  if (device !== undefined && device !== null && device !== "" && String(device).trim().toLowerCase() !== "laptop") {
+    return { error: `Plugins run only in the laptop app (the phone app has only alerts and notes, and hosts no plugins), not "${String(device)}". Nothing was asked.` };
   }
-  const live = HOSTS.filter((h) => controlLive(h));
-  if (!live.length) return { hosts: ["laptop"] };
-  return { hosts: all ? live : [live[0]!] };
+  return { hosts: ["laptop"] };
 }
 
 async function ask(d: PluginOfferDeps, host: Host, body: Record<string, unknown>, extraMs = 0): Promise<Asked> {
@@ -298,7 +292,7 @@ async function listAll(d: PluginOfferDeps, hosts: Host[], vaultArg: unknown): Pr
     if (!r.ok) return void blocks.push(hosts.length > 1 ? `On the ${HOST_NAME[h]}: ${r.text}` : r.text);
     const ps = r.answer.plugins ?? [];
     for (const id of [...ps.map((p) => p.id), ...(r.answer.pages ?? [])]) mounted.set(id, [...(mounted.get(id) ?? []), h]);
-    blocks.push(ps.length ? [`${ps.length} live plugin(s) on the ${HOST_NAME[h]} and what each offers (PluginRead {plugin, device} reads state; PluginAct {plugin, action, args, device} runs an action):`, ...ps.map(offersText)].join("\n") : `No plugin mounted on the ${HOST_NAME[h]} declares offers right now.`);
+    blocks.push(ps.length ? [`${ps.length} live plugin(s) on the ${HOST_NAME[h]} and what each offers (PluginRead {plugin} reads state; PluginAct {plugin, action, args} runs an action):`, ...ps.map(offersText)].join("\n") : `No plugin mounted on the ${HOST_NAME[h]} declares offers right now.`);
   });
   const tv = vaultFor(d.vault, d.vaults?.(), vaultArg, "");
   if ("error" in tv) return { ok: false, text: `Error: ${tv.error}.` };

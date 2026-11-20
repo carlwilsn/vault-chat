@@ -19,7 +19,7 @@ import { authorize, isDirectLoopback, phoneToken, tailnetIdentity } from "./auth
 import { PAGE_LINK_PREFIX, pageLinkDocument, pageLinkId } from "./pageLink";
 import { appCss } from "./appCss";
 import { liveGateway, liveManifest, liveRevoke, liveToken } from "./liveProxy";
-import { devicePlugins, pluginCatalog } from "./pluginCatalog";
+import { pluginCatalog } from "./pluginCatalog";
 import { offDocument, pluginDesired, supervisorOf, supervisorRoute } from "./supervisor";
 import { coreRoute } from "./coreBundles";
 import { CORE_PART } from "../src/coreBundle";
@@ -507,8 +507,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   }
   // A vault-level signal in this vault's log (/poll).
   const tagged = (ev: Record<string, unknown>) => signal(scope.path, ev);
-  // The old app (the relay) knows only the main vault.
-  const mainOnly = () => json(res, 409, { error: `only on the box's main vault (${cfg.vaultName})` });
 
   // The voice: the call's pipeline and pi (server/voiceBrain.ts).
   if (hooks.brain && (path === "/v1/chat/completions" || path.startsWith("/api/v1/brain/"))) {
@@ -668,11 +666,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // The catalog (src/pluginCatalog.ts): the registered services and this vault's plugins. A page reaches it through
   // the gateway with `catalog` granted; this is the app's and a loopback caller's way in.
   if (path === "/api/v2/plugin/catalog" && method === "GET") return json(res, 200, pluginCatalog(open.path));
-  // The vault plugins a device host mounts (the phone app: phone/src/plugins.ts), with their code.
-  if (path === "/api/v2/plugin/device" && method === "GET") {
-    const out = devicePlugins(open.path, q("device"));
-    return json(res, out.status, out.body);
-  }
   // An app plugin's own state (server/pluginState.ts): plugin.state records the app's windows follow (app/chat-rows' choices).
   if (path === "/api/v2/plugin/app-state" && (method === "GET" || method === "POST")) {
     const out = appPluginStateRoute(vault, method, url.searchParams, method === "POST" ? await jsonBody(req) : null);
@@ -768,11 +761,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       rows.sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0));
       return json(res, 200, { vault: (conversationsSummary(open.path) as { vault: string }).vault, conversations: rows.slice(0, 60) });
     }
-    case "GET /surface": {
-      const id = q("id");
-      if (id && scope.main) void relay("phone:surface", { convId: id }, 4000);
-      return json(res, 200, { ok: true });
-    }
     case "GET /conversation": {
       const n = parseInt(q("n"), 10);
       const c = conversationDetail(vault, q("id"), Number.isFinite(n) ? n : 60, q("full") === "1");
@@ -801,14 +789,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       writeGlobalNotes(vault, b.notes);
       return json(res, 200, { ok: true });
     }
-    case "POST /client-event":
-      if (scope.main) await relay("phone:client-event", await jsonBody(req), 5000);
-      return json(res, 200, { ok: true });
     case "POST /notes/status":
-    case "POST /notes/edit": {
+    case "POST /notes/edit":
+    case "POST /notes/delete": {
       const b = await jsonBody(req);
       if (path.endsWith("/status") && b.status !== "open" && b.status !== "resolved") return json(res, 400, { error: "invalid status" });
-      const r = await noteTool(vault, path.endsWith("/edit") ? "UpdateNote" : b.status === "open" ? "ReopenNote" : "ResolveNote", b);
+      const r = await noteTool(vault, path.endsWith("/edit") ? "UpdateNote" : path.endsWith("/delete") ? "DeleteNote" : b.status === "open" ? "ReopenNote" : "ResolveNote", b);
       return json(res, r.ok ? 200 : 400, { ...r, error: r.ok ? undefined : r.text });
     }
     case "POST /notes/clear-resolved": {
@@ -829,32 +815,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     case "POST /notifications/clear":
       notificationAppend(vault, JSON.stringify({ type: "clear", ts: Date.now() }));
       return json(res, 200, { ok: true });
-    case "POST /decision-record": {
-      // voice_server.rs:1023
-      const b = await jsonBody(req);
-      const answer = String(b.answer ?? "").trim();
-      if (!answer) return json(res, 400, { error: "missing answer or vault" });
-      const ts = Date.now();
-      const id = `dec-${ts.toString(16)}`;
-      const rec: Record<string, unknown> = {
-        id,
-        ts,
-        kind: "ask",
-        title: [...String(b.title ?? "Inline decision")].slice(0, 90).join(""),
-        body: [...String(b.question ?? "")].slice(0, 600).join(""),
-        intention: "Your call · decided in-conversation",
-      };
-      if (typeof b.convId === "string" && b.convId) rec.convId = b.convId;
-      notificationAppend(vault, JSON.stringify(rec));
-      notificationAppend(vault, JSON.stringify({ type: "answered", id, answer: [...answer].slice(0, 200).join(""), ts }));
-      return json(res, 200, { ok: true });
-    }
-    case "GET /schedules":
-      if (!scope.main) return json(res, 200, { schedules: [] });
-      return relayRoute(res, "phone:schedules", {}, 10_000, "app not answering — is a vault open?");
-    case "POST /schedule":
-      if (!scope.main) return mainOnly();
-      return relayRoute(res, "phone:schedule", await jsonBody(req), 10_000, "app not answering");
     case "GET /status":
       // Every vault's runs are its engine's.
       if (hooks.vaultStatus) return json(res, 200, await hooks.vaultStatus(scope));

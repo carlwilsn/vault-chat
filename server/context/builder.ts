@@ -11,7 +11,7 @@ import { threadKindOf } from "../../src/threads";
 import type { ContextConv, RolloverInfo } from "./types";
 import { agentKeyEnvNames } from "../keys";
 
-export const ROLE_PROMPT = `You are vault-chat's agent. You run on Carl's box ("thinkbox"), in his vault's working copy; he talks to you from his laptop, his phone and by voice, and it is one conversation wherever he is.`;
+export const ROLE_PROMPT = `You are vault-chat's agent. You run on Carl's box ("thinkbox"), in his vault's working copy; he talks to you from his laptop, typed or by voice (his phone app has only his alerts and notes).`;
 
 /** Memory: what to save, where, and what wins (reports/Project memory SOTA research.md, section 8). */
 export const MEMORY_RULE = `# Memory
@@ -154,7 +154,7 @@ export function buildDeveloperInstructions(conv: ContextConv, opts: BuildOptions
   if (p) {
     out.push(`# This thread: project ${p.name}\n\nThis is the thread of Carl's project "${p.name}", the folder ${p.folder}. Its AGENTS.md (his instructions) is loaded; its memory (${PROJECT_DIR}/${PROJECT_NOTES_FILE}) comes with your turns, sent again whenever it changes. Other projects' memory is not yours here. ${PROJECTS_RULE}`);
   } else if (kind === "main") {
-    out.push(`# This thread: Main\n\nThis is Main, Carl's one main conversation: his laptop, phone and voice calls all continue it, whatever folder he has open, and it does not end (compaction keeps it bounded; Carl's Clear gives him a fresh view). Do small things inline; hand slow work to the Agent tool in background mode and keep talking. When a result lands while he is on another subject, name the topic it belongs to. Carl's projects (each one's folder) come with your turns; no project's memory is loaded here. ${PROJECTS_RULE}`);
+    out.push(`# This thread: Main\n\nThis is Main, Carl's one main conversation: his laptop and voice calls continue it, whatever folder he has open, and it does not end (compaction keeps it bounded; Carl's Clear gives him a fresh view). Do small things inline; hand slow work to the Agent tool in background mode and keep talking. When a result lands while he is on another subject, name the topic it belongs to. Carl's projects (each one's folder) come with your turns; no project's memory is loaded here. ${PROJECTS_RULE}`);
   } else {
     out.push(`# This thread\n\nA separate chat beside Main. ${PROJECTS_RULE}`);
   }

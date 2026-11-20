@@ -1,7 +1,7 @@
 // @vc-box-only: imported only by server/main.ts; its invoke calls are the box's commands (server/commands/phone.ts,
 // net.ts), which the laptop shell no longer carries.
-// Phone host, on the box (server/main.ts starts it): notes, schedules, the
-// chats list, notifications and Web Push for the /phone PWA, over the same
+// Phone host, on the box (server/main.ts starts it): notes, notifications and
+// Web Push for the /phone PWA (alerts and notes only), over the same
 // reqId relay phone voice uses. Messages, answers and stops never come here —
 // they are the engine's (server/http.ts).
 //
@@ -451,66 +451,6 @@ export async function startPhoneAppHost(): Promise<void> {
     .then(({ pubB64u }) => invoke("phone_set_vapid", { key: pubB64u }))
     .catch((e) => console.warn("[phone-app] vapid init failed:", e));
 
-  // Full schedule list for the phone's drawer — read fresh from disk so the
-  // phone sees the same truth as the SchedulesPanel.
-  await listen<{ reqId: string }>("phone:schedules", async (event) => {
-    try {
-      const s = useStore.getState();
-      if (!s.vaultPath) {
-        respond(event.payload.reqId, { error: "no vault open" });
-        return;
-      }
-      const { readSchedules, recurrenceLabel, shortTimeLabel } = await import("./schedules");
-      const list = await readSchedules(s.vaultPath);
-      respond(event.payload.reqId, {
-        schedules: list.map((sc) => ({
-          id: sc.id,
-          name: sc.name || sc.prompt.split(/\s+/).slice(0, 5).join(" ") || "Schedule",
-          prompt: sc.prompt.slice(0, 200),
-          label: `${recurrenceLabel(sc.recurrence)} · ${shortTimeLabel(sc)}`,
-          enabled: sc.enabled,
-          lastFiredAt: sc.lastFiredAt,
-          quietUnlessAlert: !!sc.quietUnlessAlert,
-          // One-offs are the agent's own self-scheduled wakes (it sets a one-time
-          // Schedule for its next check, which self-destructs after firing).
-          // Those are background plumbing, not something the user monitors — the
-          // phone hides them from the Scheduled list.
-          once: sc.recurrence.kind === "once",
-        })),
-      });
-    } catch (e) {
-      respond(event.payload.reqId, { error: String(e) });
-    }
-  });
-
-  // Toggle / delete a schedule from the phone. Uses the scheduler's own CRUD
-  // so the in-memory loop and the SchedulesPanel stay in sync.
-  await listen<{ reqId: string; action?: string; id?: string; enabled?: boolean }>(
-    "phone:schedule",
-    async (event) => {
-      const { reqId, action, id, enabled } = event.payload;
-      try {
-        const s = useStore.getState();
-        if (!s.vaultPath || !id) {
-          respond(reqId, { error: "no vault open or missing id" });
-          return;
-        }
-        const { toggleSchedule, deleteSchedule } = await import("./schedulerLoop");
-        if (action === "toggle") {
-          await toggleSchedule(s.vaultPath, id, !!enabled);
-          respond(reqId, { ok: true });
-        } else if (action === "delete") {
-          await deleteSchedule(s.vaultPath, id);
-          respond(reqId, { ok: true });
-        } else {
-          respond(reqId, { error: `unknown action ${action}` });
-        }
-      } catch (e) {
-        respond(reqId, { error: String(e) });
-      }
-    },
-  );
-
   // Capture a new note from the phone. Pure text capture (no anchors) — the same
   // shape the desktop's quick-note and the voice CreateNote produce. addNote
   // appends to notes.jsonl and updates the in-memory store, so it shows up on the
@@ -537,23 +477,6 @@ export async function startPhoneAppHost(): Promise<void> {
     } catch (e) {
       respond(reqId, { error: String(e) });
     }
-  });
-
-  // [experience-log] The phone streams UI events (card renders, option taps, send
-  // outcomes, errors) so a bug report is a REPLAY of the real session rather than
-  // a description. Append them to client-events.jsonl. STRICTLY best-effort —
-  // always respond ok, never throw; logging must never affect the app.
-  await listen<{ reqId: string; [k: string]: unknown }>("phone:client-event", async (event) => {
-    const { reqId, ...ev } = event.payload as { reqId: string; [k: string]: unknown };
-    try {
-      const s = useStore.getState();
-      if (s.vaultPath) {
-        await invoke("client_event_append", { vault: s.vaultPath, line: JSON.stringify(ev) }).catch(() => {});
-      }
-    } catch {
-      /* logging must never surface */
-    }
-    respond(reqId, { ok: true });
   });
 
   // Resolve / reopen a note from the phone (swipe-to-resolve). Apply the change
@@ -754,40 +677,6 @@ export async function startPhoneAppHost(): Promise<void> {
         }));
       }
       respond(reqId, { ok: true, cleared });
-    } catch (e) {
-      respond(reqId, { error: String(e) });
-    }
-  });
-
-  // The phone opened a thread — promote it into the recent/Chats list. Mission
-  // and worker threads live on Activity and stay out of recent by default; the
-  // moment the user views one it flips `surfaced` and joins recent so they can
-  // get back to it. Setting it on the conversations list triggers the store's
-  // debounced autosave, which persists + syncs it (so a worker surfaced on the
-  // phone also shows in the desktop's list). No-op for already-surfaced threads
-  // and for normal chats (manual/voice/phone), which are in recent regardless.
-  await listen<{ reqId: string; convId?: string }>("phone:surface", async (event) => {
-    const { reqId, convId } = event.payload;
-    try {
-      const s = useStore.getState();
-      const conv = convId ? s.conversations.find((c) => c.id === convId) : undefined;
-      // Worker/mission threads live on Activity and stay out of recent by
-      // default. Opening one both surfaces it AND bumps lastActivityAt so it
-      // pins to the TOP of recent — matching the desktop's selectConversation,
-      // and the note's ask ("pin that chat to top … instead it disappears").
-      // Bump on every open (not just first surface) so re-opening re-pins.
-      const isWorkerOrMission =
-        !!conv && (conv.source === "worker" || conv.source === "mission");
-      if (isWorkerOrMission) {
-        useStore.setState((st) => ({
-          conversations: st.conversations.map((c) =>
-            c.id === convId
-              ? { ...c, surfaced: true, lastActivityAt: Date.now() }
-              : c,
-          ),
-        }));
-      }
-      respond(reqId, { ok: true });
     } catch (e) {
       respond(reqId, { error: String(e) });
     }

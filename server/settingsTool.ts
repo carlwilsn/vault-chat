@@ -17,7 +17,7 @@ export const settingsToolSpecs = [
     name: SETTINGS_TOOL,
     description:
       "Read or change Carl's app settings, the same ones his Settings, the composer's model picker and the phone's drawer change: theme, model, effort, voice, pushAutomatic, chatSidebar, corePublish. " +
-      "No key: lists every setting with its value, what it takes and who set it. key + value: sets it (value null: back to its default); it shows at once in every open app and on the phone. " +
+      "No key: lists every setting with its value, what it takes and who set it. key + value: sets it (value null: back to its default); it shows at once in every open app. " +
       "Use it when Carl asks for a lighter theme, another model or effort, another voice, automatic pushes on or off. Not for keys or secrets. " +
       "A change that is your own idea, not Carl asking for that setting: draft: true; it goes through the gate first (the box takes every value; a window setting is drawn in the app's hidden copy) and, passed, is set, with a \"Done:\" line in this chat (Undo, or Plugins back on settings-values, undoes it).",
     inputSchema: {

@@ -1,6 +1,6 @@
 // app/chat-rows' kept choices, read from its state (plugin.state records, src/appPluginState.ts): which renderers and
 // translators are off, the one chosen per kind or type, and the renderer options. Pure (no app imports), so every host
-// that draws the chat follows the same records: the laptop (./index.ts followRowPrefs) and the phone (phone/src/plugins.ts).
+// that draws the chat follows the same records: the laptop (./index.ts followRowPrefs).
 
 export const OFF = "off:";
 export const USE = "use:";

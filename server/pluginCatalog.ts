@@ -117,13 +117,3 @@ export function pluginCatalog(vault: string): Catalog {
   plugins.unshift(...vaultCodePlugins(vault).map((c): CatalogPlugin => ({ id: vaultPluginId(c.file), name: c.name, mount: "module", description: c.description || undefined, devices: c.devices, needs: [], refused: [] })));
   return { services: catalogServices(), plugins, app: catalogAppPlugins(appPluginCopies(vault)), ...(truncated ? { truncated: true } : {}) };
 }
-
-/** GET /api/v2/plugin/device?device=phone: the vault plugins whose meta names that surface, with their code (the phone
- *  app mounts them through the same host as the laptop: phone/src/plugins.ts). */
-export function devicePlugins(vault: string, device: string): { status: number; body: unknown } {
-  if (device !== "phone" && device !== "laptop") return { status: 400, body: { error: "device: laptop or phone" } };
-  const plugins = vaultCodeFiles(vault)
-    .filter((c) => c.devices.includes(device))
-    .map((c) => ({ id: vaultPluginId(c.file), name: c.name, code: c.code }));
-  return { status: 200, body: { device, plugins } };
-}

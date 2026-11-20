@@ -1,7 +1,6 @@
 // Track 2: the phone app is a surface Carl or the agent switch off and on live, like a plugin
 // (src/appPlugins.ts SURFACE_PLUGINS, server/surfaces.ts). Off is only a plugin.desired record: /phone serves
-// the one "turned off" line, a push to the phone is dropped, and Show says so instead of sending. On again (a record
-// too), everything comes back. Real HTTP.
+// the one "turned off" line and a push to the phone is dropped. On again (a record too), everything comes back. Real HTTP.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,7 +10,6 @@ import { freePort } from "./helpers";
 import { _resetConvLogs, setFeedVaults } from "../convlog/log";
 import { startHttpServer, type VaultScope } from "../http";
 import { PushGate, resetAttention, type PushOffer } from "../pushGate";
-import { show } from "../show";
 import { appPluginNamed } from "../../src/appPlugins";
 import { catalogAppPlugins } from "../../src/pluginCatalog";
 
@@ -108,13 +106,6 @@ describe("the phone app is a surface that switches off", () => {
     expect(await gate.offer(o)).toMatchObject({ act: "drop", reason: "the phone app is turned off" });
     expect(sent).toEqual([]);
     expect(lines.at(-1)).toContain("the phone app is turned off");
-
-    // Show "phone" says so instead of sending.
-    const emitted: unknown[] = [];
-    const r = await show({ vault: A.path, off: (s) => surfaces.surfaceOff(A.path, s), emit: (ev) => emitted.push(ev) }, { path: "hw/hw4.md", where: "phone" });
-    expect(r.ok).toBe(false);
-    expect(r.text).toContain("Not shown on the phone: The phone app is turned off");
-    expect(emitted).toEqual([]);
 
     expect(tools.pluginTool(A.path, { action: "enable", plugin: "phone app" }).text).toContain("app/phone: on");
     expect(surfaces.surfaceOff(A.path, "phone")).toBeNull();

@@ -391,7 +391,7 @@ test("pane is for the laptop: refused for the phone before anything is sent", as
   const n = sent.length;
   const r = await show(toolDeps(), { path: "hw/hw4.md", where: "phone", pane: "left" });
   assert.equal(r.ok, false);
-  assert.match(r.text, /pane is for the laptop's split screen/);
+  assert.match(r.text, /the phone app has only Carl's alerts and notes/);
   const bad = await Show({ path: "hw/hw4.md", pane: "middle" });
   assert.match(bad.text, /pane is "left" or "right"/);
   assert.equal(sent.length, n);

@@ -9,7 +9,7 @@
 import { piOf } from "./fakePi";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup, makeVault, startServer, sh, waitFor, type Running } from "./helpers";
 import { withPiSessions } from "./fakeSession";
@@ -330,8 +330,8 @@ describe("vault-scoped routes (the real server)", () => {
     expect(Date.now() - t0).toBeLessThan(20_000);
     expect(m.events.some((e: any) => e.conv === "cmain")).toBe(true);
 
-    await post("/decision-record?vault=physics", { answer: "yes", title: "t", question: "q", convId: "cphys" });
-    await waitFor(() => existsSync(join(home, "physics", ".vault-chat", "notifications.jsonl")), 5000);
+    mkdirSync(join(home, "physics", ".vault-chat"), { recursive: true });
+    appendFileSync(join(home, "physics", ".vault-chat", "notifications.jsonl"), JSON.stringify({ id: "n-phys", ts: Date.now(), kind: "info", title: "t", body: "q", convId: "cphys" }) + "\n");
     expect((await (await fetch(srv.base + "/notifications?vault=physics")).json()).notifications.length).toBe(1);
     expect((await (await fetch(srv.base + "/notifications")).json()).notifications.length).toBe(0);
   });
