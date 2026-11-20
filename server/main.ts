@@ -127,6 +127,8 @@ async function main(): Promise<void> {
       changes: () => supervisorOf(cfg.vault).changes(CORE_PART),
     });
   }
+  // The box server's own handovers (server/deploy/vault-chat-update.sh notes each one): box.server.switch records.
+  (await import("./serverSwitches")).startServerSwitches(cfg.stateDir, cfg.vault);
   // The Mac friend channel (server/macFriend.ts): every few hours the box looks whether a release passed every Mac check
   // and soaked 24 h on Carl's laptop with no new app errors, and at most every 7 days points the friend's manifest at it
   // (a pushed tag that .github/workflows/mac-promote.yml turns into latest-mac.json). Box only (Linux + the repo).

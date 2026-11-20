@@ -40,10 +40,24 @@
 #      Also on an up-to-date pass, from the running version. So updater changes ship like
 #      everything else; install.sh is needed once, never again.
 #
+# Box builds first (hot-swap "boxserver-1"): before GitHub is asked, the box looks at accepted main
+# ($SOURCE_REPO's refs/heads/main). The ship gate already built that commit's server
+# ($SHIP_RUNS/<run>/<rev>/dist-server, next to its <rev>-build-server.log); a commit is main only once its
+# gate accepted it. That bundle is copied (never moved) into versions/<rev>, with the commit's phone assets and
+# deploy files, checked by its own build-info, and lands through the same steps 3-6 (idle wait, handover,
+# health within 90 s, switch back, failed/<rev>). GitHub becomes a mirror: a release built from a commit the
+# running box build already contains is skipped, so a failed Windows build no longer holds the box back. No
+# box build there (no repo, the run pruned, VC_UPDATE_BOX_BUILDS=0): GitHub as before.
+# Every handover and every switch back appends one line to server-switches.jsonl; the server that owns the
+# log writes each as a box.server.switch record (server/serverSwitches.ts).
+#
 # Layout under $VC_SERVER_STATE (default ~/.local/state/vault-chat-server):
 #   current -> versions/<ver>          what the systemd unit runs
 #   versions/<ver>/vault-chat-server.mjs, server-version.json, assets/
+#   versions/<rev>/…                    a box build (server-version.json says "source": "box")
 #   failed/<ver>                        versions whose health check failed here: one line, when and why
+#   failed/<rev>                        the same for a box build
+#   server-switches.jsonl               one line per handover / switch back (recorded in the log by the server)
 #   update.lock                         one pass at a time
 #
 # Never reads or touches secrets. Talks to the server over loopback only.
@@ -75,6 +89,15 @@ KEEP_OLD="${VC_UPDATE_KEEP_OLD:-2}"
 # Test hook only: on a filesystem without symlinks (Windows Git Bash without developer
 # mode) `current` becomes a plain file holding the target. Never set on the box.
 FAKE_LINKS="${VC_UPDATE_FAKE_SYMLINKS:-0}"
+# Box builds: accepted main and the gate's runs (see the header). VC_UPDATE_BOX_BUILDS=0 turns them off.
+BOX_BUILDS="${VC_UPDATE_BOX_BUILDS:-1}"
+SOURCE_REPO="${VC_UPDATE_SOURCE_REPO:-$HOME/vc/projects/vault-chat}"
+SHIP_RUNS="${VC_UPDATE_SHIP_RUNS:-$HOME/agent-work/vault-chat/host-ship-runs}"
+# Where a GitHub release's version commit is looked up when the repo does not have it.
+COMMITS_API="${VC_UPDATE_COMMITS_API:-https://api.github.com/repos/$REPO/commits}"
+# What this pass installs: a GitHub release (versions/<ver>) or a box build (versions/<rev>).
+kind=github
+slot=""
 
 BUNDLE=vault-chat-server.mjs
 ASSETS=vault-chat-server-assets.tar.gz
@@ -347,6 +370,8 @@ NODE
 }
 
 record_failure() { # durable private host observation, not a synced card or public write API
+  # Keyed by release version and matched against GitHub releases only: a box build has neither.
+  [ "${kind:-github}" = box ] && return 0
   mkdir -p "$STATE/release-failures"
   node - "$STATE" "$ver" "$expected_rev" <<'NODE'
 const fs = require("fs"), path = require("path"), crypto = require("crypto");
@@ -364,7 +389,26 @@ NODE
 
 # mark_failed <reason>: failed/<ver> holds one line, when and why, so a later pass (and Carl) can tell a broken
 # release from one that failed for another reason. A mark without a reason predates this (see retry_legacy_mark).
-mark_failed() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" > "failed/$ver"; }
+# A box build's mark is failed/<rev> (its slot): every box build of one package.json version shares <ver>.
+mark_failed() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" > "failed/${slot:-$ver}"; }
+
+# note_switch <keep|switch> <to dir> <from dir> <reason>: one line in server-switches.jsonl per handover
+# (keep: a new version took over) and per switch back (switch). The server that owns the log writes each as a
+# box.server.switch record (server/serverSwitches.ts); this file is only the hand-off, never read back here.
+note_switch() {
+  node - "$STATE/server-switches.jsonl" "$1" "$2" "$3" "$4" <<'NODE' || log "could not note the switch in server-switches.jsonl"
+const fs = require("fs"), path = require("path");
+const [file, change, to, from, reason] = process.argv.slice(2);
+const meta = (dir) => {
+  if (!dir) return null;
+  let m = {};
+  try { m = JSON.parse(fs.readFileSync(path.join(path.dirname(file), dir, "server-version.json"), "utf8")); } catch {}
+  return { slot: path.basename(dir), version: typeof m.version === "string" ? m.version : null, rev: typeof m.rev === "string" ? m.rev : null, source: m.source === "box" ? "box" : "github" };
+};
+const line = JSON.stringify({ at: Date.now(), change, by: "auto", to: meta(to), from: meta(from), reason: String(reason || "").slice(0, 300) });
+fs.appendFileSync(file, line + "\n", { mode: 0o600 });
+NODE
+}
 
 # supports_front <dir>: that release's server can run in a slot behind the front (it reads VC_BACKEND_PORT).
 # One from before the front (48c422fb) listens on 8848 itself: started in a slot it only crash-loops on
@@ -401,6 +445,7 @@ fallback_failed_release() {
       else
         outcome="retained v$oldver failed readiness"
       fi
+      [ "$again" = skip ] || note_switch switch "$prev" "$serving" "$why; $outcome"
     fi
   fi
   mark_failed "$why; $outcome"
@@ -458,6 +503,203 @@ refresh_self() {
 tmp="$(mktemp -d "$STATE/.tmp.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
+# What this pass is about, for the log lines: "v0.9.63", or "box build 1a2b3c4d5e6f (v0.7.25)".
+what_runs() { if [ "$kind" = box ]; then echo "box build ${slot:0:12} (v$ver)"; else echo "$ver"; fi; }
+
+# confirm_current: the running version is the one wanted. A current symlink proves only selection, not startup
+# or continuing readiness: the same bounded health check as after a handover, and its switch back (to
+# previous.json) when it fails now. Ends the pass.
+confirm_current() {
+  # A current symlink proves only selection, not startup or continuing readiness.
+  # Reuse the exact bounded HTTP/version/revision check used after installation.
+  expected_rev="$(json_field rev < "$(read_current)/$META")"
+  [[ "$expected_rev" =~ ^[a-f0-9]{40}$ ]] || die "current metadata has no pinned source revision"
+  status=0
+  wait_for_version "$ver" "$HEALTH_WAIT_S" "$expected_rev" || status=$?
+  if [ "$status" = 1 ]; then
+    prev=""
+    if [ -f "$(read_current)/previous.json" ]; then prev="$(json_field previous < "$(read_current)/previous.json")"; fi
+    case "$prev" in versions/*) ;; *) prev="" ;; esac
+    fallback_failed_release "failed actual release readiness while current"
+    exit 1
+  elif [ "$status" != 0 ]; then
+    log "$(what_runs) matches source/version but actual readiness remains pending; not confirmed and not reverted"
+    exit 0
+  fi
+  log "up to date ($(what_runs)) with actual box readiness; physical laptop verification is separate"
+  refresh_self "$(read_current)/deploy"
+  ensure_front || true
+  exit 0
+}
+
+# box_build: accepted main has a server the ship gate built here. Sets bx_rev (main), bx_dir (the gate's checkout
+# of it: dist-server/, src-tauri/assets/, server/deploy/) and bx_ver (its package.json version). The newest run
+# whose build of that commit finished (its <rev>-build-server.log beside it) wins.
+box_build() {
+  [ "$BOX_BUILDS" = 1 ] && [ -d "$SHIP_RUNS" ] && command -v git >/dev/null 2>&1 || return 1
+  bx_rev="$(git -C "$SOURCE_REPO" rev-parse --verify -q 'refs/heads/main^{commit}' 2>/dev/null)" || return 1
+  [[ "$bx_rev" =~ ^[0-9a-f]{40}$ ]] || return 1
+  local d
+  bx_dir=""
+  for d in $(ls -1td "$SHIP_RUNS"/*/"$bx_rev" 2>/dev/null); do
+    [ -f "$(dirname "$d")/$bx_rev-build-server.log" ] && [ -f "$d/dist-server/$BUNDLE" ] && [ -f "$d/dist-server/$META" ] || continue
+    [ "$(json_field rev < "$d/dist-server/$META")" = "$bx_rev" ] || continue
+    bx_dir="$d"; break
+  done
+  [ -n "$bx_dir" ] || return 1
+  bx_ver="$(strip_v "$(json_field version < "$bx_dir/dist-server/$META")")"
+  case "$bx_ver" in *[!0-9A-Za-z.+-]*|"") return 1;; esac
+}
+
+# stage_box_build: copy the gate's bundle (never move it: the run is the gate's), its commit's phone assets and
+# deploy files into $stage, check the executable's own build-info, write server-version.json. 1 (with a reason on
+# stdout) when the build is not what it says.
+stage_box_build() {
+  local id sha a f
+  stage="$tmp/stage"
+  rm -rf "$stage"; mkdir -p "$stage/assets" "$stage/deploy"
+  cp "$bx_dir/dist-server/$BUNDLE" "$stage/$BUNDLE" || { echo "could not copy its bundle"; return 1; }
+  # The executable's own word (build-info: no listener, keys or voice), not the file beside it.
+  id="$(cd "$tmp" && timeout 30 env -i PATH="$PATH" HOME="$tmp" VC_VOICE_PIPELINE=0 node "$stage/$BUNDLE" build-info 2>/dev/null)" \
+    || { echo "its bundle does not answer build-info"; return 1; }
+  [ "$(printf '%s' "$id" | json_field version)" = "$bx_ver" ] && [ "$(printf '%s' "$id" | json_field rev)" = "$bx_rev" ] \
+    || { echo "its bundle says it is something else"; return 1; }
+  sha="$(sha256sum "$stage/$BUNDLE" | awk '{print $1}')"
+  printf '%s  %s\n' "$sha" "$BUNDLE" > "$stage/$BUNDLE.sha256"
+  for a in phone.html phone-sw.js icon-apple-touch.png; do
+    [ -f "$bx_dir/src-tauri/assets/$a" ] && cp "$bx_dir/src-tauri/assets/$a" "$stage/assets/$a"
+  done
+  for f in $DEPLOY_FILES; do
+    [ -f "$bx_dir/server/deploy/$f" ] && cp "$bx_dir/server/deploy/$f" "$stage/deploy/$f"
+  done
+  node -e 'const fs=require("fs");const [f,version,rev,sha256,run]=process.argv.slice(1);fs.writeFileSync(f,JSON.stringify({version,rev,sha256,source:"box",run,promotedAt:new Date().toISOString()},null,2)+"\n")' \
+    "$stage/$META" "$bx_ver" "$bx_rev" "$sha" "$(basename "$(dirname "$bx_dir")")" || { echo "could not write $META"; return 1; }
+}
+
+# built_from <rev>: the main commit a release was built from (a version commit "vX.Y.Z [skip ci]" is built from
+# its parent), or "" when neither the repo nor GitHub can say.
+built_from() {
+  local r="$1" subj
+  [[ "$r" =~ ^[0-9a-f]{40}$ ]] || return 0
+  if subj="$(git -C "$SOURCE_REPO" log -1 --format=%s "$r" 2>/dev/null)"; then
+    if [[ "$subj" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\ \[skip\ ci\]$ ]]; then git -C "$SOURCE_REPO" rev-parse --verify -q "$r^" 2>/dev/null || true
+    else echo "$r"; fi
+    return 0
+  fi
+  curl -fsSL --max-time 30 -H 'Accept: application/vnd.github+json' "$COMMITS_API/$r" 2>/dev/null | node -e '
+    let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+      let c; try { c = JSON.parse(s); } catch { return; }
+      const msg = String(c?.commit?.message ?? "").split("\n")[0], p = c?.parents?.[0]?.sha;
+      if (/^v\d+\.\d+\.\d+ \[skip ci\]$/.test(msg)) { if (/^[0-9a-f]{40}$/.test(p ?? "")) process.stdout.write(p); }
+      else if (c?.sha === process.argv[1]) process.stdout.write(c.sha);
+    });' "$r" || true
+}
+
+land() {
+rm -rf "versions/$slot"
+mv "$stage" "versions/$slot"
+touch "versions/$slot"
+
+# Put the CLI where the server reads it from. The server itself does the work,
+# because it alone knows whether this box can run that binary directly or has to
+# go through its own loader. A box that cannot install it still updates: it keeps
+# whatever CLI it had, and the engine reports what it found.
+if [ -f "versions/$slot/claude-cli/claude" ]; then
+  # Its own status, not a pipeline's: piping through anything here would test
+  # the last command and never fail.
+  if cli_out="$(node "versions/$slot/$BUNDLE" install-claude-cli "versions/$slot/claude-cli/claude" "$STATE" 2>&1)"; then
+    log "$cli_out"
+  else
+    log "WARNING: could not install the Claude Code CLI from $tag ($cli_out) — keeping the one already there"
+  fi
+fi
+
+# ── 3. wait for the server to be idle ───────────────────────────────────────
+if [ -n "$cur" ]; then wait_idle; fi
+
+# ── 4. swap and restart ─────────────────────────────────────────────────────
+prev="$(read_current)"
+node -e 'const fs=require("fs"); const f=process.argv[1];const fd=fs.openSync(f,"w",0o600);try{fs.writeFileSync(fd,JSON.stringify({previous:process.argv[2]}));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}' "versions/$slot/previous.json" "$prev"
+point_current "versions/$slot"
+
+# ── 5. prove it, or roll back ───────────────────────────────────────────────
+status=0
+if front_on; then
+  from="$(active_slot)"
+  if ! handover "$from" "$(other_slot "$from")"; then
+    # It never stood by: the old version served throughout and still does.
+    point_current "$prev"
+    record_failure
+    mark_failed "never stood by beside v$cur; v$cur kept serving"
+    log "$ver failed to start beside $cur; $cur kept serving"
+    exit 1
+  fi
+  wait_for_version "$ver" "$HEALTH_WAIT_S" "$expected_rev" || status=$?
+else
+  wait_for_version "$ver" "$HEALTH_WAIT_S" "$expected_rev" "" restart || status=$?
+fi
+if [ "$status" = 0 ]; then
+  log "now running $(what_runs) with actual box readiness; physical laptop verification is separate"
+  note_switch keep "versions/$slot" "$prev" "handover: healthy within ${HEALTH_WAIT_S}s"
+  refresh_self "versions/$slot/deploy"
+  ensure_front || true
+elif [ "$status" = 2 ]; then
+  # An unsupported/starting voice adapter is UNKNOWN, not proof of failure. Offline laptop is likewise
+  # never a reason to undo source. Keep the installed version and show the pending server/card state.
+  log "$(what_runs) matches source/version but actual readiness remains pending; not confirmed and not reverted"
+  note_switch keep "versions/$slot" "$prev" "handover: serving, readiness still pending"
+  refresh_self "versions/$slot/deploy"
+  ensure_front || true
+else
+  fallback_failed_release "failed actual release readiness after install"
+  exit 1
+fi
+
+# ── 6. keep the two most recent old versions ────────────────────────────────
+keep_cur="$(basename "$(read_current)")"
+n=0
+for d in $(ls -1t versions); do
+  [ "$d" = "$keep_cur" ] && continue
+  n=$(( n + 1 ))
+  if [ "$n" -gt "$KEEP_OLD" ]; then
+    log "removing old version $d"
+    rm -rf "versions/$d"
+  fi
+done
+exit 0
+}
+
+cur="$(strip_v "$(current_version)")"
+cur_dir="$(read_current)"
+cur_rev="" cur_source=github
+if [ -n "$cur_dir" ] && [ -f "$cur_dir/$META" ]; then
+  cur_rev="$(json_field rev < "$cur_dir/$META")"
+  [ "$(json_field source < "$cur_dir/$META")" = box ] && cur_source=box
+fi
+
+# ── 1a. accepted main, built by the ship gate on this box ───────────────────
+if box_build; then
+  if [ -e "failed/$bx_rev" ]; then
+    log "box build ${bx_rev:0:12} failed here before ($(head -c 300 "failed/$bx_rev" | head -n 1); rm $STATE/failed/$bx_rev to retry); asking GitHub"
+  elif [ "$cur_dir" = "versions/$bx_rev" ]; then
+    kind=box; slot="$bx_rev"; ver="$bx_ver"
+    confirm_current
+  elif [ -n "$cur_rev" ] && [ "$(built_from "$cur_rev")" = "$bx_rev" ]; then
+    log "v$cur was built from main ${bx_rev:0:12} already: no box handover"
+  else
+    kind=box; slot="$bx_rev"; ver="$bx_ver"; expected_rev="$bx_rev"
+    if why="$(stage_box_build)"; then
+      stage="$tmp/stage"
+      log "updating ${cur:-<none>} -> $(what_runs), accepted main, built by the ship gate in $bx_dir"
+      land
+    fi
+    mark_failed "box build refused: $why"
+    log "box build ${bx_rev:0:12} refused ($why); asking GitHub"
+    kind=github; slot=""; rm -rf "$tmp/stage"
+  fi
+fi
+
+# ── 1b. GitHub's latest release ─────────────────────────────────────────────
 curl -fsSL --max-time 30 -H 'Accept: application/vnd.github+json' "$API" -o "$tmp/release.json" \
   || die "cannot read the latest release from $API"
 tag="$(json_field tag_name < "$tmp/release.json")"
@@ -470,28 +712,9 @@ if [ -e "failed/$ver" ] && ! retry_legacy_mark; then
   log "skipping $ver: it failed here before ($(head -c 300 "failed/$ver" | head -n 1); rm $STATE/failed/$ver to retry)"
   exit 0
 fi
-cur="$(strip_v "$(current_version)")"
-if [ "$ver" = "$cur" ]; then
-  # A current symlink proves only selection, not startup or continuing readiness.
-  # Reuse the exact bounded HTTP/version/revision check used after installation.
-  expected_rev="$(json_field rev < "$(read_current)/$META")"
-  [[ "$expected_rev" =~ ^[a-f0-9]{40}$ ]] || die "current metadata has no pinned source revision"
-  status=0
-  wait_for_version "$ver" "$HEALTH_WAIT_S" "$expected_rev" || status=$?
-  if [ "$status" = 1 ]; then
-    prev=""
-    if [ -f "versions/$ver/previous.json" ]; then prev="$(json_field previous < "versions/$ver/previous.json")"; fi
-    case "$prev" in versions/*) ;; *) prev="" ;; esac
-    fallback_failed_release "failed actual release readiness while current"
-    exit 1
-  elif [ "$status" != 0 ]; then
-    log "$ver matches source/version but actual readiness remains pending; not confirmed and not reverted"
-    exit 0
-  fi
-  log "up to date ($ver) with actual box readiness; physical laptop verification is separate"
-  refresh_self "$(read_current)/deploy"
-  ensure_front || true
-  exit 0
+if [ "$ver" = "$cur" ] && [ "$cur_source" != box ]; then
+  slot="$ver"
+  confirm_current
 fi
 
 log "updating ${cur:-<none>} -> $ver"
@@ -517,6 +740,16 @@ fetch() {  # fetch <asset name> [optional]
 }
 
 fetch "$META"
+# GitHub is a mirror while a box build runs: a release built from a commit that box build already contains
+# (its version commit's parent, or older) is never installed over it.
+if [ "$cur_source" = box ]; then
+  rel_from="$(built_from "$(json_field rev < "$stage/$META")")"
+  if [ -n "$rel_from" ] && git -C "$SOURCE_REPO" merge-base --is-ancestor "$rel_from" "$cur_rev" 2>/dev/null; then
+    log "v$ver mirrors main ${rel_from:0:12}, which the running box build ${cur_rev:0:12} already contains: not installing it"
+    kind=box; slot="$(basename "$cur_dir")"; ver="$cur"
+    confirm_current
+  fi
+fi
 fetch "$BUNDLE"
 fetch "$BUNDLE.sha256"
 sha_ok "$stage/$BUNDLE" "$stage/$BUNDLE.sha256" \
@@ -559,72 +792,5 @@ if fetch "$CLI" optional; then
   rm -f "$stage/$CLI" "$stage/$CLI.sha256"
 fi
 
-rm -rf "versions/$ver"
-mv "$stage" "versions/$ver"
-touch "versions/$ver"
-
-# Put the CLI where the server reads it from. The server itself does the work,
-# because it alone knows whether this box can run that binary directly or has to
-# go through its own loader. A box that cannot install it still updates: it keeps
-# whatever CLI it had, and the engine reports what it found.
-if [ -f "versions/$ver/claude-cli/claude" ]; then
-  # Its own status, not a pipeline's: piping through anything here would test
-  # the last command and never fail.
-  if cli_out="$(node "versions/$ver/$BUNDLE" install-claude-cli "versions/$ver/claude-cli/claude" "$STATE" 2>&1)"; then
-    log "$cli_out"
-  else
-    log "WARNING: could not install the Claude Code CLI from $tag ($cli_out) — keeping the one already there"
-  fi
-fi
-
-# ── 3. wait for the server to be idle ───────────────────────────────────────
-if [ -n "$cur" ]; then wait_idle; fi
-
-# ── 4. swap and restart ─────────────────────────────────────────────────────
-prev="$(read_current)"
-node -e 'const fs=require("fs"); const f=process.argv[1];const fd=fs.openSync(f,"w",0o600);try{fs.writeFileSync(fd,JSON.stringify({previous:process.argv[2]}));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}' "versions/$ver/previous.json" "$prev"
-point_current "versions/$ver"
-
-# ── 5. prove it, or roll back ───────────────────────────────────────────────
-status=0
-if front_on; then
-  from="$(active_slot)"
-  if ! handover "$from" "$(other_slot "$from")"; then
-    # It never stood by: the old version served throughout and still does.
-    point_current "$prev"
-    record_failure
-    mark_failed "never stood by beside v$cur; v$cur kept serving"
-    log "$ver failed to start beside $cur; $cur kept serving"
-    exit 1
-  fi
-  wait_for_version "$ver" "$HEALTH_WAIT_S" "$expected_rev" || status=$?
-else
-  wait_for_version "$ver" "$HEALTH_WAIT_S" "$expected_rev" "" restart || status=$?
-fi
-if [ "$status" = 0 ]; then
-  log "now running $ver with actual box readiness; physical laptop verification is separate"
-  refresh_self "versions/$ver/deploy"
-  ensure_front || true
-elif [ "$status" = 2 ]; then
-  # An unsupported/starting voice adapter is UNKNOWN, not proof of failure. Offline laptop is likewise
-  # never a reason to undo source. Keep the installed version and show the pending server/card state.
-  log "$ver matches source/version but actual readiness remains pending; not confirmed and not reverted"
-  refresh_self "versions/$ver/deploy"
-  ensure_front || true
-else
-  fallback_failed_release "failed actual release readiness after install"
-  exit 1
-fi
-
-# ── 6. keep the two most recent old versions ────────────────────────────────
-keep_cur="$(basename "$(read_current)")"
-n=0
-for d in $(ls -1t versions); do
-  [ "$d" = "$keep_cur" ] && continue
-  n=$(( n + 1 ))
-  if [ "$n" -gt "$KEEP_OLD" ]; then
-    log "removing old version $d"
-    rm -rf "versions/$d"
-  fi
-done
-exit 0
+slot="$ver"
+land
