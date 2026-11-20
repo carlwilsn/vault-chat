@@ -192,6 +192,7 @@ test("live: places mount the preset; a draft goes through Change ready (Try, Kee
   await act(async () => CR.tryChange("app/preset", v));
   await waitFor("the draft tried", () => /^BA\{"size":2\}app\/nope is not a part this app has: skipped in overlay \(preset "test"\)fallback:preset$/.test(text(box)));
   assert.ok(box.querySelector("[data-preset-skipped]"), "the skipped mount is a visible line");
+  assert.equal(document.documentElement.getAttribute("data-vc-preset"), `${v}:tried`, "the page says which preset it tries (the gate's Drive run waits for it)");
   assert.equal(presetInEffect(vault).builtIn, true, "Try changes nothing on the box");
   assert.match(JSON.stringify(await reach.read("app/preset", "preset")), /"tried":true.*"skipped":\["app\/nope is not a part/);
 

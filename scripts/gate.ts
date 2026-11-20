@@ -92,15 +92,23 @@ async function driveSide(o: RunOpts, steps: Step[], tries?: Record<string, strin
   return body;
 }
 
+/** What the page shows once a tried draft is in effect there: a plugin's draft mount (an app or vault plugin's
+ *  data-vc-copy="draft"), the preset's tried version on the page (src/PluginMount.tsx PlaceMount). */
+export function draftMark(part: string, version: string): string | null {
+  if (part === PRESET_PART) return `html[data-vc-preset="${version}:tried"]`;
+  if (/^app\/[a-z][a-z0-9-]*$/.test(part) || /^\.vault-chat\/plugins\/[^/"]+\.m?js$/i.test(part)) return `[data-vc-plugin="${part}"][data-vc-copy="draft"]`;
+  return null;
+}
+
 /**
- * An app plugin's draft judged in the real laptop app's hidden, read-only Drive copy on Carl's real data (the copy in
- * effect, then a fresh copy running the draft), instead of the preview harness. Null (with why) when that can't be
- * relied on: the laptop is off, busy or refuses, its app knows no tries yet, or the draft's copy never mounted there
- * (not synced yet, or it failed: the harness then judges it).
+ * A plugin's or the preset's draft judged in the real laptop app's hidden, read-only Drive copy on Carl's real data (the
+ * copy in effect, then a fresh copy running the draft), instead of the preview harness. Null (with why) when that can't
+ * be relied on: the laptop is off, busy or refuses, its app knows no tries yet, or the draft never took effect there
+ * (not synced yet, an older core without the mark, or it failed: the harness then judges it).
  */
-export async function judgeOnLaptop(part: string, version: string, o: RunOpts): Promise<{ v: ReturnType<typeof judge> } | { skip: string }> {
-  if (!/^app\/[a-z][a-z0-9-]*$/.test(part)) return { skip: "only app plugins carry a draft mark the Drive copy can see" };
-  const mark = `[data-vc-plugin="${part}"][data-vc-copy="draft"]`;
+export async function judgeOnLaptop(part: string, version: string, o: RunOpts, failText?: RegExp): Promise<{ v: ReturnType<typeof judge> } | { skip: string }> {
+  const mark = draftMark(part, version);
+  if (!mark) return { skip: "no draft mark the Drive copy can show for this part" };
   const live = await driveSide(o, [{ wait: 3000 }]);
   if (live.unavailable || !live.steps) return { skip: live.unavailable ?? live.error ?? "the laptop gave no result" };
   const draft = await driveSide(o, [{ waitFor: mark, timeout: 30_000 }, { wait: 3000 }], { [part]: version });
@@ -108,7 +116,7 @@ export async function judgeOnLaptop(part: string, version: string, o: RunOpts): 
   if (!draft.tries || draft.tries[part] !== version) return { skip: "the laptop's app does not run a gate's tries yet (an older core)" };
   if (!draft.steps || !draft.steps.steps[0]?.ok) return { skip: `the draft's copy never mounted on the laptop (${draft.steps?.steps[0]?.error ?? draft.error ?? "no result"})` };
   const side = (d: DriveSide): Side => ({ errors: d.steps!.errors, text: d.steps!.text.split("\n"), ran: true, typingMs: [] });
-  const v = judge(part, version, side(live), side(draft));
+  const v = judge(part, version, side(live), side(draft), failText);
   v.data = "Carl's real data in the laptop app's hidden Drive copy";
   return { v };
 }
@@ -132,6 +140,16 @@ export async function judgePart(p: ReturnType<typeof partOf>, o: RunOpts): Promi
     const g = presetGate(text);
     const version = versionOf(text);
     if (g.fail.length) return { verdict: "fail", reasons: g.fail, version, what: g.what, runner: "preset" };
+    const merge = (v: { verdict: GateVerdict; reasons: string[] }) => ({
+      verdict: (v.verdict === "fail" ? "fail" : v.verdict === "borderline" || g.seen.length ? "borderline" : "pass") as GateVerdict,
+      reasons: v.verdict === "fail" ? v.reasons : [...g.seen, ...v.reasons.filter((r) => !(g.seen.length && r.startsWith("no new errors")))],
+    });
+    // The real app first (Drive), as for a plugin; the preview harness otherwise.
+    if (!o.data && !o.synthetic && !o.harness) {
+      const d = await judgeOnLaptop(p.part, version, o, PRESET_SKIPPED_RE).catch((e) => ({ skip: String((e as Error)?.message ?? e) }));
+      if ("v" in d) return { ...merge(d.v), version, what: g.what, runner: "preset+ui-drive", data: d.v.data, detail: { textAdded: d.v.textAdded.slice(0, 40), textRemoved: d.v.textRemoved.slice(0, 40) } };
+      console.log(`the real app's Drive copy can't judge it now (${d.skip}): the preview harness does`);
+    }
     const v = await draftCheck({ plugin: p.part, vault: o.vault, data: o.data, synthetic: o.synthetic, scenario: o.scenario, steps: o.steps, keys: o.keys, runs: o.runs, port: o.port, slot: p.slot!, ranBy: "page", failText: PRESET_SKIPPED_RE });
     const verdict: GateVerdict = v.verdict === "fail" ? "fail" : v.verdict === "borderline" || g.seen.length ? "borderline" : "pass";
     const reasons = v.verdict === "fail" ? v.reasons : [...g.seen, ...v.reasons.filter((r) => !(g.seen.length && r.startsWith("no new errors")))];

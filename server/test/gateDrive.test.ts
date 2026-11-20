@@ -40,6 +40,21 @@ describe("the gate's Drive runner", () => {
     expect("v" in bad && bad.v.reasons.join(" ")).toMatch(/errors only with the draft: TypeError: boom/);
   });
 
+  it("a vault plugin's and the preset's drafts too, each waiting for its own mark; a preset that leaves a place 'skipped' fails", async () => {
+    const g = await import("../../scripts/gate.ts");
+    expect(g.draftMark(".vault-chat/plugins/pen.js", "0123abcd")).toBe('[data-vc-plugin=".vault-chat/plugins/pen.js"][data-vc-copy="draft"]');
+    expect(g.draftMark("app/preset", "0123abcd")).toBe('html[data-vc-preset="0123abcd:tried"]');
+    replies = [() => ({ ok: true, tries: null, steps: steps("Notes") }), (b) => ({ ok: true, tries: b.tries, steps: steps("Notes") })];
+    const pen = await g.judgeOnLaptop(".vault-chat/plugins/pen.js", "0123abcd", { vault: "/x/vaults/school2", box });
+    expect("v" in pen && pen.v.verdict).toBe("pass");
+    expect(seen.at(-1).body.tries).toEqual({ ".vault-chat/plugins/pen.js": "0123abcd" });
+    replies = [() => ({ ok: true, tries: null, steps: steps("Notes") }), (b) => ({ ok: true, tries: b.tries, steps: steps('Notes\napp/notes#x is not a part this app has: skipped in overlay (preset "lean")') })];
+    const { PRESET_SKIPPED_RE } = await import("../../src/gateChecks");
+    const lean = await g.judgeOnLaptop("app/preset", "0123abcd", { vault: "/x/vaults/school2", box }, PRESET_SKIPPED_RE);
+    expect("v" in lean && lean.v.verdict).toBe("fail");
+    expect(seen.at(-1).body.steps[0]).toEqual({ waitFor: 'html[data-vc-preset="0123abcd:tried"]', timeout: 30_000 });
+  });
+
   it("hands it to the harness when the laptop is away or busy, its app knows no tries, or the draft never mounted there", async () => {
     replies = [() => ({ unavailable: "Carl is using the laptop" })];
     expect(await run()).toEqual({ skip: "Carl is using the laptop" });
@@ -47,6 +62,6 @@ describe("the gate's Drive runner", () => {
     expect(await run()).toMatchObject({ skip: expect.stringMatching(/does not run a gate's tries/) });
     replies = [() => ({ ok: true, tries: null, steps: steps("a") }), (b) => ({ ok: false, tries: b.tries, steps: steps("a", [], false) })];
     expect(await run()).toMatchObject({ skip: expect.stringMatching(/never mounted on the laptop \(never appeared\)/) });
-    expect(await (await import("../../scripts/gate.ts")).judgeOnLaptop(".vault-chat/plugins/pen.js", "0123abcd", { vault: "/x", box })).toMatchObject({ skip: expect.stringMatching(/only app plugins/) });
+    expect(await (await import("../../scripts/gate.ts")).judgeOnLaptop("box/x", "0123abcd", { vault: "/x", box })).toMatchObject({ skip: expect.stringMatching(/no draft mark/) });
   });
 });

@@ -100,7 +100,7 @@ function One({ p }: { p: VaultPluginFile }) {
       : kept && kept.version === versionOf(code)
         ? (info: { error: string | null }): ReactNode => (info.error ? <KeptFailed plugin={p.id} version={kept.version} why={info.error} /> : null)
         : undefined;
-  return <AppPluginMount key={choice.kind ?? "none"} plugin={info} code={code} fallback={fallback} />;
+  return <AppPluginMount key={choice.kind ?? "none"} plugin={info} code={code} fallback={fallback} copyKind={choice.kind ?? undefined} />;
 }
 
 function DraftFailed({ plugin, version, why }: { plugin: string; version: string; why: string }) {

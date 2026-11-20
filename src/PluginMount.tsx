@@ -106,7 +106,7 @@ export type PluginFallbackInfo = { off: Desired | null; error: string | null; pe
 /** A part of the app that is a plugin: mounted while the supervisor says it runs; stopped, it is gone (nothing left),
  *  or, with a `fallback`, the fallback stands in (also when it fails). Its live copy, when the vault has one, runs
  *  instead of `module` (`part`: the export of the copy that is this mount, as `module` is the built-in one's). */
-export function AppPluginMount({ plugin, module, code, part, props, settings, fallback }: { plugin: Pick<AppPluginInfo, "id" | "name">; module?: unknown; code?: string; part?: string; props?: object; settings?: Record<string, unknown>; fallback?: (info: PluginFallbackInfo) => ReactNode }) {
+export function AppPluginMount({ plugin, module, code, part, props, settings, fallback, copyKind }: { plugin: Pick<AppPluginInfo, "id" | "name">; module?: unknown; code?: string; part?: string; props?: object; settings?: Record<string, unknown>; fallback?: (info: PluginFallbackInfo) => ReactNode; /** A vault plugin's code: which copy of its slot it is (its mount says so: data-vc-copy). */ copyKind?: LiveCopyKind }) {
   // The props the place hands the part (api.props): one channel per mount, set after each of the place's renders.
   const channel = useRef<PropsChannel<unknown> | null>(null);
   if (props !== undefined && !channel.current) channel.current = propsChannel<unknown>(props);
@@ -176,7 +176,7 @@ export function AppPluginMount({ plugin, module, code, part, props, settings, fa
   const onFailed = fallback ? setFailed : undefined;
   return (
     <PluginBoundary path={plugin.id} key={`${plugin.id}#${run}`} onFailed={onFailed}>
-      <Mount html={source} path={plugin.id} onFailed={onFailed} props={propsApi} settings={settingsApi} />
+      <Mount html={source} path={plugin.id} onFailed={onFailed} props={propsApi} settings={settingsApi} copy={copyKind} />
     </PluginBoundary>
   );
 }
@@ -196,7 +196,11 @@ const noRetry = () => {};
  *  `fallback` to the first it mounts). Left empty by the preset, the fallback stands in, as for a plugin turned off.
  *  A mount naming a part this app has none of is skipped with a line saying so. */
 export function PlaceMount({ place, props, fallback }: { place: string; props?: object; fallback?: (info: PluginFallbackInfo) => ReactNode }) {
-  const { preset } = usePreset();
+  const { preset, version, tried } = usePreset();
+  // Which preset is in effect in this window, on the page (the gate's Drive run waits for a tried draft's version).
+  useEffect(() => {
+    document.documentElement.setAttribute("data-vc-preset", tried ? `${version}:tried` : version);
+  }, [version, tried]);
   const mounts = presetPlace(preset, place);
   let first = true;
   const out = mounts.map((m: PresetMount) => {
