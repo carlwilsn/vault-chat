@@ -1,0 +1,383 @@
+{
+ "firstRun": true,
+ "pace": 700,
+ "steps": [
+  {
+   "waitFor": "#root > *",
+   "timeout": 30000,
+   "label": "the window paints"
+  },
+  {
+   "expect": {
+    "health": "server",
+    "timeout": 120000
+   },
+   "label": "the app's own server answers"
+  },
+  {
+   "expect": {
+    "file": ".vault-chat/plugins/tutorial.js",
+    "timeout": 10000
+   },
+   "label": "first run: the new vault got the tutorial plugin"
+  },
+  {
+   "expect": {
+    "file": "Welcome/sample-paper.pdf"
+   },
+   "label": "first run: Welcome/sample-paper.pdf"
+  },
+  {
+   "expect": {
+    "file": "Welcome.md",
+    "contains": "start the tutorial"
+   },
+   "label": "first run: Welcome.md"
+  },
+  {
+   "waitFor": "[data-el=tutorial][data-step=learn]",
+   "timeout": 30000,
+   "label": "tutorial step 1 shows (Learn from a PDF)"
+  },
+  {
+   "waitFor": "[data-el=tutorial][data-step=learn]",
+   "timeout": 30000,
+   "label": "new user: the tutorial waits in the corner"
+  },
+  {
+   "wait": 2000
+  },
+  {
+   "press": "Mod+Shift+B",
+   "label": "sign-in: open the chat, which asks to sign in"
+  },
+  {
+   "waitFor": "[data-el=claude-signin-auto]",
+   "timeout": 30000,
+   "label": "sign-in: the Sign in with Claude button"
+  },
+  {
+   "wait": 2500
+  },
+  {
+   "click": "[data-el=claude-signin-auto]",
+   "label": "sign-in: click Sign in with Claude (claude setup-token; a stand-in prints the token a real Authorize click would)"
+  },
+  {
+   "expect": {
+    "key": "service.claude-code",
+    "sha256": "66ddb547ccfee0479946c96bd74fe889128cf227e239d54d700bb9597146c699",
+    "timeout": 60000
+   },
+   "label": "sign-in: the token is in the macOS Keychain"
+  },
+  {
+   "expect": {
+    "status": {
+     "signedIn": true,
+     "vaultOpen": true,
+     "vault": "$vault"
+    },
+    "timeout": 30000
+   },
+   "label": "sign-in: signed in, the vault open (status.json)"
+  },
+  {
+   "waitFor": "textarea[data-perf-target=composer]:not([disabled])",
+   "timeout": 30000,
+   "label": "sign-in: the chat is ready"
+  },
+  {
+   "expect": {
+    "notText": "sk-ant-"
+   },
+   "label": "sign-in: the token is never on screen"
+  },
+  {
+   "wait": 2500
+  },
+  {
+   "press": "Mod+Shift+B",
+   "label": "sign-in done: the chat closes again"
+  },
+  {
+   "wait": 2500
+  },
+  {
+   "click": "[data-el=tutorial] a[role=link]",
+   "label": "step 1: open the sample paper from the card"
+  },
+  {
+   "waitFor": "[data-file$='/sample-paper.pdf'] canvas",
+   "timeout": 30000,
+   "label": "step 1: the PDF draws"
+  },
+  {
+   "wait": 1500
+  },
+  {
+   "click": "[data-file$='/sample-paper.pdf'] [data-look-scroll]"
+  },
+  {
+   "press": "Mod+L",
+   "label": "step 1: Mod+L on the PDF"
+  },
+  {
+   "waitFor": "textarea[data-perf-target=ctrl-k]",
+   "timeout": 10000
+  },
+  {
+   "type": "What is this map telling me?",
+   "into": "textarea[data-perf-target=ctrl-k]"
+  },
+  {
+   "press": "Enter",
+   "label": "step 1: ask about the map"
+  },
+  {
+   "expect": {
+    "text": "thinning out with distance",
+    "timeout": 120000
+   },
+   "label": "step 1: the answer arrives"
+  },
+  {
+   "waitFor": "[data-el=ask-answer][data-state=done]",
+   "timeout": 30000
+  },
+  {
+   "waitFor": "[data-el=tutorial][data-step=note]",
+   "timeout": 20000,
+   "label": "step 1 passed by itself (the answer names the pump)"
+  },
+  {
+   "click": "textarea[data-perf-target=ctrl-k]"
+  },
+  {
+   "press": "Escape"
+  },
+  {
+   "expect": {
+    "gone": "textarea[data-perf-target=ctrl-k]",
+    "timeout": 5000
+   }
+  },
+  {
+   "press": "Mod+Shift+B",
+   "label": "step 2: show the chat"
+  },
+  {
+   "waitFor": "textarea[data-perf-target=composer]:not([disabled])",
+   "timeout": 30000,
+   "label": "step 2: the composer is ready"
+  },
+  {
+   "click": "textarea[data-perf-target=composer]"
+  },
+  {
+   "type": "Make me a one-page note on this paper and open it next to the PDF.",
+   "into": "textarea[data-perf-target=composer]"
+  },
+  {
+   "press": "Enter",
+   "label": "step 2: ask for the note"
+  },
+  {
+   "expect": {
+    "file": "Welcome/broad-street.md",
+    "contains": "Broad Street pump",
+    "timeout": 120000
+   },
+   "label": "step 2: the agent wrote Welcome/broad-street.md"
+  },
+  {
+   "waitFor": "[data-file$='/broad-street.md']",
+   "timeout": 30000,
+   "label": "step 2: the note opens beside the PDF"
+  },
+  {
+   "expect": {
+    "text": "Wrote Welcome/broad-street.md",
+    "timeout": 60000
+   }
+  },
+  {
+   "waitFor": "[data-el=tutorial][data-step=edit]",
+   "timeout": 20000,
+   "label": "step 2 passed by itself (note + split)"
+  },
+  {
+   "click": "[data-file$='/broad-street.md']",
+   "label": "step 3: into the note"
+  },
+  {
+   "press": "Mod+E",
+   "label": "step 3: edit mode"
+  },
+  {
+   "waitFor": "[data-file$='/broad-street.md'] .cm-content",
+   "timeout": 15000
+  },
+  {
+   "select": "[data-file$='/broad-street.md'] .cm-content",
+   "text": "John Snow mapped every death and where each household drew its water.",
+   "label": "step 3: select a bullet"
+  },
+  {
+   "press": "Mod+K",
+   "label": "step 3: Mod+K"
+  },
+  {
+   "waitFor": "textarea[data-perf-target=ctrl-k]",
+   "timeout": 10000
+  },
+  {
+   "type": "make this shorter",
+   "into": "textarea[data-perf-target=ctrl-k]"
+  },
+  {
+   "press": "Enter"
+  },
+  {
+   "expect": {
+    "text": "Proposed a shorter line",
+    "timeout": 120000
+   }
+  },
+  {
+   "waitFor": "button[title='Accept (Enter)']",
+   "timeout": 30000,
+   "label": "step 3: the edit is proposed in place"
+  },
+  {
+   "wait": 1500
+  },
+  {
+   "click": "button[title='Accept (Enter)']",
+   "label": "step 3: accept"
+  },
+  {
+   "expect": {
+    "file": "Welcome/broad-street.md",
+    "contains": "Snow mapped each death and its water source.",
+    "timeout": 15000
+   },
+   "label": "step 3: the note changed on disk"
+  },
+  {
+   "waitFor": "[data-el=tutorial][data-step=tool]",
+   "timeout": 20000,
+   "label": "step 3 passed by itself"
+  },
+  {
+   "click": "textarea[data-perf-target=composer]"
+  },
+  {
+   "type": "Make me a flashcard tool that quizzes me on my note.",
+   "into": "textarea[data-perf-target=composer]"
+  },
+  {
+   "press": "Enter",
+   "label": "step 4: ask for a tool"
+  },
+  {
+   "expect": {
+    "text": "I knew it",
+    "timeout": 120000
+   }
+  },
+  {
+   "waitFor": "[data-el=flashcards] button[data-card-answer=knew]",
+   "timeout": 30000,
+   "label": "step 4: the flashcards show up live"
+  },
+  {
+   "wait": 1500
+  },
+  {
+   "click": "[data-el=flashcards] button[data-card-answer=knew]",
+   "label": "step 4: answer a card"
+  },
+  {
+   "click": "[data-el=flashcards] button[data-card-answer=not-yet]",
+   "label": "step 4: answer another"
+  },
+  {
+   "waitFor": "[data-el=tutorial][data-step=delete]",
+   "timeout": 20000,
+   "label": "step 4 passed by itself (a new plugin with answers in its state)"
+  },
+  {
+   "expect": {
+    "text": "ask me how you did",
+    "timeout": 60000
+   }
+  },
+  {
+   "click": "[data-tutorial=stories]",
+   "label": "step 5: How Carl uses vault-chat"
+  },
+  {
+   "waitFor": "[data-tutorial=stories-page]",
+   "timeout": 5000
+  },
+  {
+   "expect": {
+    "text": "vault-chat builds vault-chat."
+   }
+  },
+  {
+   "scroll": 400,
+   "in": "[data-el=tutorial]"
+  },
+  {
+   "wait": 2500
+  },
+  {
+   "click": "textarea[data-perf-target=composer]"
+  },
+  {
+   "type": "Delete the tutorial",
+   "into": "textarea[data-perf-target=composer]"
+  },
+  {
+   "press": "Enter",
+   "label": "step 5: ask to delete the tutorial"
+  },
+  {
+   "expect": {
+    "noFile": ".vault-chat/plugins/tutorial.js",
+    "timeout": 120000
+   },
+   "label": "step 5: the tutorial's file is gone"
+  },
+  {
+   "expect": {
+    "gone": "[data-el=tutorial]",
+    "timeout": 20000
+   },
+   "label": "step 5: the tutorial is off the screen"
+  },
+  {
+   "expect": {
+    "file": "Welcome/sample-paper.pdf"
+   },
+   "label": "Welcome/sample-paper.pdf stays"
+  },
+  {
+   "expect": {
+    "file": "Welcome.md"
+   },
+   "label": "Welcome.md stays"
+  },
+  {
+   "expect": {
+    "file": "Welcome/broad-street.md"
+   },
+   "label": "the note stays"
+  },
+  {
+   "wait": 2000
+  }
+ ]
+}
