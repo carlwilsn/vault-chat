@@ -434,7 +434,7 @@ test("the scripts write the same records through the box (app-plugin-live --keep
     assert.deepEqual([seen.at(-1).body.change, seen.at(-1).body.by, seen.at(-1).body.version], ["keep", "gate", v2]);
     const v3 = write("context.draft.js", "bad");
     assert.match((await landVerdict(vault, { ...verdict("fail"), version: v3, reasons: ["errors only with the draft: x"] }, false, box)).text, /^dropped/);
-    assert.match(seen.at(-1).body.reason, /draft check failed: errors only with the draft: x/);
+    assert.match(seen.at(-1).body.reason, /gate failed: errors only with the draft: x/);
     assert.ok(!fs.existsSync(path.join(DIR, "context.draft.js")));
     // Real data by default: without the installed capture helper it says so (and how to opt out), never touching data.
     await assert.rejects(captureRealData(vault, fs.mkdtempSync(path.join(fs.realpathSync(path.dirname(vault)), "vc-cap-")), { error: "no helper" }), /no helper: no real data.*--synthetic/);
@@ -454,6 +454,10 @@ test("box plugins: the box lists their drafts, Try sends the tried version with 
   fs.writeFileSync(path.join(dir, "hello.draft.js"), draft);
   const v = versionOf(draft);
   await CR.refreshBoxDrafts();
+  assert.equal(CR.pendingChanges().some((c) => c.plugin === "box/hello"), false, "nobody sees it before the gate staged it");
+  assert.equal((await supervisorRoute(vault, "POST", new URLSearchParams(), { plugin: "box/hello", change: "stage", version: v, by: "gate" })).status, 200);
+  await loadSupervisor(true);
+  await CR.refreshBoxDrafts();
   const p = CR.pendingChanges().find((c) => c.plugin === "box/hello");
   assert.deepEqual(p, { plugin: "box/hello", name: "Box: hello", what: "the box answers two", version: v, added: false, triable: true });
   assert.deepEqual(CR.boxTries(), {}, "nothing tried yet");
@@ -472,6 +476,8 @@ test("box plugins: the box lists their drafts, Try sends the tried version with 
   const bad = "export function activate(box) { box.route('GET', '/hi', () => { throw new Error('nope'); }); }\n";
   fs.writeFileSync(path.join(dir, "hello.draft.js"), bad);
   const bv = versionOf(bad);
+  assert.equal((await supervisorRoute(vault, "POST", new URLSearchParams(), { plugin: "box/hello", change: "stage", version: bv, by: "gate" })).status, 200);
+  await loadSupervisor(true);
   await CR.refreshBoxDrafts();
   CR.tryChange("box/hello", bv);
   const out = await supervisorRoute(vault, "POST", new URLSearchParams(), { plugin: "box/hello", change: "discard", version: bv, by: "auto", reason: "GET /hi threw: nope" });

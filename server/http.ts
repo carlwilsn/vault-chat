@@ -776,6 +776,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     return json(res, out.status, out.body);
   }
   // The Try redesign (src/changeFlow.ts): a waiting change's "Try it?" line in Main; the native shell's Undo.
+  // The one gate (server/gate.ts): every part's gate results (GET ?part=&version=), and the settings draft's gate (POST).
+  if (path === "/api/v2/gate" && (method === "GET" || method === "POST")) {
+    const { gateRoute } = await import("./gate");
+    const out = await gateRoute(vault, method, url.searchParams, method === "POST" ? await jsonBody(req) : null);
+    return json(res, out.status, out.body);
+  }
   if (path === "/api/v2/changes/offer" && method === "POST") {
     const out = await offerRoute(vault, await jsonBody(req));
     return json(res, out.status, out.body);

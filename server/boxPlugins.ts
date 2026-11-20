@@ -522,6 +522,68 @@ export function _resetBoxPlugins(): void {
   runtimes.clear();
 }
 
+// ---------------------------------------------------------------- the gate's probe (server/gateBox.ts)
+
+/** A copy loaded on its own for the gate: what it registered, and its routes to call. Only ever on a copy of a vault. */
+export type BoxProbe = {
+  version: string;
+  /** It loaded and activated without failing. */
+  ran: boolean;
+  error: string | null;
+  routes: string[];
+  tools: BoxToolSpec[];
+  prompt: string | null;
+  hidden: string[];
+  log: string[];
+  /** One GET or POST of a route of this copy; a throw, a slow answer or a stuck thread is an error (and the copy's). */
+  call(method: "GET" | "POST", sub: string, body?: unknown): Promise<{ status: number; body: unknown; ms: number; error?: string }>;
+  close(): Promise<void>;
+};
+
+/**
+ * Load `code` as box/<name> in its own thread, apart from every running copy (the gate's runner: server/gateBox.ts), on
+ * `vault`, which must be a scratch copy: a failure writes its usual record into that copy's log. `draft`: as a tried
+ * draft (its writes are said, not done).
+ */
+export async function probeBoxCopy(vault: string, name: string, code: string, draft: boolean): Promise<BoxProbe> {
+  const inst = load(vault, name, draft ? "draft" : "live", code, draft);
+  await inst.ready;
+  const errOf = () => (inst.stopped || inst.error ? (inst.error ?? "unloaded") : null);
+  return {
+    version: inst.version,
+    ran: !inst.stopped && !inst.error,
+    get error() {
+      return errOf();
+    },
+    routes: [...inst.routes].sort(),
+    tools: [...inst.tools.values()].map((t) => structuredClone(t.spec)).sort((a, b) => a.name.localeCompare(b.name)),
+    prompt: inst.prompt,
+    hidden: [...inst.hidden].sort(),
+    get log() {
+      return inst.lines.slice();
+    },
+    async call(method, sub, body) {
+      const route = findRoute(inst, method, sub || "/");
+      if (inst.stopped) return { status: 503, body: null, ms: 0, error: `not running: ${errOf()}` };
+      if (!route) return { status: 404, body: null, ms: 0 };
+      const t0 = Date.now();
+      try {
+        const out = await callIn(inst, "route", route, { method, path: sub || "/", query: {}, body: body ?? null, tried: draft } satisfies BoxRequest, null, BOX_HANDLER_MS, `${method} ${sub || "/"}`);
+        const ms = Date.now() - t0;
+        if (ms > BOX_SLOW_MS) return { status: 200, body: null, ms, error: `${method} ${sub || "/"} took ${ms} ms (the limit is ${BOX_SLOW_MS} ms)` };
+        if ("reply" in out) return { status: out.reply.status, body: out.reply.body ?? null, ms };
+        return { status: 200, body: out.value === undefined ? null : out.value, ms };
+      } catch (e) {
+        return { status: 500, body: null, ms: Date.now() - t0, error: `${method} ${sub || "/"} threw: ${msg(e)}` };
+      }
+    },
+    async close() {
+      await unload(inst);
+      inst.kill?.(null);
+    },
+  };
+}
+
 // ---------------------------------------------------------------- requests
 
 export type BoxOut = { status: number; body: unknown };
@@ -613,7 +675,8 @@ export function boxPluginLine(vault: string, name: string): string {
   const pending = draftPending(code, supervisorOf(vault).changes(`box/${name}`));
   const live = p?.live;
   const runs = live ? `${live.kind} ${live.version}${live.stopped ? ` not running (${live.error ?? "unloaded"})` : `, routes ${[...live.routes.keys()].join(", ") || "none"}${live.tools.size ? `, tools ${[...live.tools.keys()].join(", ")}` : ""}${live.prompt ? ", a prompt" : ""}${live.hidden.size ? `, hides ${[...live.hidden].join(", ")}` : ""}`}${!live.stopped && live.error ? `; last error: ${live.error}` : ""}` : "no copy loaded";
-  return `box/${name}: ${runs}${pending ? `; draft ${pending} waits for Carl (\"Try it?\" in Main)` : ""}`;
+  const staged = pending ? supervisorOf(vault).staged(`box/${name}`).some((x) => x.version === pending) : false;
+  return `box/${name}: ${runs}${pending ? (staged ? `; draft ${pending} waits for Carl (\"Try it?\" in Main)` : `; draft ${pending} waits for the gate (Plugins submit)`) : ""}`;
 }
 
 /** The box plugins in a vault's folder. */

@@ -3,32 +3,31 @@
 // (the viewer, a chat, the phone, its own link) follows the record (src/pluginSupervisor.ts); nothing is hard-coded here.
 //
 // A plugin's draft (change by asking, src/pluginDrafts.ts) too: keep / discard / back are the plugin.change records
-// Carl's Change ready writes (the box moves the files), and submit hands a draft to the gate: scripts/draft-check.ts
-// runs it side by side on a copy of real data as a background job and lands it by the verdict (not asked for: a clear
-// pass keeps it, a clear fail drops it, borderline waits for Carl as Change ready; asked for: only a fail drops it).
-import { existsSync, readdirSync, statSync } from "node:fs";
+// Carl's Change ready writes (the box moves the files), and submit hands a draft to the one gate (server/gate.ts,
+// scripts/gate.ts: a plugin's, a box plugin's or the preset's draft as a background job on a copy of real data, the
+// settings draft at once) and lands it by the verdict (not asked for: a clear pass keeps it, a clear fail drops it,
+// borderline waits for Carl's "Try it?"; asked for: only a fail drops it).
+import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
-import { homedir } from "node:os";
 import { pluginIdOf } from "../src/pluginSupervisor";
 import { vaultPluginId, vaultPluginNamed } from "../src/vaultPlugins";
 import { vaultCodePlugins } from "./pluginCatalog";
 import { appPluginNamed } from "../src/appPlugins";
-import { liveCopyAt, liveCopyId } from "../src/appPluginLive";
+import { APP_PLUGIN_LIVE_DIR, liveCopyAt, liveCopyId } from "../src/appPluginLive";
 import { withinVault } from "./phoneData";
 import { pluginDesired, setPluginBudget, setPluginChange, setPluginDesired, supervisorOf } from "./supervisor";
 import { slotCode, slotOf } from "./pluginDrafts";
 import { boxPluginLine, boxPluginNames } from "./boxPlugins";
 import { boxPluginName, draftWhat, versionOf, type DraftSlot } from "../src/pluginDrafts";
-import { gateOutcome, type GateOutcome } from "./changeNotices";
-import { startServiceJob, type JobEnv } from "./engine/jobs";
-import { masterDir } from "./master";
+import { type JobEnv } from "./engine/jobs";
 import { loadConfig } from "./config";
-import { killTree } from "./commands/proc";
 import { SETTINGS_DRAFT_ID, pendingSettingsDraft } from "../src/settingsRecords";
 import { readSettings } from "./settings";
 import { isMigrationId } from "../src/migrations";
 import { migrationChange, migrationDraft } from "./migrations";
+import { PRESET_DRAFT_FILE, parseDraft } from "../src/appPreset";
+import { PRESET_PART, gateLine } from "../src/gateResult";
+import { gateResults, settingsGate, submitGate } from "./gate";
 
 export const PLUGIN_TOOL = "Plugins";
 
@@ -39,9 +38,9 @@ export const pluginToolSpecs = [
     description:
       "Turn a plugin (a vault .html page, or a part of the app that is a plugin: the Notes panel, \"notes\"; or a whole surface: the phone app, \"phone\", the iPad board, \"board\") off or on everywhere it shows (the viewer, chats, the phone, its own link, the app's window), or from a later time (an end date), set its budget, or list what each plugin is. " +
       "Off: it is taken down in every view and the box gives it nothing; on: it comes back. action: status | disable | enable | budget. plugin: its vault path or its file name (\"html-lab\"), or the app part's name (\"notes\"). " +
-      "A plugin's draft (<name>.draft.js next to it): submit hands it to the draft gate (a side-by-side check on a copy of real data, in the background; nothing reaches Carl before it passes; asked: true when Carl asked for it: passed, it applies and this chat gets \"Done: <what>\" with Undo, failed, one plain line here says why; asked: false, the default, for a fix he did not ask for: a clear pass applies it silently, a fail drops it, a change he can see waits as \"<what> — Try it?\" in Main). Put a plain one-line `// @vc-change <what>` in the draft: it is the line Carl reads. keep / discard / back write the record his Try / Keep / Undo do (back: switch to the copy the last keep replaced); plugin \"settings-values\": the settings draft (Settings with draft: true). Never move the draft's files yourself. " +
+      "A plugin's draft (<name>.draft.js next to it), a box plugin's draft or the app's preset draft (plugin \"preset\": .vault-chat/app-plugins/preset.draft.json): submit hands it to the one gate (the candidate checked beside what runs now on a copy of real data, in the background; nothing reaches Carl before it passes; asked: true when Carl asked for it: passed, it applies and this chat gets \"Done: <what>\" with Undo, failed, one plain line here says why; asked: false, the default, for a fix he did not ask for: a clear pass applies it silently, a fail drops it, a change he can see waits as \"<what> — Try it?\" in Main). Put a plain one-line `// @vc-change <what>` in the draft: it is the line Carl reads. keep / discard / back write the record his Try / Keep / Undo do (back: switch to the copy the last keep replaced); plugin \"settings-values\": the settings draft (Settings with draft: true; its gate runs before Carl sees it, submit runs it at once). Never move the draft's files yourself. " +
       "Migration drafts (migrate/<name>): when a change needs a plugin's state in a new shape, write .vault-chat/migrations/<name>.draft.js (an ES module: a `// @vc-change <what>` line, export const plugin = \"app/<name>\" | \"box/<name>\" | a page's vault path, export function migrate(oldState) { return newState } over the whole state object). It waits for Carl as Change ready: Try runs it on a copy of the real state and shows before/after; Keep backs up and writes the new state as new records (old ones stay; Switch back reads them again). You may discard or back it; keep is Carl's. Never rewrite plugin.state records yourself. " +
-      "Box plugins (box/<name>): the box's own behaviour, server-side modules .vault-chat/box-plugins/<name>.js exporting activate(box) (box.route(method, path, handler) at /api/v2/box/<name><path>, box.onRecord, box.every, box.readFile, box.state, box.reply, box.log; box.tool({name, description, inputSchema, handler(args, {tried, conv})}) gives you a tool, joining your tools at your next step; box.prompt(text) (at most 1500 characters) is said to you with your turns under the plugin's id; box.hideTool(name) takes one of your vault-chat tools away while it runs (never Plugins); cleanups undone on unload), loaded live by the running box, no release. Write <name>.draft.js: Main gets a \"Try it?\" line; Try runs it only for his laptop's requests (header x-vc-try: <version> for your own checks over loopback) and a chat he starts while trying it (only there are its tools, prompt and hidden tools in force), a tried draft cannot write state, and one that throws, fails to load, answers slower than 2 s or whose tool throws or runs over 10 s discards itself; a kept one that does so within 24 h switches back by itself.",
+      "Box plugins (box/<name>): the box's own behaviour, server-side modules .vault-chat/box-plugins/<name>.js exporting activate(box) (box.route(method, path, handler) at /api/v2/box/<name><path>, box.onRecord, box.every, box.readFile, box.state, box.reply, box.log; box.tool({name, description, inputSchema, handler(args, {tried, conv})}) gives you a tool, joining your tools at your next step; box.prompt(text) (at most 1500 characters) is said to you with your turns under the plugin's id; box.hideTool(name) takes one of your vault-chat tools away while it runs (never Plugins); cleanups undone on unload), loaded live by the running box, no release. Write <name>.draft.js, then submit it: the gate loads it and the live copy apart from the box on a copy of the vault and compares what they register and answer (a draft that fails to load, throws or is slow is dropped); a change the agent or his pages would see gets a \"Try it?\" line in Main; Try runs it only for his laptop's requests (header x-vc-try: <version> for your own checks over loopback) and a chat he starts while trying it (only there are its tools, prompt and hidden tools in force), a tried draft cannot write state, and one that throws, fails to load, answers slower than 2 s or whose tool throws or runs over 10 s discards itself; a kept one that does so within 24 h switches back by itself.",
     inputSchema: {
       type: "object",
       properties: {
@@ -155,53 +154,35 @@ export function draftSlotOf(vault: string, word: string): DraftSlot | null {
 /** What submit needs from the engine: the vault's jobs, and the conversation that is woken when the gate ends. */
 export type PluginToolCtx = { jobs: JobEnv; convId: string; byCarl: boolean; repo?: string; box?: string };
 
-/** The checkout the gate runs from: the vault-chat project in the vault-chat folder. */
-function gateRepo(): string | null {
-  const m = masterDir();
-  const repo = m ? join(m, "projects", "vault-chat") : null;
-  return repo && existsSync(join(repo, "scripts", "draft-check.ts")) ? repo : null;
+/** The last gate result of a part, in a line (the Plugins tool's status), or "". */
+function lastGateLine(vault: string, part: string): string {
+  const r = gateResults(vault, part)[0];
+  return r ? `\n  last ${gateLine(r)}` : "";
 }
 
-/** Run scripts/draft-check.ts with the gate (it writes the record through this box, by "gate"). */
-function runGate(repo: string, args: string[], signal: AbortSignal, log: (t: string) => void): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const env = { HOME: process.env.HOME ?? homedir(), PATH: process.env.PATH ?? "", LANG: "C.UTF-8", ...(process.env.CHROMIUM ? { CHROMIUM: process.env.CHROMIUM } : {}) };
-    const child = spawn(process.execPath, ["--import", "tsx", "scripts/draft-check.ts", ...args], { cwd: repo, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
-    let out = "";
-    const stop = () => killTree(child.pid);
-    signal.addEventListener("abort", stop, { once: true });
-    for (const s of [child.stdout, child.stderr]) s.on("data", (d) => ((out = (out + d).slice(-20_000)), log(String(d).trimEnd())));
-    child.on("error", (e) => (signal.removeEventListener("abort", stop), reject(e)));
-    // 0 pass, 3 borderline, 1 fail: each a verdict (landed or left by the script); 2: it could not run.
-    child.on("close", (code) => (signal.removeEventListener("abort", stop), code === 0 || code === 1 || code === 3 ? resolve(out.trim()) : reject(new Error(`the draft check could not run (${code}): ${out.slice(-1200)}`))));
-  });
+/** The settings draft (server/settings.ts): keep / discard / back are its records; submit runs its gate here, at once
+ *  (server/gate.ts settingsGate; it also runs before the draft is offered to Carl). */
+async function settingsSubmit(vault: string, a: Record<string, unknown>, ctx?: PluginToolCtx): Promise<{ ok: boolean; text: string }> {
+  const r = await settingsGate(vault, { asked: a.asked === true, land: true, conv: ctx?.convId ?? null, again: true });
+  if ("error" in r) return { ok: false, text: r.error };
+  return { ok: r.result.verdict !== "fail", text: `${r.result.verdict === "fail" ? "The gate dropped the settings draft" : "The settings draft passed the gate and waits for Carl (\"Try it?\" in Main)"}: ${r.result.reasons.join("; ")}` };
 }
 
-/** The gate's machine-readable last line (scripts/draft-check.ts GATE_LINE), or null. */
-export function gateResultOf(out: string): { decision: "keep" | "discard" | "stage"; reasons: string[]; what: string } | null {
-  const line = out.split("\n").reverse().find((l) => l.startsWith("VC-GATE "));
-  if (!line) return null;
-  try {
-    const j = JSON.parse(line.slice("VC-GATE ".length));
-    if (j.decision !== "keep" && j.decision !== "discard" && j.decision !== "stage") return null;
-    return { decision: j.decision, reasons: Array.isArray(j.reasons) ? j.reasons.map(String) : [], what: typeof j.what === "string" ? j.what : "" };
-  } catch {
-    return null;
-  }
-}
-
-/** The settings draft (server/settings.ts): keep / discard / back are its records; there is no gate (Carl decides). */
 function settingsDraftAction(vault: string, action: string, a: Record<string, unknown>): { ok: boolean; text: string } {
-  if (action === "submit") return { ok: false, text: "a settings draft has no gate: it already waits for Carl as a \"Try it?\" line in Main (Settings with draft: true)" };
+  if (action === "submit") return { ok: false, text: "the settings draft's gate answers later: use the Plugins tool (submit runs it in the box)" };
   const d = pendingSettingsDraft(readSettings());
   if (action !== "back" && !d) return { ok: false, text: "no settings draft waits" };
   const w = setPluginChange(vault, { plugin: SETTINGS_DRAFT_ID, change: action === "back" ? "switch" : action, ...(action !== "back" ? { version: d!.version } : {}), ...(a.reason ? { reason: a.reason } : {}) }, "agent");
   return "error" in w ? { ok: false, text: w.error } : { ok: true, text: w.text };
 }
 
+/** The app's preset draft (.vault-chat/app-plugins/preset.draft.json): the same words as a plugin's. */
+const PRESET_SLOT: DraftSlot = { plugin: PRESET_PART, dir: APP_PLUGIN_LIVE_DIR, live: "preset.json", draft: PRESET_DRAFT_FILE, prev: "preset.prev.json" };
+
 function draftAction(vault: string, action: string, a: Record<string, unknown>, ctx?: PluginToolCtx): { ok: boolean; text: string } {
-  if (/^(?:app\/)?settings-values$/i.test(pluginIdOf(String(a.plugin ?? "").trim()))) return settingsDraftAction(vault, action, a);
-  const slot = draftSlotOf(vault, String(a.plugin ?? ""));
+  const word = pluginIdOf(String(a.plugin ?? "").trim());
+  if (/^(?:app\/)?settings-values$/i.test(word)) return settingsDraftAction(vault, action, a);
+  const slot = /^(?:app\/)?preset$/i.test(word) ? PRESET_SLOT : draftSlotOf(vault, String(a.plugin ?? ""));
   if (!slot) return { ok: false, text: `${String(a.plugin ?? "") || "(no plugin)"} has no drafts: name an app plugin with live copies (composer …) or a vault plugin's .js` };
   const draft = slotCode(vault, slot).draft;
   if (action === "back") {
@@ -209,41 +190,16 @@ function draftAction(vault: string, action: string, a: Record<string, unknown>, 
     return "error" in w ? { ok: false, text: w.error } : { ok: true, text: w.text };
   }
   if (draft === undefined) return { ok: false, text: `${slot.plugin} has no draft (${slot.dir}/${slot.draft})` };
-  if (action === "submit" && slot.plugin.startsWith("box/")) return { ok: false, text: `${slot.plugin}: a box plugin's draft has no side-by-side gate yet; it already waits for Carl as a \"Try it?\" line in Main (Try runs it only for his laptop's requests)` };
   const version = versionOf(draft);
   if (action === "keep" || action === "discard") {
     const w = setPluginChange(vault, { plugin: slot.plugin, change: action, version, ...(a.reason ? { reason: a.reason } : {}) }, "agent");
     return "error" in w ? { ok: false, text: w.error } : { ok: true, text: w.text };
   }
-  // submit: the gate, as a background job of this conversation.
+  // submit: the one gate (scripts/gate.ts), as a background job of this conversation.
   if (!ctx) return { ok: false, text: "submit runs as a background job of a conversation: not here" };
-  const repo = ctx.repo ?? gateRepo();
-  if (!repo) return { ok: false, text: "no vault-chat checkout to run the draft check from (VC_MASTER/projects/vault-chat)" };
-  const asked = a.asked === true;
   const box = ctx.box ?? `http://127.0.0.1:${loadConfig().port}`;
-  const args = [slot.plugin, "--vault", vault, asked ? "--asked" : "--unasked", "--box", box, "--conv", ctx.convId];
-  const what = draftWhat(draft);
-  // The chat lines of its end (server/changeNotices.ts): Done + Undo, or why it did not apply, or "Try it?" in Main.
-  const tell = (o: Pick<GateOutcome, "decision" | "reasons"> & { what?: string }) =>
-    void gateOutcome(vault, { plugin: slot.plugin, version, what: o.what ?? what, asked, conv: ctx.convId, decision: o.decision, reasons: o.reasons }).catch(() => {});
-  const r = startServiceJob(ctx.jobs, { name: "draft-gate", command: `Draft check of ${slot.plugin} ${version} (${asked ? "asked for" : "not asked for"})`, conv: ctx.convId, byCarl: ctx.byCarl, timeout: "30m" }, (signal, log) =>
-    runGate(repo, args, signal, log).then(
-      (out) => {
-        const g = gateResultOf(out);
-        tell(g ? { decision: g.decision, reasons: g.reasons, what: g.what } : { decision: null, reasons: ["the draft check gave no result"] });
-        return out;
-      },
-      (e) => {
-        if (!signal.aborted) tell({ decision: null, reasons: [String((e as Error)?.message ?? e)] });
-        throw e;
-      },
-    ),
-  );
-  if (!r.job) return { ok: false, text: r.text };
-  return {
-    ok: true,
-    text: `Checking ${slot.plugin} draft ${version} side by side on a copy of real data (job ${r.job.id}; JobStatus follows it). Nothing reaches Carl until it passes. ${asked ? "Passed: it applies and this chat gets \"Done: …\" with Undo; failed: one plain line here says it didn't apply and why." : "A clear pass applies it silently, a clear fail drops it; if something on screen changes, Main gets \"… — Try it?\"."}`,
-  };
+  const what = slot.plugin === PRESET_PART ? (() => { const d = parseDraft(draft); return "preset" in d ? d.what : ""; })() : draftWhat(draft);
+  return submitGate(vault, { part: slot.plugin, version, what, asked: a.asked === true }, ctx, box);
 }
 
 /** A migration draft (server/migrations.ts, migrate/<name>): the agent may discard it or switch it back; Keep is Carl's
@@ -261,6 +217,7 @@ async function migrationAction(vault: string, action: string, a: Record<string, 
 /** The Plugins tool, with migration drafts (whose words answer later). Never throws. */
 export async function pluginToolAsync(vault: string, a: Record<string, unknown>, ctx?: PluginToolCtx): Promise<{ ok: boolean; text: string }> {
   const action = String(a.action ?? "");
+  if (action === "submit" && /^(?:app\/)?settings-values$/i.test(pluginIdOf(String(a.plugin ?? "").trim()))) return settingsSubmit(vault, a, ctx);
   if ((action === "submit" || action === "keep" || action === "discard" || action === "back") && isMigrationId(pluginIdOf(String(a.plugin ?? "").trim()))) {
     try {
       return await migrationAction(vault, action, a);
@@ -282,7 +239,7 @@ export function pluginTool(vault: string, a: Record<string, unknown>, ctx?: Plug
   }
   const r = resolvePlugin(vault, String(a.plugin ?? ""));
   if ("error" in r) return { ok: false, text: r.error };
-  if (action === "status") return { ok: true, text: r.id.startsWith("box/") ? `${line(vault, r.id)}\n${boxPluginLine(vault, r.id.slice(4))}` : line(vault, r.id) };
+  if (action === "status") return { ok: true, text: (r.id.startsWith("box/") ? `${line(vault, r.id)}\n${boxPluginLine(vault, r.id.slice(4))}` : line(vault, r.id)) + lastGateLine(vault, r.id) };
   if (action === "budget") {
     const w = setPluginBudget(vault, { plugin: r.id, callsPerMinute: a.callsPerMinute ?? null }, "agent");
     return "error" in w ? { ok: false, text: w.error } : { ok: true, text: line(vault, r.id) };

@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { APP_PLUGINS } from "../src/appPlugins";
 import { APP_PLUGIN_LIVE_DIR, LIVE_APP_PLUGINS, appPluginFolder } from "../src/appPluginLive";
 import { PRESET_DRAFT_FILE, PRESET_PLUGIN_ID, parseDraft } from "../src/appPreset";
-import { BOX_PLUGIN_DIR, appSlot, boxPluginName, boxSlot, draftPending, draftStaged, draftWhat, slotFileOf, vaultSlot } from "../src/pluginDrafts";
+import { BOX_PLUGIN_DIR, appSlot, boxPluginName, boxSlot, draftStaged, draftWhat, slotFileOf, vaultSlot } from "../src/pluginDrafts";
 import { SETTINGS_DRAFT_ID, SETTINGS_DRAFT_NAME, describeValues, pendingSettingsDraft, triable as settingsTriable, type SettingsState } from "../src/settingsRecords";
 import { VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES, parseVaultPluginMeta, vaultPluginDevices } from "../src/vaultPlugins";
 import { slotCode } from "./pluginDrafts";
@@ -65,7 +65,8 @@ export function pendingOnBox(vault: string, surface: ChangeSurface = "laptop", s
   }
   const preset = slotCode(vault, { plugin: PRESET_PLUGIN_ID, dir: APP_PLUGIN_LIVE_DIR, live: "preset.json", draft: PRESET_DRAFT_FILE, prev: "preset.prev.json" }).draft;
   if (preset !== undefined) {
-    const v = draftPending({ draft: preset }, sup.changes(PRESET_PLUGIN_ID));
+    // Gated (src/gateResult.ts): only a version the gate staged reaches Carl.
+    const v = draftStaged(PRESET_PLUGIN_ID, { draft: preset }, sup.changes(PRESET_PLUGIN_ID), sup.staged(PRESET_PLUGIN_ID));
     if (v) {
       const d = parseDraft(preset);
       out.push({ plugin: PRESET_PLUGIN_ID, name: PRESET_NAME, what: "preset" in d ? d.what || `the app's preset "${d.preset.name}"` : "", version: v, added: false, tryOn: ["laptop"] });
@@ -110,7 +111,8 @@ export function pendingOnBox(vault: string, surface: ChangeSurface = "laptop", s
     if (!name) continue;
     const slot = boxSlot(name);
     const code = slotCode(vault, slot);
-    const v = code.draft !== undefined ? draftPending(code, sup.changes(slot.plugin)) : null;
+    // Gated (server/gateBox.ts): only a version the gate staged reaches Carl.
+    const v = code.draft !== undefined ? draftStaged(slot.plugin, code, sup.changes(slot.plugin), sup.staged(slot.plugin)) : null;
     if (v) out.push({ plugin: slot.plugin, name: `Box: ${name}`, what: draftWhat(code.draft!), version: v, added: code.live === undefined, tryOn: ["laptop"] });
   }
   // The app's core (server/coreBundles.ts): the newest bundle the box built from main, one for the box (the main
@@ -133,6 +135,15 @@ export async function offerRoute(vault: string, body: Record<string, unknown> | 
   const version = typeof body?.version === "string" ? body.version : "";
   const c = pendingOnBox(vault).find((p) => p.plugin === plugin && p.version === version);
   if (!c) return { status: 404, body: { error: "no such change waits" } };
+  if (c.plugin === SETTINGS_DRAFT_ID) {
+    // The settings draft is gated here, before Carl sees it (server/gate.ts settingsGate): a fail is dropped by "gate",
+    // a pass gets its "Try it?" line from the gate's own end.
+    const { settingsGate } = await import("./gate");
+    const g = await settingsGate(vault, { land: true, version: c.version });
+    if ("error" in g) return { status: 409, body: { error: g.error } };
+    if (g.result.decision === "discard") return { status: 409, body: { error: `the gate dropped it: ${g.result.reasons.join("; ")}` } };
+    if (g.fresh) return { status: 200, body: { ok: true } };
+  }
   const { offerChange } = await import("./changeNotices");
   await offerChange(vault, { plugin: c.plugin, version: c.version, what: c.what, name: c.name });
   return { status: 200, body: { ok: true } };

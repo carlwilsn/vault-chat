@@ -156,6 +156,8 @@ export function boot(base: Base): void {
   if (tried && !isPopout && tried.includes("@")) {
     const at = tried.lastIndexOf("@");
     localStorage.setItem(`vc.tryDraft:${vault}`, JSON.stringify({ [tried.slice(0, at)]: tried.slice(at + 1) }));
+    // Tried in this run (src/changeReady.ts dropTriesFromBefore drops a try older than the app's start).
+    localStorage.setItem(`vc.tryBoot:${vault}`, String(Date.now()));
   }
   seedVault(vault, base, sc, now());
   setLlmConfig(sc.llm ?? {});

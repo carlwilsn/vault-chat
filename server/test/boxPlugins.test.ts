@@ -109,7 +109,9 @@ describe("box plugins", () => {
   it("a draft waits for Carl and runs only for the requests that try it, without writing; Keep lands it, Switch back undoes it", async () => {
     writeFileSync(file("hello.draft.js"), plugin("two"));
     const v = versionOf(plugin("two"));
-    // Change ready lists it on every surface (Try on the laptop only).
+    // Nobody sees it before the gate staged it (server/gate.ts); then Change ready lists it on every surface (Try on the laptop only).
+    expect((await get("/api/v2/changes?surface=phone")).json.changes.some((c: { plugin: string }) => c.plugin === "box/hello")).toBe(false);
+    expect((await post("/api/v2/supervisor", { plugin: "box/hello", change: "stage", version: v, by: "gate" })).status).toBe(200);
     const ch = await get("/api/v2/changes?surface=phone");
     expect(ch.json.changes).toContainEqual(expect.objectContaining({ plugin: "box/hello", name: "Box: hello", what: "two", version: v, added: false, tryOn: ["laptop"] }));
     // Everyone else still gets the live copy; the trying window gets the draft.

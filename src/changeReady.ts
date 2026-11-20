@@ -41,7 +41,7 @@ import { isMigrationId, summaryLine, type MigrationSummary } from "./migrations"
 import { CORE_NAME, CORE_PART, coreCard, coreChangesSince, type CoreCandidate, type CoreCommit, type CoreLook } from "./coreBundle";
 import { provideCoreTrying } from "./coreFollow";
 import { UNDO_CHORD, plainWhy } from "./changeFlow";
-import { BUILT_IN, KEEP_TYPING_MS, KEEP_WATCH_MS, TRY_SLOW_MS, draftPending, draftStaged, draftWhat, landing, slowMedian, watchedKeep, type ChangeRecord, type SlotCode } from "./pluginDrafts";
+import { BUILT_IN, KEEP_TYPING_MS, KEEP_WATCH_MS, TRY_SLOW_MS, draftStaged, draftWhat, landing, slowMedian, watchedKeep, type ChangeRecord, type SlotCode } from "./pluginDrafts";
 
 export const CHANGES_PLUGIN = { id: "app/changes", name: "Changes" } as const;
 /** What Carl calls the app's preset in the notice. */
@@ -405,7 +405,7 @@ export function pendingChanges(all: LiveCopies = liveCopiesNow(), slots: readonl
   // The app's preset (src/appPreset.ts): its draft file waits the same way.
   const preset = all[PRESET_DRAFT_FILE];
   if (preset !== undefined) {
-    const v = draftPending({ draft: preset }, supervisorChangesNow(PRESET_PLUGIN_ID));
+    const v = draftStaged(PRESET_PLUGIN_ID, { draft: preset }, supervisorChangesNow(PRESET_PLUGIN_ID), supervisorStagedNow(PRESET_PLUGIN_ID));
     if (v) {
       const d = parseDraft(preset);
       out.push({ plugin: PRESET_PLUGIN_ID, name: PRESET_NAME, what: "preset" in d ? d.what || `the app's preset "${d.preset.name}"` : "", version: v, added: false, triable: true });

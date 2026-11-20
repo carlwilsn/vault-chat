@@ -257,6 +257,33 @@ export function settingsChange(change: unknown, version: unknown, by: string, re
   }
 }
 
+/**
+ * The settings gate (src/gateResult.ts, kind settings): the waiting draft (or the one named) judged before Carl sees it.
+ * fail: a value the box does not take now (the same checks a set makes: a model this engine runs …), a draft already
+ * decided or replaced, or one that changes nothing any more; borderline: it changes something Carl sees (a window
+ * setting); pass: only the box's settings. Pure reading: nothing is written.
+ */
+export function settingsDraftGate(version?: string | null, log: ConvLog | null = mainLog?.() ?? null): { version: string; what: string; verdict: "pass" | "borderline" | "fail"; reasons: string[] } | { error: string } {
+  if (!log) return { error: "the settings log is not open yet" };
+  const st = folded(log).state;
+  const waiting = pendingSettingsDraft(st);
+  const d = version ? st.drafts.find((x) => x.version === version) : waiting;
+  if (!d) return { error: version ? `no settings draft ${String(version).slice(0, 20)}` : "no settings draft waits" };
+  const reasons: string[] = [];
+  if (waiting?.version !== d.version) reasons.push(st.changes.some((c) => c.version === d.version && c.change !== "switch") ? "it was already decided" : "a newer settings draft replaced it");
+  for (const [k, x] of Object.entries(d.values)) {
+    const bad = settingProblem(k, x) ?? (x !== null ? (checks.get(k as SettingKey)?.(x) ?? null) : null);
+    if (bad) reasons.push(bad);
+  }
+  const changes = SETTING_KEYS.filter((k) => k in d.values && effective(k, d.values[k]) !== st.values[k]);
+  if (!changes.length) reasons.push(`it changes nothing: ${describeValues(d.values)} already`);
+  if (reasons.length) return { version: d.version, what: d.what, verdict: "fail", reasons };
+  const seen = changes.filter((k) => SETTINGS[k].applies === "window");
+  return seen.length
+    ? { version: d.version, what: d.what, verdict: "borderline", reasons: [`every value is one the box takes; Carl sees ${seen.join(", ")} change`] }
+    : { version: d.version, what: d.what, verdict: "pass", reasons: ["every value is one the box takes; only the box's settings change"] };
+}
+
 type Storage = { getItem(k: string): string | null; removeItem(k: string): void };
 
 /**

@@ -371,13 +371,13 @@ describe("the supervisor", () => {
     expect(tools.pluginTool(A.path, { action: "keep", plugin: "chats" }).text).toContain("has no draft");
     expect(tools.pluginTool(A.path, { action: "keep", plugin: "pages/other.html" }).ok).toBe(false);
 
-    // submit: the gate (scripts/draft-check.ts --unasked, landing through this box) as a background job of the conversation.
+    // submit: the one gate (scripts/gate.ts --unasked, landing through this box) as a background job of the conversation.
     writeFileSync(join(dir, "chats.draft.js"), head("speed"));
     expect(tools.pluginTool(A.path, { action: "submit", plugin: "chats" }).text).toContain("background job");
     const repo = join(home, "repo");
     mkdirSync(join(repo, "scripts"), { recursive: true });
     symlinkSync(join(process.cwd(), "node_modules"), join(repo, "node_modules"));
-    writeFileSync(join(repo, "scripts", "draft-check.ts"), 'console.log("gate " + process.argv.slice(2).join(" "));\n');
+    writeFileSync(join(repo, "scripts", "gate.ts"), 'console.log("gate " + process.argv.slice(2).join(" "));\n');
     const logDir = join(home, "jobs");
     mkdirSync(logDir, { recursive: true });
     const jobs = { logDir, wrap: null, env: {}, exec: () => ({ status: 1, stdout: "", stderr: "no systemd here" }) };

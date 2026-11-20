@@ -178,6 +178,12 @@ test("live: places mount the preset; a draft goes through Change ready (Try, Kee
   fs.writeFileSync(path.join(DIR, "preset.draft.json"), body);
   const v = versionOf(body);
   await act(async () => void (await refreshLiveCopies()));
+  assert.deepEqual(CR.pendingChanges(), [], "nobody sees it before the gate staged it (scripts/gate.ts)");
+  const stage = async (version: string) => {
+    assert.equal((await supervisorRoute(vault, "POST", new URLSearchParams(), { plugin: "app/preset", change: "stage", version, by: "gate" })).status, 200);
+    await act(async () => void (await loadSupervisor(true)));
+  };
+  await stage(v);
   assert.deepEqual(CR.pendingChanges().map((p) => [p.plugin, p.what, p.version]), [["app/preset", "B and A over the app", v]], "Change ready lists it");
   assert.doesNotMatch(text(box), /A|B/, "a draft runs nowhere by itself");
   assert.match(JSON.stringify(await reach.read("app/preset", "draft")), new RegExp(`"version":"${v}","trying":false,"name":"test"`));
@@ -217,6 +223,7 @@ test("live: places mount the preset; a draft goes through Change ready (Try, Kee
   fs.writeFileSync(path.join(DIR, "preset.draft.json"), badBody);
   await act(async () => void (await refreshLiveCopies()));
   const bv = versionOf(badBody);
+  await stage(bv); // the gate refuses it (src/gateChecks.ts); Try's own check is the second line of defence
   assert.equal(CR.pendingChanges()[0]?.version, bv);
   await act(async () => CR.tryChange("app/preset", bv));
   await waitFor("auto-discarded", () => CR.lastOutcome()?.text.startsWith("Discarded by itself: not a preset: mounts[0].place") === true);

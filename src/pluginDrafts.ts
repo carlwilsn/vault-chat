@@ -60,9 +60,10 @@ export function stagedOf(rec: { seq: number; at?: number; type?: unknown; signal
   return { seq: rec.seq, plugin: s.plugin, version: s.version, at: Number(s.at ?? rec.at) || 0, by: typeof s.by === "string" ? s.by : null, what: typeof s.what === "string" ? s.what : null, conv: typeof s.conv === "string" ? s.conv : null };
 }
 
-/** The plugins whose drafts go through the gate before Carl sees them: app plugins with live copies and vault plugins
- *  (box plugins, migrations, the preset, the settings and the core have no gate). */
-export const gated = (plugin: string): boolean => (plugin.startsWith("app/") && plugin !== "app/core" && plugin !== "app/preset" && plugin !== "app/settings-values") || plugin.startsWith(".vault-chat/plugins/");
+/** The plugins whose drafts go through the gate (src/gateResult.ts, scripts/gate.ts) before Carl sees them: app plugins
+ *  with live copies, vault plugins, box plugins and the app's preset. The settings draft is gated when it is offered
+ *  (server/changesPending.ts offerRoute); migrations and the core are not gated yet. */
+export const gated = (plugin: string): boolean => (plugin.startsWith("app/") && plugin !== "app/core" && plugin !== "app/settings-values") || plugin.startsWith(".vault-chat/plugins/") || plugin.startsWith("box/");
 
 /** Whether the slot's draft reaches Carl: it waits (draftPending) and, for a gated plugin, the gate staged this version. */
 export function draftStaged(plugin: string, slot: SlotCode, changes: readonly ChangeRecord[], staged: readonly StagedRecord[]): string | null {

@@ -48,7 +48,7 @@ const { _resetConvLogs, setFeedVaults } = await import("../../server/convlog/log
 const { supervisorRoute, supervisorOf } = await import("../../server/supervisor.ts");
 const { changesRoute, pendingOnBox, undoLastRoute } = await import("../../server/changesPending.ts");
 const N = await import("../../server/changeNotices.ts");
-const { gateResultOf } = await import("../../server/supervisorTools.ts");
+const { gateLineOf } = await import("../../src/gateResult.ts");
 _resetConvLogs();
 setFeedVaults(vault, () => [vault]);
 const lines: { conv: string; kind: string; text: string; level?: string; offer?: string; plugin: string; version: string }[] = [];
@@ -148,8 +148,11 @@ test("the gate: asked for applies once passed (Done + Undo in the chat that aske
   const v = (verdict: "pass" | "borderline" | "fail") => ({ verdict, reasons: ["x"] });
   assert.deepEqual([gateDecision(v("pass"), true).change, gateDecision(v("borderline"), true).change, gateDecision(v("fail"), true).change], ["keep", "keep", "discard"]);
   assert.deepEqual([gateDecision(v("pass"), false).change, gateDecision(v("borderline"), false).change, gateDecision(v("fail"), false).change], ["keep", "stage", "discard"]);
-  assert.deepEqual(gateResultOf('checking\nVC-GATE {"plugin":"p","version":"12345678","what":"w","decision":"keep","verdict":"pass","reasons":["fine"]}\n'), { decision: "keep", reasons: ["fine"], what: "w" });
-  assert.equal(gateResultOf("PASS\nno line"), null);
+  assert.deepEqual(
+    (({ decision, reasons, what }) => ({ decision, reasons, what }))(gateLineOf('checking\nVC-GATE {"plugin":"app/notes","version":"12345678","what":"w","decision":"keep","verdict":"pass","reasons":["fine"]}\n')!),
+    { decision: "keep", reasons: ["fine"], what: "w" },
+  );
+  assert.equal(gateLineOf("PASS\nno line"), null);
 
   lines.length = 0;
   logs.length = 0;
