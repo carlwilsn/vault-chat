@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ABI_FILE, abiText, commandSignatures, shellAbi } from "../../scripts/shell-abi";
 import { needsOf } from "../../scripts/core-publish";
-import { CORE_BOX_API, manifestProblem, manifestText, missingNeeds, nextCoreStep } from "../../src/coreBundle";
+import { CORE_BOX_API, manifestProblem, manifestText, missingNeeds, nextCoreStep, scanNeeds } from "../../src/coreBundle";
 
 const repo = join(__dirname, "..", "..");
 
@@ -58,5 +58,13 @@ fn set_bg(state: tauri::State<'_, RunInBackground>, window: tauri::WebviewWindow
     expect(manifestProblem({ ...m, needs: { ...m.needs, abi: { app_ready: "nope" } } })).toBe("needs: a bad abi");
     const old = { ...m, needs: { commands: ["app_ready"], plugins: [], boxApi: 1 } };
     expect(JSON.parse(manifestText(old)).needs).not.toHaveProperty("abi");
+  });
+
+  it("box-only sources (the phone host, run by the box with its own commands) are not the bundle's needs", () => {
+    expect(scanNeeds([`// @vc-box-only: the box's\ninvoke("phone_broadcast", {})`, `invoke("read_text_file")`]).commands).toEqual(["read_text_file"]);
+    expect(readFileSync(join(repo, "src", "phoneApp.ts"), "utf8")).toMatch(/^\/\/ @vc-box-only/m);
+    // The embedded phone server left the shell (the box hosts the phone): none of its commands is registered.
+    const abi = shellAbi(repo);
+    for (const c of ["voice_server_start", "phone_broadcast", "voice_tool_respond", "notification_add", "push_post", "agent_audio_play"]) expect(abi).not.toHaveProperty(c);
   });
 });

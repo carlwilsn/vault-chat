@@ -4,7 +4,6 @@ mod claude_signin;
 mod first_run;
 mod first_run_tutorial;
 mod local_server;
-mod voice_server;
 mod boot_watch;
 mod agent_projects;
 mod box_sync;
@@ -651,22 +650,6 @@ pub(crate) fn conversation_tombstones_path(vault: &str) -> std::path::PathBuf {
         .join("conversations-deleted.jsonl")
 }
 
-/// The set of tombstoned ids, as sanitized file STEMS (what both readers key
-/// their directory scans on).
-pub(crate) fn conversation_tombstone_stems(vault: &str) -> std::collections::HashSet<String> {
-    let mut out = std::collections::HashSet::new();
-    if let Ok(raw) = std::fs::read_to_string(conversation_tombstones_path(vault)) {
-        for line in raw.lines() {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
-                    out.insert(conversation_file_stem(id));
-                }
-            }
-        }
-    }
-    out
-}
-
 /// Explicitly delete one conversation: tombstone first (so every machine learns
 /// of the deletion through sync), then remove the local file.
 #[tauri::command]
@@ -703,101 +686,6 @@ async fn conversation_delete(vault: String, id: String) -> Result<(), String> {
     })
     .await
     .map_err(|e| e.to_string())?
-}
-
-/// Reassemble one conversation JSON string from a per-conversation `.jsonl`
-/// body: a `meta` line (the conversation object minus `messages`) plus one line
-/// per message. This append-only line layout is what lets `merge=union` resolve
-/// two machines editing the same conversation losslessly — each machine's new
-/// message is its own line, so the union keeps both instead of conflicting.
-///
-/// On read we keep EVERY message line in order — we never de-dup by content,
-/// because real conversations legitimately contain byte-identical messages
-/// (repeated short replies, identical tool results); content-dedup would delete
-/// those. A union can at worst leave a rare duplicate line, which is a cosmetic
-/// double, not data loss — always the safer side to err on. If several `meta`
-/// lines survived a union we keep the freshest by `lastActivityAt`.
-pub(crate) fn reconstruct_conversation(contents: &str) -> Option<String> {
-    let mut meta: Option<serde_json::Value> = None;
-    let mut meta_activity: i64 = i64::MIN;
-    let mut messages: Vec<serde_json::Value> = Vec::new();
-    for line in contents.lines() {
-        let t = line.trim();
-        if t.is_empty() {
-            continue;
-        }
-        let v: serde_json::Value = match serde_json::from_str(t) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        // Classify by `id` FIRST: a conversation's meta line always carries the
-        // conversation id, and a ChatMessage line never has a top-level `id`.
-        // The old role-first order misclassified SUPERVISOR conversations —
-        // their meta line carries `role:"supervisor"` (the conversation-level
-        // role field) — as messages, so the whole file reconstructed to None:
-        // every phone cockpit chat was invisible to the drawer and /conversation,
-        // and (pre-tombstones) a restart would drop it from memory and the old
-        // delete-by-omission sweep then erased the file itself.
-        if v.get("id").is_some() {
-            // A meta line. If a union left more than one, pick a winner. Terminal
-            // state (a completed / killed mission) is MONOTONIC: once a mission is
-            // DONE/KILLED it must never be resurrected by a staler RUNNING line —
-            // even one with a NEWER lastActivityAt, because a stray post-completion
-            // wake (a double-fire, a not-yet-cancelled heartbeat) re-stamps RUNNING
-            // with a fresh timestamp and would otherwise win the freshness race and
-            // put a finished mission back on the Activity board. So a terminal meta
-            // always beats a non-terminal one; between two of the same kind the
-            // freshest lastActivityAt wins. This is the tombstone rule (see
-            // conversation/schedule tombstones) applied to mission completion.
-            let act = v.get("lastActivityAt").and_then(|x| x.as_i64()).unwrap_or(0);
-            let cand_terminal = is_terminal_meta(&v);
-            let take = match &meta {
-                None => true,
-                Some(cur) => {
-                    let cur_terminal = is_terminal_meta(cur);
-                    if cand_terminal != cur_terminal {
-                        cand_terminal // the terminal line wins regardless of freshness
-                    } else {
-                        act >= meta_activity
-                    }
-                }
-            };
-            if take {
-                meta_activity = act;
-                meta = Some(v);
-            }
-        } else if v.get("role").is_some() {
-            // Collapse a message line byte-identical to the immediately-preceding
-            // SAME-ROLE line: that is the union-merge / double-append artifact
-            // (the 223 duplicate lines on disk), never a legitimate repeat — real
-            // repeats ("?", "...", "Thank you.") are always assistant-separated,
-            // so adjacent same-role twins are only ever an accident.
-            let is_twin = messages.last().map_or(false, |prev| {
-                prev.get("role") == v.get("role")
-                    && serde_json::to_string(prev).ok() == serde_json::to_string(&v).ok()
-            });
-            if !is_twin {
-                messages.push(v);
-            }
-        }
-    }
-    let mut meta = meta?;
-    if let Some(obj) = meta.as_object_mut() {
-        obj.insert("messages".to_string(), serde_json::Value::Array(messages));
-    }
-    serde_json::to_string(&meta).ok()
-}
-
-/// A conversation meta line is "terminal" once its mission has finished:
-/// `completedAt` stamped, or `missionState` DONE/KILLED. Terminal state is
-/// monotonic across a union merge — see the pick logic in
-/// `reconstruct_conversation` — so a completed mission never reappears.
-fn is_terminal_meta(v: &serde_json::Value) -> bool {
-    v.get("completedAt").map_or(false, |x| !x.is_null())
-        || matches!(
-            v.get("missionState").and_then(|x| x.as_str()),
-            Some("DONE") | Some("KILLED")
-        )
 }
 
 /// The set of tombstoned schedule ids (deleted on some machine). Every reader
@@ -5359,95 +5247,6 @@ mod sync_role_tests {
     }
 }
 
-#[cfg(test)]
-mod conversation_jsonl_tests {
-    use super::reconstruct_conversation;
-
-    #[test]
-    fn keeps_every_message_and_picks_fresh_meta() {
-        // Two "hi" messages — which is a legitimately repeated message, NOT to be
-        // collapsed (we can't tell a real repeat from a union artifact, so we
-        // keep both: never lose real data). An older meta line lingers and must
-        // lose to the fresher one.
-        let body = "{\"id\":\"abc\",\"title\":\"T\",\"lastActivityAt\":100}\n\
-                    {\"role\":\"user\",\"content\":\"hi\"}\n\
-                    {\"role\":\"assistant\",\"content\":\"hello\"}\n\
-                    {\"role\":\"user\",\"content\":\"hi\"}\n\
-                    {\"id\":\"abc\",\"title\":\"T-old\",\"lastActivityAt\":50}\n";
-        let out = reconstruct_conversation(body).expect("reconstruct");
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v.get("title").and_then(|x| x.as_str()), Some("T")); // fresh meta wins
-        let msgs = v.get("messages").unwrap().as_array().unwrap();
-        assert_eq!(msgs.len(), 3); // every message kept — no content de-dup
-    }
-
-    #[test]
-    fn both_machines_messages_survive_a_union() {
-        // The whole point: two machines each appended a distinct message to the
-        // same conversation. A union keeps both lines; neither is lost.
-        let body = "{\"id\":\"x\",\"lastActivityAt\":10}\n\
-                    {\"role\":\"user\",\"content\":\"shared\"}\n\
-                    {\"role\":\"assistant\",\"content\":\"from-box\"}\n\
-                    {\"role\":\"assistant\",\"content\":\"from-laptop\"}\n";
-        let out = reconstruct_conversation(body).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v.get("messages").unwrap().as_array().unwrap().len(), 3);
-    }
-
-    #[test]
-    fn empty_or_metaless_body_is_none() {
-        assert!(reconstruct_conversation("").is_none());
-        assert!(reconstruct_conversation("{\"role\":\"user\",\"content\":\"orphan\"}\n").is_none());
-    }
-
-    #[test]
-    fn completed_mission_survives_a_staler_running_line() {
-        // Regression: a finished mission (DONE + completedAt) reappeared on the
-        // Activity board because a stray post-completion RUNNING wake re-stamped a
-        // NEWER lastActivityAt and won the freshness race. Terminal state must win
-        // regardless of lastActivityAt — order-independent, both directions.
-        let running_first = "{\"id\":\"m\",\"missionState\":\"RUNNING\",\"lastActivityAt\":200}\n\
-                             {\"role\":\"user\",\"content\":\"go\"}\n\
-                             {\"id\":\"m\",\"missionState\":\"DONE\",\"completedAt\":150,\"lastActivityAt\":150}\n";
-        let done_first = "{\"id\":\"m\",\"missionState\":\"DONE\",\"completedAt\":150,\"lastActivityAt\":150}\n\
-                          {\"role\":\"user\",\"content\":\"go\"}\n\
-                          {\"id\":\"m\",\"missionState\":\"RUNNING\",\"lastActivityAt\":200}\n";
-        for body in [running_first, done_first] {
-            let out = reconstruct_conversation(body).unwrap();
-            let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-            assert_eq!(v.get("missionState").and_then(|x| x.as_str()), Some("DONE"));
-            assert_eq!(v.get("completedAt").and_then(|x| x.as_i64()), Some(150));
-        }
-    }
-
-    #[test]
-    fn between_two_running_lines_freshest_wins() {
-        // Non-terminal vs non-terminal keeps the original freshest-lastActivityAt
-        // rule intact.
-        let body = "{\"id\":\"m\",\"missionState\":\"RUNNING\",\"lastActivityAt\":100}\n\
-                    {\"id\":\"m\",\"missionState\":\"RUNNING\",\"lastActivityAt\":300}\n\
-                    {\"id\":\"m\",\"missionState\":\"RUNNING\",\"lastActivityAt\":200}\n";
-        let out = reconstruct_conversation(body).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v.get("lastActivityAt").and_then(|x| x.as_i64()), Some(300));
-    }
-
-    #[test]
-    fn adjacent_same_role_twins_collapse_nonadjacent_survive() {
-        // Two ADJACENT identical user lines = a union/double-append artifact ->
-        // collapse to one. A later identical "dup" separated by an assistant turn
-        // is a legitimate repeat -> kept.
-        let body = "{\"id\":\"z\",\"lastActivityAt\":1}\n\
-                    {\"role\":\"user\",\"content\":\"dup\"}\n\
-                    {\"role\":\"user\",\"content\":\"dup\"}\n\
-                    {\"role\":\"assistant\",\"content\":\"ok\"}\n\
-                    {\"role\":\"user\",\"content\":\"dup\"}\n";
-        let out = reconstruct_conversation(body).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v.get("messages").unwrap().as_array().unwrap().len(), 3);
-    }
-}
-
 // ----- .git/ guard -----
 //
 // The git auto-commit / history / restore system is our only undo
@@ -5511,127 +5310,6 @@ fn app_ready(window: tauri::WebviewWindow) -> Result<(), String> {
     window.show().map_err(|e| e.to_string())?;
     let _ = window.set_focus();
     Ok(())
-}
-
-// ----- phone voice mode: embedded HTTP server (see voice_server.rs) -----
-// Inert until the frontend opts in by calling voice_server_start with a
-// freshly-generated token. Stage 1 surfaces only start/stop/status.
-
-#[tauri::command]
-async fn voice_server_start(app: tauri::AppHandle, port: u16, token: String) -> Result<u16, String> {
-    // Hand the server the app handle so it can relay phone tool calls to the
-    // running app's real handlers (full parity with desktop voice).
-    voice_server::set_app(app);
-    tauri::async_runtime::spawn_blocking(move || voice_server::start(port, token))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-/// The desktop app's answer to a relayed phone tool call (voice_server::run_tool).
-#[tauri::command]
-fn voice_tool_respond(req_id: String, result: String) {
-    voice_server::tool_respond(req_id, result);
-}
-
-#[tauri::command]
-fn voice_server_stop() -> Result<(), String> {
-    voice_server::stop();
-    Ok(())
-}
-
-#[tauri::command]
-fn voice_server_status() -> bool {
-    voice_server::is_running()
-}
-
-/// Best-effort phone link base for the Settings note. Prefers the secure
-/// Tailscale **HTTPS** URL (the one a phone's mic will accept); falls back to the
-/// http IP (localhost-only). The frontend appends `/phone?token=…`.
-///
-/// Two or three `tailscale` CLI runs (`serve --bg`, `status`, maybe `ip`), each
-/// 0.7-6 s here, on every launch: on the main thread they were the "Not
-/// responding" window.
-#[tauri::command]
-async fn voice_server_url(port: u16) -> Option<String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        voice_server::https_url(port).or_else(|| voice_server::tailscale_url(port))
-    })
-    .await
-    .ok()
-    .flatten()
-}
-
-// ----- phone chat PWA: SSE broadcast + Web Push plumbing -----
-// The heavy lifting (RFC 8291 payload encryption, VAPID JWT) happens in the
-// webview with WebCrypto; Rust only stores subscriptions, fans events out to
-// the phone's SSE stream, and performs the raw push POST.
-
-/// Frontend → phone SSE clients: forward one JSON event line.
-#[tauri::command]
-fn phone_broadcast(json: String) {
-    voice_server::broadcast_event(json);
-}
-
-/// Frontend hands over its VAPID public key (base64url raw P-256 point) so the
-/// phone page can subscribe with it.
-#[tauri::command]
-fn phone_set_vapid(key: String) {
-    voice_server::set_vapid_pub(key);
-}
-
-/// Stored Web Push subscriptions (JSON array string).
-#[tauri::command]
-async fn phone_push_subs() -> String {
-    tauri::async_runtime::spawn_blocking(voice_server::push_subs_list)
-        .await
-        .unwrap_or_else(|_| "[]".into())
-}
-
-/// Drop a dead subscription (push endpoint answered 404/410).
-#[tauri::command]
-async fn phone_push_unsub(endpoint: String) {
-    let _ = tauri::async_runtime::spawn_blocking(move || voice_server::push_subs_remove(&endpoint)).await;
-}
-
-/// Append one notification line to <vault>/.vault-chat/notifications.jsonl —
-/// the agent→you feed behind the phone app's Alerts tab.
-#[tauri::command]
-async fn notification_add(vault: String, json: String) {
-    // One append at a time, as when this ran on the main thread.
-    static APPEND: Mutex<()> = Mutex::new(());
-    let _ = tauri::async_runtime::spawn_blocking(move || {
-        let _g = APPEND.lock().unwrap_or_else(|e| e.into_inner());
-        voice_server::notification_append(&vault, &json);
-    })
-    .await;
-}
-
-/// Raw Web Push delivery: POST the webview-encrypted body to the push service.
-/// Returns the HTTP status so the caller can prune dead subscriptions.
-#[tauri::command]
-async fn push_post(
-    endpoint: String,
-    headers: Vec<(String, String)>,
-    body_b64: String,
-) -> Result<u16, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        use base64::Engine as _;
-        let body = base64::engine::general_purpose::STANDARD
-            .decode(body_b64)
-            .map_err(|e| e.to_string())?;
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(20))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let mut r = client.post(&endpoint);
-        for (k, v) in &headers {
-            r = r.header(k.as_str(), v.as_str());
-        }
-        let resp = r.body(body).send().map_err(|e| e.to_string())?;
-        Ok(resp.status().as_u16())
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize)]
@@ -5986,101 +5664,6 @@ fn apply_titlebar_color(window: &tauri::WebviewWindow) {
     }
 }
 
-// ── Native agent-audio playback (Linux) ────────────────────────────────────
-// WebKitGTK 2.52 on Ubuntu 26.04 renders no audio output, so the ElevenLabs
-// agent voice is silent if played through the webview. The SDK's `onAudio`
-// callback hands us the agent's speech as base64 PCM (16 kHz mono, s16le); we
-// decode it and play it natively with rodio, which uses the working system
-// audio path. The rodio OutputStream is not Send, so it lives on a dedicated
-// thread and we talk to it over a channel.
-#[cfg(target_os = "linux")]
-mod agent_audio {
-    use std::sync::mpsc::{channel, Sender};
-    use std::sync::{Mutex, OnceLock};
-
-    enum Cmd {
-        Play(Vec<i16>),
-        Stop,
-    }
-
-    static TX: OnceLock<Mutex<Sender<Cmd>>> = OnceLock::new();
-
-    fn sender() -> &'static Mutex<Sender<Cmd>> {
-        TX.get_or_init(|| {
-            let (tx, rx) = channel::<Cmd>();
-            std::thread::spawn(move || {
-                let (_stream, handle) = match rodio::OutputStream::try_default() {
-                    Ok(v) => v,
-                    Err(e) => {
-                        eprintln!("agent_audio: no output device: {e}");
-                        return;
-                    }
-                };
-                let sink = match rodio::Sink::try_new(&handle) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        eprintln!("agent_audio: sink init failed: {e}");
-                        return;
-                    }
-                };
-                for cmd in rx {
-                    match cmd {
-                        Cmd::Play(samples) => {
-                            sink.append(rodio::buffer::SamplesBuffer::new(1, 16_000, samples));
-                        }
-                        Cmd::Stop => {
-                            // Drop queued audio (barge-in / session end), then
-                            // resume so the next turn plays. clear() pauses.
-                            sink.clear();
-                            sink.play();
-                        }
-                    }
-                }
-            });
-            Mutex::new(tx)
-        })
-    }
-
-    pub fn play(b64: &str) {
-        use base64::Engine;
-        let bytes = match base64::engine::general_purpose::STANDARD.decode(b64) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-        let mut samples = Vec::with_capacity(bytes.len() / 2);
-        for ch in bytes.chunks_exact(2) {
-            samples.push(i16::from_le_bytes([ch[0], ch[1]]));
-        }
-        if samples.is_empty() {
-            return;
-        }
-        let _ = sender().lock().unwrap().send(Cmd::Play(samples));
-    }
-
-    pub fn stop() {
-        if let Some(tx) = TX.get() {
-            let _ = tx.lock().unwrap().send(Cmd::Stop);
-        }
-    }
-}
-
-// Play a base64 PCM (16 kHz mono s16le) agent-audio chunk natively. No-op off
-// Linux, where the webview plays audio correctly on its own.
-#[tauri::command]
-fn agent_audio_play(b64: String) {
-    #[cfg(target_os = "linux")]
-    agent_audio::play(&b64);
-    #[cfg(not(target_os = "linux"))]
-    let _ = b64;
-}
-
-// Stop/flush native agent-audio playback (barge-in or session end).
-#[tauri::command]
-fn agent_audio_stop() {
-    #[cfg(target_os = "linux")]
-    agent_audio::stop();
-}
-
 // "Run in background" gate. When on, closing the main window hides it to the
 // tray instead of quitting, so the renderer (scheduler loop + supervisor
 // wakes) keeps running. Machine-local: the frontend pushes the user's
@@ -6235,19 +5818,6 @@ pub fn run() {
             keystore_encrypt,
             keystore_decrypt,
             compile_tex,
-            agent_audio_play,
-            agent_audio_stop,
-            voice_server_start,
-            phone_broadcast,
-            phone_set_vapid,
-            phone_push_subs,
-            phone_push_unsub,
-            notification_add,
-            push_post,
-            voice_server_stop,
-            voice_server_status,
-            voice_server_url,
-            voice_tool_respond,
             set_run_in_background,
             boot_timing,
             app_ready,

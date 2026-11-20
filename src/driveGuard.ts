@@ -13,7 +13,7 @@ export const DRIVE_READ_COMMANDS = new Set([
   "read_text_file", "read_binary_file", "list_markdown_files", "list_dir", "glob_files", "path_exists", "read_ignore_lines",
   "notes_read", "schedules_read", "vault_box_config", "vault_sync_status", "vault_sync_role", "vault_page_root",
   "git_repo_root_for_file", "git_log_subdir", "git_file_at", "machine_host", "boot_timing", "box_get_json", "keychain_get",
-  "default_voice_prompt", "voice_server_status", "voice_server_url", "tailscale_check",
+  "default_voice_prompt", "tailscale_check",
 ]);
 /** Plugin commands it may run (the event bus it talks to the main window on, read-only window/app/path queries). */
 const DRIVE_PLUGIN_OK = /^plugin:(event\|(listen|unlisten|emit_to)|app\|(version|name|tauri_version|identifier)|path\|.+|window\|(inner_size|outer_size|inner_position|outer_position|scale_factor|is_.+|title|current_monitor|primary_monitor|available_monitors|theme)|webview\|(get_all_webviews|webview_position|webview_size))$/;

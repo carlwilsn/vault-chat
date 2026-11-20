@@ -153,12 +153,16 @@ export function missingNeeds(needs: CoreNeeds, shell: { commands: readonly strin
  *  `@tauri-apps/plugin-<name>` imports. Pure (the build script reads the files). */
 /** Commands the source calls that no shell has, each call guarded (it works without them): not needs. */
 export const OPTIONAL_COMMANDS: readonly string[] = ["phone_push_legacy_enabled", "phone_push_result", "safety_beat"];
+/** A source file that runs only on the box (its invoke is the box's own command table, server/commands): a line
+ *  `// @vc-box-only` in it. The laptop bundle never calls its commands, so they are not needs. */
+export const BOX_ONLY = /^\/\/ @vc-box-only\b/m;
 export function scanNeeds(sources: Iterable<string>): { commands: string[]; plugins: string[] } {
   const commands = new Set<string>();
   const plugins = new Set<string>();
   const inv = /\binvoke\s*(?:<[^()]*?>)?\s*\(\s*["'`]([a-z][a-z0-9_]*)["'`]/g;
   const imp = /["']@tauri-apps\/plugin-([a-z-]+)["']/g;
   for (const s of sources) {
+    if (BOX_ONLY.test(s)) continue;
     for (const m of s.matchAll(inv)) if (!OPTIONAL_COMMANDS.includes(m[1]!)) commands.add(m[1]!);
     for (const m of s.matchAll(imp)) plugins.add(m[1]!);
   }

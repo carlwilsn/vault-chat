@@ -1,3 +1,5 @@
+// @vc-box-only: imported only by server/main.ts; its invoke calls are the box's commands (server/commands/phone.ts,
+// net.ts), which the laptop shell no longer carries.
 // Phone host, on the box (server/main.ts starts it): notes, schedules, the
 // chats list, notifications and Web Push for the /phone PWA, over the same
 // reqId relay phone voice uses. Messages, answers and stops never come here —

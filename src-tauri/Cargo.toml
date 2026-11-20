@@ -49,9 +49,6 @@ base64 = "0.22"
 sha2 = "0.10"
 # Random key for the encrypted headless-Linux secret fallback (keychain_*).
 getrandom = "0.2"
-# Tiny embedded HTTP server for phone voice mode (box serves a Tailscale-reachable
-# voice page + token-guarded session/tool relay). Sync, runs on its own thread.
-tiny_http = "0.12"
 # Inline web pages in the chat (src/web_embed.rs): a native browser view laid over the chat, made with wry directly
 # (not through Tauri's webview manager) so it carries none of the app's IPC or protocols. Same version Tauri uses.
 wry = { version = "0.54", default-features = false }
@@ -68,7 +65,3 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphic
 # same version + feature wry uses so the WebView type unifies.
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }
-# WebKitGTK on this stack can't play Web Audio, so voice-mode agent audio is
-# played natively instead (see agent_audio in lib.rs). default-features off:
-# we feed raw PCM, no format decoders needed.
-rodio = { version = "0.19", default-features = false }

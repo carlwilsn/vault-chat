@@ -3,14 +3,6 @@
   "sig": "add_to_ignore(vault:String,relative_path:String)->Result<(),String>",
   "v": "fcfa0035"
  },
- "agent_audio_play": {
-  "sig": "agent_audio_play(b64:String)->()",
-  "v": "106c73a1"
- },
- "agent_audio_stop": {
-  "sig": "agent_audio_stop()->()",
-  "v": "6151e5c5"
- },
  "app_ready": {
   "sig": "app_ready()->Result<(),String>",
   "v": "84604c51"
@@ -203,10 +195,6 @@
   "sig": "notes_write_all(vault:String,lines:Vec<String>)->Result<(),String>",
   "v": "c2c74591"
  },
- "notification_add": {
-  "sig": "notification_add(vault:String,json:String)->()",
-  "v": "c35b0653"
- },
  "open_box_terminal": {
   "sig": "open_box_terminal(host:String,user:String,path:String)->Result<(),String>",
   "v": "753b8f4a"
@@ -219,29 +207,9 @@
   "sig": "path_exists(path:String)->bool",
   "v": "f5fabab1"
  },
- "phone_broadcast": {
-  "sig": "phone_broadcast(json:String)->()",
-  "v": "17248183"
- },
- "phone_push_subs": {
-  "sig": "phone_push_subs()->String",
-  "v": "2ce2cfbb"
- },
- "phone_push_unsub": {
-  "sig": "phone_push_unsub(endpoint:String)->()",
-  "v": "3feff9e7"
- },
- "phone_set_vapid": {
-  "sig": "phone_set_vapid(key:String)->()",
-  "v": "208cdb93"
- },
  "prepare_agent_projects": {
   "sig": "prepare_agent_projects(vault:String)->Result<agent_projects::Prepared,String>",
   "v": "f3176498"
- },
- "push_post": {
-  "sig": "push_post(endpoint:String,headers:Vec<(String,String)>,body_b64:String)->Result<u16,String>",
-  "v": "79019641"
  },
  "read_binary_file": {
   "sig": "read_binary_file(path:String)->Result<Vec<u8>,String>",
@@ -366,26 +334,6 @@
  "vault_sync_status": {
   "sig": "vault_sync_status(vault:String)->Result<SyncStatus,String>",
   "v": "470abf37"
- },
- "voice_server_start": {
-  "sig": "voice_server_start(port:u16,token:String)->Result<u16,String>",
-  "v": "0dde6797"
- },
- "voice_server_status": {
-  "sig": "voice_server_status()->bool",
-  "v": "67614277"
- },
- "voice_server_stop": {
-  "sig": "voice_server_stop()->Result<(),String>",
-  "v": "e86482eb"
- },
- "voice_server_url": {
-  "sig": "voice_server_url(port:u16)->Option<String>",
-  "v": "9b103664"
- },
- "voice_tool_respond": {
-  "sig": "voice_tool_respond(req_id:String,result:String)->()",
-  "v": "d48b9cd6"
  },
  "web_embed_close": {
   "sig": "web_embed_close(id:Option<String>)->Result<(),String>",
