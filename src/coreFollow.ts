@@ -32,6 +32,8 @@ export type CoreStatus = {
   events: { from: string; to: string; reason: string; at_ms: number }[];
   commands: string[];
   plugins: string[];
+  /** Each command's signature version (an installed shell from before it: absent). */
+  abi?: Record<string, string>;
   baked: { commit: string; commitTime: number | null };
 };
 
@@ -184,7 +186,7 @@ export async function followCoreOnce(d: CoreDeps, o: { swap?: boolean; now?: boo
     active: s.active === BUILT_IN ? null : s.active,
     bad: s.bad,
     bakedCommitTime: s.baked.commitTime,
-    shell: { commands: s.commands, plugins: s.plugins },
+    shell: { commands: s.commands, plugins: s.plugins, abi: s.abi },
     boxApi: typeof box.boxApi === "number" ? box.boxApi : null,
   });
   if (step.kind === "stay") return { step, did: "nothing" };
@@ -231,8 +233,8 @@ export async function tryCore(version: string, c: CoreCandidate, d: CoreDeps, wh
 }
 
 /** Why this laptop can't run a bundle waiting as Change ready, or null (it can: the card offers Try). */
-export function candidateProblem(version: string, c: CoreCandidate, s: Pick<CoreStatus, "bad" | "baked" | "commands" | "plugins">): string | null {
-  const step = nextCoreStep({ offer: { version, sha256: c.sha256, commit: c.commit, commitTime: c.commitTime, needs: c.needs, seq: 0 }, active: null, bad: s.bad, bakedCommitTime: s.baked.commitTime, shell: { commands: s.commands, plugins: s.plugins }, boxApi: c.boxApi });
+export function candidateProblem(version: string, c: CoreCandidate, s: Pick<CoreStatus, "bad" | "baked" | "commands" | "plugins" | "abi">): string | null {
+  const step = nextCoreStep({ offer: { version, sha256: c.sha256, commit: c.commit, commitTime: c.commitTime, needs: c.needs, seq: 0 }, active: null, bad: s.bad, bakedCommitTime: s.baked.commitTime, shell: { commands: s.commands, plugins: s.plugins, abi: s.abi }, boxApi: c.boxApi });
   return step.kind === "install" ? null : step.why;
 }
 

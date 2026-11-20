@@ -45,7 +45,9 @@ export const CORE_SCHEMA = 1;
 export const READY_MS = 30_000;
 
 export type CoreFile = { path: string; sha256: string; size: number };
-export type CoreNeeds = { commands: string[]; plugins: string[]; boxApi: number };
+/** `abi`: each needed command's signature version (src-tauri/shell-abi.json of the bundle's commit, scripts/shell-abi.ts);
+ *  a shell whose version of a needed command differs cannot run the bundle. Bundles from before it have none. */
+export type CoreNeeds = { commands: string[]; plugins: string[]; boxApi: number; abi?: Record<string, string> };
 export type CoreManifest = {
   schema: typeof CORE_SCHEMA;
   /** The main commit it was built from, and that commit's time (s since 1970). */
@@ -116,6 +118,7 @@ export function manifestProblem(m: unknown): string | null {
   const n = x.needs;
   if (!n || !Array.isArray(n.commands) || !Array.isArray(n.plugins) || typeof n.boxApi !== "number") return "needs missing";
   if (![...n.commands, ...n.plugins].every((c) => typeof c === "string" && NAME_RE.test(c))) return "needs: a bad name";
+  if (n.abi !== undefined && (!n.abi || typeof n.abi !== "object" || !Object.entries(n.abi).every(([c, v]) => NAME_RE.test(c) && typeof v === "string" && CORE_VERSION_RE.test(v)))) return "needs: a bad abi";
   if (!Array.isArray(x.files) || !x.files.length || x.files.length > 5000) return "files missing";
   const seen = new Set<string>();
   for (const f of x.files) {
@@ -130,17 +133,20 @@ export function manifestProblem(m: unknown): string | null {
 /** The manifest's bytes, always written the same way (the version is the hash of these bytes). */
 export function manifestText(m: CoreManifest): string {
   const files = [...m.files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  return JSON.stringify({ schema: m.schema, commit: m.commit, commitTime: m.commitTime, builtAt: m.builtAt, needs: { commands: [...m.needs.commands].sort(), plugins: [...m.needs.plugins].sort(), boxApi: m.needs.boxApi }, files }, null, 1) + "\n";
+  return JSON.stringify({ schema: m.schema, commit: m.commit, commitTime: m.commitTime, builtAt: m.builtAt, needs: { commands: [...m.needs.commands].sort(), plugins: [...m.needs.plugins].sort(), boxApi: m.needs.boxApi, ...(m.needs.abi ? { abi: Object.fromEntries(Object.entries(m.needs.abi).sort(([a], [b]) => (a < b ? -1 : 1))) } : {}) }, files }, null, 1) + "\n";
 }
 
 /** The version of a manifest whose sha256 is `sha256`. */
 export const coreVersionOf = (sha256: string): string => sha256.slice(0, 8);
 
 /** What the installed shell lacks for this bundle (empty: it can run it). */
-export function missingNeeds(needs: CoreNeeds, shell: { commands: readonly string[]; plugins: readonly string[] }): string[] {
+/** What a shell lacks for a bundle's needs. `shell.abi` (its command versions, core_status): when the shell reports
+ *  them, a needed command at another version counts as missing (an installed shell from before it reports none). */
+export function missingNeeds(needs: CoreNeeds, shell: { commands: readonly string[]; plugins: readonly string[]; abi?: Record<string, string> | null }): string[] {
   const c = new Set(shell.commands);
   const p = new Set(shell.plugins);
-  return [...needs.commands.filter((x) => !c.has(x)).map((x) => `command ${x}`), ...needs.plugins.filter((x) => !p.has(x)).map((x) => `plugin ${x}`)];
+  const changed = shell.abi ? Object.entries(needs.abi ?? {}).filter(([x, v]) => c.has(x) && shell.abi![x] !== v).map(([x]) => `command ${x} (changed)`).sort() : [];
+  return [...needs.commands.filter((x) => !c.has(x)).map((x) => `command ${x}`), ...changed, ...needs.plugins.filter((x) => !p.has(x)).map((x) => `plugin ${x}`)];
 }
 
 /** The native commands and shell plugins a source tree uses: invoke("<command>") / invoke<T>("<command>") calls and
@@ -167,7 +173,7 @@ export function nextCoreStep(o: {
   active: string | null;
   bad: readonly string[];
   bakedCommitTime: number | null;
-  shell: { commands: readonly string[]; plugins: readonly string[] };
+  shell: { commands: readonly string[]; plugins: readonly string[]; abi?: Record<string, string> | null };
   boxApi: number | null;
 }): CoreStep {
   const { offer } = o;

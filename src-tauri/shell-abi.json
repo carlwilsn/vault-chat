@@ -1,0 +1,418 @@
+{
+ "add_to_ignore": {
+  "sig": "add_to_ignore(vault:String,relative_path:String)->Result<(),String>",
+  "v": "fcfa0035"
+ },
+ "agent_audio_play": {
+  "sig": "agent_audio_play(b64:String)->()",
+  "v": "106c73a1"
+ },
+ "agent_audio_stop": {
+  "sig": "agent_audio_stop()->()",
+  "v": "6151e5c5"
+ },
+ "app_ready": {
+  "sig": "app_ready()->Result<(),String>",
+  "v": "84604c51"
+ },
+ "app_status_read": {
+  "sig": "app_status_read()->Option<serde_json::Value>",
+  "v": "bf4dc7fe"
+ },
+ "app_status_write": {
+  "sig": "app_status_write(status:Reported)->Result<(),String>",
+  "v": "f7fb7ec5"
+ },
+ "append_debug_log": {
+  "sig": "append_debug_log(vault_path:String,text:String)->Result<(),String>",
+  "v": "a254f87c"
+ },
+ "append_sync_log": {
+  "sig": "append_sync_log(vault_path:String,line:String)->Result<(),String>",
+  "v": "0e2f7470"
+ },
+ "boot_timing": {
+  "sig": "boot_timing()->boot_watch::BootTiming",
+  "v": "9276f181"
+ },
+ "box_discover": {
+  "sig": "box_discover()->Result<Vec<box_sync::FoundBox>,String>",
+  "v": "80930a45"
+ },
+ "box_get_json": {
+  "sig": "box_get_json(url:String,token:Option<String>,timeout_ms:Option<u64>)->Result<PostResult,String>",
+  "v": "960cc822"
+ },
+ "box_post_json": {
+  "sig": "box_post_json(url:String,body:String,token:Option<String>)->Result<PostResult,String>",
+  "v": "9c63e9d5"
+ },
+ "claude_cli_ensure": {
+  "sig": "claude_cli_ensure()->Result<ClaudeCliReady,String>",
+  "v": "e4bba3ab"
+ },
+ "claude_setup_token_cli": {
+  "sig": "claude_setup_token_cli()->Option<ClaudeCli>",
+  "v": "c3887333"
+ },
+ "claude_signin_available": {
+  "sig": "claude_signin_available()->bool",
+  "v": "8af171bc"
+ },
+ "claude_signin_cancel": {
+  "sig": "claude_signin_cancel()->()",
+  "v": "6e531aa0"
+ },
+ "claude_signin_run": {
+  "sig": "claude_signin_run()->Result<(),String>",
+  "v": "aa76fb97"
+ },
+ "cleanup_old_captures": {
+  "sig": "cleanup_old_captures(vault:String,older_than_hours:u64)->Result<u64,String>",
+  "v": "df1bb596"
+ },
+ "client_event_append": {
+  "sig": "client_event_append(vault:String,line:String)->Result<(),String>",
+  "v": "4640db35"
+ },
+ "compile_tex": {
+  "sig": "compile_tex(source_path:String,contents:String)->Result<TexCompileResult,String>",
+  "v": "1bd95898"
+ },
+ "conversation_delete": {
+  "sig": "conversation_delete(vault:String,id:String)->Result<(),String>",
+  "v": "dd686c7e"
+ },
+ "copy_into_vault": {
+  "sig": "copy_into_vault(dst_dir:String,src:String)->Result<String,String>",
+  "v": "7678d5aa"
+ },
+ "core_boot_error": {
+  "sig": "core_boot_error(message:String)->Result<bool,String>",
+  "v": "560283d9"
+ },
+ "core_events_sent": {
+  "sig": "core_events_sent(n:usize)->Result<(),String>",
+  "v": "2af9e140"
+ },
+ "core_install": {
+  "sig": "core_install(base_url:String,token:Option<String>,version:String,sha256:String)->Result<(),String>",
+  "v": "bb1082e3"
+ },
+ "core_ready": {
+  "sig": "core_ready()->Result<(),String>",
+  "v": "b0b847ff"
+ },
+ "core_status": {
+  "sig": "core_status()->Result<serde_json::Value,String>",
+  "v": "9ad7fb81"
+ },
+ "core_use": {
+  "sig": "core_use(version:Option<String>)->Result<(),String>",
+  "v": "d16877de"
+ },
+ "create_dir": {
+  "sig": "create_dir(path:String)->Result<(),String>",
+  "v": "c629046a"
+ },
+ "default_voice_prompt": {
+  "sig": "default_voice_prompt()->String",
+  "v": "105ca350"
+ },
+ "delete_file": {
+  "sig": "delete_file(path:String)->Result<(),String>",
+  "v": "6042e205"
+ },
+ "first_run_seed": {
+  "sig": "first_run_seed(vault:String)->Result<Seeded,String>",
+  "v": "e3af0665"
+ },
+ "git_commit_all": {
+  "sig": "git_commit_all(vault:String,message:String,agent:Option<bool>,actor:Option<String>,machine:Option<String>,conversation:Option<String>)->Result<Option<String>,String>",
+  "v": "03727e47"
+ },
+ "git_file_at": {
+  "sig": "git_file_at(vault:String,hash:String,relative_path:String)->Result<String,String>",
+  "v": "a81396a1"
+ },
+ "git_init_if_needed": {
+  "sig": "git_init_if_needed(vault:String)->Result<bool,String>",
+  "v": "2ef605fd"
+ },
+ "git_log_subdir": {
+  "sig": "git_log_subdir(vault:String,subdir:String,since:Option<String>,author:Option<String>,max_count:Option<u32>)->Result<String,String>",
+  "v": "d8455ce0"
+ },
+ "git_repo_root_for_file": {
+  "sig": "git_repo_root_for_file(vault:String,path:String)->Option<String>",
+  "v": "c2f5bcb0"
+ },
+ "glob_files": {
+  "sig": "glob_files(pattern:String,cwd:Option<String>)->Result<Vec<String>,String>",
+  "v": "a64642bf"
+ },
+ "keychain_delete": {
+  "sig": "keychain_delete(key:String)->Result<(),String>",
+  "v": "9ba080f3"
+ },
+ "keychain_get": {
+  "sig": "keychain_get(key:String)->Result<Option<String>,String>",
+  "v": "968d6d3d"
+ },
+ "keychain_set": {
+  "sig": "keychain_set(key:String,value:String)->Result<(),String>",
+  "v": "7f62a4f3"
+ },
+ "keystore_decrypt": {
+  "sig": "keystore_decrypt(passphrase:String,blob:String)->Result<String,String>",
+  "v": "58520ae8"
+ },
+ "keystore_encrypt": {
+  "sig": "keystore_encrypt(passphrase:String,plaintext:String)->Result<String,String>",
+  "v": "577eae54"
+ },
+ "list_dir": {
+  "sig": "list_dir(path:String)->Result<Vec<FileEntry>,String>",
+  "v": "b579c2ab"
+ },
+ "list_markdown_files": {
+  "sig": "list_markdown_files(vault:String)->Result<Vec<FileEntry>,String>",
+  "v": "7646f9aa"
+ },
+ "local_server_start": {
+  "sig": "local_server_start(vault:String)->Result<local_server::LocalServer,String>",
+  "v": "b68403ae"
+ },
+ "machine_host": {
+  "sig": "machine_host()->String",
+  "v": "e25e99ad"
+ },
+ "master_repo_init": {
+  "sig": "master_repo_init(dest:String,remote_url:String,branch:String,origin_url:Option<String>)->Result<String,String>",
+  "v": "2311dc99"
+ },
+ "notes_append": {
+  "sig": "notes_append(vault:String,line:String)->Result<(),String>",
+  "v": "233739ea"
+ },
+ "notes_read": {
+  "sig": "notes_read(vault:String)->Result<Vec<String>,String>",
+  "v": "b2739820"
+ },
+ "notes_write_all": {
+  "sig": "notes_write_all(vault:String,lines:Vec<String>)->Result<(),String>",
+  "v": "c2c74591"
+ },
+ "notification_add": {
+  "sig": "notification_add(vault:String,json:String)->()",
+  "v": "c35b0653"
+ },
+ "open_box_terminal": {
+  "sig": "open_box_terminal(host:String,user:String,path:String)->Result<(),String>",
+  "v": "753b8f4a"
+ },
+ "open_terminal": {
+  "sig": "open_terminal(cwd:Option<String>)->Result<(),String>",
+  "v": "720be092"
+ },
+ "path_exists": {
+  "sig": "path_exists(path:String)->bool",
+  "v": "f5fabab1"
+ },
+ "phone_broadcast": {
+  "sig": "phone_broadcast(json:String)->()",
+  "v": "17248183"
+ },
+ "phone_push_subs": {
+  "sig": "phone_push_subs()->String",
+  "v": "2ce2cfbb"
+ },
+ "phone_push_unsub": {
+  "sig": "phone_push_unsub(endpoint:String)->()",
+  "v": "3feff9e7"
+ },
+ "phone_set_vapid": {
+  "sig": "phone_set_vapid(key:String)->()",
+  "v": "208cdb93"
+ },
+ "prepare_agent_projects": {
+  "sig": "prepare_agent_projects(vault:String)->Result<agent_projects::Prepared,String>",
+  "v": "f3176498"
+ },
+ "push_post": {
+  "sig": "push_post(endpoint:String,headers:Vec<(String,String)>,body_b64:String)->Result<u16,String>",
+  "v": "79019641"
+ },
+ "read_binary_file": {
+  "sig": "read_binary_file(path:String)->Result<Vec<u8>,String>",
+  "v": "189ed2bb"
+ },
+ "read_ignore_lines": {
+  "sig": "read_ignore_lines(vault:String)->Result<Vec<String>,String>",
+  "v": "4f210e72"
+ },
+ "read_text_file": {
+  "sig": "read_text_file(path:String)->Result<String,String>",
+  "v": "6b4cd991"
+ },
+ "remove_from_ignore": {
+  "sig": "remove_from_ignore(vault:String,relative_paths:Vec<String>)->Result<(),String>",
+  "v": "67abff36"
+ },
+ "remove_prefix_from_ignore": {
+  "sig": "remove_prefix_from_ignore(vault:String,relative_prefixes:Vec<String>)->Result<(),String>",
+  "v": "53abc7c9"
+ },
+ "rename_in_ignore": {
+  "sig": "rename_in_ignore(vault:String,old_relative:String,new_relative:String)->Result<(),String>",
+  "v": "ecad93ee"
+ },
+ "rename_path": {
+  "sig": "rename_path(from:String,to:String)->Result<(),String>",
+  "v": "c340376d"
+ },
+ "safety_beat": {
+  "sig": "safety_beat(url:Option<String>,token:Option<String>,vault:Option<String>,watch_until:u64,healthy:bool,tried:Vec<Tried>)->()",
+  "v": "33eed3f7"
+ },
+ "schedule_tombstone_add": {
+  "sig": "schedule_tombstone_add(vault:String,id:String)->Result<(),String>",
+  "v": "e430a4df"
+ },
+ "schedules_read": {
+  "sig": "schedules_read(vault:String)->Result<Vec<String>,String>",
+  "v": "2d817075"
+ },
+ "schedules_write_all": {
+  "sig": "schedules_write_all(vault:String,lines:Vec<String>)->Result<(),String>",
+  "v": "818fdb9e"
+ },
+ "selftest_config": {
+  "sig": "selftest_config()->Option<Config>",
+  "v": "a5a78644"
+ },
+ "selftest_finish": {
+  "sig": "selftest_finish(result:serde_json::Value)->Result<(),String>",
+  "v": "3975eace"
+ },
+ "selftest_progress": {
+  "sig": "selftest_progress(i:u64,action:String,outcome:Option<serde_json::Value>)->()",
+  "v": "e095a7a6"
+ },
+ "set_run_in_background": {
+  "sig": "set_run_in_background(enabled:bool)->()",
+  "v": "1da0d930"
+ },
+ "setup_take": {
+  "sig": "setup_take(vault_open:bool)->Result<Option<String>,String>",
+  "v": "12e2df65"
+ },
+ "tailscale_check": {
+  "sig": "tailscale_check()->Result<box_sync::TailscaleState,String>",
+  "v": "24d8d195"
+ },
+ "tailscale_open": {
+  "sig": "tailscale_open()->Result<(),String>",
+  "v": "95ff3f59"
+ },
+ "vault_box_config": {
+  "sig": "vault_box_config(vault:String)->Option<BoxConfigOut>",
+  "v": "b76e7d7a"
+ },
+ "vault_box_connect": {
+  "sig": "vault_box_connect(vault:String,box_url:String,box_vault:String,name:String)->Result<(),String>",
+  "v": "a706aabe"
+ },
+ "vault_box_disconnect": {
+  "sig": "vault_box_disconnect(vault:String)->Result<(),String>",
+  "v": "129ce9c2"
+ },
+ "vault_box_sync": {
+  "sig": "vault_box_sync(vault:String,pull:Option<bool>)->Result<box_sync::BoxSyncReport,String>",
+  "v": "5e22832f"
+ },
+ "vault_commit_local": {
+  "sig": "vault_commit_local(vault:String)->Result<SyncOpResult,String>",
+  "v": "31514bae"
+ },
+ "vault_page_root": {
+  "sig": "vault_page_root(root:String)->Result<usize,String>",
+  "v": "6907d4a9"
+ },
+ "vault_sync_commit_local": {
+  "sig": "vault_sync_commit_local(vault:String)->Result<SyncOpResult,String>",
+  "v": "70553ae1"
+ },
+ "vault_sync_gh_create_repo": {
+  "sig": "vault_sync_gh_create_repo(vault:String,name:String,private_repo:bool)->Result<SyncOpResult,String>",
+  "v": "40346b0c"
+ },
+ "vault_sync_pull": {
+  "sig": "vault_sync_pull(vault:String)->Result<SyncOpResult,String>",
+  "v": "7201ccb0"
+ },
+ "vault_sync_push": {
+  "sig": "vault_sync_push(vault:String)->Result<SyncOpResult,String>",
+  "v": "ac88e96e"
+ },
+ "vault_sync_role": {
+  "sig": "vault_sync_role(vault:String)->String",
+  "v": "9212d34a"
+ },
+ "vault_sync_set_remote": {
+  "sig": "vault_sync_set_remote(vault:String,url:String)->Result<(),String>",
+  "v": "d489776f"
+ },
+ "vault_sync_status": {
+  "sig": "vault_sync_status(vault:String)->Result<SyncStatus,String>",
+  "v": "470abf37"
+ },
+ "voice_server_start": {
+  "sig": "voice_server_start(port:u16,token:String)->Result<u16,String>",
+  "v": "0dde6797"
+ },
+ "voice_server_status": {
+  "sig": "voice_server_status()->bool",
+  "v": "67614277"
+ },
+ "voice_server_stop": {
+  "sig": "voice_server_stop()->Result<(),String>",
+  "v": "e86482eb"
+ },
+ "voice_server_url": {
+  "sig": "voice_server_url(port:u16)->Option<String>",
+  "v": "9b103664"
+ },
+ "voice_tool_respond": {
+  "sig": "voice_tool_respond(req_id:String,result:String)->()",
+  "v": "d48b9cd6"
+ },
+ "web_embed_close": {
+  "sig": "web_embed_close(id:Option<String>)->Result<(),String>",
+  "v": "a7863220"
+ },
+ "web_embed_go": {
+  "sig": "web_embed_go(id:String,action:String,url:Option<String>)->Result<(),String>",
+  "v": "d3c078a2"
+ },
+ "web_embed_open": {
+  "sig": "web_embed_open(id:String,url:String,x:f64,y:f64,width:f64,height:f64,visible:bool)->Result<(),String>",
+  "v": "c3ceac9d"
+ },
+ "web_embed_place": {
+  "sig": "web_embed_place(id:String,x:f64,y:f64,width:f64,height:f64,visible:bool)->Result<(),String>",
+  "v": "af394247"
+ },
+ "web_embed_url": {
+  "sig": "web_embed_url(id:String)->Result<String,String>",
+  "v": "1e0a7ab8"
+ },
+ "write_binary_file_unique": {
+  "sig": "write_binary_file_unique(dir:String,name:String,bytes:Vec<u8>)->Result<String,String>",
+  "v": "0306786c"
+ },
+ "write_text_file": {
+  "sig": "write_text_file(path:String,contents:String)->Result<(),String>",
+  "v": "438be112"
+ }
+}

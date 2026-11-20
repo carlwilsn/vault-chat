@@ -27,7 +27,12 @@ function walk(dir: string, base = dir): string[] {
 /** The needs of the source tree at `root`: its src/ files (tests left out), and this commit's box API. */
 export function needsOf(root: string, boxApi = CORE_BOX_API): CoreNeeds {
   const files = walk(join(root, "src")).filter((p) => /\.(tsx?|jsx?|mjs)$/.test(p) && !/\.test\./.test(p));
-  return { ...scanNeeds(files.map((p) => readFileSync(join(root, "src", p), "utf8"))), boxApi };
+  const scanned = scanNeeds(files.map((p) => readFileSync(join(root, "src", p), "utf8")));
+  // Each needed command's signature version, from the commit's own shell-abi.json (absent before it existed).
+  const abiFile = join(root, "src-tauri", "shell-abi.json");
+  const shell: Record<string, { v: string }> = existsSync(abiFile) ? JSON.parse(readFileSync(abiFile, "utf8")) : {};
+  const abi = Object.fromEntries(scanned.commands.filter((c) => shell[c]).map((c) => [c, shell[c]!.v]));
+  return { ...scanned, boxApi, ...(Object.keys(abi).length ? { abi } : {}) };
 }
 
 /**

@@ -15,6 +15,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -66,6 +67,10 @@ struct ManifestFile {
 struct Needs {
     commands: Vec<String>,
     plugins: Vec<String>,
+    /// The version of each needed command's signature, from the bundle's src-tauri/shell-abi.json (scripts/shell-abi.ts).
+    /// Bundles from before it have none: their command names alone are checked.
+    #[serde(default)]
+    abi: HashMap<String, String>,
 }
 #[derive(Deserialize)]
 struct Manifest {
@@ -102,9 +107,32 @@ fn version_ok(v: &str) -> bool {
     v.len() == 8 && v.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
-/// What this shell lacks for a manifest's needs (empty: it can run the bundle).
-fn missing(needs: &Needs, commands: &[&str]) -> Vec<String> {
+/// This shell's command set: each command's signature version (src-tauri/shell-abi.json, generated from this source
+/// by scripts/shell-abi.ts and kept current by a test), name -> version.
+pub fn shell_abi() -> &'static HashMap<String, String> {
+    static ABI: OnceLock<HashMap<String, String>> = OnceLock::new();
+    ABI.get_or_init(|| {
+        #[derive(Deserialize)]
+        struct Entry {
+            v: String,
+        }
+        let m: HashMap<String, Entry> = serde_json::from_str(include_str!("../shell-abi.json")).unwrap_or_default();
+        m.into_iter().map(|(k, e)| (k, e.v)).collect()
+    })
+}
+
+/// What this shell lacks for a manifest's needs (empty: it can run the bundle): a command it does not have, a command
+/// it has with another signature than the one the bundle was built against, a plugin it does not carry.
+fn missing(needs: &Needs, commands: &[&str], abi: &HashMap<String, String>) -> Vec<String> {
     let mut out: Vec<String> = needs.commands.iter().filter(|c| !commands.contains(&c.as_str())).map(|c| format!("command {c}")).collect();
+    let mut changed: Vec<String> = needs
+        .abi
+        .iter()
+        .filter(|(c, v)| commands.contains(&c.as_str()) && abi.get(c.as_str()) != Some(v))
+        .map(|(c, _)| format!("command {c} (changed)"))
+        .collect();
+    changed.sort();
+    out.extend(changed);
     out.extend(needs.plugins.iter().filter(|p| !SHELL_PLUGINS.contains(&p.as_str())).map(|p| format!("plugin {p}")));
     out
 }
@@ -116,6 +144,8 @@ pub struct CoreLoader {
     root: PathBuf,
     shell: String,
     commands: Vec<&'static str>,
+    /// Each command's signature version (shell_abi(); tests set their own).
+    abi: HashMap<String, String>,
     inner: Mutex<Inner>,
     /// The bundle served now (its files folder), read on every asset request.
     active: RwLock<Option<PathBuf>>,
@@ -138,7 +168,7 @@ impl CoreLoader {
             let events = std::mem::take(&mut state.events);
             state = State { shell: shell.to_string(), events, ..Default::default() };
         }
-        let me = CoreLoader { root, shell: shell.to_string(), commands, inner: Mutex::new(Inner { state, active: None, load: 0, ready: false }), active: RwLock::new(None) };
+        let me = CoreLoader { root, shell: shell.to_string(), commands, abi: shell_abi().clone(), inner: Mutex::new(Inner { state, active: None, load: 0, ready: false }), active: RwLock::new(None) };
         {
             let mut g = me.inner.lock().unwrap();
             // The last load of this version never said ready (the app crashed or was killed while it booted).
@@ -177,7 +207,7 @@ impl CoreLoader {
         if !self.dir(v).join("files").join("index.html").is_file() {
             return Err(format!("{v} is incomplete"));
         }
-        let lack = missing(&m.needs, &self.commands);
+        let lack = missing(&m.needs, &self.commands, &self.abi);
         if lack.is_empty() {
             Ok(())
         } else {
@@ -295,6 +325,7 @@ impl CoreLoader {
             "bad": g.state.bad,
             "events": g.state.events,
             "commands": self.commands,
+            "abi": self.abi,
             "plugins": SHELL_PLUGINS,
             "baked": { "commit": option_env!("VC_BAKED_COMMIT").unwrap_or(""), "commitTime": option_env!("VC_BAKED_TIME").and_then(|t| t.parse::<u64>().ok()) },
         })
@@ -327,7 +358,7 @@ impl CoreLoader {
             return Err(format!("{version}'s manifest does not match its record's hash: refused"));
         }
         let m: Manifest = serde_json::from_slice(&mbytes).map_err(|e| format!("a bad manifest: {e}"))?;
-        let lack = missing(&m.needs, &self.commands);
+        let lack = missing(&m.needs, &self.commands, &self.abi);
         if !lack.is_empty() {
             return Err(format!("needs a newer installed app ({})", lack.join(", ")));
         }
@@ -615,6 +646,30 @@ mod tests {
         let (v, sha) = bundle(&mut srv, &[("index.html", "x")], &["app_ready", "brand_new_command"]);
         let l = CoreLoader::open(root, "1.0.0", CMDS.to_vec());
         assert!(l.install(&v, &sha, &fetcher(&srv)).unwrap_err().contains("brand_new_command"));
+    }
+
+    #[test]
+    fn refuses_a_bundle_built_against_another_signature_of_a_command() {
+        let root = tmp("abi");
+        let mut srv = HashMap::new();
+        let ours = shell_abi().get("core_ready").cloned().expect("shell-abi.json lists core_ready");
+        let with_abi = |srv: &mut HashMap<String, Vec<u8>>, body: &str, v: &str| {
+            let text = serde_json::to_vec(&serde_json::json!({"schema": 1, "commit": "0".repeat(40), "commitTime": 1, "builtAt": "x",
+                "needs": {"commands": ["core_ready"], "plugins": [], "boxApi": 1, "abi": {"core_ready": v}},
+                "files": [{"path": "index.html", "sha256": hex(body.as_bytes()), "size": body.len()}]})).unwrap();
+            let sha = hex(&text);
+            let ver = sha[..8].to_string();
+            srv.insert(format!("/api/v2/core/{ver}/manifest.json"), text);
+            srv.insert(format!("/api/v2/core/{ver}/files/index.html"), body.as_bytes().to_vec());
+            (ver, sha)
+        };
+        let (same, ssha) = with_abi(&mut srv, "same", &ours);
+        let (other, osha) = with_abi(&mut srv, "other", "deadbeef");
+        let l = CoreLoader::open(root, "1.0.0", CMDS.to_vec());
+        l.install(&same, &ssha, &fetcher(&srv)).unwrap();
+        assert!(l.install(&other, &osha, &fetcher(&srv)).unwrap_err().contains("core_ready (changed)"));
+        // Every command this shell registers has a version (the file is generated from this source).
+        assert!(CMDS.iter().all(|c| shell_abi().contains_key(*c)));
     }
 
     #[test]
