@@ -1,0 +1,16 @@
+{
+  "pace": 400,
+  "steps": [
+    { "waitFor": "#root > *", "timeout": 30000, "label": "the window paints" },
+    { "expect": { "health": "server", "timeout": 120000 }, "label": "the app's own server answers" },
+    { "press": "Mod+Shift+B", "label": "show the chat" },
+    { "waitFor": "textarea[data-perf-target=composer]:not([disabled])", "timeout": 30000, "label": "the composer is ready" },
+    { "click": "textarea[data-perf-target=composer]" },
+    { "type": "Please run a test job in the background.", "into": "textarea[data-perf-target=composer]" },
+    { "press": "Enter", "label": "ask for a job" },
+    { "expect": { "text": "Started the test job", "timeout": 120000 }, "label": "StartJob started it (no systemd on a Mac)" },
+    { "expect": { "file": "job-proof.txt", "contains": "job-ran-on-mac", "timeout": 60000 }, "label": "the job ran in the vault" },
+    { "expect": { "file": "job-proof.txt", "contains": "Darwin", "timeout": 10000 }, "label": "the job ran on macOS" },
+    { "expect": { "text": "The test job finished on this Mac", "timeout": 120000 }, "label": "the job's end was reported back (wake turn)" }
+  ]
+}

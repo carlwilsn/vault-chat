@@ -97,6 +97,14 @@ const SCRIPTS = [
     tools: [{ name: "Bash", input: { command: `mkdir -p .vault-chat/plugins && cat > .vault-chat/plugins/flashcards.js <<'VCEOF'\n${FLASHCARDS}\nVCEOF`, description: "Make the flashcard plugin" } }],
     reply: "Your flashcards are open on the right. Each answer is saved; ask me how you did.",
   },
+  // StartJob on a Mac (test/selftest/startjob.json): the job writes a proof file in the vault; its end comes back as
+  // a wake turn ("Job <id> finished: exit 0.") that this answers, so the chat shows the end was reported.
+  {
+    when: /run a test job in the background/i,
+    tools: [{ suffix: "__StartJob", input: { command: "echo job-ran-on-mac > job-proof.txt; uname -s >> job-proof.txt; sleep 3; echo job-end-line", name: "mac-proof", timeout: "10m" } }],
+    reply: "Started the test job.",
+  },
+  { when: /Job mac-proof-[a-z0-9]+ finished: exit 0/i, reply: "The test job finished on this Mac: exit 0." },
   { when: /delete the tutorial/i, tools: [{ name: "Bash", input: { command: "rm -f .vault-chat/plugins/tutorial.js", description: "Delete the tutorial plugin" } }], reply: "Deleted the tutorial. Welcome/ and your note are still there." },
 ];
 
