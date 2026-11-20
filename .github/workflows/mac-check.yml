@@ -258,6 +258,9 @@ jobs:
           REC=$!
           ( sleep 45; kill "$REC" 2>/dev/null ) &   # never let the recorder hold the job
           sleep 2
+          # WKWebView keeps its storage (localStorage: the last vault, panel layout, tutorial progress) under the REAL
+          # home (NSHomeDirectory), not $HOME: every launch below wipes it so a fresh HOME is a fresh app.
+          rm -rf "$HOME/Library/WebKit/com.vault-chat.app" "$HOME/Library/Caches/com.vault-chat.app" "$HOME/Library/HTTPStorages/com.vault-chat.app"   # a fresh webview too (WebKit keeps it under the real home)
           HOME="$FRESH" "$APP/Contents/MacOS/$EXE" > "$OUT/app.log" 2>&1 &
           PID=$!
           echo "launched $EXE pid $PID"
@@ -344,6 +347,7 @@ jobs:
             local name=$1 home=$2 vault=${3:-} steps res code pid guard t0 src=${STEPS:-$SMOKE}
             steps="$ST/$name.steps.json"; res="$ST/$name.result.json"
             rm -rf "$home"; mkdir -p "$home"
+            rm -rf "$HOME/Library/WebKit/com.vault-chat.app" "$HOME/Library/Caches/com.vault-chat.app" "$HOME/Library/HTTPStorages/com.vault-chat.app"   # a fresh webview too (WebKit keeps it under the real home)
             # LOGIN_ONLY=1: the stand-in `claude` sits in a folder only the login shell's ~/.zprofile puts on PATH (as
             # nvm or a custom install would), and the app starts with launchd's bare PATH, as from Finder or the Dock.
             local pre=""
@@ -465,6 +469,7 @@ jobs:
           APP=$(ls -d src-tauri/target/release/bundle/macos/*.app | head -1)
           EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
           pkill -9 -x "$EXE" 2>/dev/null; sleep 1
+          rm -rf "$HOME/Library/WebKit/com.vault-chat.app" "$HOME/Library/Caches/com.vault-chat.app" "$HOME/Library/HTTPStorages/com.vault-chat.app"   # a fresh webview too (WebKit keeps it under the real home)
           HOME_T="$RUNNER_TEMP/tour-home"; VAULT="$RUNNER_TEMP/Tour Vault"
           rm -rf "$HOME_T" "$VAULT"; mkdir -p "$HOME_T"; cp -R test/selftest/tour-vault "$VAULT"
           jq --arg v "$VAULT" '{vault: $v} + .' test/selftest/tour.json > "$T/steps.json"
@@ -540,6 +545,7 @@ jobs:
           APP=$(ls -d src-tauri/target/release/bundle/macos/*.app | head -1)
           EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
           pkill -9 -x "$EXE" 2>/dev/null; sleep 1
+          rm -rf "$HOME/Library/WebKit/com.vault-chat.app" "$HOME/Library/Caches/com.vault-chat.app" "$HOME/Library/HTTPStorages/com.vault-chat.app"   # a fresh webview too (WebKit keeps it under the real home)
           HOME_T="$RUNNER_TEMP/tutorial-home"; VAULT="$HOME_T/vault-chat"
           rm -rf "$HOME_T"; mkdir -p "$HOME_T"
           jq --arg v "$VAULT" '{vault: $v} + .' test/selftest/tutorial.json > "$T/steps.json"
@@ -563,6 +569,8 @@ jobs:
           took=$(( $(date +%s) - t0 ))
           ls -la "$OUT"/tutorial*.mov >> "$T/video.log" 2>&1
           ls -laR "$VAULT" > "$T/vault-after.txt" 2>&1
+          find "$HOME_T" -maxdepth 7 -type f \( -name '*.log' -o -name '*.jsonl' -o -name '*.json' \) -size -5M -print0 2>/dev/null \
+            | xargs -0 -I{} sh -c 'mkdir -p "$1/$(dirname "${2#$3/}")" && cp "$2" "$1/${2#$3/}"' _ "$T/home" {} "$HOME_T" || true
           {
             echo
             echo "## Recorded first-run tutorial (tutorial.mov, ${took} s, exit $code)"
@@ -621,6 +629,7 @@ jobs:
               lines="$lines$name: skipped%0A"; continue
             fi
             pkill -9 -x "$EXE" 2>/dev/null; sleep 1
+            rm -rf "$HOME/Library/WebKit/com.vault-chat.app" "$HOME/Library/Caches/com.vault-chat.app" "$HOME/Library/HTTPStorages/com.vault-chat.app"   # a fresh webview too (WebKit keeps it under the real home)
             H="$RUNNER_TEMP/plumbing-$name-home"; V="$RUNNER_TEMP/plumbing-$name-vault"
             rm -rf "$H" "$V"; mkdir -p "$H" "$V"
             jq --arg v "$V" '{vault: $v} + .' "test/selftest/$name.json" > "$P/$name.steps.json"
@@ -699,6 +708,7 @@ jobs:
           if [ ! -f test/selftest/update-a.json ]; then note "skipped (the checked release predates test/selftest/update-a.json)"; exit 0; fi
           BUNDLE_DIR=src-tauri/target/release/bundle/macos
           pkill -9 -x vault-chat 2>/dev/null; sleep 1
+          rm -rf "$HOME/Library/WebKit/com.vault-chat.app" "$HOME/Library/Caches/com.vault-chat.app" "$HOME/Library/HTTPStorages/com.vault-chat.app"   # a fresh webview too (WebKit keeps it under the real home)
           VA=$(node -p 'require("./package.json").version')
           VB=$(node -p 'const [a,b,c]=require("./package.json").version.split(".").map(Number); `${a}.${b}.${c+1}`')
           ARCH=$( [ "$(uname -m)" = arm64 ] && echo aarch64 || echo x64 )

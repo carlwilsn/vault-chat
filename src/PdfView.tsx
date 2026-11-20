@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import * as pdfjs from "pdfjs-dist";
-import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { pdfjs } from "./pdfjsSetup";
 import { FileText, ZoomIn, ZoomOut, BoxSelect, X } from "lucide-react";
 import { cn } from "./lib/utils";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
@@ -10,7 +9,6 @@ import { reportScroll } from "./scrollTarget";
 import { decodeTarget, landPdf } from "./viewTarget";
 import { registerZoom } from "./plugins/viewer/zoom";
 
-pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 5;

@@ -2,10 +2,7 @@
 // (server/engine/extraTools.ts PdfRead) and a notebook's cells (voice's Read
 // and NotebookEdit, server/voice.ts).
 import { invoke } from "@tauri-apps/api/core";
-import * as pdfjs from "pdfjs-dist";
-import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-
-pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
+import { pdfjs } from "./pdfjsSetup";
 
 function parsePageSpec(spec: string | undefined, total: number): number[] {
   if (!spec || !spec.trim()) {
