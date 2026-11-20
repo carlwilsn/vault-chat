@@ -366,3 +366,31 @@ has a key). On the box it runs from server/voicePipeline.ts; the Mac has no mana
   "latest"). No new secret, no Actions cron reading box data.
 - Not yet proven: a real Mac updating A → B from the friend manifest (the "install vN, update to vN+1, relaunch" CI
   test of section 5) and the first real `mac-promote` run on GitHub.
+
+## mac-11 … mac-15 (Nov 20): StartJob, sign-in PATH, a real update, PDFs, the new user on video
+All proven together on macOS 15.8.2 arm64 (lab tag mac-lab-15c, run 44672154204: every Mac check passed).
+- **Lab runs before shipping**: a pushed `mac-lab-*` tag (the box's deploy key can push tags; it has no token to
+  dispatch) runs mac-check on THAT unshipped commit (`intel` in the tag: macos-15-intel) and puts `<tag>-proof.zip` on
+  the `mac-lab` prerelease (never latest, no manifest). mac_proof / mac_publish skip tag runs.
+- **StartJob** (mac-11): no systemd on a Mac, so a job is a detached process group (server/engine/jobs.ts portable
+  runner; `VC_JOB_RUNNER=portable` on Linux for tests): pid in the registry, end read from the log's exit line, time
+  limit and JobStop kill the group, `renice` for CPU, `ulimit -v` best effort (macOS refuses: no memory ceiling there).
+  Plumbing self-test: the job writes Darwin into the vault and its end comes back to the chat as a wake turn.
+- **Sign-in PATH** (mac-12): `claude_signin::user_path()` (login shell + Homebrew + ~/.local/bin, once per launch) for
+  the setup-token run, Settings' which-claude probe and the look for an installed CLI. Self-test `signin-login-path`:
+  launchd's bare PATH, `claude` only on ~/.zprofile's PATH. The sign-in module's Rust tests now run on macOS (13 pass).
+- **Update A → B** (mac-13): A and B built from the commit with a throwaway minisign key and a 127.0.0.1 manifest
+  (http allowed for that build only); A in /Applications signs in, saves a note, Install & restart; the steps file is
+  swapped after A read it so the relaunched B (same environment) checks its version, vault, note, app data. Keychain:
+  B read A's token without a prompt **on the CI keychain**; a real login keychain may still prompt (ad-hoc identity).
+- **PDFs** (mac-14): pdf.js 5.6 calls `Map/WeakMap.getOrInsertComputed`, missing in macOS 15's WebKit: every page render
+  threw, no PDF ever drew in the Mac app (and the tour/tutorial failed). src/upsertPolyfill.ts adds it where missing and
+  src/pdfjsSetup.ts gives pdf.js its legacy worker there. Also: WKWebView keeps its storage under the REAL home, not
+  $HOME, so the CI's "fresh HOME" runs shared localStorage (the last vault ended the tutorial's first run before it
+  seeded); every CI launch now wipes it. The fake model calls a host tool the CLI deferred (DeferredToolPlaceholder)
+  by its full name, as a real model does after its tool search (ProposeEdit in Ctrl+K).
+- **New user on video** (mac-15): newuser.mov in mac-proof.zip, one take on the 1440×900@2× screen: the README's agent
+  install typed in Terminal, `open` (LaunchServices, launchd env via `launchctl setenv`), Sign in with Claude, all five
+  tutorial steps. 80/80.
+- Still unproven: the real Authorize click; real login-keychain prompts after an ad-hoc update; a quarantined browser
+  download; Intel; local voice on Mac.
