@@ -3,6 +3,8 @@ import { useStore, type FileEntry } from "./store";
 import { prepareVaultProjects } from "./projects";
 import { refreshOpenFiles } from "./liveReload";
 import { afterVaultReady, bootMark } from "./bootTiming";
+import { boxPullCycle, boxSyncCycle } from "./boxSync/cycle";
+import { shellHasGitBridge, tauriGit } from "./boxSync/git";
 
 // After a pull pulls in commits from another machine, the file tree
 // should reflect new/renamed/deleted files without a manual refresh. We
@@ -733,8 +735,28 @@ export async function boxSyncNow(vault: string, o: { pull?: boolean } = {}): Pro
 /** A send depends on this full cycle, not the scheduler's best-effort kick.
  * Serialized with ordinary cycles; never resolves successfully on a conflict/offline report. */
 export async function pushEditorWrites(vault: string): Promise<void> {
-  const report = await oneCycleAtATime(vault, () => invoke<BoxSyncReport>("vault_box_sync", { vault }));
+  const report = await oneCycleAtATime(vault, () => runBoxCycle(vault, false));
   if (!report.ok || report.error || report.conflict) throw new Error(report.error || "File sync is not complete (resolve the sync conflict before sending)");
+}
+
+/** One box cycle: the bundle's own (src/boxSync) when the installed shell has the git bridge, else the shell's
+ *  vault_box_sync (an installer from before git_bridge.rs). Both return the same report. Switch back: a TypeScript
+ *  cycle that throws (a bug, not a git failure, which comes back as the report's error) hands this and every later
+ *  cycle of this launch to the shell's own, and says so in the app log; `localStorage["vc-box-sync"] = "native"`
+ *  keeps the shell's own for good. */
+let tsCycleOff: string | null = null;
+async function runBoxCycle(vault: string, pull: boolean): Promise<BoxSyncReport> {
+  const native = () => invoke<BoxSyncReport>("vault_box_sync", { vault, pull });
+  let forced = false;
+  try { forced = localStorage.getItem("vc-box-sync") === "native"; } catch { /* no storage */ }
+  if (forced || tsCycleOff || !(await shellHasGitBridge())) return native();
+  try {
+    return await (pull ? boxPullCycle(tauriGit, vault) : boxSyncCycle(tauriGit, vault));
+  } catch (e) {
+    tsCycleOff = e instanceof Error ? e.message : String(e);
+    console.error(`[box sync] the bundle's cycle failed (${tsCycleOff}); the shell's own runs from now on`);
+    return native();
+  }
 }
 
 const vaultKey = (v: string) => v.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
@@ -991,7 +1013,7 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
     inFlight = true;
     set({ running: true });
     try {
-      const r = await oneCycleAtATime(vault, () => invoke<BoxSyncReport>("vault_box_sync", { vault, pull })).catch(
+      const r = await oneCycleAtATime(vault, () => runBoxCycle(vault, pull)).catch(
         (e): BoxSyncReport => ({
           configured: true,
           ok: false,
