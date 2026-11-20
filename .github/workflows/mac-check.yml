@@ -792,6 +792,96 @@ jobs:
           echo "::notice title=Mac update A -> B::$(grep '^update A->B' "$OUT/checks.txt" | tr '\n' '|' | sed 's/%/%25/g')"
           [ "$ok" = 1 ]
 
+      # A new user on the MacBook-like screen, recorded in one go (newuser.mov): the install as the README's agent
+      # section does it, typed out in Terminal (curl of the tested .app.tar.gz, served here as the release would be;
+      # tar into /Applications; setup.json picks ~/vault-chat; `open`), so the app starts from Finder's LaunchServices
+      # with launchd's environment, in this runner's own home (no app data, no Keychain token, no webview storage).
+      # Then the sign-in (Sign in with Claude: `claude setup-token` on a pty; a real Authorize click needs a human,
+      # so a stand-in prints a fake token and the Keychain must hold it) and the first-run tutorial, all five steps,
+      # driven as a new user would (test/selftest/newuser.json; the agent is the real Claude Code CLI on the local
+      # fake model). The test settings reach the app through launchctl setenv, never the Terminal's lines.
+      - name: New user, install to tutorial, recorded
+        id: newuser
+        if: ${{ !cancelled() }}
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          set +e -u
+          OUT="$RUNNER_TEMP/mac-proof"; N="$OUT/newuser"; mkdir -p "$N/serve"
+          note() { echo "new user: $*" | tee -a "$OUT/checks.txt"; }
+          if [ ! -f test/selftest/newuser.json ]; then note "skipped (the checked release predates test/selftest/newuser.json)"; exit 0; fi
+          pkill -9 -x vault-chat 2>/dev/null; sleep 1
+          BUNDLE=$(ls "$RUNNER_TEMP"/mac-update/*.app.tar.gz | head -1)
+          [ -s "$BUNDLE" ] || { note "FAIL (no tested bundle)"; exit 1; }
+          cp "$BUNDLE" "$N/serve/"
+          # A new user: nothing of vault-chat in this home.
+          rm -rf /Applications/vault-chat.app ~/vault-chat "$HOME/Library/Application Support/vault-chat" "$HOME/Library/Application Support/com.vault-chat.app"
+          rm -rf "$HOME/Library/WebKit/com.vault-chat.app" "$HOME/Library/Caches/com.vault-chat.app" "$HOME/Library/HTTPStorages/com.vault-chat.app"
+          security delete-generic-password -s com.vault-chat.app -a service.claude-code > /dev/null 2>&1
+          # `claude` for the app: setup-token is the stand-in (no human to click Authorize); anything else is the real
+          # Claude Code CLI on the local fake model.
+          CLI="$GITHUB_WORKSPACE/node_modules/@anthropic-ai/claude-agent-sdk-darwin-$( [ "$(uname -m)" = arm64 ] && echo arm64 || echo x64 )/claude"
+          mkdir -p "$N/bin"
+          printf '#!/bin/sh\nif [ "$1" = setup-token ]; then exec "%s" "$@"; fi\nunset CLAUDE_CODE_OAUTH_TOKEN\nANTHROPIC_API_KEY=sk-ant-not-a-real-key exec "%s" "$@"\n' \
+            "$GITHUB_WORKSPACE/test/selftest/fake-claude" "$CLI" > "$N/bin/claude"
+          chmod +x "$N/bin/claude"
+          jq --arg v "$HOME/vault-chat" '{vault: $v} + .' test/selftest/newuser.json > "$N/steps.json"
+          node test/selftest/fake-anthropic.mjs 18768 "$N/fake-api.log" > "$N/fake-api.out" 2>&1 & FAKE=$!
+          ( cd "$N/serve" && exec python3 -m http.server 18781 --bind 127.0.0.1 ) > "$N/http.log" 2>&1 & HTTP=$!
+          for kv in "VC_SELFTEST=$N/steps.json" "VC_SELFTEST_OUT=$N/result.json" VC_SELFTEST_TIMEOUT=900 \
+                    ANTHROPIC_BASE_URL=http://127.0.0.1:18768 "VC_CLAUDE_BIN=$N/bin/claude" VC_TITLE_MODEL=off VC_AUTO_TITLE=off; do
+            launchctl setenv "${kv%%=*}" "${kv#*=}"
+          done
+          # What the new user's installing agent runs, shown in Terminal.
+          NAME=$(basename "$BUNDLE")
+          cat > "$N/install.command" <<EOS
+          #!/bin/bash
+          clear
+          printf '\033[1mInstalling vault-chat\033[0m (what your Claude Code runs for you, from the README)\n'
+          run() { printf '\n\033[32m\$\033[0m %s\n' "\$1"; sleep 1.5; eval "\$1"; }
+          run 'curl -fsSL "http://127.0.0.1:18781/$NAME" -o /tmp/vault-chat.app.tar.gz && ls -lh /tmp/vault-chat.app.tar.gz'
+          run 'rm -rf /Applications/vault-chat.app && tar -xzf /tmp/vault-chat.app.tar.gz -C /Applications && ls /Applications | grep vault-chat'
+          run 'mkdir -p ~/Library/Application\ Support/vault-chat && printf "{\"vault\": \"~/vault-chat\"}\n" > ~/Library/Application\ Support/vault-chat/setup.json'
+          run 'open /Applications/vault-chat.app'
+          printf '\nThe app is open. Next: click \033[1mSign in with Claude\033[0m.\n'
+          EOS
+          sed -i '' 's/^          //' "$N/install.command"; chmod +x "$N/install.command"
+          ( n=1; while [ ! -s "$N/result.json" ] && [ "$n" -le 8 ]; do
+              f="$OUT/newuser.mov"; [ "$n" -gt 1 ] && f="$OUT/newuser-$n.mov"
+              screencapture -v -V 180 -x "$f" >> "$N/video.log" 2>&1; n=$((n+1))
+            done ) > /dev/null 2>&1 & REC=$!
+          sleep 3
+          t0=$(date +%s)
+          open -a Terminal "$N/install.command"
+          for _ in $(seq 1 1000); do [ -s "$N/result.json" ] && break; sleep 1; done
+          took=$(( $(date +%s) - t0 ))
+          sleep 4; pkill -9 -x vault-chat 2>/dev/null; pkill -x Terminal
+          for kv in VC_SELFTEST VC_SELFTEST_OUT VC_SELFTEST_TIMEOUT ANTHROPIC_BASE_URL VC_CLAUDE_BIN VC_TITLE_MODEL VC_AUTO_TITLE; do launchctl unsetenv "$kv"; done
+          for _ in $(seq 1 200); do kill -0 "$REC" 2>/dev/null || break; sleep 1; done; kill -9 "$REC" "$FAKE" "$HTTP" 2>/dev/null
+          ls -la "$OUT"/newuser*.mov >> "$N/video.log" 2>&1
+          cp "$HOME/Library/Application Support/vault-chat/status.json" "$N/" 2>/dev/null
+          cp "$HOME/Library/Application Support/vault-chat/first-run.json" "$N/" 2>/dev/null
+          ls -la "$HOME/Library/Application Support/vault-chat/" > "$N/app-dir.txt" 2>&1
+          ls -laR ~/vault-chat > "$N/vault-after.txt" 2>&1
+          if grep -rl "SELFTEST-fake-token" "$N" "$OUT"/checks.txt > "$N/token-leaks.txt" 2>/dev/null; then note "FAIL (the fake token appeared in $(tr '\n' ' ' < "$N/token-leaks.txt"))"; exit 1; fi
+          {
+            echo; echo "## New user: install, sign-in, tutorial (newuser.mov, ${took} s)"; echo
+            echo "| # | step | result | ms | note |"; echo "|---|---|---|---|---|"
+            if [ -s "$N/result.json" ]; then
+              jq -r '.steps[] | "| \(.i) | \(.action) | \(if .ok then "pass" else "FAIL" end) | \(.ms) | \((.error // .note // "") | gsub("[|\\n]"; " ") | .[0:120]) |"' "$N/result.json"
+              jq -r 'if .error then "\nerror: \(.error)" else "" end' "$N/result.json"
+            else echo "| - | no results file | FAIL | - | the app never finished (see newuser/) |"; fi
+          } > "$N/steps.md"
+          cat "$N/steps.md" | tee -a "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          { if [ -s "$N/result.json" ]; then jq -r '.steps[] | "\(.i) \(if .ok then "ok" else "FAIL" end) \(.action) \((.error // "") | .[0:160])"' "$N/result.json"; else echo "no results file"; fi; } \
+            | head -c 60000 | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' > "$N/annotation.txt"
+          echo "::notice title=new user: install, sign-in, tutorial::$(cat "$N/annotation.txt")"
+          if [ -s "$N/result.json" ] && [ "$(jq -r .ok "$N/result.json")" = true ]; then
+            note "pass ($(jq '.steps | length' "$N/result.json") steps, ${took} s, installed from Terminal, signed in, tutorial done)"
+          else
+            note "FAIL ($(jq -r '([.steps[]? | select(.ok | not)][0] | "step \(.i) \(.action): \(.error // "")") // .error // "no results"' "$N/result.json" 2>/dev/null | cut -c1-200))"; exit 1
+          fi
+
       # What each step did, in the proof itself: a failed or timed-out step is
       # named here even when its own files never got written.
       - name: Write status.txt (every step's outcome)
