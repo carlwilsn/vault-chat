@@ -676,6 +676,114 @@ jobs:
           npx tauri bundle --bundles dmg --config '{"bundle":{"createUpdaterArtifacts":false}}'
           ls -la src-tauri/target/release/bundle/dmg/ | tee -a "$RUNNER_TEMP/mac-proof/bundles.txt"
 
+      # A real update on this Mac, A -> B, through the app's own updater (reports/11-mac 5: "install vN, update to
+      # vN+1, relaunch"). After the .dmg, because it builds the .app twice more in the same target dir (the tested
+      # bundle was packed and the .dmg made already). A throwaway minisign key made here (never the release key; it
+      # signs only this lab bundle): A = this commit at its own version, trusting that key, reading a manifest on
+      # 127.0.0.1 (http allowed for this build only), copied to /Applications as an install would; B = the same
+      # commit at version+1, packed as an ad-hoc signed .app.tar.gz (no Apple Developer ID) and signed with the
+      # throwaway key. A signs in (fake claude: the token goes to the Keychain under A's ad-hoc identity), saves a
+      # note, its updater finds B, "Install & restart" is clicked; the self-test steps file is swapped right after A
+      # read it, so the relaunched process (B, same environment) runs test/selftest/update-b.json: B's version, the
+      # same vault and note, then the Keychain token (recorded, not required: an ad-hoc identity changes with every
+      # build). Results: update/ (A's steps from its log, B's result.json, data-diff.txt, update.mov).
+      - name: Update A -> B through the app's own updater
+        id: update
+        if: ${{ !cancelled() }}
+        timeout-minutes: 45
+        shell: bash
+        run: |
+          set +e -u
+          OUT="$RUNNER_TEMP/mac-proof"; U="$OUT/update"; mkdir -p "$U/serve"
+          note() { echo "update A->B: $*" | tee -a "$OUT/checks.txt"; }
+          if [ ! -f test/selftest/update-a.json ]; then note "skipped (the checked release predates test/selftest/update-a.json)"; exit 0; fi
+          BUNDLE_DIR=src-tauri/target/release/bundle/macos
+          pkill -9 -x vault-chat 2>/dev/null; sleep 1
+          VA=$(node -p 'require("./package.json").version')
+          VB=$(node -p 'const [a,b,c]=require("./package.json").version.split(".").map(Number); `${a}.${b}.${c+1}`')
+          ARCH=$( [ "$(uname -m)" = arm64 ] && echo aarch64 || echo x64 )
+          PORT=18780; KEY="$RUNNER_TEMP/update-lab.key"; PASS=lab-throwaway-not-secret
+          npx tauri signer generate --ci -f -p "$PASS" -w "$KEY" > "$U/keygen.log" 2>&1 || { note "FAIL (could not make the throwaway key)"; exit 1; }
+          PUB=$(cat "$KEY.pub")
+          cfg() { jq -nc --arg v "$1" --arg pub "$PUB" --arg url "http://127.0.0.1:$PORT/update-lab.json" \
+            '{version: $v, bundle: {createUpdaterArtifacts: false}, plugins: {updater: {pubkey: $pub, endpoints: [$url], dangerousInsecureTransportProtocol: true}}}'; }
+          t0=$(date +%s)
+          npx tauri build --bundles app --config "$(cfg "$VA")" > "$U/build-a.log" 2>&1 || { tail -n 30 "$U/build-a.log"; note "FAIL (build A)"; exit 1; }
+          APP=$(ls -d $BUNDLE_DIR/*.app | head -1); NAME=$(basename "$APP")
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          [ -n "$EXE" ] && [ -x "$APP/Contents/MacOS/$EXE" ] || { note "FAIL (build A left no app: $(ls $BUNDLE_DIR 2>&1 | tr '\n' ' '))"; exit 1; }
+          # "Install release A": into /Applications, as the .dmg drag or the curl install puts it.
+          rm -rf "/Applications/$NAME"; ditto "$APP" "/Applications/$NAME" || { note "FAIL (could not install A in /Applications)"; exit 1; }
+          npx tauri build --bundles app --config "$(cfg "$VB")" > "$U/build-b.log" 2>&1 || { tail -n 30 "$U/build-b.log"; note "FAIL (build B)"; exit 1; }
+          echo "builds A ($VA) and B ($VB): $(( $(date +%s) - t0 )) s" | tee "$U/builds.txt"
+          codesign -dv "$APP" >> "$U/builds.txt" 2>&1
+          codesign -dv "/Applications/$NAME" >> "$U/builds.txt" 2>&1
+          TGZ="vault-chat_${VB}_${ARCH}.app.tar.gz"
+          COPYFILE_DISABLE=1 tar -czf "$U/serve/$TGZ" -C "$BUNDLE_DIR" "$NAME"
+          npx tauri signer sign -f "$KEY" -p "$PASS" "$U/serve/$TGZ" > "$U/sign.log" 2>&1 || { note "FAIL (could not sign B with the throwaway key)"; exit 1; }
+          jq -n --arg v "$VB" --arg sig "$(cat "$U/serve/$TGZ.sig")" --arg url "http://127.0.0.1:$PORT/$TGZ" \
+            '{version: $v, notes: "Lab update A -> B (mac-check)", pub_date: (now | todate), platforms: {"darwin-aarch64": {signature: $sig, url: $url}, "darwin-x86_64": {signature: $sig, url: $url}}}' > "$U/serve/update-lab.json"
+          ( cd "$U/serve" && exec python3 -m http.server "$PORT" --bind 127.0.0.1 ) > "$U/http.log" 2>&1 & HTTP=$!
+          # The sign-in self-tests above left their token in this user's Keychain under the tested build's identity:
+          # A starts from none, as a first install does.
+          security delete-generic-password -s com.vault-chat.app -a service.claude-code > "$U/keychain-before.txt" 2>&1
+          H="$RUNNER_TEMP/update-home"; VAULT="$RUNNER_TEMP/Update Vault"
+          rm -rf "$H" "$VAULT"; mkdir -p "$H/.local/bin" "$VAULT"; cp test/selftest/fake-claude "$H/.local/bin/claude"
+          jq --arg v "$VAULT" '{vault: $v} + .' test/selftest/update-a.json > "$U/steps.json"
+          jq --arg v "$VAULT" --arg ver "$VB" '{vault: $v} + . | (.steps[] | select(.expect.status.version? != null) | .expect.status.version) |= $ver' test/selftest/update-b.json > "$U/steps-b.json"
+          ( n=1; while [ ! -s "$U/result.json" ] && [ "$n" -le 3 ]; do
+              f="$OUT/update.mov"; [ "$n" -gt 1 ] && f="$OUT/update-$n.mov"
+              screencapture -v -V 180 -x "$f" >> "$U/video.log" 2>&1; n=$((n+1))
+            done ) > /dev/null 2>&1 & REC=$!
+          HOME="$H" VC_SELFTEST="$U/steps.json" VC_SELFTEST_OUT="$U/result.json" VC_SELFTEST_TIMEOUT=600 ANTHROPIC_BASE_URL=http://127.0.0.1:9 \
+            "/Applications/$NAME/Contents/MacOS/$EXE" > "$U/app.log" 2>&1 & A=$!
+          # A reads its steps once, at launch: swap in B's as soon as A's first step started.
+          for _ in $(seq 1 90); do grep -q '^\[selftest\] step' "$U/app.log" && break; sleep 1; done
+          cp "$U/steps-b.json" "$U/steps.json"
+          snap() { (cd "$H/Library/Application Support" 2>/dev/null && find . -type f ! -name '*.log' ! -name 'status.json' ! -name '*.lock' -print0 | sort -z | xargs -0 shasum 2>/dev/null); }
+          # The app data as A left it, once it asked for the install.
+          for _ in $(seq 1 400); do grep -q 'Install & restart ok' "$U/app.log" && break; kill -0 "$A" 2>/dev/null || break; sleep 1; done
+          snap > "$U/data-before.txt"
+          wait "$A"; codeA=$?
+          if [ -s "$U/result.json" ]; then
+            note "FAIL (A ended with its own result, exit $codeA: it never relaunched)"; cp "$U/result.json" "$U/result-a.json"; rm -f "$U/result.json"
+          fi
+          # B: relaunched by A's updater, with A's environment (the swapped steps file).
+          for _ in $(seq 1 400); do [ -s "$U/result.json" ] && break; sleep 1; done
+          sleep 3
+          pkill -9 -x "$EXE" 2>/dev/null
+          kill "$HTTP" 2>/dev/null
+          for _ in $(seq 1 200); do kill -0 "$REC" 2>/dev/null || break; sleep 1; done; kill -9 "$REC" 2>/dev/null
+          snap > "$U/data-after.txt"
+          grep '^\[selftest\]\|updater\|update' "$U/app.log" | head -n 200 > "$U/steps-a.txt"
+          INSTALLED=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "/Applications/$NAME/Contents/Info.plist" 2>/dev/null)
+          STATUS_V=$(jq -r .version "$H/Library/Application Support/vault-chat/status.json" 2>/dev/null)
+          cp "$H/Library/Application Support/vault-chat/status.json" "$U/status-after.json" 2>/dev/null
+          awk '{print $2}' "$U/data-before.txt" | sort > "$U/files-before.txt"; awk '{print $2}' "$U/data-after.txt" | sort > "$U/files-after.txt"
+          lost=$(comm -23 "$U/files-before.txt" "$U/files-after.txt" | tr '\n' ' ')
+          { echo "installed bundle version: $INSTALLED"; echo "status.json version (written by the running app): $STATUS_V"
+            echo "app data files before: $(wc -l < "$U/files-before.txt"), after: $(wc -l < "$U/files-after.txt"), lost: ${lost:-none}"
+            diff "$U/data-before.txt" "$U/data-after.txt"; } > "$U/data-diff.txt"
+          [ -s "$U/result.json" ] && jq -r '.steps[] | "\(.i) \(if .ok then "ok" else "FAIL" end) \(.action) \((.error // "") | .[0:200])"' "$U/result.json" > "$U/steps-b.txt"
+          cat "$U/steps-a.txt" "$U/steps-b.txt" "$U/data-diff.txt" 2>/dev/null | tail -n 80
+          # Required: B relaunched as the new version, same vault and note, no app data lost. Recorded: the Keychain.
+          ok=1
+          [ "$INSTALLED" = "$VB" ] || { note "FAIL (the bundle in /Applications is ${INSTALLED:-unknown}, not $VB)"; ok=0; }
+          [ "$STATUS_V" = "$VB" ] || { note "FAIL (the running app reported ${STATUS_V:-nothing}, not $VB)"; ok=0; }
+          [ -z "$lost" ] || { note "FAIL (app data lost: $lost)"; ok=0; }
+          if [ -s "$U/result.json" ]; then
+            bad=$(jq -r '[.steps[] | select((.ok | not) and (.action | test("keychain") | not))][0] | select(.) | "\(.i) \(.action): \(.error // "")"' "$U/result.json")
+            [ -z "$bad" ] && [ "$(jq '[.steps[] | select(.action | test("keychain") | not)] | length' "$U/result.json")" -ge 6 ] \
+              || { note "FAIL (B: ${bad:-it stopped early})"; ok=0; }
+            kc=$(jq -r '[.steps[] | select(.action | test("keychain"))] | map("\(.action | sub("^.*keychain: "; "")): \(if .ok then "yes" else "NO (\(.error // "" | .[0:120]))" end)") | join("; ")' "$U/result.json")
+            note "keychain after the update: ${kc:-not reached}"
+          else
+            note "FAIL (B wrote no result: it did not relaunch or did not finish)"; ok=0
+          fi
+          [ "$ok" = 1 ] && note "pass ($VA -> $VB through the app's own updater, relaunched, vault and app data kept)"
+          echo "::notice title=Mac update A -> B::$(grep '^update A->B' "$OUT/checks.txt" | tr '\n' '|' | sed 's/%/%25/g')"
+          [ "$ok" = 1 ]
+
       # What each step did, in the proof itself: a failed or timed-out step is
       # named here even when its own files never got written.
       - name: Write status.txt (every step's outcome)

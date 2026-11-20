@@ -1,0 +1,12 @@
+{
+  "steps": [
+    { "waitFor": "#root > *", "timeout": 30000, "label": "B: the relaunched app paints" },
+    { "expect": { "health": "server", "timeout": 120000 }, "label": "B: its own server answers" },
+    { "expect": { "status": { "version": "B_VERSION" }, "timeout": 30000 }, "label": "B: the new version runs" },
+    { "expect": { "status": { "vaultOpen": true, "vault": "$vault" }, "timeout": 30000 }, "label": "B: the same vault is open" },
+    { "expect": { "file": "update-proof.md", "contains": "Written by version A before the update" }, "label": "B: the note from before the update is there" },
+    { "expect": { "text": "update-proof", "timeout": 15000 }, "label": "B: and in the file tree" },
+    { "expect": { "status": { "signedIn": true }, "timeout": 45000 }, "label": "keychain: still signed in after the update" },
+    { "expect": { "key": "service.claude-code", "sha256": "66ddb547ccfee0479946c96bd74fe889128cf227e239d54d700bb9597146c699", "timeout": 45000 }, "label": "keychain: the new build reads the token A stored" }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "updates": true,
+  "steps": [
+    { "waitFor": "#root > *", "timeout": 30000, "label": "A: the window paints" },
+    { "expect": { "health": "server", "timeout": 120000 }, "label": "A: its own server answers" },
+    { "expect": { "status": { "vaultOpen": true, "vault": "$vault" }, "timeout": 30000 }, "label": "A: the vault is open" },
+    { "waitFor": "[data-el=claude-signin-auto]", "timeout": 30000 },
+    { "click": "[data-el=claude-signin-auto]", "label": "A: Sign in with Claude (fake claude)" },
+    { "expect": { "key": "service.claude-code", "sha256": "66ddb547ccfee0479946c96bd74fe889128cf227e239d54d700bb9597146c699", "timeout": 60000 }, "label": "A: the token is in the Keychain" },
+    { "expect": { "status": { "signedIn": true }, "timeout": 30000 }, "label": "A: signed in" },
+    { "waitFor": "[data-el=file-tree]", "timeout": 30000 },
+    { "click": "[data-el=file-tree] button[title='Add to vault']" },
+    { "click": { "text": "New file" } },
+    { "waitFor": "input[placeholder=filename]" },
+    { "type": "update-proof", "into": "input[placeholder=filename]" },
+    { "press": "Enter" },
+    { "waitFor": ".cm-content", "timeout": 15000 },
+    { "click": ".cm-content" },
+    { "type": "Written by version A before the update", "into": ".cm-content" },
+    { "expect": { "file": "update-proof.md", "contains": "Written by version A before the update", "timeout": 15000 }, "label": "A: a note saved in the vault" },
+    { "expect": { "text": "Claude shipped an update", "timeout": 120000 }, "label": "A: its updater found B on the local manifest" },
+    { "wait": 1500 },
+    { "click": { "text": "Install & restart" }, "label": "A: Install & restart" },
+    { "expect": { "file": "never-written-the-relaunch-ends-A-first.md", "timeout": 180000 }, "label": "A: the updater downloads B, checks its signature, replaces the app and relaunches (A ends here)" }
+  ]
+}
