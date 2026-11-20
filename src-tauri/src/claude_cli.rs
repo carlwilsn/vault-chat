@@ -58,7 +58,12 @@ pub fn cli_path(state_dir: &Path) -> PathBuf {
 
 /// `<cli> --version` → what it reported, or None if it did not run.
 fn probe(cli: &Path) -> Option<String> {
-    let out = Command::new(cli)
+    let mut cmd = Command::new(cli);
+    // A Mac's login-shell PATH (claude_signin::user_path): an installed `claude` (Homebrew, nvm, ~/.local/bin) is
+    // found instead of fetched again, and a CLI that runs `node` finds it. Unchanged elsewhere.
+    #[cfg(unix)]
+    cmd.env("PATH", crate::claude_signin::user_path());
+    let out = cmd
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
