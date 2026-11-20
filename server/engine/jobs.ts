@@ -7,10 +7,16 @@
 // limit (RuntimeMaxSec), a memory ceiling and a low CPU/IO share. The server
 // keeps a registry (<logDir>/jobs.json): which conversation started which job,
 // so a finished job wakes its conversation, and at most `max` run at once.
-import { spawnSync } from "node:child_process";
+// A Mac has no systemd: there (and with VC_JOB_RUNNER=portable) the server
+// starts the job as a detached process group of its own (setsid: it outlives
+// turns and server restarts), its pid in the registry; the time limit is
+// enforced by the server's job poll (a kill of the group), the CPU share is a
+// `renice`, the memory ceiling a best-effort `ulimit -v` (macOS refuses it: no
+// memory ceiling there). The environment goes in spawn's env, never its argv.
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, totalmem } from "node:os";
 import { join } from "node:path";
 import { writeAtomic } from "../atomic";
 import { asksAllInterfaces, DEV_HOST_ENV } from "../devProxy";
@@ -35,7 +41,21 @@ export type JobEnv = {
   envDir?: string;
   /** Run a command (tests replace systemd-run / systemctl). */
   exec?: (cmd: string, args: string[]) => { status: number | null; stdout: string; stderr: string };
+  /** How jobs start: systemd (Linux), portable (a detached process group: macOS, other Unix), or
+   *  none (Windows). Default: VC_JOB_RUNNER, else by platform; an injected `exec` means systemd. */
+  runner?: JobRunner;
 };
+
+export type JobRunner = "systemd" | "portable" | "none";
+
+/** The runner for this env: explicit, else VC_JOB_RUNNER, else systemd on Linux (or with a test exec), portable on any other Unix, none on Windows. */
+export function jobRunner(env: Pick<JobEnv, "runner" | "exec">, platform: NodeJS.Platform = process.platform): JobRunner {
+  if (env.runner) return env.runner;
+  const forced = process.env.VC_JOB_RUNNER;
+  if (forced === "portable" || forced === "systemd") return forced;
+  if (env.exec || platform === "linux") return "systemd";
+  return platform === "win32" ? "none" : "portable";
+}
 
 export type JobRec = {
   id: string;
@@ -52,6 +72,8 @@ export type JobRec = {
   /** Trusted host task in this service process; same registry/poll/reap/wake as shell jobs. A restart loses
    * its in-memory permits, so it becomes gone, never an implicitly resumed successful acceptance. */
   kind?: "service";
+  /** Portable runner only: the job's process group (its leader's pid). */
+  pid?: number;
 };
 
 const serviceJobs = new Map<string, { controller: AbortController; state: "running" | "finished" | "stopped" | "timeout"; exit?: number }>();
@@ -241,7 +263,8 @@ export function startJobWith(env: JobEnv, cwd: string, a: { command?: string; na
   const no = (text: string) => ({ text });
   const cmd = String(a?.command ?? "").trim();
   if (!cmd) return no("StartJob needs a command.");
-  if (process.platform !== "linux" && !env.exec) return no("StartJob needs Linux (systemd).");
+  const runner = jobRunner(env);
+  if (runner === "none") return no("StartJob needs a Unix shell (macOS or Linux); it is not available on Windows.");
   const max = env.max ?? (Number(process.env.VC_JOB_MAX) || 4);
   const running = runningJobs(env);
   if (running.length >= max) {
@@ -253,24 +276,31 @@ export function startJobWith(env: JobEnv, cwd: string, a: { command?: string; na
   mkdirSync(env.logDir, { recursive: true });
   const log = join(env.logDir, `${id}.log`);
   const shell = `(${cmd}) > ${JSON.stringify(log)} 2>&1; echo "[exit $?]" >> ${JSON.stringify(log)}`;
-  const dir = envDirOf(env);
-  sweepJobEnvFiles(dir);
-  let envFile: string;
-  try {
-    // A dev server that reads HOST binds to loopback (the box serves it to Carl behind his login: server/devProxy.ts).
-    envFile = writeJobEnvFile(dir, id, { ...DEV_HOST_ENV, ...env.env });
-  } catch (e) {
-    return no(`StartJob failed: could not write its environment file (${(e as Error).message.slice(0, 200)}).`);
+  let pid: number | undefined;
+  if (runner === "portable") {
+    const started = startPortable(env, cwd, shell);
+    if (typeof started === "string") return no(`StartJob failed: ${started}`);
+    pid = started;
+  } else {
+    const dir = envDirOf(env);
+    sweepJobEnvFiles(dir);
+    let envFile: string;
+    try {
+      // A dev server that reads HOST binds to loopback (the box serves it to Carl behind his login: server/devProxy.ts).
+      envFile = writeJobEnvFile(dir, id, { ...DEV_HOST_ENV, ...env.env });
+    } catch (e) {
+      return no(`StartJob failed: could not write its environment file (${(e as Error).message.slice(0, 200)}).`);
+    }
+    let r: ReturnType<ReturnType<typeof exec>>;
+    try {
+      r = exec(env)("systemd-run", jobArgv(env, cwd, id, shell, timeoutS, envFile));
+    } finally {
+      // Started (Type=exec: the file was read) or failed: either way it is no longer needed.
+      rmSync(envFile, { force: true });
+    }
+    if (r.status !== 0) return no(`StartJob failed: ${(r.stderr || r.stdout || "").trim().slice(0, 400)}`);
   }
-  let r: ReturnType<ReturnType<typeof exec>>;
-  try {
-    r = exec(env)("systemd-run", jobArgv(env, cwd, id, shell, timeoutS, envFile));
-  } finally {
-    // Started (Type=exec: the file was read) or failed: either way it is no longer needed.
-    rmSync(envFile, { force: true });
-  }
-  if (r.status !== 0) return no(`StartJob failed: ${(r.stderr || r.stdout || "").trim().slice(0, 400)}`);
-  const job: JobRec = { id, ...(conv ? { conv } : {}), ...(byCarl ? { byCarl } : {}), name, command: cmd.slice(0, 2000), startedAt: Date.now(), timeoutS, state: "running" };
+  const job: JobRec = { id, ...(conv ? { conv } : {}), ...(byCarl ? { byCarl } : {}), name, command: cmd.slice(0, 2000), startedAt: Date.now(), timeoutS, state: "running", ...(pid ? { pid } : {}) };
   writeJobs(env, [...readJobs(env), job]);
   const h = Math.round((timeoutS / 3600) * 10) / 10;
   return { job, text: `Started job ${id} (survives this turn and restarts; stopped after ${h} h). Output: ${log}. When it ends you get a wake turn with its exit code and last lines; JobStatus{id:"${id}"} checks it before that. A dev server it starts shows on Carl's devices with Show {url: "http://localhost:<port>"}; JobStop stops it.${asksAllInterfaces(cmd) ? " Warning: this command binds every interface (0.0.0.0 / a bare --host), so on the tailnet its port answers without Carl's login. Stop it (JobStop) and start it again on localhost (--host 127.0.0.1, or no --host): Show reaches it through the box either way." : ""}` };
@@ -293,6 +323,17 @@ export function probeJob(env: JobEnv, j: JobRec): { state: JobRec["state"]; exit
   const tail = lines.slice(-40).join("\n");
   if (exit) return { state: "finished", exit: Number(exit[1]), tail };
   if (j.state !== "running") return { state: j.state, ...(j.exit !== undefined ? { exit: j.exit } : {}), tail };
+  if (j.pid) {
+    const over = Date.now() - j.startedAt >= j.timeoutS * 1000;
+    if (groupAlive(j.pid)) {
+      if (!over) return { state: "running", tail };
+      // Its time limit: the whole group goes (TERM now, KILL on a later poll if it is still there).
+      killGroup(j.pid, Date.now() - j.startedAt >= j.timeoutS * 1000 + 30_000 ? "SIGKILL" : "SIGTERM");
+      if (groupAlive(j.pid)) return { state: "running", tail };
+      return { state: "timeout", tail };
+    }
+    return { state: over ? "timeout" : "gone", tail };
+  }
   const active = (exec(env)("systemctl", ["--user", "is-active", unitOf(j.id)]).stdout || "").trim();
   if (active === "active" || active === "activating" || active === "reloading") return { state: "running", tail };
   // The unit is gone without an exit line: its time limit, a stop, or a kill (out of memory).
@@ -352,6 +393,14 @@ export function jobStop(env: JobEnv, id: string, conv?: string): string {
     // Leave it running in the durable registry until reapJobs emits its one terminal wake/row update.
     return `Stopped job ${id}. A completed acceptance cannot be cancelled; submit a proven branch to change source instead.`;
   }
+  if (j.pid) {
+    const pid = j.pid;
+    killGroup(pid, "SIGTERM");
+    // A group that ignores TERM gets KILL a moment later.
+    setTimeout(() => groupAlive(pid) && killGroup(pid, "SIGKILL"), 3000).unref();
+    patchJob(env, id, { state: "stopped", endedAt: Date.now() });
+    return `Stopped job ${id}.`;
+  }
   const r = exec(env)("systemctl", ["--user", "stop", unitOf(id)]);
   if (r.status !== 0) return `JobStop failed: ${(r.stderr || r.stdout).trim().slice(0, 300)}`;
   patchJob(env, id, { state: "stopped", endedAt: Date.now() });
@@ -369,4 +418,63 @@ export function reapJobs(env: JobEnv): (JobRec & { tail: string })[] {
     if (j.kind === "service") serviceJobs.delete(serviceKey(env, j.id));
   }
   return out;
+}
+
+/** memoryMax ("75%", "6G", "512M", bytes) as KiB for `ulimit -v`, or null when it cannot be read. */
+export function memoryKiB(v: string, total = totalmem()): number | null {
+  const m = /^\s*(\d+(?:\.\d+)?)\s*(%|[kmgt])?\s*$/i.exec(v);
+  if (!m) return null;
+  const n = Number(m[1]);
+  const unit = (m[2] ?? "").toLowerCase();
+  const bytes = unit === "%" ? (total * n) / 100 : n * ({ "": 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3, t: 1024 ** 4 } as Record<string, number>)[unit]!;
+  const kib = Math.floor(bytes / 1024);
+  return kib > 0 ? kib : null;
+}
+
+/** The portable runner's shell (pure; tests read it): a lower CPU share, a best-effort memory ceiling, then the job. */
+export function portableShell(shell: string, memKiB: number | null): string {
+  const mem = memKiB ? `ulimit -v ${memKiB} 2>/dev/null; ` : "";
+  return `renice -n 10 -p $$ >/dev/null 2>&1; ${mem}${shell}`;
+}
+
+/** Start a job as a detached process group (setsid), its env in spawn's env (never argv). Returns its pid, or why not. */
+function startPortable(env: JobEnv, cwd: string, shell: string): number | string {
+  const memory = env.memoryMax ?? process.env.VC_JOB_MEMORY_MAX ?? "75%";
+  try {
+    statSync(cwd);
+  } catch {
+    return `its working folder ${cwd} does not exist.`;
+  }
+  try {
+    const child = spawn("/bin/sh", ["-c", portableShell(shell, memoryKiB(memory))], {
+      cwd,
+      env: { ...DEV_HOST_ENV, ...env.env },
+      detached: true,
+      stdio: "ignore",
+    });
+    child.on("error", () => { /* reported through pid below / the job's log */ });
+    child.unref();
+    if (!child.pid) return "the shell did not start.";
+    return child.pid;
+  } catch (e) {
+    return (e as Error).message.slice(0, 300);
+  }
+}
+
+/** Is any process of this group still there? */
+function groupAlive(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function killGroup(pid: number, sig: NodeJS.Signals): void {
+  try {
+    process.kill(-pid, sig);
+  } catch {
+    /* gone already */
+  }
 }

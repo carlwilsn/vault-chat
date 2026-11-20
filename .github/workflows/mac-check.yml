@@ -21,9 +21,18 @@ name: mac-check
 # dispatched by hand too (tag + runner), and it runs by itself, on the latest
 # release, when this file changes on main (so a change to the check is proven
 # without waiting for the next release).
+#
+# The lab: a pushed tag mac-lab-<anything> (the box's deploy key can push tags;
+# it has no GitHub token to dispatch) checks THAT commit, unshipped, on
+# macos-15 (or macos-15-intel when the tag says "intel"): a change is proven on
+# real macOS before it is submitted. A lab run publishes nothing to anyone
+# (mac_proof and mac_publish skip tag runs, no secret is read); mac_lab puts its
+# proof zip on the `mac-lab` prerelease (never "latest", no manifest) as
+# <tag>-proof.zip, where the box reads it with plain HTTP.
 on:
   push:
     branches: [main]
+    tags: ["mac-lab-*"]
     paths:
       - ".github/workflows/mac-check.yml"
   workflow_call:
@@ -75,6 +84,11 @@ jobs:
           TAG: ${{ inputs.tag }}
           RUNNER: ${{ inputs.runner }}
         run: |
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_TYPE" = tag ]; then
+            # A lab tag: this very commit, unshipped; Intel only when the tag asks for it.
+            SHA=$GITHUB_SHA; VERSION=lab
+            case "$GITHUB_REF_NAME" in *intel*) RUNNER=macos-15-intel ;; *) RUNNER=macos-15 ;; esac
+          fi
           if [ -z "$SHA$TAG" ]; then TAG=$(gh api "repos/$REPO/releases/latest" --jq .tag_name); fi
           VERSION=${VERSION:-${TAG#v}}
           {
@@ -567,6 +581,59 @@ jobs:
           [ -s "$T/result.json" ] && [ "$(jq -r .ok "$T/result.json")" = true ] && [ "$code" = 0 ] \
             || { echo "::error::the recorded tutorial failed (see tutorial/steps.md)"; exit 1; }
 
+      # Mac-only plumbing the agent relies on, each a short self-test on a fresh HOME with the real Claude Code CLI on
+      # the local fake model (test/selftest/fake-anthropic.mjs): startjob.json asks for a background job; StartJob
+      # has no systemd on a Mac, so it starts a detached process group (server/engine/jobs.ts, portable runner); the
+      # job writes job-proof.txt in the vault (with `uname -s` = Darwin) and its end must come back to the chat as a
+      # wake turn. Results: plumbing/<name>.result.json, one line each in checks.txt and a public annotation.
+      - name: Self-test Mac plumbing (StartJob)
+        id: plumbing
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set +e -u
+          OUT="$RUNNER_TEMP/mac-proof"; P="$OUT/plumbing"; mkdir -p "$P"
+          APP=$(ls -d src-tauri/target/release/bundle/macos/*.app | head -1)
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          CLI="$GITHUB_WORKSPACE/node_modules/@anthropic-ai/claude-agent-sdk-darwin-$( [ "$(uname -m)" = arm64 ] && echo arm64 || echo x64 )/claude"
+          node test/selftest/fake-anthropic.mjs 18767 "$P/fake-api.log" > "$P/fake-api.out" 2>&1 & FAKE=$!
+          sleep 1
+          failed=0; lines=""
+          for name in startjob; do
+            if [ ! -f "test/selftest/$name.json" ]; then
+              echo "plumbing $name: skipped (the checked release predates test/selftest/$name.json)" | tee -a "$OUT/checks.txt"
+              lines="$lines$name: skipped%0A"; continue
+            fi
+            pkill -9 -x "$EXE" 2>/dev/null; sleep 1
+            H="$RUNNER_TEMP/plumbing-$name-home"; V="$RUNNER_TEMP/plumbing-$name-vault"
+            rm -rf "$H" "$V"; mkdir -p "$H" "$V"
+            jq --arg v "$V" '{vault: $v} + .' "test/selftest/$name.json" > "$P/$name.steps.json"
+            HOME="$H" VC_SELFTEST="$P/$name.steps.json" VC_SELFTEST_OUT="$P/$name.result.json" VC_SELFTEST_TIMEOUT=540 \
+              ANTHROPIC_BASE_URL=http://127.0.0.1:18767 ANTHROPIC_API_KEY=sk-ant-not-a-real-key VC_CLAUDE_BIN="$CLI" \
+              VC_TITLE_MODEL=off VC_AUTO_TITLE=off \
+              "$APP/Contents/MacOS/$EXE" > "$P/$name.app.log" 2>&1 & PID=$!
+            ( sleep 600; kill -9 "$PID" ) > /dev/null 2>&1 & GUARD=$!
+            wait "$PID"; code=$?
+            kill "$GUARD" 2>/dev/null
+            cp "$V/job-proof.txt" "$P/$name.job-proof.txt" 2>/dev/null
+            find "$H" -maxdepth 7 -type f \( -name '*.log' -o -name '*.jsonl' -o -name '*.json' \) -size -5M -print0 2>/dev/null \
+              | xargs -0 -I{} sh -c 'mkdir -p "$1/$(dirname "${2#$3/}")" && cp "$2" "$1/${2#$3/}"' _ "$P/$name-home" {} "$H" || true
+            if [ -s "$P/$name.result.json" ] && [ "$(jq -r .ok "$P/$name.result.json")" = true ] && [ "$code" = 0 ]; then
+              line="$name: pass"
+            else
+              why=$(jq -r '(.error // "") as $e | ([.steps[]? | select(.ok | not)][0]) as $s | if $s then "step \($s.i) \($s.action): \($s.error // "")" else $e end' "$P/$name.result.json" 2>/dev/null | tr '\n' ' ' | cut -c1-240)
+              line="$name: FAIL (${why:-no results, exit $code})"; failed=1
+              tail -n 40 "$P/$name.app.log"
+            fi
+            echo "plumbing $line" | tee -a "$OUT/checks.txt"
+            lines="$lines$line%0A"
+            [ -s "$P/$name.result.json" ] && jq -r '.steps[] | "  \(.i) \(if .ok then "ok" else "FAIL" end) \(.action) \((.error // "") | .[0:160])"' "$P/$name.result.json" | tee -a "$P/steps.txt"
+          done
+          kill -9 "$FAKE" 2>/dev/null
+          echo "::notice title=Mac plumbing self-tests::$lines"
+          [ "$failed" = 0 ] || { echo "::error::a Mac plumbing self-test failed (see plumbing/)"; exit 1; }
+
       # After the launch check, so a Finder-scripting hiccup in the DMG layout
       # never hides whether the app itself runs.
       - name: Package the .dmg (local only, uploaded nowhere)
@@ -631,7 +698,7 @@ jobs:
   # with or without its artifact (job.txt/status.txt then say what GitHub saw).
   mac_proof:
     needs: [pick, build_macos]
-    if: always() && needs.pick.result == 'success'
+    if: always() && needs.pick.result == 'success' && github.ref_type != 'tag'
     continue-on-error: true
     timeout-minutes: 75
     runs-on: ubuntu-latest
@@ -729,7 +796,7 @@ jobs:
   # Mac checks" means to the box (server/macFriend.ts).
   mac_publish:
     needs: [pick, build_macos]
-    if: needs.build_macos.outputs.passed == 'true' && needs.build_macos.outputs.arch == 'aarch64'
+    if: needs.build_macos.outputs.passed == 'true' && needs.build_macos.outputs.arch == 'aarch64' && github.ref_type != 'tag'
     continue-on-error: true
     timeout-minutes: 75
     runs-on: ubuntu-latest
@@ -785,3 +852,40 @@ jobs:
         run: |
           gh release upload "v$VERSION" --repo "${{ github.repository }}" --clobber "mac-update/$BUNDLE" "mac-update/$BUNDLE.sig" mac-update/*.dmg
           gh release upload "v$VERSION" --repo "${{ github.repository }}" --clobber mac-update/mac-update.json
+
+  # A lab run's proof (a mac-lab-* tag: an unshipped commit checked on real macOS) where the box can read it
+  # without a GitHub login: <tag>-proof.zip on the `mac-lab` prerelease. Never "latest" (releases/latest skips
+  # prereleases), never a manifest, never an installer: nobody's updater reads it.
+  mac_lab:
+    needs: [pick, build_macos]
+    if: always() && needs.pick.result == 'success' && github.event_name == 'push' && github.ref_type == 'tag'
+    continue-on-error: true
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        id: download
+        continue-on-error: true
+        with:
+          name: macos-launch-proof
+          path: mac-proof
+
+      - name: Put the lab proof on the mac-lab prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          MAC_RESULT: ${{ needs.build_macos.result }}
+          PASSED: ${{ needs.build_macos.outputs.passed }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          mkdir -p mac-proof
+          printf 'lab tag: %s\ncommit: %s\nrunner label: %s\nbuild_macos: %s\nevery check passed: %s\nrun: %s\n' "$TAG" "$GITHUB_SHA" "${{ needs.pick.outputs.runner }}" "$MAC_RESULT" "${PASSED:-no}" "$RUN_URL" > mac-proof/lab.txt
+          (cd mac-proof && zip -qr "../$TAG-proof.zip" .)
+          gh release view mac-lab --repo "$REPO" > /dev/null 2>&1 \
+            || gh release create mac-lab --repo "$REPO" --prerelease --target main --title "Mac lab proofs (not a release)" \
+                 --notes "Proof zips of unshipped commits checked on real macOS (mac-check.yml, mac-lab-* tags). Not an installer; no updater reads this."
+          gh release upload mac-lab --repo "$REPO" "$TAG-proof.zip" --clobber
+          echo "lab proof: https://github.com/$REPO/releases/download/mac-lab/$TAG-proof.zip" | tee -a "$GITHUB_STEP_SUMMARY"
