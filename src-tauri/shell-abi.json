@@ -115,6 +115,10 @@
   "sig": "delete_file(path:String)->Result<(),String>",
   "v": "6042e205"
  },
+ "file_sizes": {
+  "sig": "file_sizes(root:String,paths:Vec<String>)->Vec<Option<u64>>",
+  "v": "6e66d715"
+ },
  "first_run_seed": {
   "sig": "first_run_seed(vault:String)->Result<Seeded,String>",
   "v": "e3af0665"
@@ -122,6 +126,10 @@
  "git_commit_all": {
   "sig": "git_commit_all(vault:String,message:String,agent:Option<bool>,actor:Option<String>,machine:Option<String>,conversation:Option<String>)->Result<Option<String>,String>",
   "v": "03727e47"
+ },
+ "git_dir_write": {
+  "sig": "git_dir_write(cwd:String,rel:String,contents:String)->Result<(),String>",
+  "v": "b0e484ac"
  },
  "git_file_at": {
   "sig": "git_file_at(vault:String,hash:String,relative_path:String)->Result<String,String>",
@@ -138,6 +146,10 @@
  "git_repo_root_for_file": {
   "sig": "git_repo_root_for_file(vault:String,path:String)->Option<String>",
   "v": "c2f5bcb0"
+ },
+ "git_run": {
+  "sig": "git_run(cwd:String,args:Vec<String>,timeout_secs:Option<u64>,input:Option<String>,lease:Option<String>)->Result<GitOut,String>",
+  "v": "e20a7d45"
  },
  "glob_files": {
   "sig": "glob_files(pattern:String,cwd:Option<String>)->Result<Vec<String>,String>",
@@ -238,6 +250,14 @@
  "rename_path": {
   "sig": "rename_path(from:String,to:String)->Result<(),String>",
   "v": "c340376d"
+ },
+ "repo_hold": {
+  "sig": "repo_hold(cwd:String,ms:u64)->Result<String,String>",
+  "v": "5e2de5f5"
+ },
+ "repo_release": {
+  "sig": "repo_release(lease:String)->()",
+  "v": "7573c100"
  },
  "safety_beat": {
   "sig": "safety_beat(url:Option<String>,token:Option<String>,vault:Option<String>,watch_until:u64,healthy:bool,tried:Vec<Tried>)->()",

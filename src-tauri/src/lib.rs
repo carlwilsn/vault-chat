@@ -1,4 +1,5 @@
 mod claude_cli;
+mod git_bridge;
 mod claude_login;
 mod claude_signin;
 mod first_run;
@@ -5831,7 +5832,12 @@ pub fn run() {
             core_loader::core_install,
             core_loader::core_use,
             core_loader::core_events_sent,
-            safety::safety_beat
+            safety::safety_beat,
+            git_bridge::git_run,
+            git_bridge::repo_hold,
+            git_bridge::repo_release,
+            git_bridge::file_sizes,
+            git_bridge::git_dir_write
     ];
     let mut context = tauri::generate_context!();
     // stringify! of a path is `module :: name`: the command's name is its last segment.
