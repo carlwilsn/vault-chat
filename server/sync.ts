@@ -382,7 +382,9 @@ exit 0
   private async pushBox(): Promise<void> {
     const s = this.status;
     try {
-      const r = await runGit(this.vault, ["push", "-q", this.bare, `refs/heads/${this.BRANCH}:refs/heads/${BOX_BRANCH}`], {
+      // --no-verify: a box→bare push never needs client hooks (a stray git-lfs pre-push fails every push); the
+      // bare repo's pre-receive still guards the branches.
+      const r = await runGit(this.vault, ["push", "-q", "--no-verify", this.bare, `refs/heads/${this.BRANCH}:refs/heads/${BOX_BRANCH}`], {
         env: { VC_PUSHER: "box" },
       });
       if (r.code !== 0) throw new Error(`git push ${this.BRANCH === BOX_BRANCH ? BOX_BRANCH : `${this.BRANCH} → ${BOX_BRANCH}`} (exit ${r.code}): ${r.stderr.trim()}`);

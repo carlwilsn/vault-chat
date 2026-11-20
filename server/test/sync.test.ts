@@ -112,6 +112,22 @@ describe("box sync loop", () => {
     expect(git(box, "log", "--merges", "--format=%an", "HEAD").trim().split("\n").filter(Boolean)).not.toContain("vault-chat-agent");
   });
 
+  it("keeps pushing when a client pre-push hook fails (git-lfs installed on the box writes one)", async () => {
+    // With a global `git lfs install`, git-lfs runs as the filter and writes a pre-push hook that fails pushes
+    // to a local bare repo ("does not support the Git LFS locking API").
+    writeFileSync(join(box, ".git", "hooks", "pre-push"), "#!/bin/sh\necho 'git-lfs pre-push' >&2\nexit 1\n", { mode: 0o755 });
+    const big = join(box, "big.bin");
+    const fd = openSync(big, "w");
+    ftruncateSync(fd, 50 * 1024 * 1024 + 1);
+    closeSync(fd);
+    writeFileSync(join(box, "note.md"), "x\n");
+    await sync.runOnce();
+    expect(sync.status.lastError).toBeNull();
+    expect(sync.status.ok).toBe(true);
+    expect(bareRef("refs/heads/box")).toBe(head(box));
+    expect(sh(bare, "git", ["show", "box:big.bin"])).toMatch(/^version https:\/\/git-lfs\.github\.com\/spec\/v1\n/);
+  });
+
   it("commits a file over 50 MB as a Git LFS pointer: the bytes stay in the working copy and the LFS store, no alert", async () => {
     const big = join(box, "data", "huge.bin");
     mkdirSync(join(box, "data"), { recursive: true });
