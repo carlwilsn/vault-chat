@@ -698,8 +698,7 @@ jobs:
           note() { echo "update A->B: $*" | tee -a "$OUT/checks.txt"; }
           if [ ! -f test/selftest/update-a.json ]; then note "skipped (the checked release predates test/selftest/update-a.json)"; exit 0; fi
           BUNDLE_DIR=src-tauri/target/release/bundle/macos
-          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$(ls -d $BUNDLE_DIR/*.app | head -1)/Contents/Info.plist")
-          pkill -9 -x "$EXE" 2>/dev/null; sleep 1
+          pkill -9 -x vault-chat 2>/dev/null; sleep 1
           VA=$(node -p 'require("./package.json").version')
           VB=$(node -p 'const [a,b,c]=require("./package.json").version.split(".").map(Number); `${a}.${b}.${c+1}`')
           ARCH=$( [ "$(uname -m)" = arm64 ] && echo aarch64 || echo x64 )
@@ -711,6 +710,8 @@ jobs:
           t0=$(date +%s)
           npx tauri build --bundles app --config "$(cfg "$VA")" > "$U/build-a.log" 2>&1 || { tail -n 30 "$U/build-a.log"; note "FAIL (build A)"; exit 1; }
           APP=$(ls -d $BUNDLE_DIR/*.app | head -1); NAME=$(basename "$APP")
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          [ -n "$EXE" ] && [ -x "$APP/Contents/MacOS/$EXE" ] || { note "FAIL (build A left no app: $(ls $BUNDLE_DIR 2>&1 | tr '\n' ' '))"; exit 1; }
           # "Install release A": into /Applications, as the .dmg drag or the curl install puts it.
           rm -rf "/Applications/$NAME"; ditto "$APP" "/Applications/$NAME" || { note "FAIL (could not install A in /Applications)"; exit 1; }
           npx tauri build --bundles app --config "$(cfg "$VB")" > "$U/build-b.log" 2>&1 || { tail -n 30 "$U/build-b.log"; note "FAIL (build B)"; exit 1; }
