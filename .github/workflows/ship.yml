@@ -190,6 +190,16 @@ jobs:
 
       - run: npm ci
 
+      # The Tectonic binary is cached by its pinned version (in the script), so
+      # a release only downloads it when the version changes.
+      - name: Cache the Tectonic binary
+        uses: actions/cache@v4
+        with:
+          path: |
+            src-tauri/binaries/tectonic*
+            src-tauri/binaries/VERSION
+          key: tectonic-${{ runner.os }}-${{ hashFiles('scripts/download-tectonic.mjs') }}
+
       - name: Download Tectonic LaTeX engine
         run: node scripts/download-tectonic.mjs
 
@@ -300,6 +310,16 @@ jobs:
           workspaces: src-tauri
 
       - run: npm ci
+
+      # The Tectonic binary is cached by its pinned version (in the script), so
+      # a release only downloads it when the version changes.
+      - name: Cache the Tectonic binary
+        uses: actions/cache@v4
+        with:
+          path: |
+            src-tauri/binaries/tectonic*
+            src-tauri/binaries/VERSION
+          key: tectonic-${{ runner.os }}-${{ hashFiles('scripts/download-tectonic.mjs') }}
 
       - name: Download Tectonic LaTeX engine
         run: node scripts/download-tectonic.mjs

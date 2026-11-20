@@ -4,7 +4,7 @@
 // Called from package.json prebuild / Tauri beforeDev + beforeBuild hooks,
 // and from ship.yml on CI.
 
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
+import { createWriteStream, statSync, existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,8 +32,10 @@ const versionFile = resolve(outDir, "VERSION");
 async function downloadTo(url, dest) {
   const res = await fetch(url, { redirect: "follow" });
   if (!res.ok) throw new Error(`download ${url}: HTTP ${res.status}`);
+  const expected = Number(res.headers.get("content-length") || 0);
   await new Promise((resolveP, reject) => {
     const stream = createWriteStream(dest);
+    stream.on("error", reject);
     res.body.pipeTo(
       new WritableStream({
         write(chunk)  { stream.write(chunk); },
@@ -42,7 +44,13 @@ async function downloadTo(url, dest) {
       }),
     ).catch(reject);
   });
+  // A connection the CDN drops mid-body can end the stream without an error:
+  // a truncated archive would then fail to expand, so it is caught here.
+  const got = statSync(dest).size;
+  if (expected && got !== expected) throw new Error(`download ${url}: got ${got} of ${expected} bytes`);
 }
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function expandArchive(archivePath, extractDir) {
   if (IS_WINDOWS) {
@@ -73,16 +81,33 @@ async function main() {
 
   await mkdir(outDir, { recursive: true });
   const archivePath = resolve(outDir, `tectonic-${TECTONIC_VERSION}.${ARCHIVE_EXT}`);
-  console.log(`downloading ${ARCHIVE_URL}`);
-  await downloadTo(ARCHIVE_URL, archivePath);
-
-  const sha = createHash("sha256").update(readFileSync(archivePath)).digest("hex");
-  console.log(`sha256 ${sha}`);
-
   const extractDir = resolve(outDir, "_extract");
-  await rm(extractDir, { recursive: true, force: true });
-  mkdirSync(extractDir, { recursive: true });
-  expandArchive(archivePath, extractDir);
+  // GitHub's release-asset CDN fails now and then (a reset, a 5xx, a cut-off
+  // body; on Windows also a just-written file held by the scanner): that once
+  // failed every Windows release in a row. Download and expand are retried
+  // together with backoff, so a flaky fetch can't block a release.
+  const ATTEMPTS = 6;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      console.log(`downloading ${ARCHIVE_URL} (attempt ${attempt}/${ATTEMPTS})`);
+      await rm(archivePath, { force: true });
+      await downloadTo(ARCHIVE_URL, archivePath);
+
+      const sha = createHash("sha256").update(readFileSync(archivePath)).digest("hex");
+      console.log(`sha256 ${sha}`);
+
+      await rm(extractDir, { recursive: true, force: true });
+      mkdirSync(extractDir, { recursive: true });
+      expandArchive(archivePath, extractDir);
+      break;
+    } catch (err) {
+      console.error(`attempt ${attempt} failed:`, err, err?.cause ?? "");
+      if (attempt >= ATTEMPTS) throw err;
+      const wait = 2000 * 2 ** (attempt - 1);
+      console.log(`retrying in ${wait / 1000}s`);
+      await sleep(wait);
+    }
+  }
 
   // Both the Windows zip and the Linux tar.gz place the binary at the top
   // level of the archive with the same base name.
