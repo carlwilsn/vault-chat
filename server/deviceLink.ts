@@ -23,6 +23,8 @@ type Link = {
   last: number;
   /** The vault the newest poll follows (the vault open in that app). */
   vault: string | null;
+  /** Every vault a poll follows now, or followed under LIVE_GRACE_MS ago (an app can follow more than one feed). */
+  feeds: Map<string, { open: number; last: number }>;
   /** When the link last came up (first poll after being down). */
   upSince: number | null;
   /** Carl's last message (intent) from this device. */
@@ -41,7 +43,7 @@ const asClient = (c: string | null | undefined): LinkClient | null => (CLIENTS.i
 const linkOf = (c: LinkClient): Link => {
   let l = links.get(c);
   if (!l) {
-    l = { open: 0, last: 0, vault: null, upSince: null, chatLast: 0, missed: 0, missedSince: null, lastMiss: null, lastAnswer: 0 };
+    l = { open: 0, last: 0, vault: null, feeds: new Map(), upSince: null, chatLast: 0, missed: 0, missedSince: null, lastMiss: null, lastAnswer: 0 };
     links.set(c, l);
   }
   return l;
@@ -57,12 +59,19 @@ export function linkOpened(vault: string, client: string | null | undefined, now
   l.open++;
   l.last = now;
   l.vault = vault;
+  const fk = normVault(vault);
+  const f = l.feeds.get(fk) ?? { open: 0, last: 0 };
+  f.open++;
+  f.last = now;
+  l.feeds.set(fk, f);
   let done = false;
   return () => {
     if (done) return;
     done = true;
     l.open = Math.max(0, l.open - 1);
     l.last = Date.now();
+    f.open = Math.max(0, f.open - 1);
+    f.last = l.last;
   };
 }
 
@@ -107,11 +116,18 @@ export const vaultName = (v: string): string => v.split(/[\\/]/).filter(Boolean)
  * PluginRead/Act act on the open one, a change applied in `vault` is not on screen until Carl switches, and the "you"
  * layer says it. The truth is the app's newest feed poll (each names the vault it follows).
  */
-export function laptopElsewhere(vault: string): string | null {
-  const v = linkVault("laptop");
-  if (!v) return null;
-  const norm = (x: string) => x.replace(/[\\/]+$/, "").toLowerCase();
-  return norm(v) === norm(vault) ? null : v;
+export function laptopElsewhere(vault: string, now = Date.now()): string | null {
+  const l = links.get("laptop");
+  const v = l?.vault;
+  if (!v || normVault(v) === normVault(vault)) return null;
+  // It follows this vault's feed too (now, or a moment ago): this vault is on it.
+  const f = l.feeds.get(normVault(vault));
+  if (f && (f.open > 0 || now - f.last < LIVE_GRACE_MS)) return null;
+  return v;
+}
+
+function normVault(x: string): string {
+  return x.replace(/[\\/]+$/, "").toLowerCase();
 }
 
 const iso = (t: number) => new Date(t).toISOString().replace(/\.\d{3}Z$/, "Z");

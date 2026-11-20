@@ -217,6 +217,19 @@ describe("the vault open on the laptop is state every tool uses", () => {
     }
   });
 
+  it("an app that follows this chat's vault's feed too (two feeds) has it on screen: no vault is named", async () => {
+    const own = feedOpened(A, "laptop");
+    const app = laptopOn(B, (s) => (s.type === "show" ? { ok: true, landed: "opened hw.md" } : null));
+    try {
+      const r = await show({ vault: A, vaults, emit: (ev) => void signal(A, ev), ackMs: { laptop: 3000, phone: 3000, board: 3000 } }, { path: "hw.md", where: "laptop" });
+      expect(r.ok).toBe(true);
+      expect(app.seen[0]!.vault).toBeUndefined();
+    } finally {
+      app.close();
+      own();
+    }
+  });
+
   it("Layout openInPane of a file of the open vault goes through", async () => {
     const app = laptopOn(B, (s) => (s.type === "layout" ? { ok: true, landed: "opened", data: { results: [{ op: "openInPane", ok: true }], layout: { panes: [] } } } : null));
     try {
