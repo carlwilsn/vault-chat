@@ -50,7 +50,7 @@ import { appendEntries, newSessionFile } from "../../convlog/piSession";
 import { McpRuntime, type ProcessServices } from "../../mcp/runtime";
 import { CLAUDE_BUILTINS_OFF, ClaudeSession, type SessionSend } from "./session";
 import { authRefused, SIGN_IN_AGAIN } from "./auth";
-import { ruleOnToolUse, WRITING_TOOLS, CALL_WRITE_REASON, externalPath as rulePath } from "./filePolicy";
+import { ruleOnToolUse, heldOnCall, CALL_WRITE_REASON, externalPath as rulePath } from "./filePolicy";
 import { ClaudeSideRuns } from "./side";
 import { memoryUpdate, writeClaudeMd, type MemoryMark } from "./memory";
 import { ClaudeTranslator, type Emit } from "./translate";
@@ -968,9 +968,10 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
             onToolUse: async (tool: string, input: Record<string, unknown>) => {
               // The voice gate first, and it covers Bash too: on a live call the
               // agent delegates a change instead of making it, so a shell line
-              // must not be the way around that. Same answer as vault-chat's own
-              // tools give, in the same words.
-              if (WRITING_TOOLS.includes(tool) && !(await this.h?.fileWrite?.(threadId))) return CALL_WRITE_REASON;
+              // must not be the way around that. A line that only reads (cat,
+              // grep, git log: filePolicy.ts readOnlyShell) still runs, so the
+              // agent can look at logs and files mid-call.
+              if (heldOnCall(tool, input) && !(await this.h?.fileWrite?.(threadId))) return CALL_WRITE_REASON;
               const w = this.o.walls?.() ?? { denyRead: [], denyWrite: [] };
               return ruleOnToolUse(tool, input, { cwd: t.cwd, home: process.env.HOME ?? "/", ...w });
             },

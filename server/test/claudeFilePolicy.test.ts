@@ -6,7 +6,7 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ruleOnToolUse, touchesOf, wallsOf, WRITING_TOOLS } from "../engine/claude/filePolicy";
+import { heldOnCall, readOnlyShell, ruleOnToolUse, touchesOf, wallsOf, WRITING_TOOLS } from "../engine/claude/filePolicy";
 import { tmp, cleanup } from "./helpers";
 
 const root = tmp("filepolicy");
@@ -88,5 +88,68 @@ describe("the voice gate's reach", () => {
     // Reading is not gated: the agent may still look things up mid-call.
     expect(WRITING_TOOLS).not.toContain("Read");
     expect(WRITING_TOOLS).not.toContain("Grep");
+  });
+});
+
+// 2026-11-20: on a live voice call every Bash line was refused, so the agent could not even read a log to answer Carl.
+// A line that only reads runs; anything that could write, run another program or leave the box is still held.
+describe("the shell on a live call: reading runs, writing is held", () => {
+  const reads = [
+    "cat server/logs/app.jsonl | tail -50",
+    "grep -n 'error' ~/.local/state/vault-chat-server/logs/turns.jsonl | tail -20",
+    "ls -la /home/carlwilsn/vc 2>/dev/null",
+    "git -C /home/carlwilsn/vc/projects/vault-chat log --oneline -5",
+    "git status --short && git diff HEAD~1 --stat",
+    "sed -n '1,80p' notes/a.md",
+    "find . -name '*.md' -newer x | head",
+    "jq '.items | length' a.json",
+    "tail -n 100 log.txt | grep -c warn; wc -l log.txt",
+    "awk '{print $1}' a.txt | sort | uniq -c",
+    "git branch -a",
+    "ps aux | grep node",
+  ];
+  const writesOrRuns = [
+    "echo hi > notes/a.md",
+    "cat a >> b",
+    "sed -i 's/a/b/' notes/a.md",
+    "sed -n 'w out.txt' a",
+    "rm -rf notes",
+    "find . -name x -delete",
+    "find . -exec rm {} \\;",
+    "git commit -am x",
+    "git push agents HEAD",
+    "git branch -D old",
+    "git config user.name x",
+    "curl https://example.com",
+    "python3 -c 'print(1)'",
+    "node -e 1",
+    "cat $(ls)",
+    "cat `ls`",
+    "xargs rm < list",
+    "ls | tee out",
+    "sort -o out a",
+    "uniq a out",
+    "awk '{print > \"f\"}' a",
+    "env",
+    "printenv",
+    "FOO=1 ls",
+    "bash -c 'ls'",
+    "(cd x; rm y)",
+    "cat <<EOF > x\nhi\nEOF",
+    "npm install",
+    "",
+  ];
+  it("lines that only read pass", () => {
+    for (const c of reads) expect([c, readOnlyShell(c)]).toEqual([c, true]);
+  });
+  it("lines that write, run another program or leave the box are held", () => {
+    for (const c of writesOrRuns) expect([c, readOnlyShell(c)]).toEqual([c, false]);
+  });
+  it("the call gate: file writers always held; Bash held unless it only reads; readers never", () => {
+    expect(heldOnCall("Bash", { command: "tail -50 logs/app.jsonl" })).toBe(false);
+    expect(heldOnCall("Bash", { command: "echo x > logs/app.jsonl" })).toBe(true);
+    expect(heldOnCall("Write", { file_path: "a.md", content: "" })).toBe(true);
+    expect(heldOnCall("Edit", { file_path: "a.md" })).toBe(true);
+    expect(heldOnCall("Read", { file_path: "a.md" })).toBe(false);
   });
 });
