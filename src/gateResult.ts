@@ -11,7 +11,8 @@
 //                                                              of the vault (server/gateBox.ts): load, routes, tools
 //   settings       app/settings-values (setting.draft)         every value one the box takes, it still waits, it changes
 //                                                              something (server/settings.ts settingsDraftGate)
-//   migration      migrate/<name>                              (not gated yet: Try is its dry run)
+//   migration      migrate/<name>                              its dry run on a copy of the plugin's real state, in the
+//                                                              box (server/gate.ts inBoxGate); Keep stays Carl's
 //   frontend-core  app/core                                    (not gated yet)
 //
 // The verdict (Kayenta's success / marginal / failure): pass (nothing Carl can see changes, nothing new breaks),
@@ -71,13 +72,13 @@ export function partKind(part: string): PartKind | null {
 /**
  * What the gate writes for a verdict (src/changeFlow.ts): a fail is dropped; what Carl asked for applies otherwise; a
  * change he did not ask for applies on a clear pass (nothing on screen changes) and is staged for his Try when something
- * on screen changes (borderline). A settings draft is the agent's own idea and is never set without Carl: it is staged
- * (its "Try it?" line) unless it fails. Pure.
+ * on screen changes (borderline). A settings draft (the agent's own idea) and a migration (it reshapes Carl's data) are
+ * never landed without Carl: staged (their "Try it?" line) unless they fail. Pure.
  */
 export function gateDecision(kind: PartKind, v: { verdict: GateVerdict; reasons: string[] }, asked: boolean): { change: GateDecision; reason: string } {
   const why = v.reasons.join("; ").slice(0, 280);
   if (v.verdict === "fail") return { change: "discard", reason: `the gate failed: ${why}` };
-  if (kind === "settings") return { change: "stage", reason: `the gate passed it; it waits for Carl: ${why}` };
+  if (kind === "settings" || kind === "migration") return { change: "stage", reason: `the gate passed it; it waits for Carl: ${why}` };
   if (asked) return { change: "keep", reason: `asked for; the gate passed it: ${why}` };
   if (v.verdict === "pass") return { change: "keep", reason: `not asked for; the gate passed it: ${why}` };
   return { change: "stage", reason: `not asked for; something on screen changes: ${why}` };

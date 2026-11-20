@@ -27,7 +27,7 @@ import { isMigrationId } from "../src/migrations";
 import { migrationChange, migrationDraft } from "./migrations";
 import { PRESET_DRAFT_FILE, parseDraft } from "../src/appPreset";
 import { PRESET_PART, gateLine } from "../src/gateResult";
-import { gateResults, settingsGate, submitGate } from "./gate";
+import { gateResults, inBoxGate, settingsGate, submitGate } from "./gate";
 
 export const PLUGIN_TOOL = "Plugins";
 
@@ -39,7 +39,7 @@ export const pluginToolSpecs = [
       "Turn a plugin (a vault .html page, or a part of the app that is a plugin: the Notes panel, \"notes\"; or a whole surface: the phone app, \"phone\", the iPad board, \"board\") off or on everywhere it shows (the viewer, chats, the phone, its own link, the app's window), or from a later time (an end date), set its budget, or list what each plugin is. " +
       "Off: it is taken down in every view and the box gives it nothing; on: it comes back. action: status | disable | enable | budget. plugin: its vault path or its file name (\"html-lab\"), or the app part's name (\"notes\"). " +
       "A plugin's draft (<name>.draft.js next to it), a box plugin's draft or the app's preset draft (plugin \"preset\": .vault-chat/app-plugins/preset.draft.json): submit hands it to the one gate (the candidate checked beside what runs now on a copy of real data, in the background; nothing reaches Carl before it passes; asked: true when Carl asked for it: passed, it applies and this chat gets \"Done: <what>\" with Undo, failed, one plain line here says why; asked: false, the default, for a fix he did not ask for: a clear pass applies it silently, a fail drops it, a change he can see waits as \"<what> — Try it?\" in Main). Put a plain one-line `// @vc-change <what>` in the draft: it is the line Carl reads. keep / discard / back write the record his Try / Keep / Undo do (back: switch to the copy the last keep replaced); plugin \"settings-values\": the settings draft (Settings with draft: true; its gate runs before Carl sees it, submit runs it at once). Never move the draft's files yourself. " +
-      "Migration drafts (migrate/<name>): when a change needs a plugin's state in a new shape, write .vault-chat/migrations/<name>.draft.js (an ES module: a `// @vc-change <what>` line, export const plugin = \"app/<name>\" | \"box/<name>\" | a page's vault path, export function migrate(oldState) { return newState } over the whole state object). It waits for Carl as Change ready: Try runs it on a copy of the real state and shows before/after; Keep backs up and writes the new state as new records (old ones stay; Switch back reads them again). You may discard or back it; keep is Carl's. Never rewrite plugin.state records yourself. " +
+      "Migration drafts (migrate/<name>): when a change needs a plugin's state in a new shape, write .vault-chat/migrations/<name>.draft.js (an ES module: a `// @vc-change <what>` line, export const plugin = \"app/<name>\" | \"box/<name>\" | a page's vault path, export function migrate(oldState) { return newState } over the whole state object). Its gate is a dry run on a copy of the real state before Carl sees it (submit runs it at once): one that throws is dropped; then it waits for Carl: Try runs it on a copy of the real state and shows before/after; Keep backs up and writes the new state as new records (old ones stay; Switch back reads them again). You may discard or back it; keep is Carl's. Never rewrite plugin.state records yourself. " +
       "Box plugins (box/<name>): the box's own behaviour, server-side modules .vault-chat/box-plugins/<name>.js exporting activate(box) (box.route(method, path, handler) at /api/v2/box/<name><path>, box.onRecord, box.every, box.readFile, box.state, box.reply, box.log; box.tool({name, description, inputSchema, handler(args, {tried, conv})}) gives you a tool, joining your tools at your next step; box.prompt(text) (at most 1500 characters) is said to you with your turns under the plugin's id; box.hideTool(name) takes one of your vault-chat tools away while it runs (never Plugins); cleanups undone on unload), loaded live by the running box, no release. Write <name>.draft.js, then submit it: the gate loads it and the live copy apart from the box on a copy of the vault and compares what they register and answer (a draft that fails to load, throws or is slow is dropped); a change the agent or his pages would see gets a \"Try it?\" line in Main; Try runs it only for his laptop's requests (header x-vc-try: <version> for your own checks over loopback) and a chat he starts while trying it (only there are its tools, prompt and hidden tools in force), a tried draft cannot write state, and one that throws, fails to load, answers slower than 2 s or whose tool throws or runs over 10 s discards itself; a kept one that does so within 24 h switches back by itself.",
     inputSchema: {
       type: "object",
@@ -206,7 +206,11 @@ function draftAction(vault: string, action: string, a: Record<string, unknown>, 
  *  (Change ready, or app/changes keep on his word), since it reshapes his data. */
 async function migrationAction(vault: string, action: string, a: Record<string, unknown>): Promise<{ ok: boolean; text: string }> {
   const id = pluginIdOf(String(a.plugin ?? "").trim());
-  if (action === "submit") return { ok: false, text: `${id}: a migration has no gate; it waits for Carl as a \"Try it?\" line in Main (Try runs it on a copy of real data)` };
+  if (action === "submit") {
+    const r = await inBoxGate(vault, id, { land: true, again: true });
+    if ("error" in r) return { ok: false, text: r.error };
+    return { ok: r.result.verdict !== "fail", text: `${r.result.verdict === "fail" ? "The gate dropped the migration" : "The migration passed the gate (its dry run) and waits for Carl to keep it (\"Try it?\" in Main)"}: ${r.result.reasons.join("; ")}` };
+  }
   if (action === "keep") return { ok: false, text: `${id}: Carl keeps a migration himself (its line in Main), or PluginAct app/changes keep when he said so` };
   const d = migrationDraft(vault, id);
   if (action === "discard" && !d) return { ok: false, text: `${id} has no draft` };

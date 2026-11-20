@@ -21,6 +21,7 @@ import { masterDir } from "./master";
 import { killTree } from "./commands/proc";
 import { settingsDraftGate } from "./settings";
 import { setPluginChange } from "./supervisor";
+import { migrationChange, migrationDraft, tryMigration } from "./migrations";
 import { askLaptop } from "./driveTool";
 import { controlDown } from "./deviceLink";
 import { checkSteps } from "../src/driveSteps";
@@ -64,33 +65,63 @@ export function gateResults(vault: string, part?: string | null, version?: strin
     .reverse();
 }
 
-// ---------------------------------------------------------------- the settings draft: judged in the box
+// ---------------------------------------------------------------- the gates the box runs itself: settings, migrations
+
+type Judged = { version: string; what: string; verdict: "pass" | "borderline" | "fail"; reasons: string[]; runner: string; data: string };
+
+/** The in-box runners: the settings draft (server/settings.ts settingsDraftGate) and a migration draft (its dry run on
+ *  a copy of the plugin's real state, server/migrations.ts tryMigration: a throw, a timeout or a non-object fails it). */
+async function judgeInBox(vault: string, part: string, version: string | null): Promise<Judged | { error: string }> {
+  const kind = partKind(part);
+  if (kind === "settings") {
+    const j = settingsDraftGate(version);
+    return "error" in j ? j : { ...j, runner: "settings", data: "the box's settings now" };
+  }
+  if (kind === "migration") {
+    const d = migrationDraft(vault, part);
+    if (!d) return { error: `${part} has no migration draft` };
+    if (version && version !== d.version) return { error: `the draft of ${part} changed (now ${d.version})` };
+    const r = await tryMigration(vault, part, d.version);
+    const b = r.body as { error?: string; line?: string };
+    const base = { version: d.version, what: d.what, runner: "migration-dry-run", data: `a copy of ${d.target ?? "its plugin"}'s real state` };
+    if (r.status !== 200) return { ...base, verdict: "fail", reasons: [`the dry run failed: ${b.error ?? r.status}`] };
+    return { ...base, verdict: "borderline", reasons: [`the dry run passed: ${b.line ?? "the state reshaped"}; Carl keeps it himself`] };
+  }
+  return { error: `${part}: not a gate the box runs itself` };
+}
 
 /**
- * The settings gate: the waiting draft (or `version`) judged; with `land`, a fail is discarded by "gate" and a pass
- * waits for Carl (its "Try it?" line in Main). A version the gate already landed is not judged again (`again`: it is).
+ * A gate the box runs at once (settings, migrations): the draft (or `version`) judged; with `land`, a fail is discarded
+ * by "gate" and a pass waits for Carl (its "Try it?" line in Main; neither is ever kept without him). A version the gate
+ * already landed is not judged again (`again`: it is).
  */
-export async function settingsGate(vault: string, o: { asked?: boolean; land?: boolean; conv?: string | null; version?: string | null; again?: boolean } = {}): Promise<{ result: GateResult; fresh: boolean } | { error: string }> {
-  const j = settingsDraftGate(o.version ?? null);
+export async function inBoxGate(vault: string, part: string, o: { asked?: boolean; land?: boolean; conv?: string | null; version?: string | null; again?: boolean } = {}): Promise<{ result: GateResult; fresh: boolean } | { error: string }> {
+  const kind = partKind(part);
+  if (kind !== "settings" && kind !== "migration") return { error: `${part}: not a gate the box runs itself` };
+  const j = await judgeInBox(vault, part, o.version ?? null);
   if ("error" in j) return { error: j.error };
   if (o.land && !o.again) {
-    const done = gateResults(vault, SETTINGS_PART, j.version).find((r) => r.decision !== null);
+    const done = gateResults(vault, part, j.version).find((r) => r.decision !== null);
     if (done) return { result: done, fresh: false };
   }
   const asked = o.asked === true;
-  const result: GateResult = { part: SETTINGS_PART, kind: "settings", version: j.version, verdict: j.verdict, decision: null, reasons: j.reasons, runner: "settings", data: "the box's settings now", what: j.what, asked, ...(o.conv ? { conv: o.conv } : {}), at: Date.now() };
+  const result: GateResult = { part, kind, version: j.version, verdict: j.verdict, decision: null, reasons: j.reasons, runner: j.runner, data: j.data, what: j.what, asked, ...(o.conv ? { conv: o.conv } : {}), at: Date.now() };
   if (o.land) {
-    const d = gateDecision("settings", { verdict: j.verdict, reasons: j.reasons }, asked);
+    const d = gateDecision(kind, { verdict: j.verdict, reasons: j.reasons }, asked);
     if (d.change === "discard") {
-      const w = setPluginChange(vault, { plugin: SETTINGS_PART, change: "discard", version: j.version, by: "gate", reason: d.reason }, "gate");
+      const body = { plugin: part, change: "discard", version: j.version, by: "gate", reason: d.reason };
+      const w = kind === "migration" ? await migrationChange(vault, body, "gate") : setPluginChange(vault, body, "gate");
       if ("error" in w) result.reasons = [...result.reasons, `(the discard was refused: ${w.error})`];
     }
     result.decision = d.change;
     recordGate(vault, result);
-    await gateOutcome(vault, { plugin: SETTINGS_PART, version: j.version, what: j.what, asked, conv: o.conv ?? null, decision: d.change, reasons: j.reasons }).catch(() => {});
+    await gateOutcome(vault, { plugin: part, version: j.version, what: j.what, asked, conv: o.conv ?? null, decision: d.change, reasons: j.reasons }).catch(() => {});
   }
   return { result, fresh: true };
 }
+
+/** The settings draft's gate (inBoxGate for app/settings-values). */
+export const settingsGate = (vault: string, o: Parameters<typeof inBoxGate>[2] = {}) => inBoxGate(vault, SETTINGS_PART, o);
 
 /** GET /api/v2/gate?part=&version= (the results, newest first); POST {part, asked?, land?, conv?}: a gate the box runs
  *  itself (the settings draft; the others run as the Plugins tool's job). */
@@ -98,8 +129,8 @@ export async function gateRoute(vault: string, method: string, query: URLSearchP
   if (method === "GET") return { status: 200, body: { results: gateResults(vault, query.get("part"), query.get("version")).slice(0, Math.max(1, Math.min(200, Number(query.get("limit")) || 20))) } };
   if (method !== "POST") return { status: 405, body: { error: "GET or POST" } };
   const part = String(body?.part ?? "");
-  if (partKind(part) !== "settings") return { status: 400, body: { error: `${part || "(no part)"}: only the settings draft's gate runs in the box; the others run with the Plugins tool's submit (scripts/gate.ts)` } };
-  const r = await settingsGate(vault, { asked: body?.asked === true, land: body?.land !== false, conv: typeof body?.conv === "string" ? body.conv : null, again: true });
+  if (partKind(part) !== "settings" && partKind(part) !== "migration") return { status: 400, body: { error: `${part || "(no part)"}: only the settings draft's and migrations' gates run in the box; the others run with the Plugins tool's submit (scripts/gate.ts)` } };
+  const r = await inBoxGate(vault, part, { asked: body?.asked === true, land: body?.land !== false, conv: typeof body?.conv === "string" ? body.conv : null, again: true });
   return "error" in r ? { status: 409, body: { error: r.error } } : { status: 200, body: r };
 }
 
@@ -154,7 +185,7 @@ function runGateScript(repo: string, args: string[], signal: AbortSignal, log: (
   });
 }
 
-const RUNNER: Record<PartKind, string> = { "ui-plugin": "ui-harness", preset: "preset+ui-harness", "box-plugin": "box-copy", settings: "settings", migration: "migration", "frontend-core": "frontend-core" };
+const RUNNER: Record<PartKind, string> = { "ui-plugin": "ui-harness", preset: "preset+ui-harness", "box-plugin": "box-copy", settings: "settings", migration: "migration-dry-run", "frontend-core": "frontend-core" };
 
 /**
  * Hand one part's candidate to the gate as a background job of the conversation (plugins, the preset, box plugins).

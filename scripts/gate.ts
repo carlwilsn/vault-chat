@@ -16,6 +16,8 @@
 //       apart from the box on a scratch copy of the vault, the same GET routes asked of both)
 //   settings (app/settings-values): the waiting settings draft; runner settings, in the box (POST /api/v2/gate): every
 //       value one the box takes, it still waits and changes something
+//   migrate/<name>: .vault-chat/migrations/<name>.draft.js; runner migration-dry-run, in the box: migrate on a copy of
+//       the plugin's real state (a throw, a timeout or a non-object fails it); a pass waits for Carl's Keep
 // The data: a fresh secret-filtered copy of the box's real data (the ship gate's capture helper, as draft-check), never
 // the vault itself; --synthetic: the harness's synthetic vault (box plugins: an empty scratch vault); --data <dir>: a
 // copy you name (copied again into scratch for a box plugin).
@@ -42,6 +44,7 @@ export function partOf(word: string): { part: string; kind: PartKind; slot: Draf
   const w = word.trim().replace(/\\/g, "/").replace(/^\.\//, "");
   if (/^(?:app\/)?preset$/i.test(w)) return { part: PRESET_PART, kind: "preset", slot: { plugin: PRESET_PART, dir: APP_PLUGIN_LIVE_DIR, live: "preset.json", draft: PRESET_DRAFT_FILE, prev: "preset.prev.json" } };
   if (/^(?:app\/)?settings(?:-values)?$/i.test(w) && w !== "app/settings") return { part: SETTINGS_PART, kind: "settings", slot: null };
+  if (partKind(w) === "migration") return { part: w, kind: "migration", slot: null };
   const box = /^box\/(.+)$/.exec(w) ?? /^\.vault-chat\/box-plugins\/([^/]+?)(?:\.draft)?\.js$/.exec(w);
   if (box) {
     const name = boxPluginName(`box/${box[1]}`);
@@ -155,7 +158,7 @@ export async function judgePart(p: ReturnType<typeof partOf>, o: RunOpts): Promi
   throw new Error(`${p.part}: the ${p.kind} gate runs in the box (POST /api/v2/gate)`);
 }
 
-/** The settings gate runs in the box (it reads the main log and the box's own checks): ask it there. */
+/** The settings and migration gates run in the box (they read its log and its own checks): ask it there. */
 async function boxGateRoute(vault: string, part: string, o: { asked: boolean; land: boolean; conv?: string; box?: string }): Promise<GateResult> {
   const url = `${boxUrl(o.box)}/api/v2/gate?vault=${encodeURIComponent(vault.replace(/[\\/]+$/, "").split(/[\\/]/).pop()!)}`;
   const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ part, asked: o.asked, land: o.land, ...(o.conv ? { conv: o.conv } : {}) }), signal: AbortSignal.timeout(30_000) });
@@ -181,7 +184,7 @@ async function main(argv: string[]): Promise<number> {
   const conv = value("--conv");
   const p = partOf(word);
   let result: GateResult;
-  if (p.kind === "settings") {
+  if (p.kind === "settings" || p.kind === "migration") {
     result = await boxGateRoute(vault, p.part, { asked, land, conv, box: value("--box") });
   } else {
     const num = (f: string) => (value(f) !== undefined ? Number(value(f)) : undefined);

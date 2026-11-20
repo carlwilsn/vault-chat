@@ -135,11 +135,11 @@ export async function offerRoute(vault: string, body: Record<string, unknown> | 
   const version = typeof body?.version === "string" ? body.version : "";
   const c = pendingOnBox(vault).find((p) => p.plugin === plugin && p.version === version);
   if (!c) return { status: 404, body: { error: "no such change waits" } };
-  if (c.plugin === SETTINGS_DRAFT_ID) {
-    // The settings draft is gated here, before Carl sees it (server/gate.ts settingsGate): a fail is dropped by "gate",
-    // a pass gets its "Try it?" line from the gate's own end.
-    const { settingsGate } = await import("./gate");
-    const g = await settingsGate(vault, { land: true, version: c.version });
+  if (c.plugin === SETTINGS_DRAFT_ID || c.migration) {
+    // The settings draft and a migration are gated here, before Carl sees them (server/gate.ts inBoxGate): a fail is
+    // dropped by "gate", a pass gets its "Try it?" line from the gate's own end.
+    const { inBoxGate } = await import("./gate");
+    const g = await inBoxGate(vault, c.plugin, { land: true, version: c.version });
     if ("error" in g) return { status: 409, body: { error: g.error } };
     if (g.result.decision === "discard") return { status: 409, body: { error: `the gate dropped it: ${g.result.reasons.join("; ")}` } };
     if (g.fresh) return { status: 200, body: { ok: true } };

@@ -78,7 +78,7 @@ describe("the one gate", () => {
       expect([d(kind, "pass", true), d(kind, "borderline", true), d(kind, "fail", true)]).toEqual(["keep", "keep", "discard"]);
       expect([d(kind, "pass", false), d(kind, "borderline", false), d(kind, "fail", false)]).toEqual(["keep", "stage", "discard"]);
     }
-    expect([d("settings", "pass", false), d("settings", "borderline", true), d("settings", "fail", false)]).toEqual(["stage", "stage", "discard"]);
+    for (const kind of ["settings", "migration"] as const) expect([d(kind, "pass", false), d(kind, "borderline", true), d(kind, "fail", false)]).toEqual(["stage", "stage", "discard"]);
     expect(gateLineOf('noise\nVC-GATE {"plugin":"app/notes","version":"0000000a","decision":"keep","verdict":"pass","reasons":["ok"]}')).toMatchObject({ part: "app/notes", kind: "ui-plugin", decision: "keep", verdict: "pass" });
     expect(gateLineOf("no line")).toBeNull();
   });
@@ -166,6 +166,27 @@ describe("the one gate", () => {
     // The Plugins tool's submit runs the same gate at once.
     const { pluginToolAsync } = await import("../supervisorTools");
     expect(await pluginToolAsync(A.path, { action: "submit", plugin: "settings-values" })).toMatchObject({ ok: true, text: expect.stringMatching(/passed the gate and waits for Carl/) });
+  });
+
+  it("a migration: its dry run on a copy of the real state is its gate; a draft that throws is dropped before Carl sees it, a good one waits for his Keep", async () => {
+    const dir = join(A.path, ".vault-chat", "migrations");
+    mkdirSync(dir, { recursive: true });
+    const bad = `// @vc-change rows as a list\nexport const plugin = "app/chat-rows";\nexport function migrate(old) { throw new Error("no rows key"); }\n`;
+    writeFileSync(join(dir, "rows.draft.js"), bad);
+    const offered = await post("/api/v2/changes/offer", { plugin: "migrate/rows", version: versionOf(bad) });
+    expect(offered.status).toBe(409);
+    expect(offered.json.error).toMatch(/the gate dropped it: the dry run failed: .*no rows key/);
+    expect(readdirSync(dir)).not.toContain("rows.draft.js");
+    expect((await get("/api/v2/gate?part=migrate/rows")).results[0]).toMatchObject({ kind: "migration", verdict: "fail", decision: "discard", runner: "migration-dry-run" });
+    const good = `// @vc-change rows as a list\nexport const plugin = "app/chat-rows";\nexport function migrate(old) { return { ...old, rows: [] }; }\n`;
+    writeFileSync(join(dir, "rows.draft.js"), good);
+    expect((await post("/api/v2/changes/offer", { plugin: "migrate/rows", version: versionOf(good) })).status).toBe(200);
+    expect((await get(`/api/v2/gate?part=migrate/rows&version=${versionOf(good)}`)).results[0]).toMatchObject({ verdict: "borderline", decision: "stage" });
+    expect(lines.some((l) => l.kind === "offer" && l.plugin === "migrate/rows")).toBe(true);
+    expect(readdirSync(dir)).toContain("rows.draft.js");
+    const { pluginToolAsync } = await import("../supervisorTools");
+    expect(await pluginToolAsync(A.path, { action: "submit", plugin: "migrate/rows" })).toMatchObject({ ok: true, text: expect.stringMatching(/waits for Carl to keep it/) });
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("Plugins submit hands a box plugin's or the preset's draft to scripts/gate.ts as a job; its end is one gate.result record and the chat lines", async () => {
