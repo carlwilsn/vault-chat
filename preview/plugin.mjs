@@ -171,6 +171,15 @@ export function previewPlugin(opts) {
             return void res.end(JSON.stringify({ error: String(e?.message ?? e) }));
           }
         }
+        // A built core bundle the gate boots (VC_PREVIEW_CORE_FILES; ?core=1): its /assets/ under this side's prefix
+        // (serve.mjs serves the same files at the root, where the bundle's own absolute imports land).
+        if (url.pathname.startsWith("/assets/") && process.env.VC_PREVIEW_CORE_FILES) {
+          const dir = resolve(process.env.VC_PREVIEW_CORE_FILES);
+          const p = resolve(dir, "." + decodeURIComponent(url.pathname));
+          if (!p.startsWith(dir + "/") || !existsSync(p) || !statSync(p).isFile()) return void ((res.statusCode = 404), res.end("not in the bundle"));
+          res.setHeader("content-type", { ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".woff2": "font/woff2", ".woff": "font/woff", ".wasm": "application/wasm" }[extname(p).toLowerCase()] ?? MIME[extname(p).toLowerCase()] ?? "application/octet-stream");
+          return void res.end(readFileSync(p));
+        }
         if (url.pathname.startsWith("/__preview/fixture/")) {
           const [, , , base, ...rest] = url.pathname.split("/");
           const p = fixtureFile(decodeURIComponent(base), rest.map(decodeURIComponent).join("/"));
@@ -241,7 +250,10 @@ export function previewPlugin(opts) {
         const tag = `<script type="module" src="/@vc-preview/entry?base=${encodeURIComponent(base)}"></script>\n    `;
         const needle = /<script type="module" src="\/src\/main\.tsx"><\/script>/;
         if (!needle.test(html)) throw new Error("preview: /src/main.tsx entry not found in index.html — the boot can't be injected");
-        return html.replace(needle, (m) => tag + m).replace("<title>vault-chat</title>", `<title>vault-chat · ${opts.label}</title>`);
+        // ?core=1 (the gate's boot of a built core bundle, VC_PREVIEW_CORE_FILES): the bundle's own entry and styles run
+        // after the boot, in place of the source (served at /assets/ by serve.mjs).
+        const core = u.searchParams.get("core") === "1" && process.env.VC_PREVIEW_CORE_FILES ? coreEntry(process.env.VC_PREVIEW_CORE_FILES) : null;
+        return html.replace(needle, (m) => tag + (core ?? m)).replace("<title>vault-chat</title>", `<title>vault-chat · ${opts.label}</title>`);
       },
     },
     resolveId(id, importer) {
@@ -272,6 +284,18 @@ export function previewPlugin(opts) {
       return null;
     },
   };
+}
+
+/** A built core bundle's entry tags (its index.html's module script and stylesheets), or a script that says why not. */
+function coreEntry(dir) {
+  try {
+    const html = readFileSync(join(dir, "index.html"), "utf8");
+    const tags = [...html.matchAll(/<script\b[^>]*\btype="module"[^>]*\bsrc="\/assets\/[^"]+"[^>]*><\/script>|<link\b[^>]*\brel="stylesheet"[^>]*\bhref="\/assets\/[^"]+"[^>]*>/g)].map((m) => m[0]);
+    if (!tags.some((t) => t.startsWith("<script"))) return `<script>console.error("core bundle: no module entry in its index.html")</script>`;
+    return tags.join("\n    ");
+  } catch (e) {
+    return `<script>console.error(${JSON.stringify(`core bundle: ${e?.message ?? e}`)})</script>`;
+  }
 }
 
 export { loadBase };

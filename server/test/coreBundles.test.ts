@@ -299,8 +299,17 @@ describe("core bundles on the box", () => {
     writeFileSync(join(root, torn.version, "files", "assets", "app-t.js"), "console.log(2)");
     expect(await cards()).toEqual([]);
     expect((await results(torn.version))[0]?.reasons.join(" ")).toMatch(/assets\/app-t\.js is not the file its manifest names/);
+    // Its boot (scripts/core-publish.ts bootCheck writes boot.json beside the manifest): one that does not boot is dropped.
+    const dead = build("gate-dead", { "index.html": '<script type="module" src="/assets/app-d.js"></script>', "assets/app-d.js": "throw 1" }, NEEDS, 900, "2026-11-19T00:00:04Z");
+    writeFileSync(join(root, dead.version, "boot.json"), JSON.stringify({ verdict: "fail", reasons: ["errors only with the draft: Uncaught Error: the bundle is broken"] }));
+    expect(await cards()).toEqual([]);
+    expect((await results(dead.version))[0]?.reasons.join(" ")).toMatch(/it does not boot as its source does: errors only with the draft: Uncaught Error: the bundle is broken/);
+    const booted = build("gate-booted", { "index.html": '<script type="module" src="/assets/app-b.js"></script>', "assets/app-b.js": "1" }, NEEDS, 1000, "2026-11-19T00:00:05Z");
+    writeFileSync(join(root, booted.version, "boot.json"), JSON.stringify({ verdict: "pass", reasons: ["no new errors"] }));
+    expect(await cards()).toEqual([booted.version]);
+    expect((await results(booted.version))[0]?.reasons).toContain("it boots as its source does");
     // Submit runs it again on its word.
-    expect((await post("/api/v2/gate", { part: "app/core", version: good.version })).json.result).toMatchObject({ verdict: "pass" });
+    expect((await post("/api/v2/gate", { part: "app/core", version: good.version })).json.result).toMatchObject({ verdict: "pass", reasons: [expect.any(String), "no boot check (built before it)"] });
   });
 });
 

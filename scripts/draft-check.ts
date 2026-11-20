@@ -162,7 +162,7 @@ async function key(cdp: any, sid: string, chord: string): Promise<void> {
   await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, modifiers, windowsVirtualKeyCode: vk }, sid);
 }
 
-async function runSide(cdp: any, url: string, plugin: string, steps: Step[], keys: number, ranBy: "plugin" | "page" = "plugin"): Promise<Side> {
+async function runSide(cdp: any, url: string, plugin: string, steps: Step[], keys: number, ranBy: "plugin" | "page" | "app" = "plugin"): Promise<Side> {
   const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
   const { sessionId: sid } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
   try {
@@ -172,7 +172,12 @@ async function runSide(cdp: any, url: string, plugin: string, steps: Step[], key
     await cdp.send("Page.navigate", { url }, sid);
     let ready = false;
     for (let t = Date.now(); !ready && Date.now() - t < START_MS; await sleep(250)) ready = await evalIn(cdp, sid, `!!(window.__preview && __preview.ready && __preview.stepsDone)`).catch(() => false);
-    if (!ready) throw new Error(`${url}: the app did not start within ${START_MS / 1000} s`);
+    if (!ready) {
+      const errs: string[] = await evalIn(cdp, sid, `(window.__gate && __gate.errors.slice(0, 5)) || []`).catch(() => []);
+      // A whole app that never comes up (a core bundle that does not boot) is that side's verdict, not a harness failure.
+      if (ranBy === "app") return { errors: errs.length ? errs : [`the app did not start within ${START_MS / 1000} s`], text: [], ran: false, typingMs: [] };
+      throw new Error(`${url}: the app did not start within ${START_MS / 1000} s${errs.length ? ` (errors: ${errs.join(" | ").slice(0, 600)})` : ""}`);
+    }
     await sleep(2500); // the copies are read and mounted (the folder is looked at every 2 s)
     for (const s of steps) {
       if (s.wait !== undefined) await sleep(Math.min(30_000, Number(s.wait) || 0));
@@ -206,7 +211,9 @@ async function runSide(cdp: any, url: string, plugin: string, steps: Step[], key
     }
     const g = await evalIn(cdp, sid, `({ errors: __gate.errors.slice(0, 50), ms: __gate.ms.slice(4) })`);
     // A part that is no plugin mount (the preset): it ran when the app started with it.
-    return { errors: g.errors, text, ran: ranBy === "page" ? true : plugin.startsWith("app/") ? copy !== null || ran : ran, typingMs: g.ms, copy } as Side & { copy: string | null };
+    // A whole app (a core bundle): it ran when its plugins mounted (a bundle that never boots mounts none).
+    const mounted: number = ranBy === "app" ? await evalIn(cdp, sid, `document.querySelectorAll('[data-vc-plugin]').length`) : 0;
+    return { errors: g.errors, text, ran: ranBy === "app" ? mounted > 0 : ranBy === "page" ? true : plugin.startsWith("app/") ? copy !== null || ran : ran, typingMs: g.ms, copy } as Side & { copy: string | null };
   } finally {
     await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
   }
@@ -286,15 +293,17 @@ export { GATE_LINE };
 
 /** The UI runner of the gate (scripts/gate.ts, kind ui-plugin and preset). `slot`: a part's files other than a plugin's
  *  (the preset's draft); `ranBy` "page": it ran when the app started with it (no plugin mount to find). */
-export async function draftCheck(o: { plugin: string; vault: string; data?: string; synthetic?: boolean; scenario?: string; steps?: Step[]; keys?: number; runs?: number; port?: number; slot?: DraftSlot; ranBy?: "plugin" | "page"; failText?: RegExp }): Promise<Verdict> {
-  const slot = o.slot ?? slotFor(o.plugin);
-  const ranBy = o.ranBy ?? "plugin";
+export async function draftCheck(o: { plugin: string; vault: string; data?: string; synthetic?: boolean; scenario?: string; steps?: Step[]; keys?: number; runs?: number; port?: number; slot?: DraftSlot; ranBy?: "plugin" | "page" | "app"; failText?: RegExp; core?: { files: string; version: string } }): Promise<Verdict> {
+  // A core bundle (o.core): no slot; the draft's side boots the built bundle in place of the source (preview ?core=1).
+  // The scenario's steps drive the source's store, not the bundle's: both sides start without them (steps=0).
+  const slot = o.core ? { plugin: o.plugin, dir: ".vault-chat/none", live: "none.js", draft: "none.draft.js", prev: "none.prev.js" } : (o.slot ?? slotFor(o.plugin));
+  const ranBy = o.core ? "app" : (o.ranBy ?? "plugin");
   const dir = join(o.vault, slot.dir);
   const read = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : undefined);
-  const draft = read(slot.draft);
+  const draft = o.core ? "" : read(slot.draft);
   if (draft === undefined) throw new Error(`no draft: ${slot.dir}/${slot.draft}`);
-  const live = read(slot.live);
-  const version = versionOf(draft);
+  const live = o.core ? undefined : read(slot.live);
+  const version = o.core ? o.core.version : versionOf(draft);
   const scratch = mkdtempSync(join(tmpdir(), "vc-draft-check-"));
   let serve: ChildProcess | null = null;
   let browser: { close(): Promise<void> } | null = null;
@@ -312,11 +321,11 @@ export async function draftCheck(o: { plugin: string; vault: string; data?: stri
     const base = o.data ? [resolve(o.data)] : real ? [...synthetic, real] : synthetic;
     const bases = {
       "gate-live": { vaultName: "gate", dirs: [...base, lay("live", { [slot.live]: live })] },
-      "gate-draft": { vaultName: "gate", dirs: [...base, lay("draft", { [slot.live]: live, [slot.draft]: draft })] },
+      "gate-draft": { vaultName: "gate", dirs: [...base, lay("draft", o.core ? {} : { [slot.live]: live, [slot.draft]: draft })] },
     };
     const port = o.port ?? (await freePort());
     const [bp, ap] = [await freePort(), await freePort()];
-    serve = spawn(process.execPath, [join(REPO, "preview/serve.mjs"), "--port", String(port), "--before-port", String(bp), "--after-port", String(ap)], { cwd: REPO, env: { ...process.env, VC_PREVIEW_BASES: JSON.stringify(bases) }, stdio: ["ignore", "ignore", "pipe"], detached: true });
+    serve = spawn(process.execPath, [join(REPO, "preview/serve.mjs"), "--port", String(port), "--before-port", String(bp), "--after-port", String(ap)], { cwd: REPO, env: { ...process.env, VC_PREVIEW_BASES: JSON.stringify(bases), ...(o.core ? { VC_PREVIEW_CORE_FILES: o.core.files } : {}) }, stdio: ["ignore", "ignore", "pipe"], detached: true });
     let stderr = "";
     serve.stderr?.on("data", (d) => (stderr = (stderr + d).slice(-4000)));
     await waitHttp(`http://127.0.0.1:${port}/before/`, 120_000).catch((e) => {
@@ -325,12 +334,12 @@ export async function draftCheck(o: { plugin: string; vault: string; data?: stri
     const b = await launch();
     browser = b;
     const sc = o.scenario ?? "conv-a";
-    const url = (base: string, ns: string, extra = "") => `http://127.0.0.1:${port}/before/?scenario=${encodeURIComponent(sc)}&base=${base}&narrate=0&ns=${ns}${extra}`;
+    const url = (base: string, ns: string, extra = "") => `http://127.0.0.1:${port}/before/?scenario=${encodeURIComponent(sc)}&base=${base}&narrate=0&ns=${ns}${o.core ? "&steps=0" : ""}${extra}`;
     const runs = Math.max(1, o.runs ?? 2);
     const sides: { live: Side[]; draft: Side[] } = { live: [], draft: [] };
     for (let r = 0; r < runs; r++) {
       sides.live.push(await runSide(b.cdp, url("gate-live", "gate-a"), slot.plugin, o.steps ?? [], o.keys ?? 24, ranBy));
-      sides.draft.push(await runSide(b.cdp, url("gate-draft", "gate-b", `&try=${encodeURIComponent(`${slot.plugin}@${version}`)}`), slot.plugin, o.steps ?? [], o.keys ?? 24, ranBy));
+      sides.draft.push(await runSide(b.cdp, url("gate-draft", "gate-b", o.core ? "&core=1" : `&try=${encodeURIComponent(`${slot.plugin}@${version}`)}`), slot.plugin, o.steps ?? [], o.keys ?? 24, ranBy));
     }
     const merge = (l: Side[]): Side => ({ errors: l.flatMap((s) => s.errors), text: l[l.length - 1]!.text, ran: l.every((s) => s.ran), typingMs: l.flatMap((s) => s.typingMs) });
     const v = judge(slot.plugin, version, merge(sides.live), merge(sides.draft), o.failText);

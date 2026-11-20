@@ -196,7 +196,19 @@ export function judgeCore(stateDir: string, version: string): { verdict: "pass" 
   } catch {
     /* reported above as missing */
   }
-  return reasons.length ? { verdict: "fail", reasons: reasons.slice(0, 10), commit: m.commit } : { verdict: "pass", reasons: [`${m.files.length} files as the manifest says; index.html loads only its own files; box API ${m.needs.boxApi}`], commit: m.commit };
+  // Its boot (scripts/core-publish.ts bootCheck, written by the build before it counts as built): the bundle in place
+  // of the source of its own commit in the harness. A bundle built before the boot check, or one it could not run on,
+  // is judged on its files alone (said so).
+  let boot = "no boot check (built before it)";
+  try {
+    const b = JSON.parse(readFileSync(join(coreRoot(stateDir), version, "boot.json"), "utf8")) as { verdict?: string | null; reasons?: string[]; error?: string };
+    if (b.verdict === "fail") reasons.push(`it does not boot as its source does: ${(b.reasons ?? []).join("; ").slice(0, 400)}`);
+    else if (b.verdict === "pass" || b.verdict === "borderline") boot = `it boots as its source does${b.verdict === "borderline" ? ` (${(b.reasons ?? []).join("; ").slice(0, 200)})` : ""}`;
+    else boot = `the boot check could not run: ${String(b.error ?? "").slice(0, 200)}`;
+  } catch {
+    /* no boot.json */
+  }
+  return reasons.length ? { verdict: "fail", reasons: reasons.slice(0, 10), commit: m.commit } : { verdict: "pass", reasons: [`${m.files.length} files as the manifest says; index.html loads only its own files; box API ${m.needs.boxApi}`, boot], commit: m.commit };
 }
 
 export function pendingCore(stateDir: string, changes: readonly ChangeRecord[], on = true, commitsOf: (commit: string) => CoreCommit[] = () => []): BoxPendingChange | null {

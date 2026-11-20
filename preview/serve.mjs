@@ -146,6 +146,15 @@ const server = createServer(async (req, res) => {
       res.setHeader("content-type", "application/json");
       return void res.end(JSON.stringify((await r.json()).bases));
     }
+    // A built core bundle the gate boots (scripts/draft-check.ts coreBootCheck, VC_PREVIEW_CORE_FILES: its files/ dir):
+    // its absolute /assets/… references land here, from this origin, as the native loader serves them at the app's.
+    if (url.pathname.startsWith("/assets/") && process.env.VC_PREVIEW_CORE_FILES) {
+      const dir = resolve(process.env.VC_PREVIEW_CORE_FILES);
+      const file = resolve(dir, "." + decodeURIComponent(url.pathname));
+      if (!file.startsWith(dir + "/") || !existsSync(file) || !statSync(file).isFile()) return void ((res.statusCode = 404), res.end("not in the bundle"));
+      res.setHeader("content-type", { ...MIME, ".woff2": "font/woff2", ".woff": "font/woff", ".wasm": "application/wasm", ".mjs": "text/javascript" }[extname(file)] ?? "application/octet-stream");
+      return void res.end(readFileSync(file));
+    }
     let p = url.pathname === "/" ? "/index.html" : url.pathname;
     // /tour/* is the Tour's data (preview/tour/); everything else is the shell.
     const dir = p.startsWith("/tour/") ? resolve(HERE, "tour") : resolve(HERE, "shell");
