@@ -40,7 +40,7 @@ export type Expected = {
   images?: ItemImage[];
   /** Original trusted request binding, retained if the native queue is reordered. */
   hostContext?: string;
-  /** The surface Carl sent it from (laptop, phone, board, voice): two surfaces can talk in one thread at once. */
+  /** The surface Carl sent it from (laptop, phone, voice): two surfaces can talk in one thread at once. */
   device?: string;
 };
 

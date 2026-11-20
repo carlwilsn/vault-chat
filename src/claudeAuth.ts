@@ -1,15 +1,15 @@
 // Whether the AI features are on, and the one prompt every blocked AI surface
-// shows. Pure: no React, no store, no box client — the phone and the board
-// import this too, and neither can carry the desktop's store. The laptop's live
+// shows. Pure: no React, no store, no box client — the phone
+// imports this too, and cannot carry the desktop's store. The laptop's live
 // answer (the hook, the health cache) is in src/claudeAuthLive.ts.
 //
 // vault-chat runs on Claude Code and nothing else, so "signed in" is a single
 // question with a single answer, and every surface that needs the agent asks it
 // here. Carl, after installing a build that gated the whole window: "the app
 // should work without claude, only the AI features should be blocked by sign
-// in." So nothing in this module hides a vault, a file, the editor or the
-// board — it only decides whether the chat composer, voice and the board's and
-// phone's AI actions are live.
+// in." So nothing in this module hides a vault, a file or the editor
+// — it only decides whether the chat composer, voice and the phone's AI
+// actions are live.
 //
 // Two sources, either of which is enough:
 //  - this laptop's keychain (src/keychain.ts KEY.claudeCode, mirrored into the
@@ -56,7 +56,7 @@ export function claudeAuthOf(laptopKey: string | null | undefined, vault: string
 }
 
 /**
- * What a client with no keychain of its own (the phone, the board) makes of a
+ * What a client with no keychain of its own (the phone) makes of a
  * health body: true / false as the box reports, and null while it has not been
  * read. A box that reports no Claude Code at all blocks nothing — it may be an
  * older box, and blocking its AI over a field it never sends would be a lie.
@@ -75,12 +75,11 @@ export const SIGN_IN_BUTTON = "Sign in with Claude";
 
 /**
  * One sentence per surface, reworded for what is blocked there. Shared with the
- * phone and the board (which draw their own markup) so the words cannot drift.
+ * phone (which draws its own markup) so the words cannot drift.
  */
 export const SIGN_IN_LINE = {
   chat: "Sign in with Claude to chat",
   voice: "Sign in with Claude to talk",
-  board: "Sign in with Claude to ask about this board",
   phone: "Sign in with Claude to chat",
 } as const;
 
@@ -89,7 +88,7 @@ export type SignInSurface = keyof typeof SIGN_IN_LINE;
 /**
  * Where the sign-in itself has to happen. The token comes out of a pty running
  * `claude setup-token` and goes into the laptop's own keychain
- * (src-tauri/src/claude_login.rs), so the phone and the board cannot finish it:
+ * (src-tauri/src/claude_login.rs), so the phone cannot finish it:
  * they say this instead of offering a button that would dead-end.
  */
 export const SIGN_IN_ELSEWHERE = "Sign in on your laptop: vault-chat → Settings.";

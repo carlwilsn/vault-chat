@@ -1,5 +1,5 @@
 // What may go into a log line (the laptop's app-log and client events, the box's
-// turn and board logs, the diag bundle). Logs carry names, ids, counts, timings
+// turn, voice and app logs, the diag bundle). Logs carry names, ids, counts, timings
 // and outcomes — never a key, a token, or what a file or a message says. Every
 // writer passes its line through here; the diag bundle passes everything
 // through again on the way out.
@@ -11,7 +11,7 @@
 //   safeData:   a value deep-copied for a log — a field named like a secret is
 //     dropped to "[redacted]", a field named like content (text, content,
 //     prompt, args, result …) becomes its length, other strings are capped.
-// Pure: no I/O; shared by the laptop, the board's server route and the box.
+// Pure: no I/O; shared by the laptop, the phone and the box.
 
 const SECRET_KEY = /^(?:authorization|cookie|set-cookie|password|passwd|passphrase|secret|token|apikey|api_key|accesstoken|access_token|refreshtoken|refresh_token|privatekey|private_key|signedurl|signed_url|conversationtoken|conversation_token|.*(?:secret|token|password|apikey|api_key)|.*key)$/i;
 const CONTENT_KEY = /^(?:text|content|contents|prompt|preamble|args|arguments|input|output|result|partialresult|delta|body|database64|dataurl|imagedataurl|html|markdown|messages|transcript|summary|recap|thinking|reasoning|context|instructions|code|command|patch|diff|old_string|new_string|oldtext|newtext|value)$/i;

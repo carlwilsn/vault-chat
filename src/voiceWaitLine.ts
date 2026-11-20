@@ -1,5 +1,5 @@
 // The voice's waiting line: one thin line under the voice bars, shown only while the voice is waiting on work, and the
-// same everywhere (laptop titlebar, popout, phone, iPad board). Carl's model: wait until the line is complete and the
+// same everywhere (laptop titlebar, popout, phone). Carl's model: wait until the line is complete and the
 // voice talks back. So it never lies:
 //   • determinate only when real steps exist (the agent's plan: done / total), never a made-up percentage;
 //   • otherwise indeterminate, its pace the only hint of how long: quick (seconds) or slow (a minute or more);

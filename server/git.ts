@@ -149,54 +149,33 @@ async function changedPaths(repo: string): Promise<{ path: string; deleted: bool
 /** A commit carries at most this much new content: a bigger set of new files is spread over the next
  * commits (the laptop uploads the history to GitHub a few commits at a time, so no commit may be huge). */
 export const COMMIT_MAX_BYTES = 100 * 1024 * 1024;
-/** A board being drawn on is committed once it has been still this long… */
-export const BOARD_QUIET_MS = 2 * 60_000;
-/** …or this long after its first uncommitted change, whichever comes first. */
-export const BOARD_MAX_HOLD_MS = 10 * 60_000;
 /** Archives and compressed backups (by name). The box never commits a new one: bulk output a job makes belongs
  * in the vault's work area (`~/agent-work/<vault>/`), not in the synced, backed-up vault. */
 export const ARCHIVE_RE = /\.(zip|tar|tgz|tbz2?|txz|gz|bz2|xz|zst|7z|rar)$/i;
-const BOARD_PATH_RE = /^boards\/([^./][^/]*)\//;
 
 export type StageResult = {
   /** Over 50 MB: staged as Git LFS pointers (their bytes stay in the box's LFS store). */
   lfs: string[];
   /** New archives: never staged (excluded for good); they belong in the work area. */
   archives: string[];
-  /** Board folders (`boards/<slug>`) being drawn on: held out of this commit. */
-  heldBoards: string[];
   /** Files left for the next commit so this one stays under COMMIT_MAX_BYTES of new content. */
   deferred: string[];
 };
 
 export type StageOpts = {
-  /** Hold boards that are being drawn on (the sync's autosave). Off: commit them now. */
-  holdBoards?: boolean;
-  now?: number;
-  quietMs?: number;
-  maxHoldMs?: number;
   commitMaxBytes?: number;
 };
-
-/** When each held board was first seen with uncommitted changes (key: repo + board folder). */
-const boardPendingSince = new Map<string, number>();
 
 /** Stage what the box commits, by these rules (caller holds the repo lock):
  * - a file over 50 MB is staged as a Git LFS pointer (its own line in .gitattributes' managed block; a deleted,
  *   renamed or shrunk one loses it), its bytes in the box's LFS store;
  * - a new archive (.zip, .tar.gz, …) is never staged and is excluded for good: backups and exports go in the
  *   work area outside the vault;
- * - with `holdBoards`, a board folder whose files changed in the last 2 min is held back, at most 10 min from
- *   its first held change: an evening's drawing is a commit per pause (or per 10 min), not one per 15 s
- *   autosave (each a whole board.json and overview.png);
  * - the commit's new content stays under 100 MB: the rest waits for the next commit;
  * - the conversation log is never staged. */
 export async function stageForCommit(repo: string, gitArgs: string[] = [], opts: StageOpts = {}): Promise<StageResult> {
-  const now = opts.now ?? Date.now();
-  const quietMs = opts.quietMs ?? BOARD_QUIET_MS;
-  const maxHoldMs = opts.maxHoldMs ?? BOARD_MAX_HOLD_MS;
   const budget = opts.commitMaxBytes ?? COMMIT_MAX_BYTES;
-  const res: StageResult = { lfs: [], archives: [], heldBoards: [], deferred: [] };
+  const res: StageResult = { lfs: [], archives: [], deferred: [] };
   const excludes: string[] = [];
   // The conversations are the server's event log, never synced by git: the log stays out of it
   // for good, and the older conversation files (tracked from before) are never staged (nor deleted).
@@ -231,44 +210,12 @@ export async function stageForCommit(repo: string, gitArgs: string[] = [], opts:
   // Every file over 50 MB has its line before `add` runs the filter; the lines of deleted, renamed or shrunk
   // ones go (a change to .gitattributes `add -A` stages with the rest). File reads only.
   syncLfsAttributes(repo, res.lfs);
-  // Boards being drawn on.
-  const boards = new Map<string, { last: number; live: boolean }>();
-  for (const c of changes) {
-    const m = BOARD_PATH_RE.exec(c.path);
-    if (!m || out.has(c.path)) continue;
-    const dir = `boards/${m[1]}`;
-    const b = boards.get(dir) ?? { last: 0, live: false };
-    const st = sizes.get(c.path);
-    if (st) {
-      b.last = Math.max(b.last, st.mtime);
-      b.live = true;
-    }
-    boards.set(dir, b);
-  }
-  const key = lockKey(repo);
-  for (const [dir, b] of boards) {
-    const k = `${key}|${dir}`;
-    // A board that was deleted or moved away (only removals) is committed at once.
-    if (!opts.holdBoards || !b.live) {
-      boardPendingSince.delete(k);
-      continue;
-    }
-    const since = boardPendingSince.get(k) ?? now;
-    if (now - b.last < quietMs && now - since < maxHoldMs) {
-      boardPendingSince.set(k, since);
-      res.heldBoards.push(dir);
-      excludes.push(dir);
-    } else {
-      boardPendingSince.delete(k);
-    }
-  }
-  const held = (p: string) => res.heldBoards.some((d) => p.startsWith(d + "/"));
   // The commit's budget of new content, in path order; at least one file always goes.
   let total = 0;
   let any = false;
   for (const c of [...changes].sort((a, b) => (a.path < b.path ? -1 : 1))) {
     const st = sizes.get(c.path);
-    if (!st || out.has(c.path) || held(c.path)) continue;
+    if (!st || out.has(c.path)) continue;
     if (any && total + st.size > budget) {
       res.deferred.push(c.path);
       excludes.push(c.path);

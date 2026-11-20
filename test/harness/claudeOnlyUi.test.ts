@@ -217,7 +217,7 @@ test("signed out, an AI surface draws one sentence, the command, the token field
 
 test("each surface says what is blocked there, in its own words", async () => {
   for (const [surface, line] of Object.entries(SIGN_IN_LINE)) {
-    if (surface === "phone" || surface === "board") continue; // drawn by those apps, not React
+    if (surface === "phone") continue; // drawn by the phone app, not React
     const html = await render(createElement(ClaudeSignInPrompt, { surface: surface as "chat" }), { box: false });
     assert.match(html, new RegExp(line), `${surface}: ${line}`);
     assert.match(html, new RegExp(`data-surface="${surface}"`));
@@ -275,7 +275,7 @@ function sources(dir: string, out: string[] = []): string[] {
 }
 
 const uiSources = (): Array<[string, string]> =>
-  [...sources(join(root, "src")), ...sources(join(root, "phone", "src")), ...sources(join(root, "board", "src"))].map((abs) => [
+  [...sources(join(root, "src")), ...sources(join(root, "phone", "src"))].map((abs) => [
     relative(root, abs).replace(/\\/g, "/"),
     readFileSync(abs, "utf8"),
   ]);
@@ -323,13 +323,11 @@ test("the sign-in prompt is drawn only by AI surfaces: no full-window gate", () 
   }
 });
 
-test("the phone and the board block their AI the same way, with the same words", () => {
+test("the phone blocks its AI with the shared words", () => {
   const boot = readFileSync(join(root, "phone", "src", "boot.ts"), "utf8");
-  const pill = readFileSync(join(root, "board", "src", "voicePill.ts"), "utf8");
-  // Both take the sentence from the shared table rather than writing their own.
+  // It takes the sentence from the shared table rather than writing its own.
   assert.match(boot, /SIGN_IN_LINE/, "the phone says the shared sentence");
-  assert.match(pill, /SIGN_IN_LINE\.board/, "the board says the shared sentence");
-  // And both only block on an outright false: a dropped health read must not
+  // And it only blocks on an outright false: a dropped health read must not
   // take the composer or the mic away.
   assert.match(boot, /claudeSignedIn === false/, "the phone blocks only on a definite no");
   const pages = readFileSync(join(root, "phone", "src", "shell", "Pages.tsx"), "utf8");

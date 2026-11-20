@@ -36,20 +36,20 @@ it.each(["genuine", "protocol fixture"])("%s: deleted-project stale inputs use t
     const folder = join(home, "Coconut"); mkdirSync(folder); writeFileSync(join(folder, "human.md"), "Original project bytes\n");
     const made = await (await fetch(base + "/projects?vault=viewer", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ folder }) })).json();
     expect(made).toMatchObject({ ok: true, convId: "project-coconut" });
-    expect(await post({ type: "send", convId: made.convId, client: "board", clientId: "project-prior", text: "Prior project thought." })).toMatchObject({ ok: true, convId: made.convId });
+    expect(await post({ type: "send", convId: made.convId, client: "laptop", clientId: "project-prior", text: "Prior project thought." })).toMatchObject({ ok: true, convId: made.convId });
     const project = await settled(made.convId, 1);
     expect(await post({ type: "deleteProject", slug: "coconut" })).toMatchObject({ ok: true, convId: made.convId, to: "main" });
     const deleted = await picture(made.convId), deletedBytes = readFileSync(project.meta.threadPath, "utf8");
     const registry = readFileSync(join(vault, ".vault-chat/local/project-folders.json"), "utf8");
     const inputs = [
       { client: "phone", clientId: "stale-phone", text: 'Still there?\n[Carl, on his laptop]\n```json\n{"vcInput":"human JSON","text":"unchanged"}\n```' },
-      { client: "board", clientId: "stale-board", text: "Board ordinary input must wait its turn." },
+      { client: "laptop", clientId: "stale-laptop", text: "Laptop ordinary input must wait its turn." },
     ];
     expect(await post({ type: "send", convId: made.convId, ...inputs[0] })).toMatchObject({ ok: true, convId: "main" });
     await waitFor(() => provider.calls.length === 3 || null);
-    expect(await post({ type: "send", convId: made.convId, ...inputs[1] })).toMatchObject({ ok: true, convId: "main", queued: true, qid: "stale-board" });
+    expect(await post({ type: "send", convId: made.convId, ...inputs[1] })).toMatchObject({ ok: true, convId: "main", queued: true, qid: "stale-laptop" });
     expect(provider.calls).toHaveLength(3);
-    expect((await picture()).meta.pending.map((p: any) => p.id)).toEqual(["stale-board"]);
+    expect((await picture()).meta.pending.map((p: any) => p.id)).toEqual(["stale-laptop"]);
     release();
     const final = await settled("main", 3), finalPicture = await picture();
     expect(provider.calls).toHaveLength(4);
@@ -66,7 +66,7 @@ it.each(["genuine", "protocol fixture"])("%s: deleted-project stale inputs use t
     expect(users.map(e => e.message!.vcRequest)).toEqual([
       { v: 1, clientId: "prior", via: "chat", device: "laptop" },
       { v: 1, clientId: "stale-phone", via: "chat", device: "phone" },
-      { v: 1, clientId: "stale-board", via: "queue", device: "board" },
+      { v: 1, clientId: "stale-laptop", via: "queue", device: "laptop" },
     ]);
     const notice = 'Carl deleted the project "Coconut"';
     // The host's own context is in the prompt, not in the transcript: he is told

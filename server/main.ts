@@ -252,7 +252,7 @@ async function main(): Promise<void> {
       if (voiceLiveIn(vault, now)) return { looking: true, where: "a voice call" };
       const mine = readActivity(vault, now, ACTIVITY_MS).filter((e) => e.device || e.kind === "voice");
       const last = mine[mine.length - 1];
-      return last ? { looking: true, where: `${last.device === "board" ? "iPad" : (last.device ?? "voice")} activity ${Math.round((now - last.ts) / 1000)} s ago` } : { looking: false, where: null };
+      return last ? { looking: true, where: `${last.device ?? "voice"} activity ${Math.round((now - last.ts) / 1000)} s ago` } : { looking: false, where: null };
     },
   });
   // An alert (box sync, the self-updater, the laptop's sync) is a failure he must act on: it waits
@@ -344,9 +344,9 @@ async function main(): Promise<void> {
       // A live voice session counts as a run: the updater waits for busy.runs == 0
       // (server/deploy/vault-chat-update.sh), so it never restarts under someone talking.
       // It also waits for busy.inputs == 0: no surface Carl used in the last 10 minutes
-      // (server/presence.ts: board saves, typed messages, voice, the phone, `input`: seconds ago).
+      // (server/presence.ts: typed messages, voice, the phone, `input`: seconds ago).
       // And for busy.workers == 0: background workers outlive the turn that started them
-      // (Claude Code's subagents and shells, BoardMake workers), across every vault's engine.
+      // (Claude Code's subagents and shells, background workers), across every vault's engine.
       busy: (() => {
         const agent = activeRuns().length;
         const voice = activeVoiceSessions();
@@ -495,7 +495,7 @@ async function main(): Promise<void> {
     console.log(`[vault-chat-server] ${sig} — shutting down`);
     // pi's processes die with the server: not a crash. Their turns stay "running" for the next boot to resume once.
     engineShuttingDown();
-    // Background work (Claude Code's workers and shells, BoardMake) ends with this server's processes: each chat gets
+    // Background work (Claude Code's workers and shells) ends with this server's processes: each chat gets
     // a durable wake, so the next server resumes its workers right after it takes over and says so in the chat.
     try {
       const cut = engine.saveCutWork?.() ?? 0;
@@ -503,7 +503,7 @@ async function main(): Promise<void> {
     } catch (e) {
       console.error(`[vault-chat-server] could not save the running background work: ${(e as Error).message}`);
     }
-    // A write in flight (a board save, a message) finishes and gets its answer; long polls are cut (their clients
+    // A write in flight (a message, a note) finishes and gets its answer; long polls are cut (their clients
     // reconnect). Nothing is left half-open: whatever is still running at the grace's end is closed, so its client
     // sees an error and retries.
     // Long polls answer first (an empty answer, never a cut connection): their clients simply ask again.

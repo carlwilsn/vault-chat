@@ -19,12 +19,11 @@ vi.mock("../../src-tauri/assets/phone.html", () => ({ default: "<html><body>the 
 vi.mock("../../src-tauri/assets/voice.html", () => ({ default: "" }));
 vi.mock("../../src-tauri/assets/icon-apple-touch.png", () => ({ default: "" }));
 vi.mock("vc:phone-app", () => ({ default: {} }));
-vi.mock("vc:board-app", () => ({ default: {} }));
 
 const CARL = "carl@example.test";
 const TOKEN = "test-only-phone-token";
 
-describe("Change ready on the phone and the board: the box's list of drafts", () => {
+describe("Change ready on the phone: the box's list of drafts", () => {
   const home = mkdtempSync(join(tmpdir(), "vc-chg-"));
   const A: VaultScope = { name: "main-vault", path: join(home, "a"), bare: "", main: true };
   let srv: Server | undefined;
@@ -71,9 +70,9 @@ describe("Change ready on the phone and the board: the box's list of drafts", ()
     return { status: r.status, json: (await r.json().catch(() => ({}))) as any };
   };
 
-  it("nothing waiting: an empty list (the phone and the board draw nothing)", async () => {
+  it("nothing waiting: an empty list (the phone draws nothing)", async () => {
     expect((await changes("phone")).body).toEqual({ surface: "phone", changes: [] });
-    expect((await changes("board")).body).toEqual({ surface: "board", changes: [] });
+    expect((await changes("board")).status).toBe(400);
     expect((await changes("toaster")).status).toBe(400);
   });
 
@@ -105,17 +104,14 @@ describe("Change ready on the phone and the board: the box's list of drafts", ()
     expect(phone[2]!.code).toBe(phoneDraft);
     expect(phone[2]!.version).toBe(versionOf(phoneDraft));
     expect(phone[0]!.code).toBeUndefined();
-    // The board gets no code: it tries nothing.
-    expect((await changes("board")).body.changes.every((c) => c.code === undefined)).toBe(true);
 
     // Keep on the phone (the same route the laptop's Keep posts): the files move, the record is written, the list drops it.
     const kept = await post("/api/v2/supervisor", { plugin: ".vault-chat/plugins/rows.js", change: "keep", version: versionOf(phoneDraft), by: "carl" });
     expect(kept.status).toBe(200);
-    // Discard on the board, and the settings draft kept from the board.
+    // Discard, and the settings draft kept.
     expect((await post("/api/v2/supervisor", { plugin: "app/notes", change: "discard", version: phone[0]!.version, by: "carl" })).status).toBe(200);
     expect((await post("/api/v2/supervisor", { plugin: "app/settings-values", change: "keep", version: phone[3]!.version, by: "carl" })).status).toBe(200);
     expect((await changes("phone")).body.changes.map((c) => c.plugin)).toEqual([".vault-chat/plugins/pen.js"]);
-    expect((await changes("board")).body.changes.map((c) => c.plugin)).toEqual([".vault-chat/plugins/pen.js"]);
 
     // The records the surfaces read the list again on.
     for (const t of ["plugin.change", "setting.draft", "setting.change"]) expect(changesMayMove({ type: "signal", signal: { type: t } })).toBe(true);
@@ -125,13 +121,13 @@ describe("Change ready on the phone and the board: the box's list of drafts", ()
   });
 
   it("a surface turned off gets its line and no changes; on again, the list comes back", async () => {
-    expect((await post("/api/v2/supervisor", { plugin: "app/board", state: "stopped" })).status).toBe(200);
-    const off = (await changes("board")).body;
+    expect((await post("/api/v2/supervisor", { plugin: "app/phone", state: "stopped" })).status).toBe(200);
+    const off = (await changes("phone")).body;
     expect(off.changes).toEqual([]);
-    expect(off.off).toMatch(/iPad board is turned off/);
-    // The phone is still on: it still sees the draft.
+    expect(off.off).toMatch(/phone app is turned off/);
+    // The laptop still sees the draft.
+    expect((await changes("laptop")).body.changes).toHaveLength(1);
+    expect((await post("/api/v2/supervisor", { plugin: "app/phone", state: "running" })).status).toBe(200);
     expect((await changes("phone")).body.changes).toHaveLength(1);
-    expect((await post("/api/v2/supervisor", { plugin: "app/board", state: "running" })).status).toBe(200);
-    expect((await changes("board")).body.changes).toHaveLength(1);
   });
 });

@@ -6,7 +6,7 @@ import { isDirectLoopback, tailnetLoginOk, tokenOk } from "../auth";
 import type { BoundTools } from "./tools";
 import { createMcpHttpHandler } from "./http";
 
-export type ExternalContext = { conversation: string | null; device: "laptop" | "phone" | "board" };
+export type ExternalContext = { conversation: string | null; device: "laptop" | "phone" };
 export type ExternalMcpOptions = {
   version: string;
   /** Explicit private service Host values, never a caller-derived allowlist. */
@@ -33,7 +33,7 @@ export function createExternalMcpHandler(options: ExternalMcpOptions) {
       const vault = url.searchParams.get("vault");
       const conversation = url.searchParams.get("conversation");
       const device = url.searchParams.get("device");
-      if (!vault || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(vault) || !conversation || !["laptop", "phone", "board"].includes(device ?? "")) return null;
+      if (!vault || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(vault) || !conversation || !["laptop", "phone"].includes(device ?? "")) return null;
       if (conversation !== "none" && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(conversation)) return null;
       const binding = await options.bind(vault, { conversation: conversation === "none" ? null : conversation, device: device as ExternalContext["device"] });
       return binding ? {

@@ -1,8 +1,8 @@
-// Carl's input, by surface: when each one last sent something he did (a board save, a typed message or answer,
+// Carl's input, by surface: when each one last sent something he did (a typed message or answer,
 // a voice line or tool, a note, a steer). The health's busy signal counts a surface used in the last
 // INPUT_BUSY_MS, so the self-updater (deploy/vault-chat-update.sh: it waits for busy.runs == 0, at most its 2 h
 // cap) never restarts the box under someone at work — on 2026-10-22 it restarted it 5 times in 62 minutes, once
-// with a board save in flight. Background traffic (long polls, logs, telemetry, pushes, the laptop's git sync) is
+// with a save in flight. Background traffic (long polls, logs, telemetry, pushes, the laptop's git sync) is
 // not input.
 
 /** A surface used this recently keeps the box busy. */
@@ -10,7 +10,7 @@ export const INPUT_BUSY_MS = 10 * 60_000;
 
 const lastInput = new Map<string, number>();
 
-/** Carl did something on `surface` (board, typed, voice, phone, notes, …). */
+/** Carl did something on `surface` (typed, voice, phone, notes, …). */
 export function noteInput(surface: string, now = Date.now()): void {
   lastInput.set(surface, now);
 }
@@ -28,7 +28,6 @@ export function recentInput(now = Date.now()): Record<string, number> {
  */
 export function inputSurface(method: string, path: string, client?: string | null): string | null {
   if (method !== "POST") return null;
-  if (/^\/api\/v1\/boards(\/|$)/.test(path)) return "board";
   // A call started, and each spoken turn the pipeline brings (server/voiceBrain.ts).
   if (path === "/v1/chat/completions" || path === "/api/v1/brain/call") return "voice";
   if (path === "/api/v2/intent" || path === "/message" || path === "/answer" || path === "/kill" || path === "/api/v1/side" || /^\/api\/v1\/conversations\/[^/]+\/subagents\//.test(path)) {

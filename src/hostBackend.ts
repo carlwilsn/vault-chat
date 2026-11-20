@@ -158,14 +158,6 @@ export const appHostBackend: HostBackend = {
   },
   shortcut: (id) => (SHORTCUTS.some((s) => s.id === id) ? shortcutHint(id as ShortcutId) : ""),
   speak: (text) => speakLocal(text),
-  async boardPaired() {
-    const { boxGet, boxLinkFor } = await import("./boxChat");
-    const link = await boxLinkFor(useStore.getState().vaultPath).catch(() => null);
-    if (!link) return false;
-    const h = (await boxGet(link, "/api/v1/health", 5_000).catch(() => null)) as { links?: { board?: { control?: string; lastAnswer?: string | null; chatLast?: string | null } } } | null;
-    const b = h?.links?.board;
-    return !!b && (b.control === "up" || !!b.lastAnswer || !!b.chatLast);
-  },
 };
 
 /** One line in the local voice (POST /api/v1/brain/say: Kokoro af_heart on the voice pipeline, as WAV), played here.

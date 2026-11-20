@@ -1,5 +1,5 @@
 // Change ready beyond the laptop (reports/07 corrected model, point 4): the drafts waiting for Carl, as the box sees
-// them, for the surfaces that do not hold the vault's files (the phone app, the iPad board). The laptop folds the same
+// them, for the surfaces that do not hold the vault's files (the phone app). The laptop folds the same
 // thing itself from its synced copies (src/changeReady.ts pendingChanges); here it is read from the files on the box
 // and the records in its log, so every surface shows the same list:
 //   - an app plugin's draft (.vault-chat/app-plugins/<name>.draft.js) and the app's preset draft (preset.draft.json),
@@ -11,7 +11,7 @@
 // Carl's word goes through the same POST /api/v2/supervisor as the laptop's (a plugin.change / setting.change record),
 // so a decision on any surface clears the card on every one.
 //
-// GET /api/v2/changes?surface=phone|board: {changes, off?}. A surface turned off (server/surfaces.ts) gets its line and
+// GET /api/v2/changes?surface=phone: {changes, off?}. A surface turned off (server/surfaces.ts) gets its line and
 // no changes. `tryOn` names where Try can run a draft: the laptop for every plugin draft (and a settings draft with a
 // window setting), the phone for a vault plugin whose draft names the phone (meta devices); then the phone's answer
 // carries the draft's code, which its plugin host mounts in place of the live copy on that phone only.
@@ -180,7 +180,7 @@ export async function undoLastRoute(vault: string, body: Record<string, unknown>
 /** GET /api/v2/changes (Carl's devices: the box's own auth has passed). */
 export function changesRoute(vault: string, query: URLSearchParams): { status: number; body: unknown } {
   const s = query.get("surface") || "laptop";
-  if (s !== "laptop" && s !== "phone" && s !== "board") return { status: 400, body: { error: "surface: laptop, phone or board" } };
+  if (s !== "laptop" && s !== "phone") return { status: 400, body: { error: "surface: laptop or phone" } };
   if (s !== "laptop") {
     const off = surfaceOff(vault, s as Surface);
     if (off) return { status: 200, body: { surface: s, off, changes: [] } };

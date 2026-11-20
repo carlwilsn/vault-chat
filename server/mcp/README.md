@@ -118,7 +118,7 @@ The existing HTTP server mounts standard Streamable HTTP at:
 https://thinkbox.tailbb647d.ts.net/mcp?vault=vault-chat&device=laptop&conversation=none
 ```
 
-Use `device=laptop|phone|board`. `conversation` must be a real explicit thread
+Use `device=laptop|phone`. `conversation` must be a real explicit thread
 ID or literal `none`; missing context is rejected, never defaulted to main or
 the foreground chat. Unknown vaults/conversations are rejected. The session's
 scope includes authenticated identity, vault, device and conversation; changing
@@ -150,8 +150,7 @@ explicitly allowed by the adapter (the external endpoint allows none).
 `main.ts` resolves the named vault and `Engine.mcpBinding` binds existing catalog
 and handlers. External tools cannot borrow a live turn's question, proof gate,
 worker or compaction ownership. They receive an actionable refusal instead.
-Show defaults to the bound device; board sending requires the external client's
-explicit request, not ambient screen presence. Private services are **not**
+Show defaults to the bound device. Private services are **not**
 mounted at this external endpoint.
 
 External read/write/edit/grep/find/ls use those same pi factories with explicit
@@ -227,13 +226,13 @@ as a URL parameter or cookie. Both still require the Serve-vouched Tailscale log
 **What an outside client can do.** Every vault-chat tool a side thread may use:
 Show, Layout, Screen, Act, Drive, Timing, LaptopBuild, PluginRead/PluginAct
 (every live plugin's offers: file tree, notes panel, vault plugins), Settings,
-the Notes tools, BoardLook/BoardSend/BoardInbox, Lookup/PdfRead/PdfPages,
+the Notes tools, Lookup/PdfRead/PdfPages,
 ListConversations/ReadConversation/PostToConversation (hand work to a chat),
 Rename/Delete/RestoreConversation, ListProjects/OpenProject/RestoreProject,
 JobList/JobStatus, Notify, RecentActivity, SearchHistory, Catalog, Plugins,
 WebFetch, Cost, RecordUI (browser-only), and the `vault-chat://context/you`
 resource. Not listed (they need an owning
-vault-chat turn): AskUser, SubmitChange, TodoWrite, BoardMake, StartJob, JobStop,
+vault-chat turn): AskUser, SubmitChange, TodoWrite, StartJob, JobStop,
 JobSteer, ScheduleWake, Compact; nor Carl's vault tools or a shell (above).
 The outside client's own file and shell tools are its own, on its own machine.
 

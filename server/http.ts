@@ -51,15 +51,12 @@ import PHONE_PAGE_INLINE from "../src-tauri/assets/phone.html";
 import PHONE_SW_INLINE from "../src-tauri/assets/phone-sw.js?raw";
 import ICON_PNG_INLINE from "../src-tauri/assets/icon-apple-touch.png";
 import PHONE_APP from "vc:phone-app";
-import BOARD_APP from "vc:board-app";
-import { addAsset, assetFile, copyAssets, createBoard, deleteBoard, getBoard, getHistory, listBoards, overviewPng, renameBoard, saveBoard, saveBoardPictures } from "./boards";
-import { addToBoard, getEntry, listEntries, markAdded, markRead, partFile, sendEntry, type InboxCtx } from "./inbox";
 import { boxLogs } from "./boxLogs";
 import { ackShow, feedOpened } from "./show";
 import { chatSeen, linkStates } from "./deviceLink";
 import { hostBuildHistory, lastHostBuild, recordHostBuild } from "./hostBuild";
 import { noteAttention, pushGate } from "./pushGate";
-import { boardLogPost, boxDiag } from "./diag";
+import { boxDiag, clientLogPost } from "./diag";
 import { noteUserLine } from "./signal";
 import { deliveryChallenge, deliveryRepos, laptopTransportIdentity, reportLaptopHealth } from "./changeDelivery";
 import { recordLaptopPerf, readLaptopPerf } from "./laptopPerf";
@@ -187,26 +184,7 @@ function phonePage(): string | Buffer {
   const app = PHONE_APP["index.html"];
   return app ? Buffer.from(app, "base64") : asset("phone.html", PHONE_PAGE_INLINE);
 }
-/** The whiteboard (board/): its own manifest, so a Home Screen launch opens /board fullscreen. */
-const BOARD_MANIFEST = `{
-  "name": "Whiteboard",
-  "short_name": "Board",
-  "start_url": "/board",
-  "scope": "/board",
-  "display": "fullscreen",
-  "orientation": "any",
-  "background_color": "#ececef",
-  "theme_color": "#ececef",
-  "icons": [
-    { "src": "/apple-touch-icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
-  ]
-}`;
-const BOARD_NOT_BUILT = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Whiteboard</title><p style="font:15px system-ui;padding:24px">The whiteboard isn't in this build (build:server builds it with <code>--board-app</code>).</p>`;
-function boardPage(): string | Buffer {
-  const app = BOARD_APP["index.html"];
-  return app ? Buffer.from(app, "base64") : BOARD_NOT_BUILT;
-}
-/** The cookie the phone shell provisions (voice_server.rs resp_phone_shell): the board shares it. */
+/** The cookie the phone shell provisions (voice_server.rs resp_phone_shell). */
 function tokenCookie(): Record<string, string> {
   const t = phoneToken();
   return t ? { "Set-Cookie": `vc_token=${t}; Path=/; HttpOnly; SameSite=Lax; Max-Age=34560000` } : {};
@@ -214,7 +192,7 @@ function tokenCookie(): Record<string, string> {
 
 const ASSET_MIME: Record<string, string> = {
   ".js": "text/javascript; charset=utf-8",
-  ".mjs": "text/javascript; charset=utf-8", // the board's pdf.js worker
+  ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".woff2": "font/woff2",
   ".woff": "font/woff",
@@ -371,14 +349,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     // voice_server.rs:276 resp_phone_shell — provisions the token cookie.
     return send(res, 200, "text/html; charset=utf-8", phonePage(), tokenCookie());
   }
-  // The whiteboard's shell: the same model as the phone's (token-free page, the cookie provisioned).
-  if ((path === "/board" || path === "/board/") && method === "GET") {
-    const off = surfaceOff(cfg.vault, "board");
-    if (off) return send(res, 200, "text/html; charset=utf-8", surfaceOffPage("board", off), { "Cache-Control": "no-store" });
-    return send(res, 200, "text/html; charset=utf-8", boardPage(), tokenCookie());
-  }
-  if (path === "/board/manifest.webmanifest") return send(res, 200, "application/manifest+json", BOARD_MANIFEST);
-  for (const [prefix, files] of [["/phone/", PHONE_APP], ["/board/", BOARD_APP]] as const) {
+  for (const [prefix, files] of [["/phone/", PHONE_APP]] as const) {
     if (path.startsWith(`${prefix}assets/`) && method === "GET") {
       // An app's hashed files: immutable, so cached for good.
       const f = files[path.slice(prefix.length)];
@@ -472,7 +443,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   const want = url.searchParams.get("vault") || String(req.headers["x-vc-vault"] ?? "") || null;
   let scope: VaultScope | null = hooks.vault ? hooks.vault(want) : !want || want === cfg.vaultName ? { name: cfg.vaultName, path: cfg.vault, bare: cfg.bareRepo, main: true } : null;
   if (!scope) return json(res, 404, { error: `no vault ${String(want).slice(0, 64)} on this box` });
-  // The open vault (files, boards, the inbox, the feed's file signals) …
+  // The open vault (files, the feed's file signals) …
   const open = scope;
   // … and, for a route about a conversation, the vault whose log holds it (server/convlog/log.ts GlobalFeed).
   if (hooks.vaultList && (CONVERSATION_ROUTES.has(path) || sideM || path.startsWith("/api/v1/conversations/"))) {
@@ -626,7 +597,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // laptop, used), and says when it no longer is. The phone buzzes only when no surface is.
   if (path === "/api/v1/attention" && method === "POST") {
     const b = await jsonBody(req);
-    if (!noteAttention(vault, b.device, b.looking === true, b.convId)) return json(res, 400, { error: "device: laptop, phone or board" });
+    if (!noteAttention(vault, b.device, b.looking === true, b.convId)) return json(res, 400, { error: "device: laptop or phone" });
     return json(res, 200, { ok: true });
   }
 
@@ -639,76 +610,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     return json(res, 200, activityImageRoute(vault, await jsonBody(req)));
   }
 
-  // The board inbox (server/inbox.ts, board/INBOX.md): what the agent sends the iPad.
-  //   GET  /api/v1/inbox                     → {entries:[summary], unread}
-  //   POST /api/v1/inbox {title,note,parts}  → {ok,id,parts} | 422 {ok:false, refusals:[…]} (the validated send)
-  //   GET  /api/v1/inbox/<id>                → the entry
-  //   POST /api/v1/inbox/<id>/read           → mark read
-  //   POST /api/v1/inbox/<id>/added {part, board, items}
-  //   GET  /api/v1/inbox/<id>/part/<n>[/html|bundle|snapshot]
-  // Every change: {type:"inbox", id, status, title, landed?, failed?} on /poll.
-  if (path === "/api/v1/inbox" || path.startsWith("/api/v1/inbox/")) {
-    const ictx: InboxCtx = { stateDir: cfg.stateDir, emit: (ev) => tagged(ev) };
-    const [id = "", sub, n, what, ...rest] = path.slice("/api/v1/inbox/".length).split("/");
-    let out: { status: number; body: unknown; file?: Buffer; mime?: string; headers?: Record<string, string> };
-    // The board switched off (server/surfaces.ts): its open inbox says so, and nothing new lands in it.
-    const boardOff = surfaceOff(vault, "board");
-    if (path === "/api/v1/inbox" && method === "GET") out = { status: 200, body: { ...listEntries(vault, ictx), ...(boardOff ? { off: boardOff } : {}) } };
-    else if (path === "/api/v1/inbox" && method === "POST" && boardOff) out = { status: 422, body: { ok: false, refusals: [boardOff] } };
-    else if (path === "/api/v1/inbox" && method === "POST") {
-      const r = await sendEntry(vault, await jsonBody(req), ictx);
-      out = { status: r.ok ? 200 : 422, body: r };
-    } else if (rest.length) out = { status: 404, body: { error: "not found" } };
-    else if (sub === undefined && method === "GET") out = getEntry(vault, id, ictx);
-    else if (sub === "read" && n === undefined && method === "POST") out = markRead(vault, id, ictx);
-    else if (sub === "added" && n === undefined && method === "POST") out = markAdded(vault, id, await jsonBody(req), ictx);
-    else if (sub === "part" && n !== undefined && /^\d+$/.test(n) && method === "GET") out = await partFile(vault, id, Number(n), what);
-    else out = { status: 404, body: { error: "not found" } };
-    if (out.file) return send(res, 200, out.mime ?? "application/octet-stream", out.file, out.headers ?? { "X-Content-Type-Options": "nosniff" });
-    return json(res, out.status, out.body);
-  }
-
-  // pi's Show (server/show.ts): the laptop / phone / board app says what it did with a show signal.
+  // pi's Show (server/show.ts): the laptop / phone app says what it did with a show signal.
   const showAck = /^\/api\/v1\/show\/([^/]+)\/ack$/.exec(path);
   if (showAck && method === "POST") return json(res, 200, { ok: true, waiting: ackShow(decodeURIComponent(showAck[1]!), await jsonBody(req)) });
 
-  // The whiteboard's own log (board/src/log.ts): batched events → <state>/logs/board.jsonl.
+  // The apps' log batches (server/diag.ts clientLogPost; the path is the whiteboard's old one, kept for the apps out there).
   if (path === "/api/v1/board/log" && method === "POST") {
-    const out = boardLogPost({ stateDir: cfg.stateDir, vaultName: scope.name, ua: String(req.headers["user-agent"] ?? "") }, await jsonBody(req));
+    const out = clientLogPost({ stateDir: cfg.stateDir, vaultName: scope.name, ua: String(req.headers["user-agent"] ?? "") }, await jsonBody(req));
     return json(res, out.status, out.body);
   }
   // The box's half of a diag bundle (server/diag.ts): the last N minutes of its logs, redacted.
   if (path === "/api/v1/diag" && method === "GET") {
     return json(res, 200, boxDiag({ stateDir: cfg.stateDir, vault, vaultName: scope.name, version: SERVER_VERSION, rev: SERVER_REV ?? null, minutes: Number(q("minutes") || 15) }));
-  }
-
-  // The whiteboard (server/boards.ts): boards/<slug>/ in this vault.
-  if (path === "/api/v1/boards" || path.startsWith("/api/v1/boards/")) {
-    const [slugRaw, file, more, ...rest] = path.slice("/api/v1/boards/".length).split("/");
-    let slug = "";
-    try {
-      slug = decodeURIComponent(slugRaw ?? "");
-    } catch {
-      /* invalid escape: an invalid slug */
-    }
-    let out: { status: number; body: unknown; file?: Buffer; mime?: string; headers?: Record<string, string> };
-    if (path === "/api/v1/boards" && method === "GET") out = { status: 200, body: { boards: listBoards(vault) } };
-    else if (path === "/api/v1/boards" && method === "POST") out = createBoard(vault, (await jsonBody(req)).name);
-    else if (file === "assets" && more === "copy" && rest.length === 0 && method === "POST") out = copyAssets(vault, slug, await jsonBody(req));
-    else if (file === "assets" && more && rest.length === 0 && method === "GET") out = assetFile(vault, slug, more);
-    else if (file === "assets" && more === undefined && method === "POST") out = addAsset(vault, slug, await jsonBody(req));
-    else if (file === "rename" && more === undefined && method === "POST") out = renameBoard(vault, slug, await jsonBody(req));
-    else if (file === "delete" && more === undefined && method === "POST") out = deleteBoard(vault, slug);
-    else if (file === "from-inbox" && more === undefined && method === "POST") out = await addToBoard(vault, slug, await jsonBody(req));
-    else if (more !== undefined) out = { status: 404, body: { error: "not found" } };
-    else if (file === undefined && method === "GET") out = getBoard(vault, slug);
-    else if (file === undefined && method === "POST") out = await saveBoard(vault, slug, await jsonBody(req));
-    else if (file === "overview.png" && method === "GET") out = overviewPng(vault, slug);
-    else if (file === "history" && method === "GET") out = getHistory(vault, slug);
-    else if (file === "pictures" && method === "POST") out = await saveBoardPictures(vault, slug, await jsonBody(req));
-    else out = { status: 404, body: { error: "not found" } };
-    if (out.file) return send(res, 200, out.mime ?? "application/octet-stream", out.file, out.headers ?? { "X-Content-Type-Options": "nosniff" });
-    return json(res, out.status, out.body);
   }
 
   // ---- the conversation log (src/convlog/protocol.ts) ----
@@ -771,7 +684,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     const out = settingsRoute(method, method === "POST" ? await jsonBody(req) : null, "carl");
     return json(res, out.status, out.body);
   }
-  // Change ready on the phone and the board (server/changesPending.ts): the drafts waiting for Carl, read from the box.
+  // Change ready on the phone (server/changesPending.ts): the drafts waiting for Carl, read from the box.
   if (path === "/api/v2/changes" && method === "GET") {
     const out = changesRoute(vault, url.searchParams);
     return json(res, out.status, out.body);
@@ -1057,7 +970,7 @@ function logIntent(stateDir: string, vault: string, req: IncomingMessage, b: any
  * `after=latest` (or none) → the head, no records. A cursor from another log (its epoch) or from
  * beyond the head → `reset`: start over from 0. */
 async function poll(res: ServerResponse, url: URL, vault: string): Promise<void> {
-  // Who follows the feed (`client=laptop|phone|board`): Show sends only to a live app (server/show.ts).
+  // Who follows the feed (`client=laptop|phone`): Show sends only to a live app (server/show.ts).
   const leave = feedOpened(vault, url.searchParams.get("client"));
   try {
     await pollLog(res, url, vault);

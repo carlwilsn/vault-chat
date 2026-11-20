@@ -1,14 +1,14 @@
 // Is Carl looking at this surface? Each surface says so to the box (POST /api/v1/attention), and
 // the box buzzes his phone only when none is (server/pushGate.ts).
 //
-//   phone, iPad  looking while the app is on screen (the screen locking or another app hides it)
+//   phone        looking while the app is on screen (the screen locking or another app hides it)
 //   laptop       looking while the window is shown and focused and he touched it in the last few
 //                minutes (an app left open on an empty desk is not someone looking)
 //
 // A beat every 30 s while looking (the box forgets one after 75 s), one at once on every change,
 // and a last "not looking" when the surface goes away. Never throws; a failed post just drops.
 
-export type AttentionDevice = "laptop" | "phone" | "board";
+export type AttentionDevice = "laptop" | "phone";
 export type AttentionBody = { device: AttentionDevice; looking: boolean; convId: string | null };
 
 export const BEAT_EVERY_MS = 30_000;

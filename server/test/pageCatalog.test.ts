@@ -86,7 +86,6 @@ describe("the catalog", () => {
       { id: "app/ask", name: "Ctrl+K box", mount: "panel", description: expect.stringContaining("Ctrl+K / Ctrl+L box") },
       { id: "app/elevenlabs-voice", name: "ElevenLabs voice", mount: "panel", description: expect.stringContaining("free local voice") },
       { id: "app/phone", name: "Phone app", mount: "surface", description: expect.stringContaining("phone app") },
-      { id: "app/board", name: "iPad board", mount: "surface", description: expect.stringContaining("iPad whiteboard") },
     ]);
     expect(c.truncated).toBeUndefined();
     // A page added now is in the next answer: the vault is read each time.

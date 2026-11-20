@@ -5,7 +5,7 @@
 // to the box (POST /api/v1/board/log with source "voice" → <state>/logs/
 // voice.jsonl, rotated, every line redacted by the box), batched every 15 s, on
 // call end and when the page hides. The box's own agent reads them there, no
-// SSH. The board's voice lines go to board.jsonl by its own log (board/src/log.ts).
+// SSH.
 
 /** The lines worth shipping (the rest stay in the device's local trail). "voice brain ..." is the call's own client
  *  (src/voiceBrainClient.ts): a refused play(), its connection states, barge-ins, each reply's playback; 2026-11-20 a

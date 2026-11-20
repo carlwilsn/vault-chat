@@ -33,7 +33,6 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Speakable, toSpeech } from "./speakable";
 import { isCommentary } from "../src/convlog/commentary";
 import { speechReady } from "./speakMath";
-import { calibFrom } from "../src/voiceWaitLine";
 
 export type BrainEngine = {
   message(b: { convId?: string | null; text?: string; context?: string; source?: string; via?: string; client?: string; clientMsgId?: string; continues?: boolean; unqueue?: string }): Promise<Record<string, unknown> | null>;
@@ -45,7 +44,6 @@ export type BrainEngine = {
   /** Stop the running turn and the work started since `since` (his previous line; server/engine stopWork). */
   stopWork?(convId: string, since?: number, stopped?: string[]): Promise<number>;
   /** What a voice on the conversation waits on (the waiting line's inputs). */
-  waitInputs?(convId: string): { works: unknown[]; plan: unknown; samples: Record<string, number[]>; running?: boolean } | null;
 };
 
 export type BrainDeps = {
@@ -107,12 +105,12 @@ export const talkerModel = (): string => process.env.VC_CLAUDE_VOICE_TALKER_MODE
 /** The talker's thinking (pi's levels: off, minimal, low, medium, high): a spoken reply wants little. */
 export const talkerThinking = (): string => "off";
 
-type Device = "laptop" | "board" | "phone";
-const DEVICES: Device[] = ["laptop", "board", "phone"];
+type Device = "laptop" | "phone";
+const DEVICES: Device[] = ["laptop", "phone"];
 
 /** What pi is told once, in front of the call's first turn (it stays in the session). */
 export function voiceCallRules(device: Device): string {
-  const where = device === "board" ? "his iPad board" : device === "phone" ? "his phone" : "his laptop";
+  const where = device === "phone" ? "his phone" : "his laptop";
   // One reply, written as always (markdown); the voice reads it aloud as written (server/speakable.ts). Only a light
   // nudge on length, and the one rule a live call needs: slow work goes to the Agent tool, so the voice never goes quiet.
   return `[A voice call is live on ${where}: your replies are shown as always and also read aloud as written. Keep them short: two or three spoken sentences answer what he asked (offer more, don't give it); when he is thinking aloud rather than asking, a line at most. A lookup in his notes is one Lookup {query} call (it finds and reads together); independent calls go at once, not one after another. Anything that takes more than a few seconds goes to the Agent tool in background mode (it notifies you when it completes or fails). A change to a file (making, editing or rebuilding one: a PDF, a sheet, a page) always does, at once: start an Agent in the background with his words and the file — don't read or edit it yourself first. Say in a line that you've sent it and carry on; when it reports back, tell him the result. Say something was done only when it was.]`;
@@ -358,22 +356,6 @@ export function followCall(vault: string, convId: string, from?: string): boolea
   c.untap = c.engine.tap(convId, (ev) => onPi(c.deps, c, ev));
   callByConv.set(callOwner(c.vault, convId), c.id);
   return true;
-}
-
-/** One short line for the live call(s) in `vault` that is no turn's (an inbox entry landed): said whole at the next real
- *  gap, like a result (bot.py Gate). */
-export function announce(vault: string, text: string): number {
-  let n = 0;
-  for (const c of calls.values()) {
-    if (!sameVault(c.vault, vault)) continue;
-    const line = `data: ${JSON.stringify({ text, utt: c.utt, at: Date.now() })}
-
-`;
-    for (const ch of c.channels) ch.write(line);
-    if (c.channels.size) c.channelSaid = true;
-    n++;
-  }
-  return n;
 }
 
 export function liveCalls(): Record<string, unknown>[] {
@@ -912,15 +894,6 @@ export async function brainRoute(
       ...(method === "POST" ? { ok: pipeline && !error } : {}), engine: "new", pipeline,
       model: talkerModel(), error, failure: state?.failure ?? null, settingUp: state?.settingUp ?? false,
     });
-    return true;
-  }
-  // The waiting line for a surface with no conversation feed of its own (the iPad board): its inputs, and the box's
-  // calibration merged with this conversation's history.
-  const wait = /^\/api\/v1\/brain\/wait\/([A-Za-z0-9_-]{1,80})$/.exec(path);
-  if (wait && method === "GET") {
-    const engine = await d.engine();
-    const w = engine.waitInputs?.(wait[1]!) ?? { works: [], plan: null, samples: {}, running: false };
-    json(res, 200, { works: w.works, plan: w.plan, running: !!w.running, calib: calibFrom(w.samples, workCalibration(d.logDir)), now: Date.now() });
     return true;
   }
   if (path === "/api/v1/brain/expect" && method === "GET") {

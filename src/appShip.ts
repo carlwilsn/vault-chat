@@ -1,6 +1,6 @@
 // The laptop app's errors and its box connection, on the box (2026-10-22): console errors, uncaught errors and
 // rejections, and box.feed (the box dropped, with the error; connected again, with how long it was down) go from
-// the local trail (src/debugLog.ts → app-log.txt) to the box too — POST /api/v1/board/log with source "app" →
+// the local trail (src/debugLog.ts → app-log.txt) to the box too — POST /api/v1/board/log (the old whiteboard path, kept) with source "app" →
 // <state>/logs/app.jsonl, redacted by the box — batched every 15 s and when the page hides. While the box is out
 // of reach they wait (a failed batch goes back in front), so a drop arrives with its end.
 import { onVlog } from "./debugLog";

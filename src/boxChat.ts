@@ -604,9 +604,6 @@ class BoxChatSession {
         // The agent on the box just wrote this file: a pane showing it shows the box's bytes now.
         if (typeof e.path === "string") boxFileChanged({ vault: this.vault, rel: e.path, fetch: (rel) => fetchBoxFile(this.link, rel) });
         return;
-      case "inbox":
-        // Something landed in the board inbox: a live call says it at its next gap (the box does: server/voiceBrain.ts).
-        return;
       case "show": {
         // pi's Show: open it here (the file tree's way, scrolled to its target) and tell the box what happened.
         const id = typeof e.id === "string" ? e.id : "";

@@ -177,7 +177,7 @@ a child process itself: its orchestration calls `pi/subagents.ts`, which starts
 the child as a **sibling** of the parent — the same launch as any pi (its own bubblewrap, pid namespace and process
 group, the key on its own fd 3, scrubbed env, the path guard), in RPC mode, on a persisted session in
 `sessions/sub/<parent session>/<child>/`. A child's tools are its agent's allow-list: pi's file/shell tools plus at
-most `Notify`, `PdfRead`, `WebSearch`, `BoardSend` (default: read, bash, edit, write, Notify) — never `AskUser`,
+most `Notify`, `PdfRead`, `WebSearch` (default: read, bash, edit, write, Notify) — never `AskUser`,
 `subagent`, `ScheduleWake` or `StartJob`; it reports to the parent, which decides what
 reaches Carl. The parent conversation's meta gets `subagents[]` = `{threadId, task, agent, model, state
 (running|completed|failed|stopped|timeout|killed), costUsd, startedAt, endedAt, sessionFile}`; each child's
@@ -200,12 +200,6 @@ Every `VC_SYNC_INTERVAL_MS`, after every turn that ends, and after a push over `
      good, listed (`archivesSkipped`) and alerted once per folder: backups and archives belong in the work
      area `~/agent-work/<vault>/`, and the agents are told so. (On 2026-10-22 a job wrote a `.tar.gz` of a
      board every 10 s into `Whiteboard Backups/`: 121 files, 257 MB in the history.)
-   - a board being drawn on (`boards/<slug>/`, any file in it changed in the last 2 min) is held back, at most
-     10 min from its first held change (`heldBoards`). The board app saves every ~15 s and every save rewrites
-     the whole `board.json` and `overview.png`; committing each one made 413 commits in one evening (262 MB of
-     loose objects, 37 MB uploaded); held, the same evening is 16 commits (11 MB loose, 2.6 MB uploaded).
-     The file stays one stroke per line, so what is committed deltas small. If the laptop's `master` changes a
-     held board, it is committed at once (before the fast-forward would refuse it);
    - one commit carries at most 100 MB of new content; the rest goes in the next commits, at once — the
      laptop uploads to GitHub a few commits at a time, so no commit may be huge;
 2. push `box` to the bare repo;

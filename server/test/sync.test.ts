@@ -156,39 +156,6 @@ describe("box sync loop", () => {
     expect(git(box, "status", "--porcelain").trim()).toBe("");
   });
 
-  it("holds a board while it is drawn on, commits it once still; a ff that touches it commits it first", async () => {
-    const b = join(box, "boards", "b1");
-    mkdirSync(b, { recursive: true });
-    writeFileSync(join(b, "board.json"), '{"v":2,"strokes":[\n{"id":"s1"}\n]}\n');
-    writeFileSync(join(b, "overview.png"), Buffer.alloc(100, 1));
-    writeFileSync(join(box, "notes", "other.md"), "other\n");
-    await sync.runOnce();
-    expect(sync.status.ok, JSON.stringify(sync.status.steps)).toBe(true);
-    expect(sync.status.heldBoards).toEqual(["boards/b1"]);
-    expect(git(box, "show", "--name-only", "--format=", "HEAD").trim()).toBe("notes/other.md");
-    expect(sync.status.steps.commit?.detail).toMatch(/held while drawn on: boards\/b1/);
-    // Still for over 2 minutes → committed.
-    const past = new Date(Date.now() - 3 * 60_000);
-    for (const f of ["board.json", "overview.png"]) utimesSync(join(b, f), past, past);
-    await sync.runOnce();
-    expect(sync.status.heldBoards).toEqual([]);
-    expect(git(box, "show", "--name-only", "--format=", "HEAD").trim().split("\n").sort()).toEqual(["boards/b1/board.json", "boards/b1/overview.png"]);
-    expect(bareRef("refs/heads/box")).toBe(head(box));
-
-    // Drawing again while master (the laptop) changed the same board: committed now, no failed fast-forward.
-    cloneLaptop();
-    git(laptop, "checkout", "-q", "-b", "master", "origin/box");
-    writeFileSync(join(laptop, "boards", "b1", "board.json"), '{"v":2,"strokes":[\n{"id":"s1"},\n{"id":"laptop"}\n]}\n');
-    git(laptop, "commit", "-qam", "laptop draws");
-    sh(laptop, "git", ["push", "-q", "origin", "master"], { VC_PUSHER: "http" });
-    writeFileSync(join(b, "board.json"), '{"v":2,"strokes":[\n{"id":"s1"},\n{"id":"box"}\n]}\n');
-    await sync.runOnce();
-    expect(sync.status.ok, sync.status.lastError ?? "").toBe(true);
-    expect(sync.status.steps.fastForward?.detail).toMatch(/committed it, waiting for the laptop/);
-    expect(git(box, "status", "--porcelain").trim()).toBe("");
-    expect(git(box, "show", "HEAD:boards/b1/board.json")).toContain('"box"');
-  });
-
   it("the bare repo refuses a push to box over /git", async () => {
     await sync.runOnce();
     cloneLaptop();

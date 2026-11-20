@@ -1,4 +1,4 @@
-// The New voice's call, on any device (laptop, iPad board, phone): the device
+// The New voice's call, on any device (laptop, phone): the device
 // is only a microphone and a speaker. Its audio goes to the box over WebRTC on
 // the tailnet (server/voiceBrain.ts → voice-pipeline/bot.py); the box hears,
 // asks the conversation's own pi agent (the voice IS the agent), and speaks
@@ -14,7 +14,7 @@
 // The reply plays through an <audio> element (not Web Audio), so the browser's
 // echo cancellation sees it (WebView2 and Safari cancel only what they play).
 
-export type BrainDevice = "laptop" | "board" | "phone";
+export type BrainDevice = "laptop" | "phone";
 export type BrainMode = "listening" | "thinking" | "speaking";
 
 /** POST to the box; resolves with the JSON body or throws with the box's words. */

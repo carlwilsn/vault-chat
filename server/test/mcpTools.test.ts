@@ -1,5 +1,5 @@
 // Protocol/scope integration tests, NOT real-app review proof. The HTTP tests
-// use an independent official MCP Client and the real BoardLook file handler.
+// use an independent official MCP Client and the real RecentActivity handler.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createServer, request, type Server as HttpServer } from "node:http";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -12,11 +12,11 @@ import { ProgressNotificationSchema, ToolListChangedNotificationSchema } from "@
 import { createToolServer, type BoundTools } from "../mcp/tools";
 import { createMcpHttpHandler } from "../mcp/http";
 import type { ToolSpec } from "../engine/backend";
-import { createBoard, lookBoard } from "../boards";
+import { appendActivity, searchActivity } from "../activity";
 
 const root = mkdtempSync(join(tmpdir(), "vc-mcp-"));
 let specs: ToolSpec[];
-let boardSpec: ToolSpec;
+let toolSpec: ToolSpec;
 beforeAll(async () => {
   process.env.VC_VAULT = join(root, "vault");
   process.env.VC_STATE_DIR = join(root, "state");
@@ -26,7 +26,7 @@ beforeAll(async () => {
   // Consume the existing authoritative definitions, never a test-only schema.
   const catalog = await import("../engine/engine");
   specs = catalog.agentToolSpecs();
-  boardSpec = specs.find((tool) => tool.name === "BoardLook")!;
+  toolSpec = specs.find((tool) => tool.name === "RecentActivity")!;
 });
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
@@ -69,42 +69,42 @@ describe("vault-chat's single catalog over MCP", () => {
   });
   it("rejects unknown tools and invalid arguments before dispatch", async () => {
     let calls = 0;
-    const c = await connected({ specs: [boardSpec], call: async () => { calls++; return { ok: true, text: "unexpected" }; } });
+    const c = await connected({ specs: [toolSpec], call: async () => { calls++; return { ok: true, text: "unexpected" }; } });
     try {
       await expect(c.client.callTool({ name: "Show", arguments: {} })).rejects.toThrow(/not available/);
-      await expect(c.client.callTool({ name: "BoardLook", arguments: { board: 42 } })).rejects.toThrow(/string/);
-      await expect(c.client.callTool({ name: "BoardLook", arguments: { vault: "/another-vault", threadId: "another-thread" } })).rejects.toThrow(/additional properties/);
+      await expect(c.client.callTool({ name: "RecentActivity", arguments: { query: 42 } })).rejects.toThrow(/string/);
+      await expect(c.client.callTool({ name: "RecentActivity", arguments: { vault: "/another-vault", threadId: "another-thread" } })).rejects.toThrow(/additional properties/);
       expect(calls).toBe(0);
     } finally { await c.close(); }
   });
 
   it("preserves images and tool failure semantics", async () => {
     const image = { data: "aW1hZ2U=", mimeType: "image/png" };
-    const c = await connected({ specs: [boardSpec], call: async () => ({ ok: false, text: "board unavailable", images: [image] }) });
+    const c = await connected({ specs: [toolSpec], call: async () => ({ ok: false, text: "activity unavailable", images: [image] }) });
     try {
-      expect(await c.client.callTool({ name: "BoardLook" })).toMatchObject({
+      expect(await c.client.callTool({ name: "RecentActivity" })).toMatchObject({
         isError: true,
-        content: [{ type: "text", text: "board unavailable" }, { type: "image", ...image }],
+        content: [{ type: "text", text: "activity unavailable" }, { type: "image", ...image }],
       });
     } finally { await c.close(); }
   });
 
   it("returns thrown host errors as failed tool results, not successful text", async () => {
-    const c = await connected({ specs: [boardSpec], call: async () => { throw new Error("storage unavailable"); } });
+    const c = await connected({ specs: [toolSpec], call: async () => { throw new Error("storage unavailable"); } });
     try {
-      expect(await c.client.callTool({ name: "BoardLook" })).toMatchObject({ isError: true, content: [{ type: "text", text: "BoardLook failed: storage unavailable" }] });
+      expect(await c.client.callTool({ name: "RecentActivity" })).toMatchObject({ isError: true, content: [{ type: "text", text: "RecentActivity failed: storage unavailable" }] });
     } finally { await c.close(); }
   });
 
   it("snapshots the allowed schemas rather than sharing mutable caller state", async () => {
-    const copy = structuredClone(boardSpec);
+    const copy = structuredClone(toolSpec);
     const c = await connected({ specs: [copy], call: async () => ({ ok: true, text: "ok" }) });
     try {
       copy.name = "Show";
-      (copy.inputSchema.properties as Record<string, unknown>).board = { type: "number" };
+      (copy.inputSchema.properties as Record<string, unknown>).query = { type: "number" };
       const tools = (await c.client.listTools()).tools;
-      expect(tools[0]?.name).toBe("BoardLook");
-      await expect(c.client.callTool({ name: "BoardLook", arguments: { board: 1 } })).rejects.toThrow(/string/);
+      expect(tools[0]?.name).toBe("RecentActivity");
+      await expect(c.client.callTool({ name: "RecentActivity", arguments: { query: 1 } })).rejects.toThrow(/string/);
     } finally { await c.close(); }
   });
 
@@ -113,7 +113,7 @@ describe("vault-chat's single catalog over MCP", () => {
     let cancelled!: () => void;
     const began = new Promise<void>((resolve) => { started = resolve; });
     const aborted = new Promise<void>((resolve) => { cancelled = resolve; });
-    const c = await connected({ specs: [boardSpec], call: async (_name, _args, context) => {
+    const c = await connected({ specs: [toolSpec], call: async (_name, _args, context) => {
       expect(context.requestId).toBeDefined();
       started();
       await new Promise<void>((resolve) => context.signal.addEventListener("abort", () => { cancelled(); resolve(); }, { once: true }));
@@ -121,7 +121,7 @@ describe("vault-chat's single catalog over MCP", () => {
     } });
     try {
       const controller = new AbortController();
-      const call = c.client.callTool({ name: "BoardLook" }, undefined, { signal: controller.signal });
+      const call = c.client.callTool({ name: "RecentActivity" }, undefined, { signal: controller.signal });
       const result = expect(call).rejects.toBeDefined();
       await began;
       controller.abort();
@@ -131,13 +131,13 @@ describe("vault-chat's single catalog over MCP", () => {
   });
 
   it("sends requested progress (including token 0), isolates concurrent calls, and drains in order before results", async () => {
-    const server = createToolServer({ specs: [boardSpec], call: async (_n, args, ctx) => {
-      if (args.board === "silent") expect(ctx.progress).toBeUndefined();
+    const server = createToolServer({ specs: [toolSpec], call: async (_n, args, ctx) => {
+      if (args.query === "silent") expect(ctx.progress).toBeUndefined();
       else {
-        void ctx.progress?.(`${args.board}: first`);
-        void ctx.progress?.(`${args.board}: second`);
+        void ctx.progress?.(`${args.query}: first`);
+        void ctx.progress?.(`${args.query}: second`);
       }
-      return { ok: true, text: String(args.board) };
+      return { ok: true, text: String(args.query) };
     } }, "test");
     const client = new Client({ name: "progress-test", version: "test" });
     const [a, b] = InMemoryTransport.createLinkedPair();
@@ -153,9 +153,9 @@ describe("vault-chat's single catalog over MCP", () => {
     await server.connect(a); await client.connect(b);
     try {
       await Promise.all([
-        client.callTool({ name: "BoardLook", arguments: { board: "zero" }, _meta: { progressToken: 0 } }),
-        client.callTool({ name: "BoardLook", arguments: { board: "other" }, _meta: { progressToken: "other" } }),
-        client.callTool({ name: "BoardLook", arguments: { board: "silent" } }),
+        client.callTool({ name: "RecentActivity", arguments: { query: "zero" }, _meta: { progressToken: 0 } }),
+        client.callTool({ name: "RecentActivity", arguments: { query: "other" }, _meta: { progressToken: "other" } }),
+        client.callTool({ name: "RecentActivity", arguments: { query: "silent" } }),
       ]);
       expect(updates.filter((u) => u.progressToken === 0)).toEqual([
         { progressToken: 0, progress: 1, message: "zero: first" },
@@ -171,15 +171,15 @@ describe("vault-chat's single catalog over MCP", () => {
   });
 
   it("a live catalog: a tool added by a call is announced before that call's result, listed, and callable; a bad catalog keeps the last good one", async () => {
-    let catalog: ToolSpec[] = [boardSpec];
-    const added = { ...structuredClone(boardSpec), name: "MadeNow", description: "made by a call" };
+    let catalog: ToolSpec[] = [toolSpec];
+    const added = { ...structuredClone(toolSpec), name: "MadeNow", description: "made by a call" };
     const calls: string[] = [];
     const server = createToolServer({
       specs: catalog,
       current: async () => catalog,
       call: async (name) => {
         calls.push(name);
-        if (name === "BoardLook") catalog = [boardSpec, added];
+        if (name === "RecentActivity") catalog = [toolSpec, added];
         return { ok: true, text: name };
       },
     }, "test");
@@ -193,32 +193,32 @@ describe("vault-chat's single catalog over MCP", () => {
     });
     try {
       expect(client.getServerCapabilities()?.tools?.listChanged).toBe(true);
-      await client.callTool({ name: "BoardLook", arguments: {} });
+      await client.callTool({ name: "RecentActivity", arguments: {} });
       order.push("result");
-      expect(order).toEqual(["changed", "listed BoardLook,MadeNow", "result"]);
+      expect(order).toEqual(["changed", "listed RecentActivity,MadeNow", "result"]);
       await client.callTool({ name: "MadeNow", arguments: {} });
-      expect(calls).toEqual(["BoardLook", "MadeNow"]);
+      expect(calls).toEqual(["RecentActivity", "MadeNow"]);
       // A tool made outside any call: callable even before the client lists again.
-      catalog = [boardSpec, added, { ...structuredClone(boardSpec), name: "Later" }];
+      catalog = [toolSpec, added, { ...structuredClone(toolSpec), name: "Later" }];
       await client.callTool({ name: "Later", arguments: {} });
       expect(calls.at(-1)).toBe("Later");
       // A broken catalog is not served: the last good one stays.
-      catalog = [boardSpec, boardSpec];
+      catalog = [toolSpec, toolSpec];
       expect(await server.refreshTools()).toBe(false);
-      expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["BoardLook", "MadeNow", "Later"]);
+      expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["RecentActivity", "MadeNow", "Later"]);
     } finally { await client.close(); await server.close(); }
   });
 
   it("a fixed binding does not advertise list changes", async () => {
-    const c = await connected({ specs: [boardSpec], call: async () => ({ ok: true, text: "ok" }) });
+    const c = await connected({ specs: [toolSpec], call: async () => ({ ok: true, text: "ok" }) });
     try { expect(c.client.getServerCapabilities()?.tools?.listChanged).toBeUndefined(); } finally { await c.close(); }
   });
 
   it("fails closed on duplicate names, internal names and malformed schemas", () => {
     const call: BoundTools["call"] = async () => ({ ok: true, text: "unused" });
-    expect(() => createToolServer({ specs: [boardSpec, boardSpec], call }, "test")).toThrow(/duplicate/);
-    expect(() => createToolServer({ specs: [{ ...boardSpec, name: "__env" }], call }, "test")).toThrow(/Invalid/);
-    expect(() => createToolServer({ specs: [{ ...boardSpec, inputSchema: { type: "string" } }], call }, "test")).toThrow(/object/);
+    expect(() => createToolServer({ specs: [toolSpec, toolSpec], call }, "test")).toThrow(/duplicate/);
+    expect(() => createToolServer({ specs: [{ ...toolSpec, name: "__env" }], call }, "test")).toThrow(/Invalid/);
+    expect(() => createToolServer({ specs: [{ ...toolSpec, inputSchema: { type: "string" } }], call }, "test")).toThrow(/object/);
   });
 });
 
@@ -229,12 +229,10 @@ describe("standard Streamable HTTP with request-local authority", () => {
   const clients: Client[] = [];
   const vaultA = join(root, "a");
   const vaultB = join(root, "b");
-  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jWZkAAAAASUVORK5CYII=", "base64");
   beforeAll(async () => {
     mkdirSync(vaultA, { recursive: true });
     mkdirSync(vaultB, { recursive: true });
-    const board = createBoard(vaultA, "Only vault A's board").body as { slug: string };
-    writeFileSync(join(vaultA, "boards", board.slug, "overview.png"), png);
+    appendActivity(vaultA, { kind: "focus", modality: "editor", text: "Only vault A's file", device: "laptop", path: "a-only.md" });
     // Select an ephemeral port before creating the handler's exact Host allowlist.
     let current: ReturnType<typeof createMcpHttpHandler>;
     http = createServer((req, res) => { void current(req, res); });
@@ -249,7 +247,7 @@ describe("standard Streamable HTTP with request-local authority", () => {
         if (req.headers["x-test-authorized"] !== "yes") return null;
         const vault = req.url === "/a" ? vaultA : req.url === "/b" ? vaultB : null;
         if (!vault) return null;
-        return { scopeId: vault, specs: [boardSpec], call: async (_name, args) => lookBoard(vault, args.board) };
+        return { scopeId: vault, specs: [toolSpec], call: async (_name, args) => ({ ok: true, text: searchActivity(vault, { query: typeof args.query === "string" ? args.query : "" }) }) };
       },
     });
   });
@@ -264,24 +262,20 @@ describe("standard Streamable HTTP with request-local authority", () => {
     return client;
   }
 
-  it("calls the real BoardLook handler and returns the actual saved PNG", async () => {
+  it("calls the real RecentActivity handler and returns the bound vault's activity", async () => {
     const client = await connect("/a");
     const tool = (await client.listTools()).tools[0];
-    expect(tool?.name).toBe("BoardLook");
-    const result = await client.callTool({ name: "BoardLook" });
+    expect(tool?.name).toBe("RecentActivity");
+    const result = await client.callTool({ name: "RecentActivity" });
     expect(result.isError).not.toBe(true);
-    expect(result.content).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: "text", text: expect.stringContaining("Only vault A's board") }),
-      { type: "image", data: png.toString("base64"), mimeType: "image/png" },
-    ]));
+    expect(result.content).toEqual([expect.objectContaining({ type: "text", text: expect.stringContaining("Only vault A's file") })]);
   });
 
   it("keeps concurrent callers in their bound vault, not an ambient main vault", async () => {
     const [a, b] = await Promise.all([connect("/a"), connect("/b")]);
-    const [resultA, resultB] = await Promise.all([a.callTool({ name: "BoardLook" }), b.callTool({ name: "BoardLook" })]);
-    expect(JSON.stringify(resultA)).toContain("Only vault A's board");
-    expect(JSON.stringify(resultB)).not.toContain("Only vault A's board");
-    expect(resultB.content).toEqual([{ type: "text", text: "Carl has no whiteboard boards yet." }]);
+    const [resultA, resultB] = await Promise.all([a.callTool({ name: "RecentActivity" }), b.callTool({ name: "RecentActivity" })]);
+    expect(JSON.stringify(resultA)).toContain("Only vault A's file");
+    expect(JSON.stringify(resultB)).not.toContain("Only vault A's file");
   });
 
   it("denies unauthenticated requests even if they claim an MCP session id", async () => {

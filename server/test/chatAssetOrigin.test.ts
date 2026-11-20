@@ -14,7 +14,6 @@ vi.mock("../../src-tauri/assets/phone.html", () => ({ default: "" }));
 vi.mock("../../src-tauri/assets/voice.html", () => ({ default: "" }));
 vi.mock("../../src-tauri/assets/icon-apple-touch.png", () => ({ default: "" }));
 vi.mock("vc:phone-app", () => ({ default: {} }));
-vi.mock("vc:board-app", () => ({ default: {} }));
 
 describe("chat media follows its existing log owner, not the viewer or project name", () => {
   const home = mkdtempSync(join(tmpdir(), "vc-origin-"));

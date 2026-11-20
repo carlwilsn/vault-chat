@@ -1,6 +1,6 @@
 // GET /api/v1/diag?minutes=15 — the box's half of a "something just went
 // wrong" bundle: the last N minutes of the turn log (turns and intents), the
-// board's log, the journal of the server and its updater, and the phone's
+// voice and app logs, the journal of the server and its updater, and the phone's
 // client events in this vault. The laptop's Report action (src/diag.ts) adds
 // its own app-log and client events and writes the whole as one file.
 // Everything passes through src/logRedact.ts again on the way out: no key, no
@@ -20,7 +20,6 @@ export type BoxDiag = {
   vault: string;
   minutes: number;
   turns: unknown[];
-  board: unknown[];
   /** The laptop's and the phone's voice diagnostics (voice.jsonl). */
   voice: unknown[];
   /** The laptop app's errors and box drops (app.jsonl). */
@@ -85,7 +84,6 @@ export function boxDiag(o: { stateDir: string; vault: string; vaultName: string;
     vault: o.vaultName,
     minutes,
     turns: logs.turns.since(since).map((x) => safeData(x, { depth: 5 })),
-    board: logs.board.since(since).map((x) => safeData(x, { depth: 5 })),
     voice: logs.voice.since(since).map((x) => safeData(x, { depth: 5 })),
     app: logs.app.since(since).map((x) => safeData(x, { depth: 5 })),
     journal: j.lines,
@@ -94,18 +92,18 @@ export function boxDiag(o: { stateDir: string; vault: string; vaultName: string;
   };
 }
 
-/** One board batch (POST /api/v1/board/log): each event its own line, stamped and made safe. A batch with
- *  source "voice" (the laptop's and the phone's voice diagnostics, src/voiceShip.ts) goes to voice.jsonl, one with
- *  source "app" (the laptop app's errors and box drops, src/appShip.ts) to app.jsonl. */
-export function boardLogPost(o: { stateDir: string; vaultName: string; ua: string }, body: any): { status: number; body: Record<string, unknown> } {
+/** One client log batch (POST /api/v1/board/log: the path the whiteboard first used, kept for the apps already out):
+ *  each event its own line, stamped and made safe. A batch with source "voice" (the laptop's and the phone's voice
+ *  diagnostics, src/voiceShip.ts) goes to voice.jsonl; any other (source "app": the laptop app's errors and box drops,
+ *  src/appShip.ts) to app.jsonl. */
+export function clientLogPost(o: { stateDir: string; vaultName: string; ua: string }, body: any): { status: number; body: Record<string, unknown> } {
   const evs: unknown[] = Array.isArray(body?.events) ? body.events.slice(0, 300) : [];
   if (!evs.length) return { status: 400, body: { error: "events: a non-empty list is required" } };
-  const voice = body?.source === "voice" || body?.source === "app";
-  const log = body?.source === "app" ? boxLogs(o.stateDir).app : voice ? boxLogs(o.stateDir).voice : boxLogs(o.stateDir).board;
-  const from = voice && typeof body?.device === "string" ? body.device.slice(0, 20) : null;
+  const log = body?.source === "voice" ? boxLogs(o.stateDir).voice : boxLogs(o.stateDir).app;
+  const from = typeof body?.device === "string" ? body.device.slice(0, 20) : null;
   const ua = /iPad|iPhone|Macintosh|Android|Windows|Linux/.exec(o.ua)?.[0] ?? "?";
   const sess = typeof body?.session === "string" ? body.session.slice(0, 40) : null;
-  // The board's build, and what the device says it is: an iPad sends a Mac UA, so its touch points tell it apart.
+  // The client's build, and what the device says it is (touch points tell a tablet with a desktop UA apart).
   const v = typeof body?.v === "string" ? body.v.slice(0, 60) : null;
   const touch = typeof body?.touch === "number" && Number.isFinite(body.touch) ? Math.max(0, Math.min(20, Math.round(body.touch))) : null;
   const app = body?.standalone === true ? "home-screen" : body?.standalone === false ? "browser" : null;

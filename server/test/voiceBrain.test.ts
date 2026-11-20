@@ -101,7 +101,7 @@ afterEach(async () => {
 /** A call, with the pipeline's token (the route hides it from devices; the test reads it from startCall). */
 async function call(): Promise<{ id: string; token: string }> {
   const { startCall } = await import("../voiceBrain");
-  const r = await startCall({ vault: "/v", engine: async () => eng, elKey: () => "k", voiceId: () => "v", botUrl: "", selfUrl: "", logDir }, { convId: "conv-123456", device: "board" });
+  const r = await startCall({ vault: "/v", engine: async () => eng, elKey: () => "k", voiceId: () => "v", botUrl: "", selfUrl: "", logDir }, { convId: "conv-123456", device: "phone" });
   return { id: String(r.body.callId), token: String(r.body.token) };
 }
 
@@ -149,7 +149,7 @@ it("devices cannot select a different talker or enable thinking", async () => {
 describe("voice with one brain", () => {
   it("call startup is silent on every device: no synthetic greeting or model turn", async () => {
     const { startCall } = await import("../voiceBrain");
-    for (const device of ["laptop", "phone", "board"]) {
+    for (const device of ["laptop", "phone"]) {
       const r = await startCall({ vault: "/v", engine: async () => eng, elKey: () => "k", voiceId: () => "v", botUrl: "", selfUrl: "", logDir }, { convId: "conv-123456", device });
       expect(r.status).toBe(200);
       expect(eng.messages).toEqual([]);
@@ -160,10 +160,10 @@ describe("voice with one brain", () => {
   it("what Carl said is a turn of the conversation, on the talker model, with the call's rules", async () => {
     const c = await call();
     expect(eng.talker.model).toBeTruthy();
-    expect(eng.talker.rules).toContain("A voice call is live on his iPad board");
+    expect(eng.talker.rules).toContain("A voice call is live on his phone");
     const p = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}`, "content-type": "application/json" }, body: JSON.stringify({ messages: [{ role: "system", content: "x" }, { role: "user", content: "what's two plus two" }], stream: true }) });
     await until(() => eng.messages.length);
-    expect(eng.messages[0]).toMatchObject({ convId: "conv-123456", text: "what's two plus two", via: "voice", client: "board" });
+    expect(eng.messages[0]).toMatchObject({ convId: "conv-123456", text: "what's two plus two", via: "voice", client: "phone" });
     eng.emit(delta("It's **four**. "));
     eng.emit(delta("And $x^2$ at $x=2$ is four too."));
     eng.emit({ type: "message_end", message: { role: "assistant" } });
@@ -430,9 +430,9 @@ describe("voice with one brain", () => {
     expect(vb.voiceLiveIn("/v")).toBe(false);
     const c = await call();
     expect(vb.voiceLiveIn("/v")).toBe(true);
-    expect(vb.voiceLiveIn("/v", Date.now(), "board")).toBe(true);
-    expect(vb.voiceLiveIn("/elsewhere", Date.now(), "board")).toBe(false);
-    expect(vb.voiceLiveIn("/v", Date.now(), "phone")).toBe(false);
+    expect(vb.voiceLiveIn("/v", Date.now(), "phone")).toBe(true);
+    expect(vb.voiceLiveIn("/elsewhere", Date.now(), "phone")).toBe(false);
+    expect(vb.voiceLiveIn("/v", Date.now(), "laptop")).toBe(false);
     expect(vb.activeVoiceSessions()).toBe(1);
     expect(vb.followCall("/elsewhere", "project-coconut")).toBe(false);
     expect(vb.followCall("/v", "project-coconut")).toBe(true);
@@ -444,22 +444,6 @@ describe("voice with one brain", () => {
     expect(eng.messages[0]).toMatchObject({ convId: "project-coconut", text: "make me three practice problems" });
     eng.emit({ type: "vc_turn_end", status: "completed" });
     await p.then((r) => sse(r)).catch(() => null);
-  });
-
-  it("an inbox announcement reaches only the vault's New call without creating a pi turn", async () => {
-    const c = await call();
-    const { announce } = await import("../voiceBrain");
-    const ac = new AbortController();
-    const res = await fetch(`${base}/api/v1/brain/call/${c.id}/speak`, { headers: { authorization: `Bearer ${c.token}` }, signal: ac.signal });
-    const reader = res.body!.getReader();
-    expect(announce("/elsewhere", "not yours")).toBe(0);
-    expect(announce("/v", '"Lecture 7" is in your board inbox.')).toBe(1);
-    let got = "";
-    for (let i = 0; i < 4 && !got.includes("Lecture 7"); i++) got += new TextDecoder().decode((await reader.read()).value);
-    ac.abort();
-    expect(got).toContain("Lecture 7");
-    expect(got).not.toContain("not yours");
-    expect(eng.messages).toEqual([]);
   });
 
   it("what the conversation says outside a request (a typed turn, a result) goes to the speak channel", async () => {
@@ -579,7 +563,7 @@ describe("voice with one brain", () => {
   });
 
   it("one context, each surface its own exchange: a reply to a line typed on another device is not spoken on this call; one typed on its own device is", async () => {
-    const c = await call(); // on the board
+    const c = await call(); // on the phone
     const ac = new AbortController();
     const res = await fetch(`${base}/api/v1/brain/call/${c.id}/speak`, { headers: { authorization: `Bearer ${c.token}` }, signal: ac.signal });
     const reader = res.body!.getReader();
@@ -595,12 +579,12 @@ describe("voice with one brain", () => {
     eng.emit({ type: "vc_turn_start", kind: "user", origin: "laptop" });
     eng.emit(delta("The laptop's answer, for the laptop. "));
     eng.emit({ type: "vc_turn_end", status: "completed" });
-    eng.emit({ type: "vc_turn_start", kind: "user", origin: "board" });
-    eng.emit(delta("The board's own answer. "));
+    eng.emit({ type: "vc_turn_start", kind: "user", origin: "phone" });
+    eng.emit(delta("The phone's own answer. "));
     eng.emit({ type: "vc_turn_end", status: "completed" });
-    await until(() => got.includes("board's own answer"));
+    await until(() => got.includes("phone's own answer"));
     ac.abort();
-    expect(got).toContain("The board's own answer.");
+    expect(got).toContain("The phone's own answer.");
     expect(got).not.toContain("for the laptop");
   });
 
@@ -653,10 +637,10 @@ it("revokes speech at the authenticated dispatch boundary for turns, owners, can
   expect((await able(original, "not-the-call")).status).toBe(401);
   expect((await able(original, c.token, true)).status).toBe(403);
   // A reply on another surface is NOT the call's, and old worker text cannot be rebound to it.
-  eng.emit({ type: "vc_turn_start", kind: "user", origin: "phone" });
+  eng.emit({ type: "vc_turn_start", kind: "user", origin: "laptop" });
   expect((await able(original)).body.speak).toBe(false);
   expect((await able(original + 1)).body.speak).toBe(false);
-  eng.emit({ type: "vc_turn_start", kind: "user", origin: "board" });
+  eng.emit({ type: "vc_turn_start", kind: "user", origin: "phone" });
   expect((await able(original + 2)).body.speak).toBe(true);
   eng.emit({ type: "vc_turn_end", status: "interrupted" });
   expect((await able(original + 2)).body.speak).toBe(false);
@@ -733,12 +717,12 @@ it("native final is the same answer once: partial/final, final-only, no history 
   eng.emit(end("Old background output."));
   eng.emit({ type: "vc_turn_end", status: "completed" });
   const answer = "## Literal answer\nThe human text is [Carl, on his laptop].\n\n```text\nDo not strip my user header\n```\n**The actual answer** is 42.";
-  eng.emit({ type: "vc_turn_start", kind: "user", origin: "board" });
+  eng.emit({ type: "vc_turn_start", kind: "user", origin: "phone" });
   eng.emit({ type: "message_start", message: { role: "assistant" } });
   eng.emit(delta("Partial text that final supersedes. "));
   eng.emit(end(answer)); eng.emit(end(answer));
   eng.emit({ type: "vc_turn_end", status: "completed" });
-  eng.emit({ type: "vc_turn_start", kind: "user", origin: "board" });
+  eng.emit({ type: "vc_turn_start", kind: "user", origin: "phone" });
   eng.emit({ type: "message_start", message: { role: "assistant" } });
   eng.emit(end("Final-only answer.")); eng.emit(end("Final-only answer."));
   eng.emit({ type: "vc_turn_end", status: "completed" });
@@ -751,7 +735,7 @@ it("native final is the same answer once: partial/final, final-only, no history 
   const next = new AbortController();
   const r = await fetch(`${base}/api/v1/brain/call/${c.id}/speak`, { headers: { authorization: `Bearer ${c.token}` }, signal: next.signal });
   const fresh = r.body!.getReader();
-  eng.emit({ type: "vc_turn_start", kind: "user", origin: "board" });
+  eng.emit({ type: "vc_turn_start", kind: "user", origin: "phone" });
   eng.emit(delta("Only fresh output. ")); eng.emit({ type: "vc_turn_end", status: "completed" });
   let raw = "";
   while (!raw.includes("Only fresh output")) raw += new TextDecoder().decode((await fresh.read()).value);
@@ -767,7 +751,7 @@ it("a native delivered typed input uses the gap channel, not the previous spoken
   const ac = new AbortController();
   const res = await fetch(`${base}/api/v1/brain/call/${c.id}/speak`, { headers: { authorization: `Bearer ${c.token}` }, signal: ac.signal });
   const reader = res.body!.getReader();
-  eng.emit({ type: "vc_delivered", clientId: "typed", origin: "board" });
+  eng.emit({ type: "vc_delivered", clientId: "typed", origin: "phone" });
   eng.emit(delta("Typed same-session answer. ")); eng.emit({ type: "message_end", message: { role: "assistant" } });
   eng.emit({ type: "vc_delivered", clientId: "other-device", origin: "laptop" });
   eng.emit(delta("Other device private reply. ")); eng.emit({ type: "vc_turn_end", status: "completed" });
@@ -785,7 +769,7 @@ it("same thread IDs in different owner roots neither replace nor follow one anot
   const vb = await import("../voiceBrain");
   const first = await call();
   const peer = fakeEngine();
-  const second = await vb.startCall({ vault: "/peer", engine: async () => peer, elKey: () => "k", voiceId: () => "v", botUrl: "", selfUrl: "", logDir: null }, { convId: "conv-123456", device: "board" });
+  const second = await vb.startCall({ vault: "/peer", engine: async () => peer, elKey: () => "k", voiceId: () => "v", botUrl: "", selfUrl: "", logDir: null }, { convId: "conv-123456", device: "phone" });
   expect(vb.liveCalls().map(c => c.id)).toEqual([first.id, second.body.callId]);
   expect(vb.followCall("/peer", "main")).toBe(true);
   expect(vb.liveCalls().map(c => c.convId)).toEqual(["conv-123456", "main"]);
@@ -838,7 +822,7 @@ it("a voice line's own turn never sends the speak channel an interrupt (it cance
   expect(completion).toContain("Fifty-six.");
   expect(msgs().filter((m) => m.interrupt)).toEqual([]);
   // A typed line from his device: its reply is said on the channel; the next turn stops it there.
-  eng.emit({ type: "vc_turn_start", kind: "user", origin: "board" });
+  eng.emit({ type: "vc_turn_start", kind: "user", origin: "phone" });
   eng.emit(delta("A typed reply. "));
   eng.emit({ type: "vc_turn_end", status: "completed" });
   await until(() => got.includes("A typed reply."));

@@ -274,7 +274,7 @@ describe("the you layer (buildYouLayer)", () => {
       E(2, { kind: "ask", modality: "ctrl-l", text: 'asked "why"' }),
     ];
     const s = core.buildYouLayer({ entries }, { now, convId: "me" }).text;
-    expect(s).toContain("Elsewhere (Ctrl+K/L, voice, inbox):");
+    expect(s).toContain("Elsewhere (Ctrl+K/L, voice):");
     expect(s.indexOf("Voice edited")).toBeLessThan(s.indexOf("tighten"));
     expect(s).not.toContain("Carl: mine");
     const later = core.buildYouLayer({ entries }, { now, since: now - 2.5 * 60_000 }).text;

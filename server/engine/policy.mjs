@@ -238,7 +238,7 @@ export function memoryCapNote(toolName, input, cwd, read) {
   return null;
 }
 
-/** A host tool's answer as pi's tool content: its text, and the images the host attaches (BoardLook's board
+/** A host tool's answer as pi's tool content: its text, and the images the host attaches (Screen's
  *  pictures) as pi's own image blocks ({type: "image", data: base64, mimeType}), as its read tool gives an image. */
 export function hostToolContent(r) {
   const images = (Array.isArray(r?.images) ? r.images : [])

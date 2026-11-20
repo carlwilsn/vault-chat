@@ -104,7 +104,7 @@ test("without a backend the host is inert, and the Notes plugin imports no store
   }
 });
 
-test("first-run helpers: vault files inside the vault only, shortcut labels, voice and board never throw", async () => {
+test("first-run helpers: vault files inside the vault only, shortcut labels, voice never throws; boardPaired is always false", async () => {
   const f = fake();
   const read: string[] = [];
   const b: HostBackend = {
@@ -112,7 +112,6 @@ test("first-run helpers: vault files inside the vault only, shortcut labels, voi
     readFile: async (rel) => (read.push(rel), rel === "Welcome/note.md" ? "# Note" : null),
     shortcut: (id) => (id === "edit.inline" ? "⌘K" : ""),
     speak: async () => { throw new Error("no voice"); },
-    boardPaired: async () => true,
   };
   const h = await mountWith(b, `globalThis.__h9 = api.host;`);
   const host = (globalThis as any).__h9;
@@ -123,7 +122,7 @@ test("first-run helpers: vault files inside the vault only, shortcut labels, voi
   assert.equal(host.shortcut("edit.inline"), "⌘K");
   assert.equal(await host.speak("Hi"), false, "a voice failure is false, never a throw");
   assert.equal(await host.speak("  "), false);
-  assert.equal(await host.boardPaired(), true);
+  assert.equal(await host.boardPaired(), false, "the iPad board was removed");
   h.unmount();
   assert.equal(await host.readFile("Welcome/note.md"), null, "a stopped run reads nothing");
   // A backend without them (the phone, a test): empty answers.

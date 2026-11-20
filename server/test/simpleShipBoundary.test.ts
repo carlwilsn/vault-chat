@@ -88,12 +88,12 @@ describe("external script source and argv boundary (offline)", () => {
   it("uses fixed installed tool argv despite forged npm scripts/config and treats missing reports as incomplete", async () => {
     const f = fixture(); writeFileSync(join(f.repo, ".npmrc"), "node-options=--import=FORGED_CONTROL\nregistry=https://private.example\n");
     const results = await f.execute(), calls = f.observations();
-    expect(calls).toHaveLength(10); // 4 typechecks, harness, server build + vitest, 3 final build commands
+    expect(calls).toHaveLength(8); // 3 typechecks, harness, server build + vitest, 2 final build commands
     const commands = calls.map(r => r.argv.slice(r.argv.indexOf("--") + 1));
     expect(commands.map(c => c.slice(0, 2))).toEqual([
-      ...Array.from({ length: 4 }, () => [f.o.node, "/host/node_modules/typescript/bin/tsc"]),
+      ...Array.from({ length: 3 }, () => [f.o.node, "/host/node_modules/typescript/bin/tsc"]),
       [f.o.node, "--import"], [f.o.node, "server/build.mjs"], [f.o.node, "/host/node_modules/vitest/vitest.mjs"],
-      [f.o.node, "/host/node_modules/vite/bin/vite.js"], [f.o.node, "/host/node_modules/vite/bin/vite.js"], [f.o.node, "server/build.mjs"],
+      [f.o.node, "/host/node_modules/vite/bin/vite.js"], [f.o.node, "server/build.mjs"],
     ]);
     expect(commands.flat().join(" ")).not.toMatch(/FORGED|npm run/);
     for (const r of calls) {
@@ -102,7 +102,7 @@ describe("external script source and argv boundary (offline)", () => {
       for (const flag of ["--unshare-all", "--die-with-parent", "--new-session"]) expect(r.argv).toContain(flag);
       expect(r.argv.join(" ")).toContain("--ro-bind " + f.o.pi);
     }
-    expect(results).toHaveLength(7);
+    expect(results).toHaveLength(6);
     for (const name of ["test:harness", "test:server"]) expect(results.find(r => r.gate === name)).toMatchObject({ exitCode: 0, complete: false });
   });
 });

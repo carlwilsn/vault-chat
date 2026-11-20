@@ -1,4 +1,4 @@
-/** Real seven-command runner on a tiny git fixture, NOT a published release/device proof. */
+/** Real gate runner on a tiny git fixture, NOT a published release/device proof. */
 import { expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -19,8 +19,8 @@ it("normal branch shipping runs all seven gates; later native failure leaves acc
     for (const name of ["package.json", "package-lock.json"]) put(name, readFileSync(join(dependencies, "..", name), "utf8"));
     put("app.ts", "export const value: number = 1;\n");
     put("tsconfig.json", JSON.stringify({ compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler", noEmit: true, skipLibCheck: true, types: [] }, files: ["app.ts"] }));
-    for (const dir of ["phone", "board", "server"]) put(`${dir}/tsconfig.json`, JSON.stringify({ extends: "../tsconfig.json", files: ["../app.ts"] }));
-    for (const dir of ["phone", "board"]) put(`${dir}/vite.config.ts`, `export default {build:{outDir:'${dir}/dist',lib:{entry:'app.ts',formats:['es'],fileName:'app'}}};`);
+    for (const dir of ["phone", "server"]) put(`${dir}/tsconfig.json`, JSON.stringify({ extends: "../tsconfig.json", files: ["../app.ts"] }));
+    for (const dir of ["phone"]) put(`${dir}/vite.config.ts`, `export default {build:{outDir:'${dir}/dist',lib:{entry:'app.ts',formats:['es'],fileName:'app'}}};`);
     put("server/build.mjs", "import {build} from 'esbuild'; await build({entryPoints:['app.ts'],bundle:true,outfile:'dist-server/app.js'});\n");
     put("server/vitest.config.ts", "export default {test:{include:['server/test/*.test.ts']}};\n");
     put("server/test/base.test.ts", "import {it,expect} from 'vitest'; import {value} from '../../app'; it('base contract',()=>expect(value).toBeGreaterThan(0));\n");

@@ -36,7 +36,6 @@ export function mount(el, api) {
     muted: !!saved.muted,
     note: typeof saved.note === "string" ? saved.note : null,
     results: saved.results && typeof saved.results === "object" ? saved.results : {},
-    board: null,
   };
   const persist = () => {
     try {
@@ -142,24 +141,6 @@ export function mount(el, api) {
           if (r && r.ok !== false && hasSomething(r.state ?? r)) return true;
         }
         return false;
-      },
-    },
-    {
-      id: "board",
-      title: "Flex: your iPad board",
-      only: () => st.board === true,
-      say: "You've got an iPad paired. Let's use it. I'll send you a question, you answer in ink, and I'll check it.",
-      body: () => [["p", `Ask: `, ["q", "Send me one question about the map to my board."], ` Answer it with the pen, then ask `, ["q", "Look at my board. Am I right?"]]],
-      waiting: "Waiting for the agent to look at your board",
-      enter(b) {
-        b.asked = false;
-        b.last = lastAssistant()?.id ?? null;
-      },
-      async check(b) {
-        const m = h.state().lastMessage;
-        if (m && m.role === "user" && /look at my board/i.test(m.content || "")) b.asked = true;
-        const a = lastAssistant();
-        return b.asked && !!a && a.id !== b.last;
       },
     },
     {
@@ -281,8 +262,8 @@ export function mount(el, api) {
         make(
           "p",
           "margin:0 0 8px;font-size:12px;opacity:.85;font-style:italic",
-          "The idea: human-in-the-loop, maxed out. The agent has rich context (your open files, your screen, your board, your history). You have good ways in (split view, " +
-            `${K.edit} and ${K.ask}, voice on your phone, ink on an iPad, pages you click). Either side can step in from any of them. It's one assistant for learning, for notes and for building.`,
+          "The idea: human-in-the-loop, maxed out. The agent has rich context (your open files, your screen, your history). You have good ways in (split view, " +
+            `${K.edit} and ${K.ask}, voice, pages you click). Either side can step in from any of them. It's one assistant for learning, for notes and for building.`,
         ),
       );
       STORIES.forEach(([title, text], i) => {
@@ -368,7 +349,7 @@ export function mount(el, api) {
     state: {
       progress: {
         description: "The tutorial now: the step shown (id, title), whether the card is hidden, and each step's result so far (passed / skipped).",
-        read: () => ({ step: (STEPS[st.step] || {}).id, title: (STEPS[st.step] || {}).title, hidden: st.hidden, results: st.results, note: st.note, board: st.board }),
+        read: () => ({ step: (STEPS[st.step] || {}).id, title: (STEPS[st.step] || {}).title, hidden: st.hidden, results: st.results, note: st.note }),
       },
     },
     actions: {
@@ -388,10 +369,5 @@ export function mount(el, api) {
     });
   });
 
-  void h.boardPaired().then((b) => {
-    st.board = b;
-    if (STEPS[st.step]?.only && !STEPS[st.step].only()) advance("skipped");
-    else render();
-  });
   void enter();
 }

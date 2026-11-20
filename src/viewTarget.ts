@@ -12,7 +12,6 @@
 //   HTML      anchor (an element id) | heading | text (hash-routed pages follow their nav)
 //   Notebook  cell (1-based) | text (the first cell containing it)
 //   Image     nothing (it just opens)
-//   Board     label (an item's label, e.g. "Problem 3"; centred in the view)
 //
 // Older requests are plain strings ("page=4", "L12-L18", "#id", a heading or a
 // phrase): they decode to `query` and every viewer keeps its old meaning for it.
@@ -26,7 +25,6 @@ export type ViewTarget = {
   text?: string;
   anchor?: string;
   cell?: number;
-  label?: string;
   /** A free string from an older caller (voice ScrollTo, a note's anchor): id, heading, page or phrase. */
   query?: string;
 };
@@ -34,7 +32,7 @@ export type ViewTarget = {
 export type TargetKey = Exclude<keyof ViewTarget, "query">;
 
 /** Which keys each kind of file takes (nothing listed: it only opens). */
-export const TARGET_KEYS: Record<FileKind | "board", TargetKey[]> = {
+export const TARGET_KEYS: Record<FileKind, TargetKey[]> = {
   pdf: ["page", "text"],
   markdown: ["line", "heading", "text"],
   code: ["line", "endLine"],
@@ -44,10 +42,9 @@ export const TARGET_KEYS: Record<FileKind | "board", TargetKey[]> = {
   video: [],
   tex: [],
   unsupported: [],
-  board: ["label"],
 };
 
-const KIND_NAME: Record<FileKind | "board", string> = {
+const KIND_NAME: Record<FileKind, string> = {
   pdf: "a PDF",
   markdown: "a markdown file",
   code: "a code or text file",
@@ -57,7 +54,6 @@ const KIND_NAME: Record<FileKind | "board", string> = {
   video: "a video",
   tex: "a TeX file",
   unsupported: "this kind of file",
-  board: "the board",
 };
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim().slice(0, 300) : undefined);
@@ -78,7 +74,7 @@ export function targetOf(a: Record<string, unknown> | null | undefined): ViewTar
   if (line !== undefined) t.line = line;
   if (endLine !== undefined) t.endLine = endLine;
   if (cell !== undefined) t.cell = cell;
-  for (const k of ["heading", "text", "anchor", "label"] as const) {
+  for (const k of ["heading", "text", "anchor"] as const) {
     const v = str(a[k]);
     if (v !== undefined) t[k] = k === "anchor" ? v.replace(/^#/, "") : v;
   }
@@ -88,7 +84,7 @@ export function targetOf(a: Record<string, unknown> | null | undefined): ViewTar
 export const hasTarget = (t: ViewTarget): boolean => Object.keys(t).length > 0;
 
 /** Null when `t` fits a file of this kind; else what it takes instead (an error line for the agent). */
-export function targetError(kind: FileKind | "board", t: ViewTarget, name = "it"): string | null {
+export function targetError(kind: FileKind, t: ViewTarget, name = "it"): string | null {
   const keys = Object.keys(t).filter((k) => k !== "query") as TargetKey[];
   if (!keys.length) return null;
   const ok = TARGET_KEYS[kind];
@@ -141,7 +137,6 @@ export function spotLabel(t: ViewTarget): string {
   if (t.heading) return `heading "${t.heading}"`;
   if (t.anchor) return `#${t.anchor}`;
   if (t.text) return `the text "${t.text}"`;
-  if (t.label) return `"${t.label}"`;
   return t.query ?? "";
 }
 

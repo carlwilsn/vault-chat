@@ -1,16 +1,14 @@
-// The logs' rules on the laptop and the board: nothing secret or private gets in
+// The logs' rules on the laptop: nothing secret or private gets in
 // (src/logRedact.ts), every app-log line carries its full date and the version
 // (src/debugLog.ts), client events record what the screen did and only
 // shortcuts of the keyboard (src/clientEvents.ts), the diag bundle gathers the
-// window and redacts it again (src/diag.ts), and the board counts its chrome
-// taps (board/src/chrome.ts).
+// window and redacts it again (src/diag.ts).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { installFakeTauri, makeTempVault } from "./fakes.ts";
 import { redactText, safeData, safeLine } from "../../src/logRedact.ts";
-import { ChromeTaps } from "../../board/src/chrome.ts";
 
 const vault = makeTempVault("vc-logging-");
 const fake = installFakeTauri(vault);
@@ -170,17 +168,3 @@ test("diag bundle: the last N minutes of each log, redacted again, written under
   assert.deepEqual(out.box, { note: "not in box mode" });
 });
 
-test("board chrome taps are counted: pressed, missed (moved off), dropped (a tap's synthesized click)", () => {
-  const presses: string[] = [];
-  const c = new ChromeTaps<string>((b) => presses.push(b));
-  c.down(1, "pen", 10, 10);
-  assert.equal(c.up(1, "pen", 12, 11, 100), true);
-  assert.equal(c.click(150), false); // the click iOS synthesises after it
-  c.down(2, "undo", 10, 10);
-  assert.equal(c.up(2, "redo", 60, 10, 300), false);
-  c.down(3, null, 0, 0);
-  c.up(3, null, 0, 0, 400); // not on a button: not a missed tap
-  assert.deepEqual(c.takeStats(), { pressed: 1, missed: 1, dropped: 1 });
-  assert.deepEqual(c.takeStats(), { pressed: 0, missed: 0, dropped: 0 });
-  assert.deepEqual(presses, ["pen"]);
-});

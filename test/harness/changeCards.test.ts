@@ -1,4 +1,4 @@
-// Change ready on the phone and the iPad board (src/changeCards.ts, phone/src/changes.ts, board/src/changes.ts): the
+// Change ready on the phone (src/changeCards.ts, phone/src/changes.ts): the
 // box's list of drafts drawn as a card with Keep / Discard (and Try on the phone for a draft that runs there), Carl's
 // word through the same POST /api/v2/supervisor as the laptop's, a word from another surface clearing the card here,
 // a tried draft that throws discarding itself, a surface turned off showing nothing, and nothing pending drawing
@@ -14,7 +14,6 @@ const { window, document } = parseHTML("<!doctype html><html><head></head><body>
 (globalThis as any).document = document;
 const { startPhoneHost } = await import("../../phone/src/plugins.ts");
 const { startPhoneChanges } = await import("../../phone/src/changes.ts");
-const { startBoardChanges } = await import("../../board/src/changes.ts");
 
 const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 const THEME = { mode: "dark" as const, vars: {} };
@@ -174,36 +173,3 @@ test("decided elsewhere while the phone tries it: the phone stops trying", async
   }
 });
 
-test("the board: Keep / Discard only (it says where to try it), a word clears it, a board turned off shows nothing", async () => {
-  const box: Box = { changes: [rowsDraft(), notesDraft, { plugin: "app/settings-values", name: "Settings", what: "the model opus", version: "dddddddd", added: false, tryOn: [] }], words: [], plugins: [], gets: 0 };
-  let feed: ((rec: unknown) => void) | null = null;
-  const events: string[] = [];
-  const b = startBoardChanges({ api: fakeBox(box) as any, onFeed: (fn) => ((feed = fn), () => (feed = null)), blog: (ev) => void events.push(ev), everyMs: 60_000, visible: () => true });
-  try {
-    await tick(60);
-    assert.equal(document.querySelector('[data-el="change-ready-title"]')?.textContent, "Change ready: a rounder chat row");
-    assert.equal(document.querySelector('[data-el="change-try"]'), null);
-    assert.match(document.querySelector('[data-el="change-direct"]')!.textContent!, /Try it on the laptop or the phone/);
-    click('[data-el="change-discard"]');
-    await tick(150);
-    assert.deepEqual(box.words[0], { plugin: ROWS, change: "discard", version: "aaaaaaaa", by: "carl" });
-    assert.equal(document.querySelector('[data-el="change-ready-title"]')?.textContent, "Change ready: bigger note text");
-    // Later hides this one: the settings draft (the box applies it: no Try anywhere) shows.
-    click('[aria-label="Later"]');
-    assert.equal(document.querySelector('[data-el="change-ready-title"]')?.textContent, "Change ready: the model opus");
-    assert.match(document.querySelector('[data-el="change-direct"]')!.textContent!, /The box applies this/);
-    click('[data-el="change-keep"]');
-    await tick(150);
-    assert.deepEqual(box.words[1], { plugin: "app/settings-values", change: "keep", version: "dddddddd", by: "carl" });
-    assert.ok(events.includes("change.word"));
-
-    // The board turned off: its list is empty with the line, and the card goes (after the outcome is dismissed).
-    box.off = "The iPad board is turned off by Carl.";
-    feed!({ type: "signal", signal: { type: "plugin.desired", plugin: "app/board", state: "stopped" } });
-    click('[aria-label="Dismiss"]');
-    await tick(250);
-    assert.equal(card(), null);
-  } finally {
-    b.stop();
-  }
-});

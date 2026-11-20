@@ -62,7 +62,7 @@ describe("private external MCP authority", () => {
     expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["Echo"]);
     expect(await client.callTool({ name: "Echo", arguments: {} })).toMatchObject({ content: [{ type: "text", text: JSON.stringify({ conversation: null, device: "laptop" }) }] });
     expect(f.bindings).toContainEqual({ vault: "notes", conversation: null, device: "laptop" });
-    expect((await fetch(`${f.url}?vault=notes&device=board&conversation=none`, { headers: { ...privateHeaders, "mcp-session-id": transport.sessionId!, Accept: "text/event-stream" } })).status).toBe(404);
+    expect((await fetch(`${f.url}?vault=notes&device=phone&conversation=none`, { headers: { ...privateHeaders, "mcp-session-id": transport.sessionId!, Accept: "text/event-stream" } })).status).toBe(404);
     expect((await fetch(`${f.url}?vault=missing&device=laptop&conversation=none`, { headers: privateHeaders })).status).toBe(401);
     expect((await fetch(scoped, { headers: { ...privateHeaders, Origin: "https://evil.example" } })).status).toBe(403);
   });

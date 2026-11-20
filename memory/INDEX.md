@@ -4,7 +4,7 @@ These notes are rebuilt from vault-chat’s code, not AgentOS notes.
 Carl’s instructions live in AGENTS.md.
 
 - pi integration is in server/engine/; server/http.ts serves the box API.
-- src/ is the React/Tauri laptop client; phone/ and board/ are separate clients.
+- src/ is the React/Tauri laptop client; phone/ is a separate client.
 - voice-pipeline/bot.py handles the only voice transport; server/voiceBrain.ts connects it to pi.
 - Legacy Classic preferences are inert, not migrated or deleted; microphone-off Health still shows pipeline startup failures.
 - src/convlog/ defines shared conversation records and projection code.

@@ -71,7 +71,6 @@ run() {
 # Keep every failure, including legacy context snapshots; no filters or snapshot rewrite.
 run type-desktop "$NODE" node_modules/typescript/bin/tsc --noEmit -p . || :
 run type-phone "$NODE" "$NPM" run typecheck:phone || :
-run type-board "$NODE" "$NPM" run typecheck:board || :
 run type-server "$NODE" "$NPM" run typecheck:server || :
 run convlog-boundaries "$NODE" --import tsx --import ./test/harness/register.mjs --test test/harness/convlog.test.ts test/harness/convlogWorkers.test.ts || :
 run recorder-contract "$NODE" preview/tools/check-native-recording.mjs || :

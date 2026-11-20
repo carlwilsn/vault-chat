@@ -1,6 +1,5 @@
-// A headless Chromium for the board inbox's checks (server/inbox.ts): a
-// widget must mount without throwing, and a widget or a typeset math part gets
-// a PNG snapshot (what the agent sees, and what the board's overview draws).
+// A headless Chromium on the box (RecordUI drives it: server/recordUI.ts openPage;
+// headless() renders a local page to its verdict and a PNG snapshot).
 //
 // The page is a local file with CSP `default-src 'none'` (inline script and
 // style only): nothing it runs can reach the network. One warm browser serves

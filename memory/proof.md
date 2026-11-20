@@ -10,14 +10,11 @@
 - Phone bottom-follow uses the viewport latch and native scroll anchoring/ResizeObserver. A queued programmatic scroll can arrive after image decode enlarged the gap; only upward motion/input releases the latch, not that new gap. Keep image URLs/ownership and the shared conversation fold independent of this layout state.
 
 ## Device routing
-- A poll proves reachability only, never where Carl is. Show/board policy reads the
+- A poll proves reachability only, never where Carl is. Show policy reads the
   last delivered human input in the owning native conversation feed. Keep voice's
-  `via: voice` separate from its actual phone/board/laptop origin. Deferred workers
-  retain the original request's permission but default to the current delivered
-  interaction, not a later request's explicit iPad permission or ambient focus.
-  Existing maker entry IDs alone are not destination permission. Only the
-  host-accepted BoardMake scope retains its original destination/asked permission
-  for that exact entry; unrelated deferred sends still recheck the current surface. Native wake/job/delegate/resume inputs are not new human interactions.
+  `via: voice` separate from its actual phone/laptop origin. Deferred workers
+  default to the current delivered interaction, not ambient focus.
+  Native wake/job/delegate/resume inputs are not new human interactions.
 
 - Send now's existing replay adapter had an enqueue-after-settle race: Pi RPC
   steer/follow_up accepts an idle queue without starting a run. A fast replacement
@@ -28,7 +25,7 @@
   the selected input first. Keep pending through interruption
   and clear each only when its actual native entry arrives (including the selected
   prompt). A bounded public Pi input hook reproduces it on baseline 6c7078a2 too;
-  SDK files remain read-only. Wakes cannot acquire human device/board permission.
+  SDK files remain read-only. Wakes cannot acquire human device permission.
 - Recheck that SAME original feed after native clear/abort: a user entry may land
   while interruption is in flight. Never replay a pre-abort snapshot already
   delivered by Pi; if the selected input landed, continue as nonhuman resume.
@@ -37,7 +34,7 @@
   Keep exact original prefix/private-appends and native provider-input guards.
 
 - Integrating device sense with accepted typed speech must preserve TWO native
-  bindings: the entry's physical `device` (phone/board/laptop) for visual routing,
+  bindings: the entry's physical `device` (phone/laptop) for visual routing,
   and its original `via: voice` actor for the voice delivery callback. Passing a
   phone device as that callback's origin accidentally treats spoken input as typed
   and closes its active completion. Derive voice origin from the matched native
@@ -48,29 +45,6 @@
   and wake refusal. The call's exact one-time rules prefix belongs on SECOND;
   its local provider must advertise the accepted Haiku model too. Neither fixture
   adjustment changes the native exact-input or pending-before-delivery guards.
-
-- piSubagents' old `BOARDMAKE a problem set` fixture had no physical device or
-  explicit board request. Baseline passed only because unknown ambient presence
-  used to authorize the board; delivered-human routing correctly refuses it.
-  Keep the named end-to-end test faithful: explicit phone request, genuine Pi
-  child held until the parent's reply/pending entry are observed, then later
-  phone input plus ambient polls before release. Also test original asked:true
-  and original current-board permission without asking the child to regenerate
-  `asked:true`: the host's existing worker scope carries acceptance for its own
-  make entry, never model text/args or a later wake/viewer. Unsolicited phone and
-  laptop makes must still refuse without spawning any child.
-
-## Scribble pen-up lifecycle
-- Reuse prepared 23a677fb's existing recognition/geometry and Arbiter owner retirement:
-  recognition/deletion happens only on actual non-touch pen-tool up, never on moves,
-  cancel, lost capture or blur. Original tile ink must stay fully opaque and persisted
-  throughout contact; one erasure is one existing undo/autosave transaction.
-- Existing A's production-board assertion reads actual base-canvas pixels, model,
-  history and disk after every trusted browser pen sample. Linux CDP pen input is
-  not physical Apple Pencil/Safari evidence. Playwright-managed pages force focus
-  in their own protocol session, hiding real WM blur; a public-CDP unmanaged target
-  on the same private display plus XTest focus/keys avoids that override without
-  mutating SDKs, calling application handlers or changing the board store as input.
 
 - Project deletion routing fixtures must distinguish model context from literal
   human bodies: the one-time deletion notice belongs to hidden `vc-context`,

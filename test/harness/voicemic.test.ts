@@ -8,11 +8,9 @@
 //     outputDeviceId) and stays there through default/communications switches.
 //   - Unplugged: the best remaining device, the call going on.
 //   - Safari/iOS (no virtual default listed): nothing pinned.
-import { test, before, after } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MicPin, micFor, resolveVirtualMic, type MicDevice } from "../../src/voiceMic.ts";
-import { VoiceController, type VoiceConv } from "../../board/src/voice.ts";
-import type { BrainOptions } from "../../src/voiceBrainClient.ts";
 
 // ---- Carl's Windows devices -------------------------------------------------
 const INTEL: MicDevice = { deviceId: "intel-mic", groupId: "g-intel", label: "Microphone Array (Intel® Smart Sound Technology for Digital Microphones)", kind: "audioinput" };
@@ -75,76 +73,4 @@ test("pin: the physical device behind 'Default - …' by label and group; iOS (n
   assert.equal(ios.pinned, null);
   assert.equal(await ios.target(), "default");
   assert.deepEqual(logs, []);
-});
-
-// ---- the board's call (board/src/voice.ts), on a fake call ---------------
-function boardCall(over: Partial<VoiceConv> = {}) {
-  let opts: BrainOptions | null = null;
-  const log = { inputs: [] as string[], outputs: [] as string[] };
-  const conv: VoiceConv = {
-    endSession: async () => {},
-    setMicMuted: () => {},
-    getOutputVolume: () => 0.4,
-    getInputVolume: () => 0,
-    changeInputDevice: async (c) => void log.inputs.push(c.inputDeviceId),
-    changeOutputDevice: async (c) => void log.outputs.push(c.outputDeviceId),
-    ...over,
-  };
-  return { start: async (o: BrainOptions) => ((opts = o), o.onConnect?.(), conv), conv, log, opts: () => opts! };
-}
-const boardApi = { listChats: async () => [], brainPost: async () => ({}) };
-const mic = async () => ({ getTracks: () => [] }) as unknown as MediaStream;
-
-test("board: pinned at start; an output default switch keeps the sink; the output unplugged moves it", async () => {
-  await withSinkId(async () => {
-    const devs = new FakeMediaDevices(windows({ def: INTEL, comm: INTEL, outDef: HEADSET }));
-    const f = boardCall();
-    const events: [string, any][] = [];
-    const v = new VoiceController({ api: boardApi, startCall: f.start, mic, devices: devs, log: (e, d) => events.push([e, d]) });
-    await v.start();
-    try {
-      assert.equal(v.state.phase, "live");
-      assert.equal(f.opts().inputDeviceId, "intel-mic");
-      assert.equal(f.opts().outputDeviceId, "jabra-out");
-      assert.equal(f.opts().convId, "main", "no chat picked: the one main conversation");
-      devs.change(windows({ def: INTEL, comm: INTEL, outDef: SPEAKERS }));
-      await wait(10);
-      assert.deepEqual(f.log.outputs, [], "Windows moving its default output doesn't move the call's");
-      devs.change(windows({ def: INTEL, comm: INTEL, outDef: SPEAKERS, outputs: [SPEAKERS] }));
-      await wait(10);
-      assert.deepEqual(f.log.outputs, ["spk"], "the headset unplugged: the speakers");
-      assert.equal(v.state.phase, "live");
-      assert.ok(events.some(([e]) => e === "voice devices changed"));
-    } finally {
-      await v.end();
-    }
-  });
-});
-
-test("board: a call that drops says why and the mic continues the same thread; mute and end are the call's", async () => {
-  let opts: BrainOptions | null = null;
-  const muted: boolean[] = [];
-  let ended = 0;
-  const closes: any[] = [];
-  const v = new VoiceController({
-    api: { listChats: async () => [{ id: "project-coconut", title: "Coconut", lastActivityAt: Date.now(), source: "box", kind: "project" }, { id: "main", title: "Main", lastActivityAt: 1, source: "box", kind: "main" }], brainPost: async () => ({}) },
-    startCall: async (o) => ((opts = o), o.onConnect?.(), { endSession: async () => void ended++, setMicMuted: (m: boolean) => void muted.push(m) }),
-    mic,
-    devices: null,
-    onClose: (c) => closes.push(c),
-  });
-  await v.switchChat("project-coconut");
-  assert.equal(opts!.convId, "project-coconut");
-  assert.equal(v.state.phase, "live");
-  v.setMuted(true);
-  assert.deepEqual(muted, [true]);
-  opts!.onDisconnect?.({ reason: "error", message: "the call's connection failed" });
-  assert.equal(v.state.phase, "error");
-  assert.match(v.state.error, /Tap the mic to go on with this chat/);
-  assert.equal(closes.at(-1).by, "remote");
-  await v.start();
-  assert.equal(opts!.convId, "project-coconut", "the picked thread goes on");
-  await v.end("pill");
-  assert.equal(v.state.phase, "idle");
-  assert.equal(ended, 1);
 });

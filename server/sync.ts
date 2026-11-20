@@ -4,8 +4,7 @@
 //       1. commit the working copy as the agent ("[agent] …"), under the
 //          shared repo lock, by the staging rules (git.ts stageForCommit):
 //          a file over 50 MB as a Git LFS pointer (its bytes in the box's
-//          LFS store, server/lfs.ts), never a new archive; a board being drawn
-//          on waits until it is still (2 min, at most 10); at most 100 MB
+//          LFS store, server/lfs.ts), never a new archive; at most 100 MB
 //          of new content a commit;
 //       2. push `box` to the bare repo (a local path);
 //       3. fetch `master` from it and fast-forward `box` when master
@@ -51,8 +50,6 @@ export type SyncStatus = {
   behind: number | null;
   /** New archives the box never commits (they belong in ~/agent-work/<vault>/). */
   archivesSkipped: string[];
-  /** Boards being drawn on, not committed yet (they go once still). */
-  heldBoards: string[];
   mirror: string;
 };
 
@@ -94,7 +91,6 @@ export class BoxSync {
       ahead: null,
       behind: null,
       archivesSkipped: [],
-      heldBoards: [],
       mirror: "off — the box does not mirror to GitHub; the laptop pushes master and box to its github remote",
     };
     onStageResult((repo, r) => {
@@ -255,7 +251,7 @@ exit 0
 
         // 1. Commit.
         try {
-          s.steps.commit = { ok: true, at: Date.now(), detail: await this.commitWorkingCopy(true) };
+          s.steps.commit = { ok: true, at: Date.now(), detail: await this.commitWorkingCopy() };
         } catch (e) {
           s.steps.commit = { ok: false, at: Date.now(), error: errText(e) };
           throw e;
@@ -298,13 +294,6 @@ exit 0
           const masterSha = (await git(vault, ["rev-parse", this.HUB_REF])).trim();
           if (boxSha === masterSha) {
             s.steps.fastForward = { ok: true, at: Date.now(), detail: "box == master" };
-          } else if ((await runGit(vault, ["merge-base", "--is-ancestor", "HEAD", this.HUB_REF])).code === 0 && (await this.heldBoardsIn(this.HUB_REF))) {
-            // Master changed a board that is being drawn on here: commit the drawing now (box is then ahead and
-            // waits for the laptop's merge) rather than let the fast-forward refuse to overwrite it.
-            const detail = await this.commitWorkingCopy(false);
-            s.steps.commit = { ok: true, at: Date.now(), detail };
-            await this.pushBox();
-            s.steps.fastForward = { ok: true, at: Date.now(), detail: "master changed a board being drawn on: committed it, waiting for the laptop to merge" };
           } else if ((await runGit(vault, ["merge-base", "--is-ancestor", "HEAD", this.HUB_REF])).code === 0) {
             await git(vault, ["merge", "--ff-only", "-q", this.HUB_REF]);
             s.steps.fastForward = { ok: true, at: Date.now(), detail: `fast-forwarded ${boxSha.slice(0, 8)} → ${masterSha.slice(0, 8)}` };
@@ -342,22 +331,17 @@ exit 0
     }
   }
 
-  /** Commit the working copy as the agent (caller holds the repo lock). `hold`: boards being drawn on wait. */
-  private async commitWorkingCopy(hold: boolean): Promise<string> {
+  /** Commit the working copy as the agent (caller holds the repo lock). */
+  private async commitWorkingCopy(): Promise<string> {
     const vault = this.vault;
     // A file the old rule kept out of git (over 50 MB, in .git/info/exclude) goes through LFS now.
     const freed = releaseExcludedBig(vault, (p) => ARCHIVE_RE.test(p));
     const st = await git(vault, ["status", "--porcelain", "--ignore-submodules=dirty"]);
-    if (!st.trim() && !freed.length) {
-      this.status.heldBoards = [];
-      return "clean";
-    }
-    const r = await stageForCommit(vault, AGENT_IDENTITY_ARGS, { holdBoards: hold });
+    if (!st.trim() && !freed.length) return "clean";
+    const r = await stageForCommit(vault, AGENT_IDENTITY_ARGS);
     this.noteStaged(r);
-    this.status.heldBoards = r.heldBoards;
     const staged = await runGit(vault, ["diff", "--cached", "--quiet"]);
     const notes = [
-      r.heldBoards.length ? `held while drawn on: ${r.heldBoards.join(", ")}` : "",
       r.deferred.length ? `${r.deferred.length} file(s) left for the next commit (100 MB a commit)` : "",
       r.archives.length ? `${r.archives.length} archive(s) kept out` : "",
       r.lfs.length ? `${r.lfs.length} file(s) over 50 MB as Git LFS pointers` : "",
@@ -369,14 +353,6 @@ exit 0
     // More waits (a set of new files over the commit's budget): the next cycle takes it at once.
     if (r.deferred.length) this.again = true;
     return `committed ${n} file(s)${tail}`;
-  }
-
-  /** Does `ref` change a board this box is holding (being drawn on)? */
-  private async heldBoardsIn(ref: string): Promise<boolean> {
-    const held = this.status.heldBoards;
-    if (!held.length) return false;
-    const r = await runGit(this.vault, ["diff", "--name-only", "HEAD", ref, "--", ...held]);
-    return r.code !== 0 || r.stdout.trim() !== "";
   }
 
   private async pushBox(): Promise<void> {
@@ -568,5 +544,5 @@ export function syncStatus(): unknown {
 export function syncSummary(): Record<string, unknown> {
   if (!instance) return { enabled: false, ok: false, error: setupError };
   const s = instance.status;
-  return { enabled: true, ok: s.ok, lastOkAt: s.lastOkAt, failingSince: s.failingSince, lastError: s.lastError, ahead: s.ahead, behind: s.behind, archivesSkipped: s.archivesSkipped.length, heldBoards: s.heldBoards };
+  return { enabled: true, ok: s.ok, lastOkAt: s.lastOkAt, failingSince: s.failingSince, lastError: s.lastError, ahead: s.ahead, behind: s.behind, archivesSkipped: s.archivesSkipped.length };
 }

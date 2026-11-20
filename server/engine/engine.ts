@@ -42,9 +42,6 @@ import { MAIN_ID, projectOfThread, projectThreadId, threadKindOf } from "../../s
 import { searchHistory } from "./history";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
 import { pdfPagesAnswer, pdfPagesSpec, pdfRead, webFetch, webFetchSpec } from "./extraTools";
-import { failMake, inboxLog, listEntries, readEntry, sendEntry, startMake, type InboxEvent } from "../inbox";
-import { BOARD_MAKER_PROMPT, boardMakeTask, makerStats } from "./boardTools";
-import { lookBoard } from "../boards";
 import { show, SHOW_DESCRIPTION, SHOW_SCHEMA } from "../show";
 import { layoutTool, LAYOUT_DESCRIPTION, LAYOUT_SCHEMA } from "../layoutTool";
 import { pluginOfferTool, pluginOfferToolSpecs } from "../pluginOffersTool";
@@ -58,7 +55,6 @@ import { driveTool, DRIVE_DESCRIPTION, DRIVE_SCHEMA } from "../driveTool";
 import { actTool, ACT_DESCRIPTION, ACT_SCHEMA } from "../actTool";
 import { timingTool, TIMING_DESCRIPTION, TIMING_SCHEMA } from "../timingTool";
 import { SERVER_REV as BOX_SERVER_REV } from "../config";
-import { boardGuard } from "../boardGuard";
 import { surfaceOff } from "../surfaces";
 import { openProject, OPEN_PROJECT_DESCRIPTION, OPEN_PROJECT_SCHEMA } from "../projectRoutes";
 import { startJobWith, jobStatus, jobList, jobStop, reapJobs, readJobs, type JobEnv } from "./jobs";
@@ -84,8 +80,7 @@ import { appendActivity, contextImage, searchActivity, youLayer } from "../activ
 import { CAPTURE_FRESH_MS, chatPointerEntry } from "../../src/activityCore";
 import type { EventBody, ItemImage, PendingInput } from "../../src/convlog/protocol";
 import { isOpen, pendingOf, type Picture } from "../../src/convlog/reduce";
-import { makeChatView, toolName } from "../../src/convlog/view";
-import { waitInputs } from "../../src/voiceWaitLine";
+import { toolName } from "../../src/convlog/view";
 import { lookupAll } from "./lookup";
 import { pluginCatalog } from "../pluginCatalog";
 import { catalogText } from "../../src/pluginCatalog";
@@ -117,7 +112,7 @@ export type EngineDeps = {
   log?: (s: string) => void;
   /** The engine of the vault at this path (the owner of a chat this vault's log does not hold). */
   engineAt?: (path: string) => Promise<Engine | null>;
-  /** A vault-level signal on /poll (the inbox, notifications). */
+  /** A vault-level signal on /poll (notifications, show, layout). */
   broadcast?: (ev: Record<string, unknown>) => void;
   /** Model for a turn that carries images when the default can't see. */
   visionModel?: string;
@@ -199,7 +194,7 @@ type Live = {
 
 };
 
-type TurnOpts = { completion?: import("./backend").NativeCompletion; /** Send now replays the existing feed directly into Pi before its replacement prompt can settle. */ replay?: Expected[]; /** Existing host-owned job/wake identity, never a push arm. */ pushWorkId?: string; images?: string[]; context?: string; hostContext?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; device?: "laptop" | "phone" | "board" | null; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean; /** The backend already started this turn by itself (a queued message it took, a background task that finished): open the turn around it instead of sending a prompt. */ adopt?: boolean; /** The retry of work held for the usage limit (its hold's count): failing on the limit again waits for the next reset, longer. */ limitTries?: number; /** Carl's message held (shown waiting) while the conversation was being summarized: not run if he took it back meanwhile. */ held?: boolean; /** The host's own retry of a turn that failed on something passing (its wake's count, retryLater). */ retryTries?: number };
+type TurnOpts = { completion?: import("./backend").NativeCompletion; /** Send now replays the existing feed directly into Pi before its replacement prompt can settle. */ replay?: Expected[]; /** Existing host-owned job/wake identity, never a push arm. */ pushWorkId?: string; images?: string[]; context?: string; hostContext?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; device?: "laptop" | "phone" | null; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean; /** The backend already started this turn by itself (a queued message it took, a background task that finished): open the turn around it instead of sending a prompt. */ adopt?: boolean; /** The retry of work held for the usage limit (its hold's count): failing on the limit again waits for the next reset, longer. */ limitTries?: number; /** Carl's message held (shown waiting) while the conversation was being summarized: not run if he took it back meanwhile. */ held?: boolean; /** The host's own retry of a turn that failed on something passing (its wake's count, retryLater). */ retryTries?: number };
 
 const RESUME_TEXT =
   "The box restarted (or the engine stopped) while your last turn was running, so any command it was running was killed and may not have finished. Re-check reality (files, processes, logs), then continue from where you were.";
@@ -243,7 +238,6 @@ export function cutShown(w: CutWork): string {
   const parts = [
     w.workers.length ? `resuming ${w.workers.length} background worker${w.workers.length > 1 ? "s" : ""} (${titles(w.workers)})` : "",
     w.commands.length ? `${w.commands.length} background command${w.commands.length > 1 ? "s" : ""} ended (${titles(w.commands)})` : "",
-    w.boards.length ? `${w.boards.length} whiteboard make${w.boards.length > 1 ? "s" : ""} ended (${titles(w.boards)})` : "",
   ].filter(Boolean);
   return `The box restarted (an update) while background work ran: ${parts.join("; ")}`.slice(0, 400);
 }
@@ -259,7 +253,6 @@ export function cutText(w: CutWork): string {
     );
   }
   if (w.commands.length) lines.push(`Background commands that ended (a shell cannot be resumed; start one again only if it is still needed): ${titles(w.commands)}.`);
-  if (w.boards.length) lines.push(`Whiteboard makes that ended before they finished (run BoardMake again only if still wanted): ${titles(w.boards)}.`);
   lines.push("Then end your turn with at most one short line; nothing else needs saying.");
   return lines.join("\n");
 }
@@ -408,56 +401,6 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
-    name: "BoardSend",
-    description:
-      "Send something to Carl's iPad whiteboard inbox (he adds it to a board himself). Only when Carl asks for the board or his iPad (\"send it to my iPad\", \"put it on the board\") or is at the board now (the \"you\" layer's Device: board, or a call on the board); a visual for him anywhere else goes where he is talking: an image in your reply, or Show. When he is on another device and did not ask, it is refused with why; asked: true when he did ask (earlier, or in other words). Use it directly only when everything already exists: PDF pages, math you have written, an image or widget file already in the vault. Parts (ordered, each addable on its own): {kind:\"pdf\", path, pages:[3,4,5] (1-based, ≤20)} | {kind:\"math\", markdown (with $…$ / $…$), label?} | {kind:\"image\", path (PNG/JPEG/WebP/SVG in the vault), alt} | {kind:\"widget\", path (one TypeScript module exporting mount(el, api); api: size(), onResize(fn), theme; no network), alt, layout?:{w,h}}. Optional width (canvas units; the view is 1000 wide) and label per part. A problem set is one math part per problem. A bad send is refused with every reason: fix them and send again. Returns the entry id.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        title: { type: "string" },
-        note: { type: "string" },
-        parts: { type: "array", items: { type: "object" } },
-        make: { type: "string", description: "Only inside a BoardMake: the id of the entry being made." },
-        asked: { type: "boolean", description: "Carl asked for the board or iPad (earlier, or in words the check did not catch)." },
-        more: { type: "boolean", description: "Only with make: these parts land now and the entry stays being made; the last send leaves it out." },
-      },
-      required: ["title", "parts"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "BoardMake",
-    description:
-      "Have something made for Carl's iPad whiteboard in the background (a problem set, a graph, a widget) and land in its inbox. Only when Carl asks for the board or his iPad, or is at the board now (Device: board, or a call on the board); never for \"visualize this\" while he is on his laptop or phone — make that picture yourself and put it in your reply. When he is elsewhere and did not ask, it is refused with why; asked: true when he did ask. Returns at once; a sub-agent in this vault makes the files, sends them through BoardSend and fixes refusals itself. The inbox shows it as being made, then the result or why it couldn't be made. Never wait for it: tell Carl it's on its way and carry on.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        request: { type: "string", description: "What to make, with everything the maker needs (the maker does not see this conversation)." },
-        title: { type: "string", description: "The inbox title, one line." },
-        asked: { type: "boolean", description: "Carl asked for the board or iPad (earlier, or in words the check did not catch)." },
-      },
-      required: ["request", "title"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "BoardInbox",
-    readOnly: true,
-    description: "The whiteboard inbox: each entry's title, status (unread / read / added / being made / couldn't make) and, for added parts, the board and whether its items are still there. Give id for one entry.",
-    inputSchema: { type: "object", properties: { id: { type: "string" } }, additionalProperties: false },
-  },
-  {
-    type: "function",
-    name: "BoardLook",
-    readOnly: true,
-    description:
-      "See one of Carl's whiteboard boards as it was last saved, whether or not it is on any screen (on his laptop he may be looking at a PDF: that is not the board). `board`: its name or words of it (\"physics\"); left out, his most recently changed board. Attaches the part he had in view on the iPad at that save and a picture of the whole board. Use it for \"look at my whiteboard\" or \"what did I write on the board\": never answer from his screen instead, and never ask him to bring the board up.",
-    inputSchema: { type: "object", properties: { board: { type: "string", description: "The board's name or words of it; empty: the most recent." } }, additionalProperties: false },
-  },
-  {
-    type: "function",
     name: "Show",
     description: SHOW_DESCRIPTION,
     inputSchema: SHOW_SCHEMA as unknown as Record<string, unknown>,
@@ -588,7 +531,7 @@ export const ENGINE_TOOL_SPECS = [
     name: "RecentActivity",
     readOnly: true,
     description:
-      "Search what Carl did on his surfaces over the last days (the shared activity stream: Ctrl+L asks and their answers, Ctrl+K edits, voice lines, captures, files he opened, his messages in other chats, inbox sends). Your turns only get the last ~45 minutes of it; use this when he refers to something older (\"what did I ask before lunch?\"). `query`: words to match (empty: everything); `hours`: how far back (default 24, at most 168).",
+      "Search what Carl did on his surfaces over the last days (the shared activity stream: Ctrl+L asks and their answers, Ctrl+K edits, voice lines, captures, files he opened, his messages in other chats). Your turns only get the last ~45 minutes of it; use this when he refers to something older (\"what did I ask before lunch?\"). `query`: words to match (empty: everything); `hours`: how far back (default 24, at most 168).",
     inputSchema: {
       type: "object",
       properties: { query: { type: "string" }, hours: { type: "number" }, limit: { type: "number" } },
@@ -683,10 +626,10 @@ export const handoffSpec = {
     additionalProperties: false,
   },
 };
-/** The agent's tools a side thread can't use: they belong to a turn (its question, plan, background maker, job, wake). */
-const TURN_ONLY_TOOLS = new Set(["AskUser", "SubmitChange", "TodoWrite", "BoardMake", "StartJob", "JobStop", "JobSteer", "ScheduleWake"]);
+/** The agent's tools a side thread can't use: they belong to a turn (its question, plan, job, wake). */
+const TURN_ONLY_TOOLS = new Set(["AskUser", "SubmitChange", "TodoWrite", "StartJob", "JobStop", "JobSteer", "ScheduleWake"]);
 /** Voice's Ask (server/voice.ts), a side thread: a question has the read-only tools and Show; an action every tool a
- *  side thread can use (BoardSend, Show, the notes …), with pi's own file tools (sideStart). */
+ *  side thread can use (Show, the notes …), with pi's own file tools (sideStart). */
 export function voiceSideToolSpecs(act: boolean): ToolSpec[] {
   if (act) return agentToolSpecs().filter((t) => !TURN_ONLY_TOOLS.has(t.name));
   return [...sideToolSpecs(), ...agentToolSpecs().filter((t) => t.name === "Show" && t.readOnly !== true)];
@@ -696,7 +639,7 @@ const text = (t: string) => ({ success: true, contentItems: [{ type: "inputText"
 /** The box plugin drafts a conversation tries (its `tries`, set when Carl started it while trying one). */
 const triesOf = (conv: unknown): BoxTries => cleanTries((conv as { tries?: unknown } | null)?.tries);
 
-/** A tool's answer for pi: its text, and the images it attaches (BoardLook's board pictures) as pi's image blocks. */
+/** A tool's answer for pi: its text, and the images it attaches (Screen's pictures) as pi's image blocks. */
 export function toolAnswer(r: any): import("./backend").ToolAnswer {
   const items: any[] = Array.isArray(r?.contentItems) ? r.contentItems : [];
   const images = items.filter((c) => c?.type === "inputImage" && typeof c.data === "string" && c.data).map((c) => ({ data: String(c.data), mimeType: String(c.mimeType || "image/png") }));
@@ -953,11 +896,11 @@ export class Engine {
   /** External clients have explicit vault/device/conversation context, never
    * whichever chat happens to be foreground. No external caller borrows a
    * running pi turn: questions, proof gates and workers require their owner. */
-  async mcpBinding(context: { conversation: string | null; device: "laptop" | "phone" | "board" }) {
+  async mcpBinding(context: { conversation: string | null; device: "laptop" | "phone" }) {
     return this.scoped(async () => {
       if (context.conversation && !(await readConv(this.d.vault, context.conversation))) return null;
       // Only what this caller may run is listed: a tool that needs an owning turn (its question, plan,
-      // background maker, job, wake) is left out rather than listed and then refused.
+      // job, wake) is left out rather than listed and then refused.
       const builtin = agentToolSpecs().filter((t) => !TURN_ONLY_TOOLS.has(t.name) && t.name !== "Compact").map((t) => t.name === "RecordUI" ? { ...t, description: `${t.description} External clients: browser-only http(s) pages; run steps and local-file navigation are refused. Omit out: a fresh vault visuals directory is allocated.` } : t);
       // Carl's vault tools (.vault-chat/tools) are not offered here: each runs his own code in the
       // command sandbox with every command key (vaultTools.ts), the shell authority this endpoint
@@ -990,9 +933,6 @@ export class Engine {
           }
           const a = { ...args };
           if (name === "Show" && (!a.where || a.where === "here")) a.where = context.device;
-          const toBoard = name === "BoardSend" || (name === "Show" && /^(board|ipad)$/i.test(String(a.where)));
-          if (toBoard && context.device !== "board" && a.asked !== true) return { ok: false, text: "Board sending requires an explicit request (asked: true) from this external client, not ambient screen presence." };
-          if (toBoard && context.device === "board") a.asked = true; // explicit bound board, not global presence
           return toolAnswer(await this.onToolCall({ side: { convId: context.conversation }, tool: name, arguments: a, signal: contextOfCall.signal, interaction: { device: context.device, request: "" } }));
         }),
       };
@@ -1084,7 +1024,7 @@ export class Engine {
 
   /** One chat's cut work as a wake (see saveCutWork); the number of tasks it holds. */
   private recordCutWork(threadId: string, work: CutWork, at: number): number {
-    const n = work.workers.length + work.commands.length + work.boards.length;
+    const n = work.workers.length + work.commands.length;
     if (!n) return 0;
     const convId = this.byThread.get(threadId);
     if (!convId) {
@@ -1273,7 +1213,7 @@ export class Engine {
     /** Take back a queued (or steering) message not delivered yet (its id). */
     unqueue?: string;
     mode?: "steer";
-    /** Which client sent it (laptop, phone, board): the turn log's `via`. */
+    /** Which client sent it (laptop, phone): the turn log's `via`. */
     client?: string;
     /** How the message shows (its item's `via`): "voice-ask" for a request voice handed over (server/voice.ts Ask). */
     via?: string;
@@ -1663,7 +1603,7 @@ export class Engine {
           writeFileSync(instr, buildDeveloperInstructions((conv ?? { id: "side", title: "", messages: [] }) as any, { rolePrompt: ENGINE_ROLE_PROMPT + (note ? `\n\n${note}` : "") }));
         }
         // What Carl did elsewhere comes in through pi (the extension's "you" layer, as of this conversation).
-        // Voice's Ask (server/voice.ts): Show too; an action also pi's own file tools and BoardSend.
+        // Voice's Ask (server/voice.ts): Show too; an action also pi's own file tools.
         const voice = typeof b.kind === "string" && b.kind.startsWith("voice");
         const act = voice && b.tools === "act";
         const tools = act ? [...READ_ONLY_TOOLS, "bash", "edit", "write"] : READ_ONLY_TOOLS;
@@ -2044,17 +1984,8 @@ export class Engine {
     return n;
   }
 
-  private waitView = makeChatView();
   /** Workers he stopped on a call ("never mind"; the voice already told him): their report is not a turn. */
   private stoppedOnHisWord = new Set<string>();
-  /** What a voice on `convId` is waiting on (src/voiceWaitLine.ts), for a surface with no feed of its own (the board). */
-  waitInputs(convId: string): ReturnType<typeof waitInputs> | null {
-    const p = this.picture(convId);
-    if (!p) return null;
-    const v = this.waitView(p);
-    return waitInputs({ running: v.running, tools: v.live.tools, startedAt: v.startedAt, subagents: p.meta.subagents as any, todos: v.todos as any, messages: v.messages as any, now: Date.now() });
-  }
-
   /** A voice call on `convId` (null: it ended). Its turns run on `model`; `rules` go in front of the call's first turn. */
   setTalker(convId: string, t: { model: string; rules: string; thinking?: string } | null): void {
     if (t) this.talkers.set(convId, { ...t, sent: false });
@@ -2934,8 +2865,7 @@ export class Engine {
         // A StartJob job outlives a restart (tickJobs ends its row when it ends).
         if ((s.state ?? s.status) !== "running" || s.kind === "job" || this.d.backend.liveChild?.(s.threadId)) continue;
         this.updateSubagent(convId, s.threadId, { status: "killed", state: "killed", endedAt: Date.now(), summary: "Stopped by a restart of the server before it reported." });
-        // (A whiteboard make reports in Carl's inbox instead: BoardMake marks its entry failed on its own path.)
-        if (!s.background || s.agent === "board-maker") continue;
+        if (!s.background) continue;
         this.log(`worker ${s.threadId} on ${convId} was lost in a restart: reporting it`);
         this.reportWhenDone(convId, String(s.title ?? s.task ?? "background work").slice(0, 120), Promise.resolve({ ok: false, state: "killed", text: "The server restarted while this worker ran, so it stopped before it reported. Start it again if it is still wanted." }));
       }
@@ -3111,7 +3041,7 @@ export class Engine {
     const name = String(p?.tool ?? "");
     // A Ctrl+K / Ctrl+L side thread (p.side): only the read-only tools, as of the conversation it was opened from (or none).
     const side: { convId: string | null } | null = p?.side ?? null;
-    // (Each side thread's own list is enforced in pi/side.ts: voice's Asks may also Show, an action BoardSend and the
+    // (Each side thread's own list is enforced in pi/side.ts: voice's Asks may also Show, an action the
     // notes, and both Carl's vault tools. A turn's own tools never run in a side thread.)
     if (side && agentToolSpecs().some((t) => t.name === name) && !voiceSideToolSpecs(true).some((t) => t.name === name)) return { success: false, contentItems: [{ type: "inputText", text: `${name} is not available here: this request has read-only tools.` }] };
     const convId: string = (side ? side.convId : this.byThread.get(p?.threadId) ?? this.childOf.get(p?.threadId)) ?? "";
@@ -3217,66 +3147,16 @@ export class Engine {
           if (phoneOff) return text(`In Carl's alerts. No phone push: ${phoneOff}`);
           return text(explicitPush ? "In Carl's alerts. One event push requested for this work, subject to away/seen/dedup rules; no future alerts armed." : "In Carl's alerts. No explicit phone push requested (legacy automatic pushes apply only if Carl enabled them in Settings).");
         }
-        case "BoardSend": {
-          // A host-accepted make keeps its original destination/permission for
-          // this entry only. An arbitrary `make` id is never authorization;
-          // other deferred tools still follow the latest delivered human surface.
-          const make = p.notifyScope?.boardMake;
-          const ownedMake = make && a.make === make.id ? make : null;
-          const origin = ownedMake?.interaction ?? interaction;
-          const no = boardGuard({ vault, request: origin.request, device: origin.device, asked: ownedMake?.asked === true || a.asked === true, tool: "BoardSend" , off: surfaceOff(vault, "board") });
-          if (no) return { success: false, contentItems: [{ type: "inputText", text: no }] };
-          delete a.asked;
-          const r = await sendEntry(vault, a, { conversation: convId, emit: (ev) => this.inboxEvent(ev) });
-          if (!r.ok) return { success: false, contentItems: [{ type: "inputText", text: `Refused (nothing reached the inbox):\n- ${r.refusals.join("\n- ")}` }] };
-          return text(JSON.stringify({ id: r.id, parts: r.parts }) + " — in Carl's whiteboard inbox.");
-        }
         case "Lookup":
           return text(await lookupAll(vault, a));
         case "Catalog":
           return text(catalogText(pluginCatalog(vault)));
-        case "BoardMake": {
-          const request = String(a.request ?? "").trim();
-          const title = String(a.title ?? "").trim();
-          if (!request || !title) return text("BoardMake needs a request and a title.");
-          const no = boardGuard({ vault, request: interaction.request, device: interaction.device, asked: a.asked === true, tool: "BoardMake" , off: surfaceOff(vault, "board") });
-          if (no) return { success: false, contentItems: [{ type: "inputText", text: no }] };
-          const entry = startMake(vault, { title, request }, { conversation: convId, emit: (ev) => this.inboxEvent(ev) });
-          const t0 = Date.now();
-          const started = this.d.backend.background(p.threadId, {
-            agent: { name: "board-maker", systemPrompt: BOARD_MAKER_PROMPT, tools: ["read", "bash", "edit", "write", "BoardSend"] },
-            task: boardMakeTask(entry.id, title, request),
-          }, undefined, Object.freeze({ id: entry.id, interaction, asked: a.asked === true }));
-          inboxLog({}, "make.spawn", { id: entry.id, ms: Date.now() - t0 });
-          void started
-            .then((r: any) => {
-              // Where the time went: the whole make, and the maker's model calls (its own session file).
-              inboxLog({}, "make.done", { id: entry.id, ms: Date.now() - t0, ok: !!r?.ok, state: r?.state ?? null, model: r?.model ?? null, costUsd: r?.costUsd ?? null, ...(makerStats(r?.sessionFile) ?? {}) });
-              // Landed: the last send cleared `making`. Otherwise it failed: say why in the inbox.
-              const e = readEntry(vault, entry.id);
-              if (e?.making) failMake(vault, entry.id, r?.ok ? (e.parts.length ? "the maker stopped before its last send" : "the maker finished without sending anything") : String(r?.text ?? r?.state ?? "the maker failed").split("\n")[0]!, { emit: (ev) => this.inboxEvent(ev) });
-            })
-            .catch((err: Error) => failMake(vault, entry.id, err.message, { emit: (ev) => this.inboxEvent(ev) }));
-          return text(`Making it in the background (inbox entry ${entry.id}, shown as being made). It lands in Carl's inbox when ready; don't wait for it.`);
-        }
-        case "BoardInbox":
-          return text(boardInboxText(vault, a.id ? String(a.id) : null));
-        case "BoardLook": {
-          const r = lookBoard(vault, a.board);
-          return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }, ...r.images.map((im) => ({ type: "inputImage", data: im.data, mimeType: im.mimeType }))] };
-        }
         case "Show": {
-          // On the device he names (or is on): a signal the laptop / phone acks, or the inbox's validated send.
-          // The board named by the agent, not by Carl, while he is elsewhere: refused with why (server/boardGuard.ts).
-          const destination = !a.where || a.where === "here" ? interaction.device : String(a.where).trim();
-          const toBoard = /^(board|ipad)$/i.test(destination ?? "");
-          const no = toBoard ? boardGuard({ vault, request: interaction.request, device: interaction.device, asked: a.asked === true, tool: "Show" , off: surfaceOff(vault, "board") }) : null;
-          if (no) return { success: false, contentItems: [{ type: "inputText", text: no }] };
+          // On the device he names (or is on): a signal the laptop / phone acks.
           if ((!a.where || a.where === "here") && interaction.device === "laptop" && /\b(?:not|away from)\s+(?:near\s+)?(?:at\s+)?my\s+(?:laptop|computer)\b/i.test(interaction.request)) {
             return { success: false, contentItems: [{ type: "inputText", text: "Nothing opened: Carl said he is away from his laptop. Keep the visual in the reply or use the destination he explicitly requested." }] };
           }
-          delete a.asked;
-          const r = await show({ vault, device: interaction.device, off: (s) => surfaceOff(vault, s), emit: (ev) => this.d.broadcast?.(ev), sendBoard: (b) => sendEntry(vault, b, { conversation: convId, emit: (ev) => this.inboxEvent(ev) }), dev: (port) => this.devUrl(port), vaults: this.d.vaultList }, a);
+          const r = await show({ vault, device: interaction.device, off: (s) => surfaceOff(vault, s), emit: (ev) => this.d.broadcast?.(ev), dev: (port) => this.devUrl(port), vaults: this.d.vaultList }, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "Layout": {
@@ -3468,15 +3348,6 @@ export class Engine {
     }
   }
 
-  /** An inbox change on /poll (the iPad's badge); a landed entry (or a make that failed) is one short line a live call
-   *  says at its next real gap (server/voiceBrain.ts announce). */
-  private inboxEvent(ev: InboxEvent): void {
-    const say = ev.landed ? `"${ev.title}" is in your board inbox.` : ev.failed ? `I couldn't make "${ev.title}": ${ev.failed}.` : "";
-    this.d.broadcast?.({ ...ev, ...(say ? { say } : {}) });
-    if (say) void import("../voiceBrain").then((v) => v.announce(this.d.vault, say)).catch(() => {});
-  }
-
-
   /** Park the turn on a question until Carl answers (via /message, /answer or an answer intent). */
   private async waitForAnswer(threadId: string, question: string, options: string[], signal?: AbortSignal): Promise<string> {
     signal?.throwIfAborted();
@@ -3658,34 +3529,6 @@ function errText(e: any): string {
 
 
 function validDevice(device: unknown): Interaction["device"] {
-  return device === "laptop" || device === "phone" || device === "board" ? device : null;
-}
-
-/** BoardInbox's answer: entries, their status, and whether added items are still on their boards. */
-function boardInboxText(vault: string, id: string | null): string {
-  const { entries } = listEntries(vault);
-  const pick = id ? entries.filter((e) => e.id === id) : entries.slice(0, 20);
-  if (!pick.length) return id ? `No inbox entry ${id}.` : "The inbox is empty.";
-  return pick
-    .map((s) => {
-      const e = readEntry(vault, s.id);
-      const state = s.failed ? `couldn't make: ${s.failed}` : s.making ? "being made" : s.status;
-      const lines = [`${s.id} — "${s.title}" (${state}; ${s.parts.length} part${s.parts.length === 1 ? "" : "s"})`];
-      for (const [k, v] of Object.entries(e?.added ?? {})) {
-        let still = "?";
-        try {
-          const b = JSON.parse(readFileSync(join(vault, "boards", v.board, "board.json"), "utf8"));
-          const have = new Set((b.items ?? []).map((x: any) => x.id));
-          const n = v.items.filter((x) => have.has(x)).length;
-          still = n === v.items.length ? "still on the board" : n ? `${n} of ${v.items.length} still on the board` : "removed from the board";
-        } catch {
-          still = "board not found";
-        }
-        const label = e?.parts[Number(k)]?.label;
-        lines.push(`  part ${Number(k) + 1}${label ? ` (${label})` : ""}: added to ${v.board}, ${still}`);
-      }
-      return lines.join("\n");
-    })
-    .join("\n");
+  return device === "laptop" || device === "phone" ? device : null;
 }
 

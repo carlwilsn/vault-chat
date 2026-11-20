@@ -1,6 +1,6 @@
-/** Fixed seven gates and existing named-case comparison. No proof identities or permits. */
+/** Fixed six gates and existing named-case comparison. No proof identities or permits. */
 export const CHANGE_GATES = [
-  "typecheck:desktop", "typecheck:phone", "typecheck:board", "typecheck:server",
+  "typecheck:desktop", "typecheck:phone", "typecheck:server",
   "test:harness", "test:server", "build:server",
 ] as const;
 export type ChangeGate = typeof CHANGE_GATES[number];

@@ -123,15 +123,15 @@ describe("PushGate", () => {
 
   it("answered while held, or the conversation opened since: never goes out", async () => {
     const g = gate();
-    noteAttention(vault, "board", true, null, t);
+    noteAttention(vault, "phone", true, null, t);
     let open = true;
     await g.offer(offer({ why: "ask", title: "Needs your answer: Main", body: "?", trigger: "AskUser", stillNeeded: () => open }));
     await g.offer(offer({ why: "failed", title: "Failed: Proj", body: "the turn failed — open it to retry.", convId: "project-x", tag: "project-x" }));
     open = false;
     t += 20_000;
-    noteAttention(vault, "board", true, "project-x", t);
+    noteAttention(vault, "phone", true, "project-x", t);
     t += 20_000;
-    noteAttention(vault, "board", false, null, t);
+    noteAttention(vault, "phone", false, null, t);
     await g.tick();
     expect(sent).toHaveLength(0);
     expect(lines.filter((l) => l.startsWith("[push] dropped")).map((l) => l.split(" — ")[1])).toEqual(["no longer needed", "Carl opened it"]);

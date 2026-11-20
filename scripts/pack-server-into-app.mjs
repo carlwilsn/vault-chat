@@ -19,7 +19,7 @@ const built = resolve(repoRoot, "dist-server", "vault-chat-server.mjs");
 const outDir = resolve(repoRoot, "src-tauri", "binaries");
 const out = resolve(outDir, "vault-chat-server.mjs");
 
-// The same build the box's release gets (phone and board apps included), so a
+// The same build the box's release gets (the phone app included), so a
 // laptop with no box can serve its phone too, and so a build here never leaves
 // dist-server holding a leaner bundle than the release pipeline expects.
 const r = spawnSync("npm", ["run", "build:server"], { cwd: repoRoot, stdio: "inherit", shell: true });

@@ -8,7 +8,7 @@
 #      phone assets tarball (+ .sha256) into versions/<ver>/, refusing any bad sha;
 #   3. wait until /api/v1/health reports busy.runs == 0 and busy.workers == 0 — agent runs,
 #      live voice sessions and background workers (Claude Code's subagents and shells,
-#      BoardMake) — and busy.inputs == 0 (a surface Carl used in the last 10 minutes), and a
+#      background workers) — and busy.inputs == 0 (a surface Carl used in the last 10 minutes), and a
 #      server that does not answer is waited for, not skipped: for at most BUSY_MAX_S (2 h)
 #      in all, one budget for the whole pass, well inside the unit's TimeoutStartSec (3 h).
 #      Then it updates anyway, with one log line: behind the front an old server that still

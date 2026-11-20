@@ -7,7 +7,7 @@
 //
 // (or ```widget widgets/counter.js```, the path on the fence line) shows that widget live in the note, in place, in the
 // viewer's rendered view (src/NoteWidget.tsx). The widget is a vault .js / .mjs module exporting `mount(el, api)` (the
-// whiteboard widget contract and the in-process host's, src/mountHost.ts), or a page that declares
+// in-process host's contract, src/mountHost.ts), or a page that declares
 // `<meta name="vc-mount" content="in-process">`. It mounts in a shadow root when it scrolls near the view (a long note
 // with many widgets opens as fast as without), and whatever it throws is an error card in its place: the note stands.
 //

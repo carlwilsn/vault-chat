@@ -7,7 +7,6 @@ import { readFileSync, mkdirSync, writeFileSync, existsSync, readdirSync, statSy
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative } from "node:path";
-import { inlinedKatexCss } from "./katexCssGen.mjs";
 import { appCss } from "./appCssGen.mjs";
 import { pageLinkHostJs } from "./pageLinkHostGen.mjs";
 
@@ -44,8 +43,8 @@ const ALIASES = {
 /** A web app's built files (<dir>/dist), embedded as "vc:<name>" =
  * { "index.html": base64, "assets/…": base64 }. Empty unless its flag is given:
  *   --phone-app → phone/dist as vc:phone-app (else /phone keeps serving phone.html)
- *   --board-app → board/dist as vc:board-app (else /board says it isn't built) */
-const APPS = { "phone-app": "phone", "board-app": "board" };
+ * (--board-app is accepted and ignored: the whiteboard was removed; the installed ship script still passes it.) */
+const APPS = { "phone-app": "phone" };
 function appFiles(name) {
   if (!process.argv.includes(`--${name}`)) return {};
   const dist = join(root, APPS[name], "dist");
@@ -67,13 +66,11 @@ function appFiles(name) {
 const webApps = {
   name: "vc-web-apps",
   setup(b) {
-    b.onResolve({ filter: /^vc:(phone|board)-app$/ }, (a) => ({ path: a.path.slice(3), namespace: "vc-web-app" }));
-    b.onResolve({ filter: /^vc:katex-css$/ }, () => ({ path: "katex-css", namespace: "vc-katex" }));
+    b.onResolve({ filter: /^vc:phone-app$/ }, (a) => ({ path: a.path.slice(3), namespace: "vc-web-app" }));
     b.onResolve({ filter: /^vc:app-css$/ }, () => ({ path: "app-css", namespace: "vc-app-css" }));
     b.onResolve({ filter: /^vc:page-link-host$/ }, () => ({ path: "page-link-host", namespace: "vc-page-link-host" }));
     b.onLoad({ filter: /.*/, namespace: "vc-page-link-host" }, async () => ({ contents: `export default ${JSON.stringify(await pageLinkHostJs(root))};`, loader: "js" }));
     b.onLoad({ filter: /.*/, namespace: "vc-app-css" }, async () => ({ contents: `export default ${JSON.stringify(await appCss(root))};`, loader: "js" }));
-    b.onLoad({ filter: /.*/, namespace: "vc-katex" }, () => ({ contents: `export default ${JSON.stringify(inlinedKatexCss(root))};`, loader: "js" }));
     b.onLoad({ filter: /.*/, namespace: "vc-web-app" }, (a) => ({ contents: `export default ${JSON.stringify(appFiles(a.path))};`, loader: "js" }));
   },
 };

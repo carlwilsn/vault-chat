@@ -1,17 +1,16 @@
 // pi's Show (server/show.ts): the laptop and phone get a signal on the feed and
 // the tool's result is only ever their ack (or an honest "offline" / "didn't
-// confirm"); the board gets an inbox entry through the validated send; "here"
+// confirm"); "here"
 // follows the device in the "you" layer; a place that does not fit the file's
 // type is refused before anything is sent. The laptop's half (it opens the
 // file and lands the place) is test/harness/show.test.ts.
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { tmp, cleanup, makeVault, makeKeyStore, startServer, type Running } from "./helpers";
 import { makePdf, textPage } from "./pdfgen";
-import { show, ackShow, feedOpened, feedLive, resetPresence, mdParts, type ShowDeps } from "../show";
-import { sendEntry, readEntry } from "../inbox";
+import { show, ackShow, feedOpened, feedLive, resetPresence, type ShowDeps } from "../show";
 import { appendActivity } from "../activity";
 
 // ---------------------------------------------------------------- a PNG, built (no opaque literals)
@@ -50,9 +49,7 @@ const emitted: Record<string, unknown>[] = [];
 const deps = (o: Partial<ShowDeps> = {}): ShowDeps => ({
   vault,
   emit: (ev) => emitted.push(ev),
-  sendBoard: (b) => sendEntry(vault, b, { conversation: "c1" }),
-  ackMs: { laptop: 3000, phone: 3000, board: 3000 },
-  renderHtml: async () => ({ png: png(8, 6), cut: null }),
+  ackMs: { laptop: 3000, phone: 3000 },
   ...o,
 });
 /** A client's app: waits for its signal, then acks it as the app would (POST /api/v1/show/<id>/ack). */
@@ -101,11 +98,11 @@ describe("Show on the laptop: a signal, and success only on the ack", () => {
     leave();
   });
 
-  it("the laptop offline (no live feed): nothing is sent, and the result says so and offers the board", async () => {
+  it("the laptop offline (no live feed): nothing is sent, and the result says so", async () => {
     const from = emitted.length;
     const r = await show(deps(), { path: "hw/hw4.md", where: "laptop" });
     expect(r.ok).toBe(false);
-    expect(r.text).toMatch(/^The laptop isn't online \(the vault-chat app isn't open and connected on it\), so nothing was shown\. Ask Carl: send it to the board instead \(where: "board"\)\?$/);
+    expect(r.text).toMatch(/^The laptop isn't online \(the vault-chat app isn't open and connected on it\), so nothing was shown\. Put it in your reply instead \(an image or a link shows in the chat\)\.$/);
     expect(emitted.length).toBe(from);
   });
 
@@ -151,15 +148,12 @@ describe("Show on the laptop: a signal, and success only on the ack", () => {
     leave();
   });
 
-  it("a web address opens on the laptop (acked); the board refuses one", async () => {
+  it("a web address opens on the laptop (acked)", async () => {
     const leave = feedOpened(vault, "laptop");
     const stop = client("laptop", (ev) => ({ ok: true, landed: `opened ${ev.url} in the browser` }));
     const r = await show(deps(), { url: "https://example.org/notes", where: "laptop" });
     stop();
     expect(r).toMatchObject({ ok: true, where: "laptop" });
-    const b = await show(deps(), { url: "https://example.org/notes", where: "board" });
-    expect(b.ok).toBe(false);
-    expect(b.text).toMatch(/doesn't take web addresses/);
     leave();
   });
 });
@@ -202,7 +196,7 @@ describe("Show's pane: the laptop's split screen", () => {
     expect(phone).toMatchObject({ ok: false });
     expect(phone.text).toMatch(/pane is for the laptop's split screen; the phone has no panes/);
     const board = await show(deps(), { path: "hw/hw4.md", where: "board", pane: "right" });
-    expect(board.text).toMatch(/the iPad board has no panes/);
+    expect(board.text).toMatch(/where is "laptop", "phone" or "here"/);
     const url = await show(deps(), { url: "https://example.org", where: "laptop", pane: "left" });
     expect(url.text).toMatch(/not in a pane/);
     const bad = await show(deps(), { path: "hw/hw4.md", where: "laptop", pane: "top" });
@@ -265,83 +259,15 @@ describe("Show into another registered vault: one call opens X in vault Y", () =
     expect(unknown.text).toMatch(/no registered vault is named "nope" \(the vaults: main, vault-chat\)/);
     const missing = await show(deps({ vaults }), { path: "video/none.html", vault: "vault-chat", where: "laptop" });
     expect(missing.text).toMatch(/does not exist in the vault \(vault vault-chat\)/);
-    const board = await show(deps({ vaults }), { path: "video/style-quiz.html", vault: "vault-chat", where: "board" });
+    const board = await show(deps({ vaults }), { path: "video/style-quiz.html", vault: "vault-chat", where: "phone" });
     expect(board.text).toMatch(/opens on the laptop only/);
     expect(emitted.length).toBe(from);
     leave();
   });
 });
 
-describe("Show on the board: an inbox entry, through the validated send", () => {
-  const entryOf = (text: string) => readEntry(vault, /entry (\S+?)\.$/.exec(text)![1]!)!;
-
-  it("a markdown problem set lands one part per problem (the lead text first)", async () => {
-    const r = await show(deps(), { path: "hw/hw4.md", where: "board" });
-    expect(r.ok, r.text).toBe(true);
-    expect(r.text).toMatch(/^In Carl's board inbox: "hw4\.md" \(4 parts\), entry /);
-    const e = entryOf(r.text);
-    expect(e.parts.map((p: any) => p.label ?? null)).toEqual([null, "Problem 1", "Problem 2", "Problem 3"]);
-    expect(existsSync(join(vault, "boards", ".inbox", e.id, "entry.json"))).toBe(true);
-  });
-
-  it("a heading (or a source line) sends just that section", async () => {
-    const r = await show(deps(), { path: "hw/hw4.md", where: "board", heading: "problem-3" });
-    const e = entryOf(r.text);
-    expect(e.title).toBe('hw4.md, "Problem 3"');
-    expect(e.parts).toHaveLength(1);
-    expect((e.parts[0] as any).markdown).toBe("## Problem 3\n\nProve the fixed point is unique.");
-    const byLine = mdParts(HW, { line: 11 }, "hw/hw4.md");
-    expect("parts" in byLine && (byLine.parts[0] as any).label).toBe("Problem 2");
-    const miss = await show(deps(), { path: "hw/hw4.md", where: "board", heading: "Problem 9" });
-    expect(miss.ok).toBe(false);
-    expect(miss.text).toMatch(/Nearest headings: "Problem/);
-  });
-
-  it("PDF pages: the page asked for, a list, or the page a phrase is on; out of range gives the range", async () => {
-    const one = await show(deps(), { path: "papers/lec7.pdf", where: "board", page: 3 });
-    expect(entryOf(one.text).parts[0]).toMatchObject({ kind: "pdf", path: "papers/lec7.pdf", pages: [3] });
-    const some = await show(deps(), { path: "papers/lec7.pdf", where: "board", pages: "2-4" });
-    expect(entryOf(some.text).parts[0]).toMatchObject({ pages: [2, 3, 4] });
-    const phrase = await show(deps(), { path: "papers/lec7.pdf", where: "board", text: "bellman optimality" });
-    expect(entryOf(phrase.text).parts[0]).toMatchObject({ pages: [4] });
-    const out = await show(deps(), { path: "papers/lec7.pdf", where: "board", page: 9 });
-    expect(out.text).toBe("Error: lec7.pdf has 5 pages; there is no page 9. Pages are 1–5.");
-  });
-
-  it("an image, a code range, and an HTML page (as a rendered picture) land", async () => {
-    const img = await show(deps(), { path: "papers/plot.png", where: "board" });
-    expect(entryOf(img.text).parts[0]).toMatchObject({ kind: "image", path: "papers/plot.png" });
-    const code = await show(deps(), { path: "papers/vi.py", where: "board", line: 3, endLine: 5 });
-    expect((entryOf(code.text).parts[0] as any).markdown).toBe("```py\nv2 = 2\nv3 = 3\nv4 = 4\n```");
-    const page = await show(deps(), { path: "papers/page.html", where: "board" });
-    expect(page.ok, page.text).toBe(true);
-    const part = entryOf(page.text).parts[0] as any;
-    expect(part.kind).toBe("image");
-    expect(part.path).toMatch(/^boards\/\.inbox\/rendered\/page-[0-9a-f]+\.png$/);
-    expect(page.text).toMatch(/a picture of the page/);
-    const none = await show(deps({ renderHtml: null }), { path: "papers/page.html", where: "board" });
-    expect(none.text).toMatch(/no headless browser/);
-  });
-
-  it("a label alone centres a board item — only when the board app is there to confirm it", async () => {
-    const off = await show(deps(), { where: "board", label: "Problem 3" });
-    expect(off.ok).toBe(false);
-    expect(off.text).toMatch(/The board isn't open on the iPad right now/);
-    const leave = feedOpened(vault, "board");
-    const stop = client("board", () => ({ ok: true, landed: '"Problem 3" centred in view' }));
-    const on = await show(deps(), { where: "board", label: "Problem 3" });
-    stop();
-    leave();
-    expect(on).toMatchObject({ ok: true, text: 'Shown on the board: "Problem 3" centred in view.' });
-  });
-});
-
 describe('"here": the authoritative request surface', () => {
-  it("follows request context, not newer activity: the board, then the laptop", async () => {
-    appendActivity(vault, { kind: "voice", modality: "voice", text: "Carl: show me problem 3", device: "board" });
-    const r = await show(deps({ device: "board" }), { path: "hw/hw4.md", heading: "Problem 3" });
-    expect(r).toMatchObject({ ok: true, where: "board" });
-    await new Promise((res) => setTimeout(res, 5));
+  it("follows request context, not newer activity: the laptop", async () => {
     appendActivity(vault, { kind: "focus", modality: "editor", text: "opened hw4.md", path: "hw/hw4.md" });
     const leave = feedOpened(vault, "laptop");
     const stop = client("laptop", () => ({ ok: true, landed: "opened hw4.md" }));

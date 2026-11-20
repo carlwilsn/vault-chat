@@ -36,7 +36,7 @@ export type Item = {
   text?: string;
   /** user: how it came in (chat, steer, queue, answer, voice, wake, nudge, resume, job). */
   via?: string;
-  /** user: the surface it was sent from (laptop, phone, board, voice), when the box knows it. */
+  /** user: the surface it was sent from (laptop, phone, voice), when the box knows it. */
   device?: string;
   images?: ItemImage[];
   // tool

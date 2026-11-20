@@ -196,15 +196,13 @@ describe("buildYouLayer", () => {
       es.push(E(40 - i * 0.4, { kind: "capture", modality: "capture", text: "captured", path: "papers/a.pdf", where: `page ${i}`, image: `.vault-chat/local/captures/c${i}.png` }));
     }
     const notes: core.NoteSnap[] = Array.from({ length: 30 }, (_, i) => ({ id: `n${i}`, ts: NOW - (30 - i) * 60_000, created: true, status: "open", text: "remember ".repeat(40) }));
-    const board: core.BoardSnap = { slug: "proof", name: "Proof", updated: NOW - 60_000, strokes: 900, items: Array.from({ length: 40 }, (_, i) => ({ kind: "image", label: `Part ${i}` })), overview: "boards/proof/overview.png" };
-    const l = core.buildYouLayer({ entries: es, notes, board }, { now: NOW });
+    const l = core.buildYouLayer({ entries: es, notes }, { now: NOW });
     expect(l.text.length).toBeLessThanOrEqual(core.YOU_MAX_CHARS);
     expect(l.text).toMatch(/\(\d+ older entries left out\)/);
     // The newest of each kind made it.
     expect(l.text).toContain("(id c79)");
     expect(l.text).toContain("c79.png");
     expect(l.text).toContain("(n29)");
-    expect(l.text).toContain('Board: "Proof"');
     expect(l.text.startsWith("<you>")).toBe(true);
     expect(l.text.endsWith("</you>")).toBe(true);
   });

@@ -162,7 +162,7 @@ describe("auth", () => {
     const got = await (await fetch(srv.base + path)).json();
     expect(got.batches).toEqual([expect.objectContaining({ ...b, nativeTransport: false })]);
   });
-  it("/api/v1/board/log and /api/v1/diag: the board's batch lands in the box's log and comes back in the diag window, redacted, behind auth", async () => {
+  it("/api/v1/board/log and /api/v1/diag: an app batch lands in the box's log and comes back in the diag window, redacted, behind auth", async () => {
     const post = (h: Record<string, string> = {}) =>
       fetch(srv.base + "/api/v1/board/log", {
         method: "POST",
@@ -174,7 +174,7 @@ describe("auth", () => {
     expect((await fetch(srv.base + "/api/v1/diag", { headers: viaServe })).status).toBe(401);
     const d = await (await fetch(srv.base + "/api/v1/diag?minutes=5")).json();
     expect(d.minutes).toBe(5);
-    expect(d.board).toEqual([expect.objectContaining({ ev: "save.fail", status: 503, ua: "iPad", session: "s9" })]);
+    expect(d.app).toEqual([expect.objectContaining({ ev: "save.fail", status: 503, ua: "iPad", session: "s9" })]);
     expect(JSON.stringify(d)).not.toContain("sk-or-v1-aaaa");
     expect(JSON.stringify(d)).not.toContain(TOKEN);
   });
@@ -197,7 +197,7 @@ describe("auth", () => {
     expect(await (await post()).json()).toEqual({ ok: true, n: 2 });
     const d = await (await fetch(srv.base + "/api/v1/diag?minutes=5")).json();
     expect(d.voice).toEqual(expect.arrayContaining([expect.objectContaining({ ev: "voice dropout", cause: "network", lost: 18, ua: "Windows", device: "laptop", session: "v7" })]));
-    expect(d.board.some((x: { ev: string }) => x.ev.startsWith("voice dropout"))).toBe(false);
+    expect(d.app.some((x: { ev: string }) => x.ev.startsWith("voice dropout"))).toBe(false);
     expect(JSON.stringify(d.voice)).not.toContain("sk-or-v1-bbbb");
   });
 });

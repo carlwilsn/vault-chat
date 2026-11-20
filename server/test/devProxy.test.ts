@@ -276,13 +276,13 @@ describe("which ports", () => {
 });
 
 describe("Show of a localhost address", () => {
-  it("opens the proxied address on the laptop, refuses the board and passes on why a port is refused", async () => {
+  it("opens the proxied address on the laptop and passes on why a port is refused", async () => {
     const { show, ackShow, feedOpened, resetPresence } = await import("../show");
     resetPresence();
     const leave = feedOpened(vault, "laptop");
     const emitted: Record<string, any>[] = [];
     const dev = async (port: number) => (port === 5173 ? { origin: "https://box.example.ts.net:5173" } : { error: `nothing that StartJob started listens on port ${port}` });
-    const deps = { vault, emit: (ev: Record<string, unknown>) => emitted.push(ev), sendBoard: async () => ({ ok: false, refusals: ["no"] }) as any, ackMs: { laptop: 3000 }, dev };
+    const deps = { vault, emit: (ev: Record<string, unknown>) => emitted.push(ev), ackMs: { laptop: 3000 }, dev };
     try {
       const p = show(deps, { url: "http://localhost:5173/src/?q=1", where: "laptop" });
       // The laptop app opens it and acks (src/showOnLaptop.ts: the url in the browser).
@@ -302,7 +302,6 @@ describe("Show of a localhost address", () => {
       const no = await show(deps, { url: "http://localhost:8848/api/v1/health", where: "laptop" });
       expect(no.ok).toBe(false);
       expect(no.text).toMatch(/Not shown: nothing that StartJob started listens on port 8848/);
-      expect((await show(deps, { url: "http://localhost:5173/", where: "board" })).text).toMatch(/board doesn't open/);
       expect(emitted.length).toBe(2);
     } finally {
       leave();

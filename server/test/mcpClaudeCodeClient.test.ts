@@ -102,10 +102,10 @@ describe("Claude Code as an outside MCP client of vault-chat", () => {
     expect(turn.code, turn.out).toBe(0);
     // What the CLI told the model it can reach (as deferred tool names or tool definitions).
     const offered = JSON.stringify(model.calls[0] ?? {});
-    for (const name of ["Show", "Layout", "Screen", "Act", "PluginRead", "PluginAct", "CreateNote", "ListNotes", "Settings", "BoardLook", "ListConversations"])
+    for (const name of ["Show", "Layout", "Screen", "Act", "PluginRead", "PluginAct", "CreateNote", "ListNotes", "Settings", "RecentActivity", "ListConversations"])
       expect(offered, name).toContain(`mcp__vault_chat__${name}`);
     // A tool that needs an owning vault-chat turn is not offered to an outside client.
-    for (const name of ["AskUser", "StartJob", "ScheduleWake", "BoardMake", "TodoWrite"]) expect(offered, name).not.toMatch(new RegExp(`mcp__vault_chat__${name}\\b`));
+    for (const name of ["AskUser", "StartJob", "ScheduleWake", "TodoWrite"]) expect(offered, name).not.toMatch(new RegExp(`mcp__vault_chat__${name}\\b`));
     const notes = readFileSync(join(vault, ".vault-chat", "notes.jsonl"), "utf8");
     expect(notes).toContain("from an outside Claude Code");
     expect(JSON.stringify(model.calls.at(-1)?.messages ?? [])).toMatch(/tool_result[\s\S]*(Noted|note)/i);

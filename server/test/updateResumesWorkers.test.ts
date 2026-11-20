@@ -59,7 +59,7 @@ function find(dir: string, re: RegExp): string[] {
 
 describe("what the chat is told", () => {
   it("one line, and a resume per worker with what could not be resumed named", () => {
-    const work = { workers: [{ id: "a1b2-c3", title: "Fix the updater" }], commands: [{ id: "b9", title: "npm run dev" }], boards: [] };
+    const work = { workers: [{ id: "a1b2-c3", title: "Fix the updater" }], commands: [{ id: "b9", title: "npm run dev" }] };
     expect(cutShown(work)).toBe('The box restarted (an update) while background work ran: resuming 1 background worker ("Fix the updater"); 1 background command ended ("npm run dev")');
     const text = cutText(work);
     expect(text).toContain('SendMessage {to: "a1b2-c3", message: ');

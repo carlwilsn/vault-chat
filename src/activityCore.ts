@@ -1,6 +1,5 @@
 // One shared context stream per vault: what Carl has been doing, across every
-// surface (the editor, Ctrl+K, Ctrl+L, image captures, voice, chat, the board
-// inbox), so each
+// surface (the editor, Ctrl+K, Ctrl+L, image captures, voice, chat), so each
 // of them can answer "the thing I just circled", "what I asked by voice",
 // "undo the Ctrl+K edit I just made".
 //
@@ -13,12 +12,12 @@
 // is machine-local: never committed, never synced, never in Carl's folders.
 // The log is the box's (the laptop posts to it).
 
-export type ActivityKind = "focus" | "edit" | "ask" | "capture" | "voice" | "chat" | "inbox";
-export const ACTIVITY_KINDS: readonly ActivityKind[] = ["focus", "edit", "ask", "capture", "voice", "chat", "inbox"];
+export type ActivityKind = "focus" | "edit" | "ask" | "capture" | "voice" | "chat";
+export const ACTIVITY_KINDS: readonly ActivityKind[] = ["focus", "edit", "ask", "capture", "voice", "chat"];
 
 /** Where an entry came from (the surface Carl used). */
-export type ActivityModality = "editor" | "ctrl-k" | "ctrl-l" | "capture" | "voice" | "chat" | "inbox" | "page";
-const MODALITIES: readonly ActivityModality[] = ["editor", "ctrl-k", "ctrl-l", "capture", "voice", "chat", "inbox", "page"];
+export type ActivityModality = "editor" | "ctrl-k" | "ctrl-l" | "capture" | "voice" | "chat" | "page";
+const MODALITIES: readonly ActivityModality[] = ["editor", "ctrl-k", "ctrl-l", "capture", "voice", "chat", "page"];
 const DEFAULT_MODALITY: Record<ActivityKind, ActivityModality> = {
   focus: "editor",
   edit: "ctrl-k",
@@ -26,12 +25,11 @@ const DEFAULT_MODALITY: Record<ActivityKind, ActivityModality> = {
   capture: "capture",
   voice: "voice",
   chat: "chat",
-  inbox: "inbox",
 };
 
 /** The device Carl was on. */
-export type Device = "laptop" | "phone" | "board";
-export const DEVICES: readonly Device[] = ["laptop", "phone", "board"];
+export type Device = "laptop" | "phone";
+export const DEVICES: readonly Device[] = ["laptop", "phone"];
 /** Surfaces only the laptop has. */
 const LAPTOP_ONLY: ReadonlySet<ActivityModality> = new Set(["editor", "ctrl-k", "ctrl-l", "capture"]);
 
@@ -189,7 +187,7 @@ export function parseLog(text: string): ActivityEntry[] {
 // ---------------------------------------------------------------- the "you" layer
 
 // What Carl just did, across every surface, for every conversation: where he
-// is (focus, selection, device), the last board, his captures and pasted
+// is (focus, selection, device), his captures and pasted
 // images, notes he changed, his own messages in OTHER chats (one-line
 // pointers: never a reply, never a draft) and what he did on the other
 // surfaces (Ctrl+K, Ctrl+L, voice). Conversation content does not bleed: a
@@ -200,11 +198,9 @@ export function parseLog(text: string): ActivityEntry[] {
 // session as a `vc-you` custom message, so it is in pi's record and its
 // compaction), and voice calls the same server function (server/activity.ts youLayer).
 
-/** The newest board, as the layer shows it (server/activity.ts reads it from boards/). */
-export type BoardSnap = { slug: string; name: string; updated: number; strokes: number; items: { kind: string; label: string }[]; overview: string | null; view?: string | null };
 /** A note's latest state (server/activity.ts reads .vault-chat/notes.jsonl). */
 export type NoteSnap = { id: string; ts: number; created: boolean; status: string; text: string };
-export type YouSources = { entries: ActivityEntry[]; board?: BoardSnap | null; notes?: NoteSnap[] };
+export type YouSources = { entries: ActivityEntry[]; notes?: NoteSnap[] };
 /** The conversations' titles, for the pointers (an entry carries the title it had when it was written). */
 export type YouOptions = {
   now: number;
@@ -247,7 +243,6 @@ const SURFACE: Record<ActivityModality, string> = {
   capture: "Image capture",
   voice: "Voice",
   chat: "Chat",
-  inbox: "Board inbox",
   page: "Live page ask",
 };
 
@@ -265,7 +260,7 @@ export function chatPointer(e: ActivityEntry, now: number): string {
   return `[${title} chat, ${ago(now - e.ts)}] Carl: ${quote}${e.convId ? ` (id ${e.convId})` : ""}`;
 }
 
-/** One entry of the other surfaces (Ctrl+K, Ctrl+L, voice, the board inbox), one line. */
+/** One entry of the other surfaces (Ctrl+K, Ctrl+L, voice), one line. */
 function otherLine(e: ActivityEntry, now: number): string {
   const loc = e.path ? ` · ${e.path}${e.where ? ` (${e.where})` : ""}` : e.where ? ` · ${e.where}` : "";
   // A voice line points at the chat it was said in (ReadConversation reads it there).
@@ -298,14 +293,6 @@ function noteLine(n: NoteSnap, now: number): string {
   const what = n.status === "cleared" ? "cleared a note" : n.status === "resolved" ? "resolved a note" : n.created ? "new note" : "changed a note";
   const t = n.text.replace(/\s+/g, " ").trim();
   return clip(`[${ago(now - n.ts)}] ${what} (${n.id}): "${t.length > 160 ? `${t.slice(0, 159)}…` : t}"`);
-}
-
-function boardLine(b: BoardSnap, now: number): string {
-  const items = b.items.length
-    ? `${b.items.length} item${b.items.length === 1 ? "" : "s"}: ${b.items.slice(0, 8).map((i) => (i.label ? `${i.label} (${i.kind})` : i.kind)).join(", ")}${b.items.length > 8 ? ", …" : ""}`
-    : "no items";
-  const look = b.overview ? ` To see it, read ${b.overview} (the whole board)${b.view ? ` or ${b.view} (the part in view on the iPad)` : ""}` : "";
-  return clip(`Board: "${b.name}" (boards/${b.slug}/), saved ${ago(now - b.updated)} — ${items}; ${b.strokes} ink stroke${b.strokes === 1 ? "" : "s"}.${look}`, 600);
 }
 
 /**
@@ -347,17 +334,15 @@ export function buildYouLayer(src: YouSources, o: YouOptions): YouLayer {
     kept.unshift(e);
   }
   const notes = (src.notes ?? []).filter((n) => n.ts <= now + 60_000).sort((a, b) => a.ts - b.ts);
-  const board = src.board && src.board.updated <= now + 60_000 ? src.board : null;
 
   // The last thing he did (any source): shown even when older than the window.
-  type Last = { ts: number; e?: ActivityEntry; note?: NoteSnap; board?: true };
+  type Last = { ts: number; e?: ActivityEntry; note?: NoteSnap };
   let last: Last | null = null;
   const take = (x: Last) => {
     if (!last || x.ts >= last.ts) last = x;
   };
   for (const e of kept) if (!isVoiceReply(e)) take({ ts: e.ts, e });
   for (const n of notes) take({ ts: n.ts, note: n });
-  if (board) take({ ts: board.updated, board: true });
   const lastT = last as Last | null;
   const fresh = (ts: number, isLast: boolean) => ts > since && (ts > from || isLast);
 
@@ -374,16 +359,15 @@ export function buildYouLayer(src: YouSources, o: YouOptions): YouLayer {
       LINE_MAX + 160,
     );
   }
-  const boardOut = board && fresh(board.updated, !!lastT?.board) ? boardLine(board, now) : "";
   const images = kept.filter((e) => e.kind === "capture" && fresh(e.ts, lastT?.e === e));
   const noteRows = notes.filter((n) => fresh(n.ts, lastT?.note === n));
   const chats = kept.filter((e) => e.kind === "chat" && fresh(e.ts, lastT?.e === e));
-  const others = kept.filter((e) => (e.kind === "ask" || e.kind === "edit" || e.kind === "voice" || e.kind === "inbox") && fresh(e.ts, lastT?.e === e));
+  const others = kept.filter((e) => (e.kind === "ask" || e.kind === "edit" || e.kind === "voice") && fresh(e.ts, lastT?.e === e));
 
   // The device he is on: the newest entry that says (his own message in this chat counts).
   const dev = [...all].reverse().find((e) => e.device);
   const devBefore = [...all].reverse().find((e) => e.device && e.ts <= since);
-  const somethingNew = !!(focusLine || boardOut || images.length || noteRows.length || chats.length || others.length);
+  const somethingNew = !!(focusLine || images.length || noteRows.length || chats.length || others.length);
   const devNew = !!dev && dev.ts > since && dev.device !== devBefore?.device;
   if (!somethingNew && !devNew) return { text: "", until: now, items: 0 };
 
@@ -394,7 +378,6 @@ export function buildYouLayer(src: YouSources, o: YouOptions): YouLayer {
   const head: string[] = [];
   if (dev) head.push(`Device: ${dev.device} (${ago(now - dev.ts)})`);
   if (focusLine) head.push(focusLine);
-  if (boardOut) head.push(boardOut);
 
   // Newest first into the budget; each section printed oldest first.
   type Sec = { title: string; rows: { ts: number; line: string }[]; max: number };
@@ -402,7 +385,7 @@ export function buildYouLayer(src: YouSources, o: YouOptions): YouLayer {
     { title: "Other chats (Carl's messages):", rows: chats.map((e) => ({ ts: e.ts, line: `- ${clip(chatPointer(e, now))}` })), max: MAX_CHATS },
     { title: "Images (captures and pasted; read a path to see it):", rows: images.map((e) => ({ ts: e.ts, line: `- ${imageLine(e, now)}` })), max: MAX_IMAGES },
     { title: "Notes:", rows: noteRows.map((n) => ({ ts: n.ts, line: `- ${noteLine(n, now)}` })), max: MAX_NOTES },
-    { title: "Elsewhere (Ctrl+K/L, voice, inbox):", rows: others.map((e) => ({ ts: e.ts, line: `- ${otherLine(e, now)}` })), max: 40 },
+    { title: "Elsewhere (Ctrl+K/L, voice):", rows: others.map((e) => ({ ts: e.ts, line: `- ${otherLine(e, now)}` })), max: 40 },
   ];
   let budget = maxChars - header.length - footer.length - head.join("\n").length - head.length - 64 - secs.reduce((n, s) => n + (s.rows.length ? s.title.length + 1 : 0), 0);
   const chosen = new Map<Sec, Set<number>>(secs.map((s) => [s, new Set<number>()]));

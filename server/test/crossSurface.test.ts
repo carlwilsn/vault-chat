@@ -5,8 +5,7 @@
 //
 // Each scenario is one "move around" story, run through the real code: the
 // engine on a fake pi (the turn's prompt and the "you" layer pi's extension
-// adds after it, as the model gets them: fakeSession.ts), the shared activity stream, the board inbox and
-// boards. The assertion is always about what the next surface's agent context CONTAINS: a pi turn's texts and
+// adds after it, as the model gets them: fakeSession.ts), the shared activity stream. The assertion is always about what the next surface's agent context CONTAINS: a pi turn's texts and
 // images (startTurn), and the "you" layer the extension's before_agent_start adds (a vc-you message). The voice
 // is the conversation's own pi turn (server/voiceBrain.ts), so a call sees exactly what a typed turn sees; its own
 // cross-surface rules (one context, each surface its own exchange) are in server/test/voiceBrain.test.ts.
@@ -153,7 +152,7 @@ const until = async (fn: () => Promise<boolean> | boolean, ms = 10_000) => {
 
 type Turn = { texts: string[]; context: string | null; images: string[]; instructions: string | null; convId: string; threadId: string; all: string };
 
-/** One user turn through the engine (any client: laptop, phone, board): what pi got, then the reply. */
+/** One user turn through the engine (any client: laptop, phone): what pi got, then the reply. */
 async function turn(body: Record<string, unknown>, reply: string, during?: (threadId: string) => Promise<void>): Promise<Turn> {
   const before = backend.turns.length;
   const threadsBefore = backend.threads.length;
@@ -289,70 +288,6 @@ describe("a. Ctrl+L on the laptop about a PDF selection, then the phone: \"what 
     expect(found).toContain("answer: L+D and U.");
     expect(found).toContain("Why does this guarantee convergence?"); // the recent one too: the search spans the window
     expect(backend.threads.at(-1)!.tools).toContain("RecentActivity");
-  });
-});
-
-describe("c. Writing a proof on the board, then the laptop chat: \"check what I just wrote on the iPad\"", () => {
-  let slug = "";
-  let entryId = "";
-  let t: Turn | null = null;
-  let inboxText = "";
-
-  it("setup: an inbox entry placed on a board, ink, an overview picture; then a laptop chat turn", async () => {
-    const boards = await import("../boards");
-    const inbox = await import("../inbox");
-    slug = String((boards.createBoard(vault, "Banach proof").body as any).slug);
-    writeFileSync(join(vault, "papers", "lemma.png"), png(90, 4, 4));
-    const sent = await inbox.sendEntry(vault, { title: "Contraction lemma", parts: [{ kind: "image", path: "papers/lemma.png", alt: "the lemma", label: "Lemma 1" }] });
-    if (!sent.ok) throw new SetupError(`inbox send refused: ${sent.refusals.join("; ")}`);
-    entryId = sent.id;
-    const asset = boards.addAsset(vault, slug, { data: b64(png(90, 4, 4)) }).body as any;
-    if (!asset?.src) throw new SetupError("asset refused");
-    const board = {
-      v: 2,
-      name: "Banach proof",
-      created: Date.now(),
-      updated: Date.now(),
-      rev: 0,
-      grid: "plain",
-      strokes: [
-        { id: "s1", tool: "pen", color: "#000", w: 2, xy: [10, 10, 200, 40, 380, 60] },
-        { id: "s2", tool: "pen", color: "#000", w: 2, xy: [10, 90, 300, 95] },
-      ],
-      items: [{ id: "it1", kind: "image", x: 0, y: 200, w: 300, h: 300, src: asset.src, label: "Lemma 1", inbox: { id: entryId, part: 0 } }],
-    };
-    const saved = await boards.saveBoard(vault, slug, { board, base: 0, overview: b64(png(30, 8, 8)) });
-    if (saved.status !== 200) throw new SetupError(`board save: ${JSON.stringify(saved.body)}`);
-    inbox.markAdded(vault, entryId, { part: 0, board: slug, items: ["it1"] });
-    t = await turn({ text: "check what I just wrote on the iPad", client: "laptop" }, "Looking.", async (threadId) => {
-      inboxText = (await need(backend.handlers, "tool handlers").toolCall(threadId, "BoardInbox", {})).text;
-    });
-  });
-
-  pass("c", "laptop chat (agent's pull: BoardInbox)", "the placed inbox part shows as added to that board, still on it", () => {
-    expect(inboxText).toContain("Contraction lemma");
-    expect(inboxText).toContain(slug);
-    expect(inboxText).toContain("still on the board");
-  });
-  pass("c", "laptop chat (pi turn)", "the you layer says a board was just written on (its name, path, items and the picture to read)", () => {
-    const all = need(t, "turn").all;
-    expect(all).toContain(`Board: "Banach proof" (boards/${slug}/)`);
-    expect(all).toContain("Lemma 1 (image)");
-    expect(all).toContain(`read boards/${slug}/overview.png`);
-  });
-  // The picture is pointed at, not pushed: the you layer names the saved overview.png, and the agent looks with
-  // pi's read (an image file comes back as an image), only when the turn is about the board.
-  pass("c", "laptop chat (pi turn)", "the board's overview picture is in reach: the you layer points at the overview.png the board saved, a real PNG", () => {
-    const m = /read (boards\/[^\s]+\/overview\.png)/.exec(need(t, "turn").all);
-    expect(m).not.toBeNull();
-    const bytes = readFileSync(join(vault, ...m![1]!.split("/")));
-    expect(bytes.subarray(1, 4).toString("ascii")).toBe("PNG");
-    expect(need(t, "turn").images).toEqual([]); // not attached to every turn
-  });
-  pass("c", "laptop chat (pi instructions)", "the agent is told boards live at boards/<slug>/ with an overview.png it can read", () => {
-    const instr = backend.threads.map((x) => x.instructions).join("\n");
-    expect(instr).toContain("boards/<slug>/");
-    expect(instr).toContain("BoardLook {board?} shows a board as last saved");
   });
 });
 

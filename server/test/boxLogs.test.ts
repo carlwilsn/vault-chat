@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { tmp, cleanup } from "./helpers";
 import { RotatingLog, boxLogs } from "../boxLogs";
 import { TurnRecorder, turnSummary } from "../engine/turnLog";
-import { boardLogPost, boxDiag, jsonlSince } from "../diag";
+import { clientLogPost, boxDiag, jsonlSince } from "../diag";
 import { assistant, toolStart, toolEnd } from "./fakePi";
 import { frustration, noteUserLine } from "../signal";
 
@@ -124,10 +124,10 @@ describe("the turn line", () => {
   });
 });
 
-describe("the board's log and the diag window", () => {
-  it("board batches: one safe line per event, stamped with the vault and the device", () => {
+describe("the apps' log batches and the diag window", () => {
+  it("a batch with no source: one safe line per event in app.jsonl, stamped with the vault and the device", () => {
     const stateDir = join(root, "state-b");
-    const out = boardLogPost({ stateDir, vaultName: "school2", ua: "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X)" }, {
+    const out = clientLogPost({ stateDir, vaultName: "school2", ua: "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X)" }, {
       session: "s1",
       events: [
         { at: "2026-10-17T21:00:00.000Z", ev: "tool", tool: "pen" },
@@ -137,18 +137,18 @@ describe("the board's log and the diag window", () => {
       ],
     });
     expect(out).toEqual({ status: 200, body: { ok: true, n: 4 } });
-    const lines = readFileSync(boxLogs(stateDir).board.path, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const lines = readFileSync(boxLogs(stateDir).app.path, "utf8").trim().split("\n").map((l) => JSON.parse(l));
     expect(lines.map((l) => l.ev)).toEqual(["tool", "save.fail", "taps", "inbox.add"]);
     expect(lines.every((l) => l.vault === "school2" && l.ua === "iPad" && l.session === "s1" && /^\d{4}-\d\d-\d\dT/.test(l.at))).toBe(true);
     expect(lines[1].error).not.toContain("t".repeat(30));
     expect(lines[3].text).toBe("[5 chars]");
-    expect(boardLogPost({ stateDir, vaultName: "x", ua: "" }, { events: [] }).status).toBe(400);
+    expect(clientLogPost({ stateDir, vaultName: "x", ua: "" }, { events: [] }).status).toBe(400);
   });
 
-  it("board batches name the build and the device: an iPad sends a Mac UA, its touch points tell it apart", () => {
+  it("batches name the build and the device: a tablet with a Mac UA is told apart by its touch points", () => {
     const stateDir = join(root, "state-b2");
     const mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)";
-    boardLogPost({ stateDir, vaultName: "school2", ua: mac }, {
+    clientLogPost({ stateDir, vaultName: "school2", ua: mac }, {
       session: "s2",
       v: "0.6.48+abc1234",
       touch: 5,
@@ -158,20 +158,20 @@ describe("the board's log and the diag window", () => {
         { at: "2026-10-18T05:00:01.000Z", ev: "taps", pressed: 3, missed: 1, dropped: 2, missedOn: ["entry>none"], src: "pill" },
       ],
     });
-    const lines = readFileSync(boxLogs(stateDir).board.path, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const lines = readFileSync(boxLogs(stateDir).app.path, "utf8").trim().split("\n").map((l) => JSON.parse(l));
     expect(lines.every((l) => l.ua === "Macintosh" && l.touch === 5 && l.app === "home-screen" && l.v === "0.6.48+abc1234")).toBe(true);
     expect(lines[0].palm).toEqual({ size: 1, "pen-hover": 2 });
     expect(lines[1].missedOn).toEqual(["entry>none"]);
-    // An older board (no build) still logs; a desktop browser says it has no touch.
-    boardLogPost({ stateDir, vaultName: "school2", ua: mac }, { touch: 0, standalone: false, events: [{ ev: "tool", tool: "pen" }] });
-    const last = JSON.parse(readFileSync(boxLogs(stateDir).board.path, "utf8").trim().split("\n").pop()!);
+    // An older client (no build) still logs; a desktop browser says it has no touch.
+    clientLogPost({ stateDir, vaultName: "school2", ua: mac }, { touch: 0, standalone: false, events: [{ ev: "tool", tool: "pen" }] });
+    const last = JSON.parse(readFileSync(boxLogs(stateDir).app.path, "utf8").trim().split("\n").pop()!);
     expect(last).toMatchObject({ ev: "tool", touch: 0, app: "browser" });
     expect(last.v).toBeUndefined();
   });
 
   it("the laptop app's batches (source app): its errors and box drops go to app.jsonl, stamped with the device; the diag window has them", () => {
     const stateDir = join(root, "state-app");
-    const out = boardLogPost({ stateDir, vaultName: "school2", ua: "Mozilla/5.0 (Windows NT 10.0)" }, {
+    const out = clientLogPost({ stateDir, vaultName: "school2", ua: "Mozilla/5.0 (Windows NT 10.0)" }, {
       source: "app",
       device: "laptop",
       session: "a1",
@@ -192,14 +192,13 @@ describe("the board's log and the diag window", () => {
     expect(lines.every((l) => l.device === "laptop" && l.session === "a1" && l.vault === "school2" && l.ua === "Windows")).toBe(true);
     expect(lines[1].downMs).toBe(64_000);
     expect(JSON.stringify(lines)).not.toContain(KEY);
-    // Not in the voice's or the board's log.
+    // Not in the voice's log.
     expect(existsSync(logs.voice.path)).toBe(false);
-    expect(existsSync(logs.board.path)).toBe(false);
     const d = boxDiag({ stateDir, vault: join(root, "vault-app"), vaultName: "school2", version: "x", rev: null, minutes: 15, now: Date.parse("2026-10-22T03:05:00.000Z") });
     expect(d.app).toHaveLength(3);
   });
 
-  it("diag: the last N minutes of the turn log, the board log and the phone's events, redacted", () => {
+  it("diag: the last N minutes of the turn log, the voice log and the phone's events, redacted", () => {
     const stateDir = join(root, "state-c");
     const vault = join(root, "vault-c");
     mkdirSync(join(vault, ".vault-chat"), { recursive: true });
@@ -208,12 +207,12 @@ describe("the board's log and the diag window", () => {
     logs.turns.append({ at: "2026-10-17T20:00:00.000Z", ev: "turn", turn: "old" });
     logs.turns.append({ at: "2026-10-17T21:20:00.000Z", ev: "turn", turn: "t1", error: `bad key ${KEY}` });
     logs.turns.append({ at: "2026-10-17T21:21:00.000Z", ev: "intent", type: "send", cmid: "m1" });
-    logs.board.append({ at: "2026-10-17T21:25:00.000Z", ev: "voice", phase: "error" });
+    logs.voice.append({ at: "2026-10-17T21:25:00.000Z", ev: "voice", phase: "error" });
     writeFileSync(join(vault, ".vault-chat", "client-events.jsonl"), [JSON.stringify({ ts: now - 60_000, kind: "tap" }), JSON.stringify({ ts: now - 3_600_000, kind: "old" })].join("\n") + "\n");
     const d = boxDiag({ stateDir, vault, vaultName: "school2", version: "0.6.45", rev: "abc", minutes: 15, now });
     expect(d.minutes).toBe(15);
     expect(d.turns.map((x: any) => x.turn ?? x.cmid)).toEqual(["t1", "m1"]);
-    expect(d.board).toHaveLength(1);
+    expect(d.voice).toHaveLength(1);
     expect(d.phoneEvents).toEqual([{ ts: now - 60_000, kind: "tap" }]);
     expect(JSON.stringify(d)).not.toContain(KEY);
     expect(jsonlSince(join(vault, "missing.jsonl"), 0)).toEqual([]);

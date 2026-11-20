@@ -75,11 +75,10 @@ function gateCommands(o: ShipConfig, gate: ChangeGate): string[][] {
   switch (gate) {
     case "typecheck:desktop": return [[...tsc, "--noEmit", "-p", "."]];
     case "typecheck:phone": return [[...tsc, "--noEmit", "-p", "phone"]];
-    case "typecheck:board": return [[...tsc, "--noEmit", "-p", "board"]];
     case "typecheck:server": return [[...tsc, "-p", "server/tsconfig.json"]];
     case "test:harness": return [[node, "--import", `${bin}/tsx/dist/loader.mjs`, "--import", "./test/harness/register.mjs", "--test", "--test-reporter=/host/harness.mjs", "test/harness/*.test.ts"]];
     case "test:server": return [[node, "server/build.mjs"], [node, `${bin}/vitest/vitest.mjs`, "run", "--config", "server/vitest.config.ts", "--reporter=/host/vitest.mjs"]];
-    case "build:server": return [[node, `${bin}/vite/bin/vite.js`, "build", "--config", "phone/vite.config.ts"], [node, `${bin}/vite/bin/vite.js`, "build", "--config", "board/vite.config.ts"], [node, "server/build.mjs", "--phone-app", "--board-app"]];
+    case "build:server": return [[node, `${bin}/vite/bin/vite.js`, "build", "--config", "phone/vite.config.ts"], [node, "server/build.mjs", "--phone-app"]];
   }
 }
 /** Public npm's lock validation/extraction, never candidate install hooks or inherited credentials. */

@@ -651,7 +651,7 @@ function VoiceAskRow({ ask, index }: { ask: NonNullable<ChatMessage["voiceAsk"]>
   );
 }
 
-// A background job that ended: one quiet row like a tool row ("Job finished · board safety copies"), red when
+// A background job that ended: one quiet row like a tool row ("Job finished · safety copies"), red when
 // it failed; its last output lines when opened. (The agent gets the whole wake: exit code and output.)
 function JobRow({ job, index }: { job: NonNullable<ChatMessage["job"]>; index?: number }) {
   // A background task's end: the row only (the agent's next message tells the result).

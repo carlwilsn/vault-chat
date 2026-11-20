@@ -1,7 +1,7 @@
 // The laptop's live answer to "is Claude signed in": the box's health, cached,
 // plus this machine's keychain copy out of the store. The decision itself and
 // the words every prompt says are in src/claudeAuth.ts, which is pure so the
-// phone and the board can share them.
+// phone can share them.
 import { useEffect, useState } from "react";
 import { useStore } from "./store";
 import { claudeSignedIn, type ClaudeAuth } from "./claudeAuth";

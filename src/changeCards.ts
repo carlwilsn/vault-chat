@@ -1,16 +1,16 @@
-// Change ready on the surfaces that do not hold the vault's files (the phone app, the iPad board; reports/07 corrected
+// Change ready on the surfaces that do not hold the vault's files (the phone app; reports/07 corrected
 // model point 4). The laptop folds its drafts itself (src/changeReady.ts); these read the box's list
 // (GET /api/v2/changes, server/changesPending.ts) and send Carl's word through the same POST /api/v2/supervisor
 // (a plugin.change / setting.change record), so a decision on any surface clears the card on every one.
 //
-// Nothing here draws: the phone (phone/src/changes.ts) and the board (board/src/changes.ts) each draw their own card
-// with their own look, from this store. With nothing pending the store holds an empty list and they draw nothing.
+// Nothing here draws: the phone (phone/src/changes.ts) draws its own card
+// with its own look, from this store. With nothing pending the store holds an empty list and they draw nothing.
 // The list is read once at start, again on a record that can move it (changesMayMove), when the page comes back on
 // screen, and every `everyMs` while on screen (a draft file the vault's sync brought has no record).
 //
-// Shared by the phone, the board and the box: no imports.
+// Shared by the phone and the box: no imports.
 
-export type ChangeSurface = "laptop" | "phone" | "board";
+export type ChangeSurface = "laptop" | "phone";
 
 /** One draft waiting for Carl, as a surface shows it (the laptop's PendingChange, plus where Try can run it). */
 export type BoxPendingChange = {
@@ -37,7 +37,7 @@ export function changesMayMove(ev: unknown): boolean {
   const s = rec?.type === "signal" ? rec.signal : (rec as { type?: unknown; path?: unknown; plugin?: unknown } | null);
   const t = s?.type;
   if (t === "plugin.change" || t === "setting.draft" || t === "setting.change") return true;
-  if (t === "plugin.desired" && (s?.plugin === "app/phone" || s?.plugin === "app/board")) return true;
+  if (t === "plugin.desired" && s?.plugin === "app/phone") return true;
   return t === "file_changed" && typeof s?.path === "string" && /^\.vault-chat\/(?:(?:app-|box-)?plugins|migrations)\//.test(s.path.replace(/\\/g, "/"));
 }
 
@@ -70,7 +70,7 @@ const NONE: readonly BoxPendingChange[] = Object.freeze([]);
 
 export function startChangeCards(d: {
   api: Api;
-  surface: "phone" | "board";
+  surface: "phone";
   everyMs?: number;
   /** Tests: whether the page is on screen. */
   visible?: () => boolean;

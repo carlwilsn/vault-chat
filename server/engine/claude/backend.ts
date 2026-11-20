@@ -94,9 +94,9 @@ export const APP_ONLY_TOOLS: readonly string[] = [
 export const OWN_TOOLS: readonly string[] = CLAUDE_BUILTINS_OFF.filter((n) => !APP_ONLY_TOOLS.includes(n));
 
 /** Conversation tools a worker never gets: they belong to the turn that started it. */
-const NOT_FOR_WORKERS = new Set(["AskUser", "SubmitChange", "TodoWrite", "BoardMake", "ScheduleWake"]);
+const NOT_FOR_WORKERS = new Set(["AskUser", "SubmitChange", "TodoWrite", "ScheduleWake"]);
 
-/** A BoardMake worker: its own Claude Code session, run to one result. */
+/** A background worker (background()): its own Claude Code session, run to one result. */
 type Worker = {
   id: string;
   parent: string;
@@ -430,7 +430,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
 
   /**
    * Background workers started and not finished: the live sessions' own background tasks
-   * (Claude Code's subagents and shells, translate.ts) plus the BoardMake workers running
+   * (Claude Code's subagents and shells, translate.ts) plus the background() workers running
    * in sessions of their own. A session that ends takes its count with it. The updater
    * waits for this to be 0 (health busy.workers): a restart kills them mid-work.
    */
@@ -442,12 +442,12 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   }
 
   /**
-   * The server is going down: every live session's background tasks and the BoardMake workers still running, taken
+   * The server is going down: every live session's background tasks and the background() workers still running, taken
    * once (the sessions' own ends then report nothing more), so the next server has their chats take them up again.
    */
   takeCutWork(): { threadId: string; work: CutWork }[] {
     const by = new Map<string, CutWork>();
-    const of = (threadId: string) => by.get(threadId) ?? (by.set(threadId, { workers: [], commands: [], boards: [] }), by.get(threadId)!);
+    const of = (threadId: string) => by.get(threadId) ?? (by.set(threadId, { workers: [], commands: [] }), by.get(threadId)!);
     for (const [threadId, live] of this.live) {
       const t = live.translator.takeRunning();
       if (t.workers.length || t.commands.length) Object.assign(of(threadId), t);
@@ -455,7 +455,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     for (const w of this.workers.values()) {
       if (w.endedAt || w.cutTaken) continue;
       w.cutTaken = true;
-      of(w.parent).boards.push({ id: w.id, title: w.title });
+      of(w.parent).commands.push({ id: w.id, title: w.title });
     }
     return [...by].map(([threadId, work]) => ({ threadId, work }));
   }
@@ -709,12 +709,12 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   private workers = new Map<string, Worker>();
 
   /**
-   * BoardMake: a worker is its own Claude Code session in the
+   * A worker is its own Claude Code session in the
    * same sandbox, with the same tools a conversation has (shell included) and
    * the worker's prompt, run until it answers once. Its report is the result;
    * the engine turns that into the conversation's next turn.
    */
-  async background(parentThreadId: string, a: Record<string, unknown>, onStarted?: (id: string) => void, boardMake?: NotifyScope["boardMake"]): Promise<Record<string, unknown>> {
+  async background(parentThreadId: string, a: Record<string, unknown>, onStarted?: (id: string) => void): Promise<Record<string, unknown>> {
     const parent = this.threads[parentThreadId];
     const agent = (a.agent ?? {}) as { name?: string; systemPrompt?: string };
     const cwd = typeof a.cwd === "string" && a.cwd.trim() ? a.cwd.trim() : (parent?.cwd ?? this.o.vault);
@@ -723,7 +723,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     const task = String(a.task ?? "").trim();
     if (!task) throw new Error("a worker needs a task");
     const id = `cc-worker-${randomUUID()}`;
-    const tools = await this.bindTools(parentThreadId, { ...(parent ?? ({} as ThreadState)), cwd }, { workers: true, ...(boardMake ? { boardMake } : {}) });
+    const tools = await this.bindTools(parentThreadId, { ...(parent ?? ({} as ThreadState)), cwd }, { workers: true });
     const model0 = model;
     return await new Promise<Record<string, unknown>>((resolve) => {
       let text = "";
@@ -829,7 +829,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     return [];
   }
 
-  /** A conversation's running BoardMake workers (Claude Code's own subagents are its own). */
+  /** A conversation's running background() workers (Claude Code's own subagents are its own). */
   liveChildren(parentThreadId: string): LiveChild[] {
     return [...this.workers.values()].filter((w) => w.parent === parentThreadId && !w.endedAt).map((w) => this.childOf(w));
   }
@@ -842,15 +842,12 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
    * bearer it issues is handed to Claude Code only in the session's HTTP
    * headers, so it is never in argv, the environment or a file.
    */
-  private async bindTools(threadId: string, t: ThreadState, w?: { workers: true; boardMake?: NotifyScope["boardMake"] }): Promise<{ servers: Record<string, unknown>; allowed: string[]; revoke: () => Promise<void>; refresh: () => Promise<boolean> } | null> {
+  private async bindTools(threadId: string, t: ThreadState, w?: { workers: true }): Promise<{ servers: Record<string, unknown>; allowed: string[]; revoke: () => Promise<void>; refresh: () => Promise<boolean> } | null> {
     if (!this.o.mcp || !this.h) return null;
     const catalog = async () => (await this.h!.toolCatalog("conversation", threadId)).filter((s) => !w || !NOT_FOR_WORKERS.has(s.name));
     const specs = await catalog();
-    // A worker acts for the conversation that started it; a board maker for its own inbox entry.
-    const notify = (): NotifyScope | null => {
-      const base = this.h?.notifyScope?.(threadId) ?? null;
-      return w?.boardMake && base ? { ...base, boardMake: w.boardMake } : base;
-    };
+    // A worker acts for the conversation that started it.
+    const notify = (): NotifyScope | null => this.h?.notifyScope?.(threadId) ?? null;
     const services: ProcessServices = {
       ...(this.h.you ? { you: (since: number | null) => this.h!.you!({ threadId, since }) } : {}),
       env: () => ({}),
@@ -1198,7 +1195,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     // Its background workers and commands ended with it (a crash, a kill; on a server's own shutdown they were
     // taken before, takeCutWork): the chat is told and takes the workers up again (engine.ts recordCutWork).
     const cut = live?.translator.takeRunning();
-    if (cut && (cut.workers.length || cut.commands.length)) this.ev({ kind: "workCut", threadId, work: { ...cut, boards: [] } });
+    if (cut && (cut.workers.length || cut.commands.length)) this.ev({ kind: "workCut", threadId, work: cut });
     if (!live?.turnId) return;
     // It died mid-turn: the engine marks that turn cut and resumes it, as it does for pi.
     this.ev({ kind: "threadLost", threadId });

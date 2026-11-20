@@ -11,7 +11,7 @@ export type AppPluginInfo = {
   id: string;
   /** What Carl calls it. */
   name: string;
-  /** Where it mounts: a panel of the app's window, or a whole surface (the phone app, the iPad board). */
+  /** Where it mounts: a panel of the app's window, or a whole surface (the phone app). */
   mount: "panel" | "surface";
   description: string;
   /** Words that name it (lower case), for the agent's Plugins tool ("disable notes"). */
@@ -182,9 +182,9 @@ export const ELEVENLABS_VOICE_PLUGIN: AppPluginInfo = {
 
 export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN, FILETREE_PLUGIN, TITLEBAR_PLUGIN, VIEWER_PLUGIN, CHAT_PLUGIN, SETTINGS_PLUGIN, VOICE_PLUGIN, CONTEXT_PLUGIN, ASK_PLUGIN, ELEVENLABS_VOICE_PLUGIN];
 
-// The surfaces (Track 2: the phone and the iPad are hosts, apps Carl can switch off). A `plugin.desired` record for one
+// The surfaces (Track 2: the phone is a host, an app Carl can switch off). A `plugin.desired` record for it
 // turns the whole app off or on live, no release: off, the box serves the one "turned off" line where its app would
-// open (/phone, /board), pushes to the phone and sends to it (Show, BoardSend, BoardMake) stop and say so, and an app
+// open (/phone), pushes to the phone and sends to it (Show) stop and say so, and an app
 // already open goes to that line (server/surfaces.ts).
 
 export const PHONE_SURFACE_ID = "app/phone";
@@ -198,18 +198,7 @@ export const PHONE_SURFACE: AppPluginInfo = {
   words: ["phone", "phone app", "the phone", "the phone app", "iphone", "mobile", "mobile app", "phone surface"],
 };
 
-export const BOARD_SURFACE_ID = "app/board";
-
-/** The iPad whiteboard (board/): its boards and the inbox the agent sends to. */
-export const BOARD_SURFACE: AppPluginInfo = {
-  id: BOARD_SURFACE_ID,
-  name: "iPad board",
-  mount: "surface",
-  description: "The iPad whiteboard app: Carl's boards and the inbox BoardSend, BoardMake and Show \"board\" send to. Off: /board shows that it is turned off and nothing is sent to its inbox.",
-  words: ["board", "ipad", "ipad board", "the board", "the ipad", "whiteboard", "ipad app", "board app", "whiteboard app", "tablet", "ipad whiteboard", "board surface"],
-};
-
-export const SURFACE_PLUGINS: readonly AppPluginInfo[] = [PHONE_SURFACE, BOARD_SURFACE];
+export const SURFACE_PLUGINS: readonly AppPluginInfo[] = [PHONE_SURFACE];
 
 /** The app plugin or surface a word names (its id, its name or one of its words), or null. */
 export function appPluginNamed(word: string): AppPluginInfo | null {

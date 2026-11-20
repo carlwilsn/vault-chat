@@ -2,8 +2,8 @@
 // Ctrl+Shift+D on the laptop (or window.vcDiag() from the devtools) gathers
 //   - this laptop's app-log (app-log.txt and its rotated .1),
 //   - its client events (client-events.jsonl and .1) and sync log,
-//   - the box's half (GET /api/v1/diag: the turn log with intents, the board
-//     log, the journal excerpt, the phone's client events),
+//   - the box's half (GET /api/v1/diag: the turn log with intents, the voice
+//     and app logs, the journal excerpt, the phone's client events),
 // and writes them as `<vault>/.vault-chat/diag/diag-<time>.json` (machine-local,
 // gitignored). Everything is redacted again here (src/logRedact.ts): no key, no
 // token, no message or file contents.

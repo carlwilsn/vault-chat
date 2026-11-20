@@ -1,7 +1,7 @@
 // Stopping the HTTP server without dropping a write (main.ts's SIGTERM: the self-updater's restart, systemd).
 //
-// Before: `server.close()` and `process.exit` 300 ms later. A board save in flight (a 5 MB body, then the write) was
-// cut off mid-way, and an iPad could be left waiting on a socket that never answered. Now every write in flight
+// Before: `server.close()` and `process.exit` 300 ms later. A save in flight (a big body, then the write) was
+// cut off mid-way, and a client could be left waiting on a socket that never answered. Now every write in flight
 // (anything but GET/HEAD/OPTIONS) is answered, its socket closed after the answer; GETs (long polls, idle keep-alive
 // sockets) are closed at once, their clients reconnect; and after the grace whatever is still open is closed, so no
 // client is ever left on a half-open socket: it gets its answer or an error, never silence.

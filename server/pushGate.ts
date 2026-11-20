@@ -8,18 +8,18 @@
 //     • something needs him (a question, a failure he must act on) — and he is not looking;
 //       while he is, it waits, and goes out when he leaves (if it still needs him).
 //   Never for: background work he did not start, anything while he is looking at a
-//   surface (laptop, phone, iPad) or in a voice call, a thing he already saw, or a duplicate.
+//   surface (laptop, phone) or in a voice call, a thing he already saw, or a duplicate.
 //
 // "Looking" is what the surfaces say (POST /api/v1/attention: the laptop while focused and used
-// in the last few minutes, the phone and the iPad while their app is on screen), his own
+// in the last few minutes, the phone while its app is on screen), his own
 // activity in the vault's context stream in the last two minutes, and a live voice call.
 //
 // The feed (notifications.jsonl, the in-app Alerts) is not gated: only the buzz is. Every
 // decision is one journal line, `[push] sent|held|dropped …`, with what triggered it.
 import { resolve } from "node:path";
 
-export type Device = "laptop" | "phone" | "board";
-const DEVICES: Device[] = ["laptop", "phone", "board"];
+export type Device = "laptop" | "phone";
+const DEVICES: Device[] = ["laptop", "phone"];
 
 /** Why a push is offered. */
 export type PushWhy =
@@ -171,7 +171,7 @@ export class PushGate {
 
   attention(vault: string, now = this.now()): Attention {
     const s = surfacesLooking(vault, now);
-    if (s) return { looking: true, where: s === "board" ? "iPad" : s };
+    if (s) return { looking: true, where: s };
     return this.d.attention?.(vault, now) ?? { looking: false, where: null };
   }
 
@@ -219,7 +219,7 @@ export class PushGate {
     // On screen where he is looking: he is reading it (a question in the thread he has open is asked there).
     const reading = o.convId ? viewingConv(o.vault, o.convId, now) : null;
     if (reading) {
-      this.line("dropped", o, `Carl has it open (${reading === "board" ? "iPad" : reading})`);
+      this.line("dropped", o, `Carl has it open (${reading})`);
       return { act: "drop", reason: "Carl has it open" };
     }
     const dec = decide({ why: o.why, byCarl: o.byCarl, attention: this.attention(o.vault, now), duplicate: this.duplicate(o, key, now), stillNeeded: o.stillNeeded ? safe(o.stillNeeded) : true });

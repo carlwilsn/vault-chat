@@ -1,7 +1,6 @@
 // The box's own logs, beside its other state: <state>/logs/.
 //   turns.jsonl  one line per agent turn (engine/turnLog.ts), every vault;
-//   board.jsonl  the whiteboard's batched events (POST /api/v1/board/log);
-//   voice.jsonl  the laptop's and the phone's voice diagnostics (the same route, source "voice": src/voiceShip.ts);
+//   voice.jsonl  the laptop's and the phone's voice diagnostics (POST /api/v1/board/log, source "voice": src/voiceShip.ts);
 //   app.jsonl    the laptop app's errors and its box connection (drops with their reason, how long it was down):
 //                the same route, source "app" (src/appShip.ts).
 // Each is a JSONL file capped in size: past the cap it becomes <name>.1 (the
@@ -95,7 +94,7 @@ export class RotatingLog {
   }
 }
 
-export type BoxLogs = { dir: string; turns: RotatingLog; board: RotatingLog; voice: RotatingLog; app: RotatingLog };
+export type BoxLogs = { dir: string; turns: RotatingLog; voice: RotatingLog; app: RotatingLog };
 
 const cache = new Map<string, BoxLogs>();
 
@@ -104,7 +103,7 @@ export function boxLogs(stateDir: string): BoxLogs {
   let l = cache.get(stateDir);
   if (!l) {
     const dir = join(stateDir, "logs");
-    l = { dir, turns: new RotatingLog(join(dir, "turns.jsonl")), board: new RotatingLog(join(dir, "board.jsonl"), { maxBytes: 2 * 1024 * 1024 }), voice: new RotatingLog(join(dir, "voice.jsonl"), { maxBytes: 2 * 1024 * 1024 }), app: new RotatingLog(join(dir, "app.jsonl"), { maxBytes: 2 * 1024 * 1024 }) };
+    l = { dir, turns: new RotatingLog(join(dir, "turns.jsonl")), voice: new RotatingLog(join(dir, "voice.jsonl"), { maxBytes: 2 * 1024 * 1024 }), app: new RotatingLog(join(dir, "app.jsonl"), { maxBytes: 2 * 1024 * 1024 }) };
     cache.set(stateDir, l);
   }
   return l;

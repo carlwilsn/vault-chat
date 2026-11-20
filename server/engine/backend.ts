@@ -57,8 +57,8 @@ export type BackendEvent =
   | { kind: "signInRefused"; threadId: string; error: string | null };
 
 /** Background work a thread's runtime took with it when it ended: Agent-tool workers (resumable from their
- *  transcripts, SendMessage), background shell commands and monitors, BoardMake workers (neither resumable). */
-export type CutWork = { workers: { id: string; title: string }[]; commands: { id: string; title: string }[]; boards: { id: string; title: string }[] };
+ *  transcripts, SendMessage), background shell commands, monitors and the host's own background workers (not resumable). */
+export type CutWork = { workers: { id: string; title: string }[]; commands: { id: string; title: string }[] };
 
 /** resumeThread throws this when the thread belongs to another runtime (or is gone): the engine starts a fresh one. */
 export class ThreadUnknownError extends Error {
@@ -77,13 +77,11 @@ export type ToolAnswer = { ok: boolean; text: string; images?: { data: string; m
 /** A piece of work the host started that has now finished, named so a bounded
  *  continuation can tell its own completion from any other event. */
 export type NativeCompletion = { kind: "job" | "delegate" | "wake"; id: string };
-export type Interaction = Readonly<{ request: string; device: "laptop" | "phone" | "board" | null }>;
+export type Interaction = Readonly<{ request: string; device: "laptop" | "phone" | null }>;
 // The existing host-owned worker scope captures its originating interaction too.
 // No second queue/presence registry: the source is the delivered native feed entry.
 export type NotifyScope = Readonly<{
   workId: string; byCarl: boolean; interaction?: Interaction;
-  /** Only the host's accepted BoardMake, bound to its own entry (never model args/text). */
-  boardMake?: Readonly<{ id: string; interaction: Interaction; asked: boolean }>;
 }>;
 export type ToolCallHandler = (threadId: string, name: string, args: any, signal?: AbortSignal, notifyScope?: NotifyScope | null) => Promise<ToolAnswer>;
 export type UserInputHandler = (threadId: string, question: string, options: string[]) => Promise<string>;
@@ -295,8 +293,8 @@ export type EngineBackend = {
   readonly paths: { sessionsDir: string; instrDir: string };
 
   // -- background work inside a turn
-  /** Start children for a parent thread (the agent's own BoardMake call). */
-  background(parentThreadId: string, a: Record<string, unknown>, onStarted?: (id: string) => void, boardMake?: NotifyScope["boardMake"]): Promise<Record<string, unknown>>;
+  /** Start a background worker (its own session, run to one result) for a parent thread. */
+  background(parentThreadId: string, a: Record<string, unknown>, onStarted?: (id: string) => void): Promise<Record<string, unknown>>;
   subagentControl(childId: string, op: "steer" | "stop", text?: string): Promise<{ ok: boolean; error?: string }>;
   /** The parent stopped waiting: its still-running children, which report when they finish. */
   detach(parentThreadId: string): Detached[];

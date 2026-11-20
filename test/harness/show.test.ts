@@ -165,7 +165,7 @@ function viewers(): () => void {
 
 const emit = (ev: Record<string, unknown>) => void box.emit(null, { type: "signal", signal: ev } as any);
 const sent: Record<string, unknown>[] = [];
-const toolDeps = () => ({ vault, emit: (ev: Record<string, unknown>) => (sent.push(ev), emit(ev)), sendBoard: async () => ({ ok: false as const, refusals: ["not in this test"] }) });
+const toolDeps = () => ({ vault, emit: (ev: Record<string, unknown>) => (sent.push(ev), emit(ev)) });
 const Show = (args: Record<string, unknown>) => show(toolDeps(), { where: "laptop", ...args });
 
 let stopViewers: () => void = () => {};
@@ -387,9 +387,9 @@ test("without pane, in a split: the active pane's file is replaced (as before) a
   assert.equal(panesNow(), "hw4.md* | vi.py");
 });
 
-test("pane is for the laptop: refused for the board before anything is sent", async () => {
+test("pane is for the laptop: refused for the phone before anything is sent", async () => {
   const n = sent.length;
-  const r = await show(toolDeps(), { path: "hw/hw4.md", where: "board", pane: "left" });
+  const r = await show(toolDeps(), { path: "hw/hw4.md", where: "phone", pane: "left" });
   assert.equal(r.ok, false);
   assert.match(r.text, /pane is for the laptop's split screen/);
   const bad = await Show({ path: "hw/hw4.md", pane: "middle" });
@@ -404,6 +404,6 @@ test("the laptop offline: nothing is sent and the result says so", async () => {
   const n = sent.length;
   const r = await Show({ path: "hw/hw4.md" });
   assert.equal(r.ok, false);
-  assert.match(r.text, /The laptop isn't online .* nothing was shown\. Ask Carl: send it to the board instead/);
+  assert.match(r.text, /The laptop isn't online .* nothing was shown\. Put it in your reply instead/);
   assert.equal(sent.length, n);
 });

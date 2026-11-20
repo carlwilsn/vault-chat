@@ -52,7 +52,7 @@ export type CatalogAppPlugin = {
 
 export type Catalog = { services: CatalogService[]; plugins: CatalogPlugin[]; app?: CatalogAppPlugin[]; truncated?: boolean };
 
-/** The app's own plugins, in registry order, then the surfaces (the phone app, the iPad board). */
+/** The app's own plugins, in registry order, then the surfaces (the phone app). */
 export function catalogAppPlugins(copies: Readonly<Record<string, string[]>> = {}): CatalogAppPlugin[] {
   return [...APP_PLUGINS, ...SURFACE_PLUGINS].map((p) => ({ id: p.id, name: p.name, mount: p.mount, description: p.description, ...(copies[p.id]?.length ? { copies: copies[p.id] } : {}) }));
 }

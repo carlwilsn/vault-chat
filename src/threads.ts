@@ -1,7 +1,7 @@
 // One main conversation (reports/Continuous conversation SOTA research.md, Carl 2026-10-21).
 //
 // - Main: one persistent conversation, id "main", the default on every surface (laptop, popout,
-//   phone, board voice). Every device and call continues it; compaction keeps it bounded.
+//   phone voice). Every device and call continues it; compaction keeps it bounded.
 // - A project's thread: one per project Carl makes, id "project-<slug>".
 // - A chat Carl started in a place ("New chat"): any other new id, `kind: "separate"`, with the
 //   project it was started in (none: the vault's main). It is listed under that place.
@@ -9,7 +9,7 @@
 //   readable, never listed in the panel: "Older chats" in its menu reaches them.
 //
 // The conversation's `kind` is a field of its feed (src/convlog/protocol.ts ConvMeta); the box
-// sets it when it makes the conversation. Pure: the box, the laptop, the phone and the board use it.
+// sets it when it makes the conversation. Pure: the box, the laptop and the phone use it.
 
 export const MAIN_ID = "main";
 export const MAIN_TITLE = "Main";

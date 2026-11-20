@@ -16,7 +16,6 @@ vi.mock("../../src-tauri/assets/phone.html", () => ({ default: "" }));
 vi.mock("../../src-tauri/assets/voice.html", () => ({ default: "" }));
 vi.mock("../../src-tauri/assets/icon-apple-touch.png", () => ({ default: "" }));
 vi.mock("vc:phone-app", () => ({ default: {} }));
-vi.mock("vc:board-app", () => ({ default: {} }));
 
 const TOKEN = "test-only-phone-token";
 const DIR = ".vault-chat/box-plugins";

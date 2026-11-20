@@ -10,9 +10,9 @@
 //   - unanswered: requests it was sent and did not ack, since its last answer (a wedged app shows here, not as "offline").
 // Pure in-memory state; Health (GET /api/v1/health `links`) shows it.
 
-export type LinkClient = "laptop" | "phone" | "board";
-const CLIENTS: LinkClient[] = ["laptop", "phone", "board"];
-const NAME: Record<LinkClient, string> = { laptop: "laptop", phone: "phone", board: "iPad board" };
+export type LinkClient = "laptop" | "phone";
+const CLIENTS: LinkClient[] = ["laptop", "phone"];
+const NAME: Record<LinkClient, string> = { laptop: "laptop", phone: "phone" };
 
 /** A device whose last poll ended this long ago still counts as up (as server/show.ts's presence). */
 export const LIVE_GRACE_MS = 8_000;

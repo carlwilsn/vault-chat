@@ -6,7 +6,7 @@
 // Written by: the laptop (focus, Ctrl+K, Ctrl+L, captures), voice (voice.ts:
 // what was said, what its tools did), the engine (Carl's messages as chat
 // pointers, images pasted into a chat). Read through youLayer() only — the one
-// "you" layer (src/activityCore.ts buildYouLayer) with the newest board and the
+// "you" layer (src/activityCore.ts buildYouLayer) with the
 // notes changes read from their own files: pi's turns and Ctrl+K / Ctrl+L side
 // threads get it through the pi extension (before_agent_start → a `vc-you`
 // custom message in the session), voice calls youLayer for its session prompt.
@@ -30,11 +30,9 @@ import {
   projectContextBlock,
   sanitizeEntry,
   type ActivityEntry,
-  type BoardSnap,
   type NoteSnap,
   type YouLayer,
 } from "../src/activityCore";
-import { BOARDS_DIR, BOARD_FILE, OVERVIEW_FILE, VIEW_FILE, parseBoard, validSlug } from "../src/boardFormat";
 
 export function activityOn(): boolean {
   return process.env.VC_ACTIVITY !== "0";
@@ -87,38 +85,6 @@ export function readActivity(vault: string, now = Date.now(), windowMs = DEFAULT
   return out.filter((e) => e.ts > now - windowMs).sort((a, b) => a.ts - b.ts);
 }
 
-/** The newest board in the vault (by its own `updated`), or null. Reads only: never creates boards/. */
-export function latestBoard(vault: string): BoardSnap | null {
-  let best: BoardSnap | null = null;
-  let names: string[] = [];
-  try {
-    names = readdirSync(join(vault, BOARDS_DIR));
-  } catch {
-    return null;
-  }
-  for (const slug of names) {
-    if (!validSlug(slug)) continue;
-    try {
-      const b = parseBoard(readFileSync(join(vault, BOARDS_DIR, slug, BOARD_FILE), "utf8"));
-      if (best && b.updated <= best.updated) continue;
-      const overview = `${BOARDS_DIR}/${slug}/${OVERVIEW_FILE}`;
-      const view = `${BOARDS_DIR}/${slug}/${VIEW_FILE}`;
-      best = {
-        slug,
-        name: b.name,
-        updated: b.updated,
-        strokes: b.strokes.length,
-        items: b.items.map((i) => ({ kind: String(i.kind ?? "item"), label: typeof i.label === "string" ? i.label.replace(/\s+/g, " ").trim().slice(0, 60) : "" })),
-        overview: existsSync(join(vault, ...overview.split("/"))) ? overview : null,
-        view: existsSync(join(vault, ...view.split("/"))) ? view : null,
-      };
-    } catch {
-      /* not a board */
-    }
-  }
-  return best;
-}
-
 /** Each note's latest state (.vault-chat/notes.jsonl: a note may have several lines; the newest last_updated wins). */
 export function notesSnapshot(vault: string): NoteSnap[] {
   let raw = "";
@@ -166,7 +132,7 @@ export function youLayer(vault: string, o: { since?: number | null; convId?: str
   try {
     if (!activityOn()) return { text: "", until: now, items: 0 };
     const layer = buildYouLayer(
-      { entries: readActivity(vault, now, YOU_LOOKBACK_MS), board: latestBoard(vault), notes: notesSnapshot(vault) },
+      { entries: readActivity(vault, now, YOU_LOOKBACK_MS), notes: notesSnapshot(vault) },
       { now, since: o.since ?? null, convId: o.convId ?? null },
     );
     // Keep the existing focus text, but make its vault-relative path unambiguous

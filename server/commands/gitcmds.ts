@@ -15,8 +15,7 @@ async function humanIdentity(repo: string): Promise<[string, string]> {
   return [(await get("user.name")) ?? "vault-chat", (await get("user.email")) ?? "vault-chat@local"];
 }
 
-/** lib.rs:4016 git_commit_all, by the box's staging rules (git.ts stageForCommit). A board being drawn on is
- * held here too (a voice turn ends every few seconds while Carl draws); the sync commits it once it is still. */
+/** lib.rs:4016 git_commit_all, by the box's staging rules (git.ts stageForCommit). */
 export async function gitCommitAll(vault: string, message: string, agent: boolean): Promise<string | null> {
   return withRepoLock(vault, async () => {
     await abortStuckMergeOrRebase(vault);
@@ -24,9 +23,9 @@ export async function gitCommitAll(vault: string, message: string, agent: boolea
     if (!st.trim()) return null;
     const [name, email] = agent ? [AGENT_GIT_NAME, AGENT_GIT_EMAIL] : await humanIdentity(vault);
     const id = ["-c", `user.name=${name}`, "-c", `user.email=${email}`];
-    reportStageResult(vault, await stageForCommit(vault, id, { holdBoards: true }));
+    reportStageResult(vault, await stageForCommit(vault, id));
     const staged = await runGit(vault, ["diff", "--cached", "--quiet"]);
-    if (staged.code === 0) return null; // only files the rules keep out (or hold) changed
+    if (staged.code === 0) return null; // only files the rules keep out changed
     await git(vault, [...id, "commit", "-q", "-m", message]);
     return (await git(vault, ["rev-parse", "--short", "HEAD"])).trim();
   });

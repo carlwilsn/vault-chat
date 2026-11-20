@@ -21,7 +21,6 @@ vi.mock("../../src-tauri/assets/phone.html", () => ({ default: "" }));
 vi.mock("../../src-tauri/assets/voice.html", () => ({ default: "" }));
 vi.mock("../../src-tauri/assets/icon-apple-touch.png", () => ({ default: "" }));
 vi.mock("vc:phone-app", () => ({ default: {} }));
-vi.mock("vc:board-app", () => ({ default: {} }));
 
 const sha = (b: Buffer | string) => createHash("sha256").update(b).digest("hex");
 const NEEDS: CoreNeeds = { commands: ["app_ready", "read_text_file"], plugins: ["dialog"], boxApi: CORE_BOX_API };

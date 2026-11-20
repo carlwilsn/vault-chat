@@ -2,7 +2,7 @@
 //   <meta name="vc-mount" content="in-process">        (src/liveBridge.ts parseLiveMount)
 // runs in the app itself, not in an iframe. Its <style>s and body markup go into a shadow root on the host element
 // (its CSS stays its own; the app's theme variables still reach it), its inline <script type="module"> is loaded as one
-// module, and that module's `mount(el, api)` is called: the whiteboard widget contract (src/widgetHost.ts), found the
+// module, and that module's `mount(el, api)` is called: the widget contract, found the
 // same way (a `mount` export, `default.mount`, or a default function). `mount` may return a cleanup function (or a
 // promise of one); unmount runs it.
 //
