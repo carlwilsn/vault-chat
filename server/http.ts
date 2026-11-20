@@ -1,3 +1,4 @@
+import { serverBuildRoute } from "./serverBuild";
 import { globalNotes, appendGlobalNote, writeGlobalNotes, noteSourceOwner } from "./notesStorage";
 import { noteTool } from "./notesTools";
 import { dedupeIntent } from "./intentDedupe";
@@ -804,6 +805,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   if (path === "/api/v2/supervisor" && (method === "GET" || method === "POST")) {
     const out = await supervisorRoute(vault, method, url.searchParams, method === "POST" ? await jsonBody(req) : null);
     return json(res, out.status, out.body);
+  }
+  // The box's own server build, for the laptop's server slot (server/serverBuild.ts).
+  if ((path === "/api/v2/server-build" || path === "/api/v2/server-build/file") && method === "GET") {
+    const out = serverBuildRoute(path.slice("/api/v2/server-build".length));
+    if (out.bytes) return send(res, out.status, "text/javascript", out.bytes, { "Cache-Control": "no-store" });
+    return json(res, out.status, out.json);
   }
   // The laptop app's core bundle (server/coreBundles.ts): the offer, and each bundle's manifest and files (immutable:
   // a version is the hash of its manifest, which holds every file's hash). The box's main vault holds the records.

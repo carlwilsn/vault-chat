@@ -63,7 +63,7 @@ test("the sign-in offers to get one, and never downloads by itself", () => {
 
 test("the shell runs the fetch from the server bundle (the slot's, then the installer's), it does not carry it", () => {
   assert.match(rs, /"fetch-claude-cli"/, "the shell starts the server bundle's fetch-claude-cli");
-  assert.match(rs, /server_bundles/, "from the server bundles the app can run, the slot's first");
+  assert.match(rs, /local_server::run_tool/, "through the server bundles the app can run, the slot's first");
   assert.doesNotMatch(rs, /registry\.npmjs\.org|Sha512|reqwest/, "no download logic is left in the shell");
   assert.match(read("server/build.mjs"), /process\.argv\[2\] === "fetch-claude-cli"[\s\S]*cliFetch/, "the bundle's entry routes it without loading the server");
 });

@@ -153,8 +153,8 @@ export function missingNeeds(needs: CoreNeeds, shell: { commands: readonly strin
  *  `@tauri-apps/plugin-<name>` imports. Pure (the build script reads the files). */
 /** Commands the source calls that no shell has, each call guarded (it works without them): not needs. */
 /** git_run / repo_hold / repo_release / file_sizes: the bundle's box sync (src/boxSync) uses them only when core_status
- *  says the shell has them, else the shell's own vault_box_sync. */
-export const OPTIONAL_COMMANDS: readonly string[] = ["phone_push_legacy_enabled", "phone_push_result", "safety_beat", "git_run", "repo_hold", "repo_release", "file_sizes", "git_dir_write"];
+ *  says the shell has them, else the shell's own vault_box_sync. server_tool: the server slot's follower (src/serverSlotFollow.ts). */
+export const OPTIONAL_COMMANDS: readonly string[] = ["phone_push_legacy_enabled", "phone_push_result", "safety_beat", "git_run", "repo_hold", "repo_release", "file_sizes", "git_dir_write", "server_tool"];
 /** A source file that runs only on the box (its invoke is the box's own command table, server/commands): a line
  *  `// @vc-box-only` in it. The laptop bundle never calls its commands, so they are not needs. */
 export const BOX_ONLY = /^\/\/ @vc-box-only\b/m;

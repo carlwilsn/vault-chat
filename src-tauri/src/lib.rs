@@ -4354,6 +4354,25 @@ async fn claude_cli_ensure(app: tauri::AppHandle) -> Result<ClaudeCliReady, Stri
     .map_err(|e| e.to_string())?
 }
 
+/// Run a server tool (`node <server bundle> <task> <state dir>`, the slot's bundle then the installer's own;
+/// local_server::run_tool): logic the shell used to carry lives in the server and changes with it. `input` goes to the
+/// tool's stdin. Progress lines become `server-tool-progress` events (task, done, total).
+#[tauri::command]
+async fn server_tool(app: tauri::AppHandle, task: String, input: Option<String>) -> Result<serde_json::Value, String> {
+    use tauri::{Emitter, Manager};
+    let state_dir = app.path().app_local_data_dir().map_err(|e| format!("no app data directory: {e}"))?;
+    let resources = app.path().resource_dir().ok();
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = task.clone();
+        local_server::run_tool(&state_dir, resources.as_deref(), &task, input.as_deref(), |done, total| {
+            let _ = handle.emit("server-tool-progress", (t.as_str(), done, total));
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Where Claude Code is, and which one it is.
 #[derive(serde::Serialize)]
 struct ClaudeCliReady {
@@ -5837,7 +5856,8 @@ pub fn run() {
             git_bridge::repo_hold,
             git_bridge::repo_release,
             git_bridge::file_sizes,
-            git_bridge::git_dir_write
+            git_bridge::git_dir_write,
+            server_tool
     ];
     let mut context = tauri::generate_context!();
     // stringify! of a path is `module :: name`: the command's name is its last segment.

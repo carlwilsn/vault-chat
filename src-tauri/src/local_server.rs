@@ -178,6 +178,78 @@ pub fn server_bundles(state_dir: &Path, resource_dir: Option<&Path>) -> Vec<(Opt
     candidates
 }
 
+/// One line a server tool writes (`node <bundle> <task> <stateDir>`): progress while it works, then its answer.
+#[derive(serde::Deserialize)]
+struct ToolLine {
+    progress: Option<(u64, u64)>,
+    ok: Option<serde_json::Value>,
+    error: Option<String>,
+}
+
+/// Run one bundle's tool `task`: Ok(Ok(answer)) or Ok(Err(its error)); Err when it gave no answer at all (it would not
+/// start, or exited without a last line): the caller tries the next bundle. `input` goes to its stdin (never argv: a
+/// token must not show in a process list).
+pub fn run_tool_with(node: &str, bundle: &Path, task: &str, state_dir: &Path, input: Option<&str>, progress: &mut dyn FnMut(u64, u64)) -> Result<Result<serde_json::Value, String>, String> {
+    use std::io::{BufRead, BufReader, Write};
+    let mut cmd = Command::new(node);
+    no_window(&mut cmd);
+    #[cfg(unix)]
+    cmd.env("PATH", crate::claude_signin::user_path());
+    let mut child = cmd
+        .arg(bundle)
+        .arg(task)
+        .arg(state_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("could not run {node}: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let body = input.unwrap_or("").to_string();
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(body.as_bytes());
+        });
+    }
+    let out = child.stdout.take().ok_or("no output")?;
+    let mut answer = None;
+    for line in BufReader::new(out).lines() {
+        let Ok(line) = line else { break };
+        let Ok(l) = serde_json::from_str::<ToolLine>(&line) else { continue };
+        if let Some((done, total)) = l.progress {
+            progress(done, total);
+        }
+        if let Some(v) = l.ok {
+            answer = Some(Ok(v));
+        } else if let Some(e) = l.error {
+            answer = Some(Err(e));
+        }
+    }
+    let _ = child.wait();
+    answer.ok_or_else(|| format!("{} gave no answer", bundle.display()))
+}
+
+/// Run the server bundle's tool `task` (the slot's bundle, then the installer's own): what logic the shell used to
+/// carry (fetching Claude Code, filling this slot) lives in the server and changes with it.
+pub fn run_tool(state_dir: &Path, resource_dir: Option<&Path>, task: &str, input: Option<&str>, mut progress: impl FnMut(u64, u64)) -> Result<serde_json::Value, String> {
+    let ok_name = !task.is_empty() && task.len() <= 40 && task.chars().all(|c| c.is_ascii_lowercase() || c == '-') && task.starts_with(|c: char| c.is_ascii_lowercase());
+    if !ok_name {
+        return Err(format!("not a server tool: {task}"));
+    }
+    let node = node_bin(resource_dir);
+    let bundles = server_bundles(state_dir, resource_dir);
+    if bundles.is_empty() {
+        return Err("this build carries no vault-chat server".to_string());
+    }
+    let mut last = String::new();
+    for (_, bundle) in bundles {
+        match run_tool_with(&node, &bundle, task, state_dir, input, &mut progress) {
+            Ok(answer) => return answer,
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
 /// Start the first candidate that comes up; a slot's (`Some(version)`) that does not is marked bad on the way.
 fn run_first(vault: &str, state_dir: &Path, candidates: Vec<(Option<String>, PathBuf)>, node: &str) -> Result<LocalServer, String> {
     let mut last = String::new();

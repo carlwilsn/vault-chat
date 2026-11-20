@@ -116,6 +116,8 @@ if (isDriveWindow) {
     .then((m) => m.launchTiming(90_000))
     .then(() => import("./coreFollow"))
     .then((m) => m.startCoreFollow())
+    .then(() => import("./serverSlotFollow"))
+    .then((m) => m.startServerSlotFollow())
     .catch(() => {});
   // For a new user's installing agent (src/appStatus.ts, src-tauri/src/first_run.rs): the vault it picked opens on
   // the first launch, and the status file (`vault-chat --status`) says how far setup has got.

@@ -287,6 +287,10 @@
   "sig": "selftest_progress(i:u64,action:String,outcome:Option<serde_json::Value>)->()",
   "v": "e095a7a6"
  },
+ "server_tool": {
+  "sig": "server_tool(task:String,input:Option<String>)->Result<serde_json::Value,String>",
+  "v": "9afec268"
+ },
  "set_run_in_background": {
   "sig": "set_run_in_background(enabled:bool)->()",
   "v": "1da0d930"

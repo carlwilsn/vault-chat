@@ -19,7 +19,6 @@
 //! installer. The shell only runs `node <server bundle> fetch-claude-cli <state dir>` and relays its lines; a slot's
 //! bundle that does not answer is passed over for the installer's own. What stays here is the startup adoption of a
 //! CLI already fetched (adopt), before any server runs.
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -60,70 +59,14 @@ pub fn adopt(state_dir: &Path) -> Option<PathBuf> {
     Some(p)
 }
 
-/// One line the server's fetch-claude-cli writes.
-#[derive(serde::Deserialize)]
-struct Line {
-    progress: Option<(u64, u64)>,
-    ok: Option<Fetched>,
-    error: Option<String>,
-}
-#[derive(serde::Deserialize)]
-struct Fetched {
-    cli: String,
-    version: String,
-}
-
-/// Run one server bundle's fetch-claude-cli: Ok(Ok(found)) or Ok(Err(its error)); Err when it gave no answer at all
-/// (it would not start, or exited without a last line): the next bundle is tried.
-fn run_fetch(node: &str, bundle: &Path, state_dir: &Path, progress: &mut impl FnMut(u64, u64)) -> Result<Result<(PathBuf, String), String>, String> {
-    let mut cmd = Command::new(node);
-    crate::local_server::no_window(&mut cmd);
-    #[cfg(unix)]
-    cmd.env("PATH", crate::claude_signin::user_path());
-    let mut child = cmd
-        .arg(bundle)
-        .arg("fetch-claude-cli")
-        .arg(state_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("could not run {node}: {e}"))?;
-    let out = child.stdout.take().ok_or("no output")?;
-    let mut answer = None;
-    for line in BufReader::new(out).lines() {
-        let Ok(line) = line else { break };
-        let Ok(l) = serde_json::from_str::<Line>(&line) else { continue };
-        if let Some((done, total)) = l.progress {
-            progress(done, total);
-        }
-        if let Some(f) = l.ok {
-            answer = Some(Ok((PathBuf::from(f.cli), f.version)));
-        } else if let Some(e) = l.error {
-            answer = Some(Err(e));
-        }
-    }
-    let _ = child.wait();
-    answer.ok_or_else(|| format!("{} gave no answer", bundle.display()))
-}
-
-/// Fetch the pinned CLI for this machine (or find the one it has) through the server bundle: the slot's, then the
-/// installer's own. `progress` is called with (bytes so far, total) as it downloads. Returns the path and the version
-/// it reported.
-pub fn fetch(state_dir: &Path, resource_dir: Option<&Path>, mut progress: impl FnMut(u64, u64)) -> Result<(PathBuf, String), String> {
-    let node = crate::local_server::node_bin(resource_dir);
-    let bundles = crate::local_server::server_bundles(state_dir, resource_dir);
-    if bundles.is_empty() {
-        return Err("this build carries no vault-chat server to fetch Claude Code with".to_string());
-    }
-    let mut last = String::new();
-    for (_, bundle) in bundles {
-        match run_fetch(&node, &bundle, state_dir, &mut progress) {
-            Ok(answer) => return answer,
-            Err(e) => last = e,
-        }
-    }
-    Err(last)
+/// Fetch the pinned CLI for this machine (or find the one it has) through the server bundle's fetch-claude-cli: the
+/// slot's, then the installer's own (local_server::run_tool). `progress` is called with (bytes so far, total) as it
+/// downloads. Returns the path and the version it reported.
+pub fn fetch(state_dir: &Path, resource_dir: Option<&Path>, progress: impl FnMut(u64, u64)) -> Result<(PathBuf, String), String> {
+    let v = crate::local_server::run_tool(state_dir, resource_dir, "fetch-claude-cli", None, progress)?;
+    let cli = v["cli"].as_str().ok_or("fetch-claude-cli named no CLI")?;
+    let version = v["version"].as_str().unwrap_or_default().to_string();
+    Ok((PathBuf::from(cli), version))
 }
 
 #[cfg(test)]
@@ -150,21 +93,23 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn it_relays_the_servers_lines_and_passes_over_a_bundle_that_gives_no_answer() {
+        use crate::local_server::run_tool_with;
         let dir = std::env::temp_dir().join(format!("vc-cli-relay-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mute = dir.join("mute.sh");
         std::fs::write(&mute, "exit 1\n").unwrap();
         let good = dir.join("good.sh");
-        std::fs::write(&good, "test \"$1\" = fetch-claude-cli || exit 9\necho '{\"progress\":[5,10]}'\necho 'noise'\necho '{\"ok\":{\"cli\":\"/x/claude\",\"version\":\"1.2.3 (Claude Code)\"}}'\n").unwrap();
+        std::fs::write(&good, "test \"$1\" = fetch-claude-cli || exit 9\nread line\necho \"{\\\"progress\\\":[5,10]}\"\necho 'noise'\necho \"{\\\"ok\\\":{\\\"cli\\\":\\\"/x/claude\\\",\\\"got\\\":\\\"$line\\\"}}\"\n").unwrap();
         let bad = dir.join("bad.sh");
         std::fs::write(&bad, "echo '{\"error\":\"npm has none\"}'\n").unwrap();
         let mut seen = vec![];
-        assert!(run_fetch("/bin/sh", &mute, &dir, &mut |d, t| seen.push((d, t))).is_err());
-        let got = run_fetch("/bin/sh", &good, &dir, &mut |d, t| seen.push((d, t))).unwrap().unwrap();
-        assert_eq!(got, (PathBuf::from("/x/claude"), "1.2.3 (Claude Code)".to_string()));
+        assert!(run_tool_with("/bin/sh", &mute, "fetch-claude-cli", &dir, None, &mut |d, t| seen.push((d, t))).is_err());
+        let got = run_tool_with("/bin/sh", &good, "fetch-claude-cli", &dir, Some("secret\n"), &mut |d, t| seen.push((d, t))).unwrap().unwrap();
+        assert_eq!(got["cli"], "/x/claude");
+        assert_eq!(got["got"], "secret", "stdin reaches the tool");
         assert_eq!(seen, vec![(5, 10)]);
-        assert_eq!(run_fetch("/bin/sh", &bad, &dir, &mut |_, _| {}).unwrap(), Err("npm has none".to_string()));
+        assert_eq!(run_tool_with("/bin/sh", &bad, "fetch-claude-cli", &dir, None, &mut |_, _| {}).unwrap(), Err("npm has none".to_string()));
         std::fs::remove_dir_all(&dir).ok();
     }
 }
