@@ -19,7 +19,7 @@ export const SCREEN_DESCRIPTION =
   "See Carl's real laptop app as it looks now: a picture of the vault-chat window (only the app's own window, never the rest of his desktop), downscaled to at most 1600 px wide. " +
   "target: \"window\" (default, the whole app), \"viewer\" (the file viewer column) or \"chat\" (the chat column). " +
   "Use it to check what he actually sees (after Show or Layout, when he says \"look at my screen\", \"what's wrong with this\", or to confirm a UI change on his laptop), instead of asking him for a screenshot. " +
-  "Laptop only: when the app isn't open and connected it says so (don't guess what is on screen). Live HTML pages inside the app are drawn as a labelled box.";
+  "Laptop only: when the app isn't open and connected it says so (don't guess what is on screen). A viewer HTML page draws itself into the picture (src/pageSnap.ts); other live frames (inline chat pages) are drawn as a labelled box.";
 
 export const SCREEN_SCHEMA = {
   type: "object",

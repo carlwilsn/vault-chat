@@ -1,3 +1,4 @@
+import { PAGE_SNAP_BRIDGE } from "./pageSnap";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { rewriteAssetUrls, resolveRelative, pageBaseUrl, withBase } from "./htmlAssets";
 import { invoke } from "@tauri-apps/api/core";
@@ -308,8 +309,8 @@ function usePageBase(path: string | null | undefined): string | null | undefined
   return i == null ? null : pageBaseUrl(i, vault, path);
 }
 
-function injectHeadScripts(html: string, scrollY = 0, live = false): string {
-  const payload = pageThemeHead(appPageTheme()) + (live ? liveScript() : "") + SCROLLBAR_INJECT + LINK_INTERCEPT + MARQUEE_BRIDGE + SCROLL_BRIDGE + scrollKeeper(scrollY);
+export function injectHeadScripts(html: string, scrollY = 0, live = false): string {
+  const payload = pageThemeHead(appPageTheme()) + (live ? liveScript() : "") + SCROLLBAR_INJECT + LINK_INTERCEPT + MARQUEE_BRIDGE + SCROLL_BRIDGE + PAGE_SNAP_BRIDGE + scrollKeeper(scrollY);
   if (/<head[^>]*>/i.test(html)) {
     return html.replace(/<head[^>]*>/i, (m) => m + payload);
   }

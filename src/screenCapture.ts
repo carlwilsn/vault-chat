@@ -7,7 +7,10 @@
 // as an image and painted onto a canvas, cropped to the target and downscaled to at most `maxWidth`. No native code
 // and no app permission: the same on every desktop. WebView2 (Windows, Chromium) reads that canvas back; a webview
 // that taints foreignObject canvases (WebKit) answers with a clear error. Sandboxed live pages (iframes with an opaque
-// origin) cannot be read from outside: they are drawn as a labelled box. Nothing runs until something asks.
+// origin) cannot be read from outside: a viewer page draws itself on request (src/pageSnap.ts) and its picture goes where
+// its frame is; any other frame (or a page that does not answer) is drawn as a labelled box. Nothing runs until something asks.
+
+import { SNAP_FRAME_SELECTOR, snapFrame } from "./pageSnap";
 
 export type CaptureTarget = "window" | "viewer" | "chat";
 export const CAPTURE_TARGETS: readonly CaptureTarget[] = ["window", "viewer", "chat"];
@@ -154,7 +157,25 @@ function cloneTree(src: Node, ctx: Ctx): Node | null {
   if (tag === "IFRAME" || tag === "EMBED" || tag === "OBJECT") {
     ctx.frames++;
     const title = el.getAttribute("title") || el.getAttribute("aria-label") || "live page";
-    return placeholder(el, `${title} (a live page: not drawn in the picture)`);
+    const box = placeholder(el, `${title} (a live page: not drawn in the picture)`);
+    // A viewer page draws itself (src/pageSnap.ts): its picture goes where the frame is.
+    if (tag === "IFRAME" && el.matches(SNAP_FRAME_SELECTOR) && onScreen(el, ctx.vw, ctx.vh)) {
+      ctx.jobs.push(
+        snapFrame(el as HTMLIFrameElement).then((url) => {
+          if (!url) return;
+          ctx.frames--;
+          box.textContent = "";
+          box.style.background = "none";
+          box.style.border = "0";
+          box.style.padding = "0";
+          const img = document.createElement("img");
+          img.setAttribute("src", url);
+          img.setAttribute("style", "display:block;width:100%;height:100%");
+          box.appendChild(img);
+        }),
+      );
+    }
+    return box;
   }
   if (tag === "CANVAS") {
     const c = el as HTMLCanvasElement;
