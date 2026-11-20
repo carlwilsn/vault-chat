@@ -856,8 +856,9 @@ const CONVERSATION_SIGNALS = new Set(["follow", "project", "notif", "setting", "
 /** The agent's requests to a device app (Act, Screen, Layout, PluginRead / PluginAct, LaptopBuild, Drive, Timing:
  *  server/deviceLink.ts): about the app's window, not a vault, so every vault's feed carries them whatever vault the
  *  app has open (each names its device in `to` and has its own id; the app acks it once). Before, a vault switch in
- *  the app left a chat in the other vault sending them nowhere. Show stays the open vault's (its paths are a vault's). */
-export const CONTROL_SIGNALS = new Set(["act", "capture", "layout", "plugin", "build", "drive", "timing"]);
+ *  the app left a chat in the other vault sending them nowhere. Show too: a file of a vault the app does not have open
+ *  carries that vault's name (server/show.ts), so the app switches to it rather than opening a wrong-vault path. */
+export const CONTROL_SIGNALS = new Set(["act", "capture", "layout", "plugin", "build", "drive", "timing", "show"]);
 
 /**
  * The box's conversations, whatever vault is open (Carl, 2026-10-29: "conversations never change when the workspace

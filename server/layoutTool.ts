@@ -5,9 +5,10 @@
 // openChat {id} switches the chat pane through the chat list's own offer (app/chats `open`, the PluginAct path: a
 // {type:"plugin"} signal, so every app that has that offer does it), then reads the layout back.
 import { randomBytes } from "node:crypto";
-import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { waitAck, type Ack } from "./show";
-import { controlDown, linkVault, noteAnswer, unansweredNote } from "./deviceLink";
+import { controlDown, laptopElsewhere, noteAnswer, unansweredNote, vaultName } from "./deviceLink";
 
 const OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "split", "focus", "fullscreenChat", "chatSidebar", "openChat"] as const;
 type Op = Record<string, unknown> & { op: string };
@@ -108,21 +109,17 @@ async function openChat(d: LayoutDeps, chat: string, ms: number): Promise<{ step
   return { step: { op: "openChat", ok: true, note: `open now: ${JSON.stringify(open)}` }, open };
 }
 
-/** The laptop has another vault open than this chat's: a vault-relative path would land in the wrong vault. */
-function otherVault(d: LayoutDeps): string | null {
-  const v = linkVault("laptop");
-  return v && resolve(v).toLowerCase() !== resolve(d.vault).toLowerCase() ? v : null;
-}
-
 export async function layoutTool(d: LayoutDeps, args: Record<string, unknown>): Promise<{ ok: boolean; text: string }> {
   const ops = parseOps(args);
   if (typeof ops === "string") return { ok: false, text: ops };
   const down = controlDown("laptop");
   if (down) return { ok: false, text: `${down} So its layout can't be read or changed. Only the laptop app has panes. Say so; don't guess.` };
-  const elsewhere = otherVault(d);
-  if (elsewhere && ops.some((o) => o.op === "openInPane")) {
-    const name = elsewhere.split(/[\\/]/).filter(Boolean).pop();
-    return { ok: false, text: `The laptop app has another vault open (${name}), so a path of this chat's vault can't be opened in its panes. Nothing was changed. Carl can switch vaults in the app's vault picker; don't do it for him unless he asks.` };
+  // The panes show the vault the laptop has open (the one truth: server/deviceLink.ts laptopElsewhere). A path that is
+  // a file there opens there; one only in this chat's vault would open the wrong file, so Show (which switches) does it.
+  const elsewhere = laptopElsewhere(d.vault);
+  const foreign = elsewhere ? ops.filter((o) => o.op === "openInPane" && !existsSync(join(elsewhere, String(o.path)))) : [];
+  if (elsewhere && foreign.length) {
+    return { ok: false, text: `The laptop app has the vault ${vaultName(elsewhere)} open, and ${foreign.map((o) => o.path).join(", ")} is not a file there (its panes open that vault's files). Nothing was changed. To put this chat's file in a pane, use Show {path, where: "laptop", pane}: it switches the app to this chat's vault (${vaultName(d.vault)}) first.` };
   }
   const ms = d.ackMs ?? 25_000;
   // In order: each openChat through the chat list, the layout ops between them in one layout request; the last request

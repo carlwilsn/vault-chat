@@ -36,7 +36,7 @@ import { parsePages, MAX_PARTS } from "../src/inboxFormat";
 import { loopbackUrl } from "./devProxy";
 import type { SendResult } from "./inbox";
 import { vaultFor, type NamedVault } from "./vaultRefs";
-import { linkOpened, resetLinks } from "./deviceLink";
+import { controlLive, laptopElsewhere, linkOpened, resetLinks, vaultName } from "./deviceLink";
 
 export type Device = "laptop" | "board" | "phone";
 const DEVICES: Device[] = ["laptop", "board", "phone"];
@@ -285,7 +285,15 @@ async function run(d: ShowDeps, a: Record<string, unknown>): Promise<ShowResult>
   if (where === "board") return toBoard(d, f, kind, target, a);
   // The laptop opens the box's copy whenever its own is missing or not this one (`sha`): a sync lag is never a failure.
   const sha = where === "laptop" ? createHash("sha256").update(readFileSync(f.abs)).digest("hex") : undefined;
-  return toClient(d, where, { path: f.rel, ...(vf.name ? { vault: vf.name } : {}), ...(sha ? { sha } : {}), ...(hasTarget(t) ? { target: t } : {}), ...(pane ? { pane } : {}) }, `${name}${vf.name ? ` (vault ${vf.name})` : ""}${pane ? ` in the ${pane} pane` : ""}${hasTarget(t) ? ` at ${spotLabel(t)}` : ""}`, because);
+  // The laptop has another vault open than the file's: name the file's vault, so the app opens it as its workspace
+  // first (as Show {vault} does) instead of a same-named path in the wrong vault, or an "offline" that isn't true.
+  let vname = vf.name;
+  const open = where === "laptop" && !vname ? laptopElsewhere(vf.vault) : null;
+  if (open) {
+    vname = d.vaults?.().find((v) => resolve(v.path) === resolve(vf.vault))?.name ?? null;
+    if (!vname) return fail(`The laptop has the vault ${vaultName(open)} open, and this file's vault (${vf.vault}) is not a registered vault it can switch to, so nothing was shown.`, where);
+  }
+  return toClient(d, where, { path: f.rel, ...(vname ? { vault: vname } : {}), ...(sha ? { sha } : {}), ...(hasTarget(t) ? { target: t } : {}), ...(pane ? { pane } : {}) }, `${name}${vname ? ` (vault ${vname})` : ""}${pane ? ` in the ${pane} pane` : ""}${hasTarget(t) ? ` at ${spotLabel(t)}` : ""}`, because);
 }
 
 function spotTakes(kind: FileKind): string {
@@ -314,7 +322,8 @@ async function vaultFile(vault: string, p: string): Promise<{ abs: string; rel: 
 async function toClient(d: ShowDeps, where: Device, payload: Record<string, unknown>, what: string, because: string): Promise<ShowResult> {
   if (where === "board") return fail("internal: board is not a feed client here");
   const dev = DEVICE_NAME[where];
-  if (!feedLive(d.vault, where)) {
+  // The laptop: its control link, whatever vault it has open (a file of another vault carries that vault's name).
+  if (!(feedLive(d.vault, where) || (where === "laptop" && controlLive("laptop")))) {
     const alt = where === "laptop" ? 'send it to the board instead (where: "board")?' : 'show it on the laptop or send it to the board instead?';
     return fail(`The ${dev} isn't online (the vault-chat app isn't open and connected on it), so nothing was shown${because}. Ask Carl: ${alt}`, where);
   }

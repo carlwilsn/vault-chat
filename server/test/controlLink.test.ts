@@ -5,11 +5,13 @@
 // vault) while Carl kept chatting from the same app. Control signals now ride every vault's feed and the link is
 // tracked per device; when it is down the tools say since when and why.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _resetConvLogs, convLog, globalFeed, setFeedVaults, signal } from "../convlog/log";
-import { ackShow, feedOpened, resetPresence } from "../show";
+import { ackShow, feedOpened, resetPresence, show } from "../show";
+import { _setChangeLineSink, gateOutcome, type ChangeLine } from "../changeNotices";
+import { youLayer } from "../activity";
 import { chatSeen, controlDown, linkState, linkStates, noteAnswer, resetLinks } from "../deviceLink";
 import { actTool } from "../actTool";
 import { screenTool } from "../screenTool";
@@ -78,13 +80,13 @@ describe("the control link follows the laptop across a vault switch", () => {
     }
   });
 
-  it("each control signal reaches the app once, from its own vault's feed too; Show stays the open vault's", () => {
+  it("each control signal reaches the app once, from its own vault's feed too; Show too (it names the vault when it is another)", () => {
     const before = globalFeed(B).latest();
     signal(A, { type: "plugin", id: "p1", to: "laptop", op: "list" });
     signal(A, { type: "show", id: "s1", to: "laptop", path: "notes.md" });
     signal(A, { type: "file_changed", path: "notes.md" });
     const carried = globalFeed(B).after(before).events.map((r) => (r as { signal?: Sig }).signal?.type);
-    expect(carried).toEqual(["plugin"]);
+    expect(carried).toEqual(["plugin", "show"]);
     const own = globalFeed(A).after(before).events.map((r) => (r as { signal?: Sig }).signal?.type);
     expect(own).toEqual(["plugin", "show", "file_changed"]);
   });
@@ -165,7 +167,8 @@ describe("Layout openChat", () => {
     try {
       const r = await layoutTool({ vault: A, emit: (ev) => signal(A, ev), ackMs: 3000 }, { action: "openInPane", pane: "left", path: "a.md" });
       expect(r.ok).toBe(false);
-      expect(r.text).toMatch(/another vault open \(vault-chat\)/);
+      expect(r.text).toMatch(/has the vault vault-chat open, and a\.md is not a file there/);
+      expect(r.text).toMatch(/use Show \{path, where: "laptop", pane\}: it switches the app to this chat's vault \(school2\)/);
       expect(app.seen).toEqual([]);
     } finally {
       app.close();
@@ -176,5 +179,71 @@ describe("Layout openChat", () => {
     expect(LAYOUT_DESCRIPTION).toMatch(/openChat \{id\}/);
     expect(ACT_DESCRIPTION).toMatch(/To switch chats use Layout \{action: "openChat", id\}/);
     expect(ACT_DESCRIPTION).toMatch(/a place's bar \(Main or a project\) only shows or hides its chats/);
+  });
+});
+
+// 2026-11-20: a chat in school2 made a vault plugin while the laptop showed vault-chat. Show said "the laptop isn't
+// online" (presence was the chat vault's) while Layout and LaptopBuild answered live; Layout refused every pane path;
+// the gate applied the plugin in school2 and its "Done" line never said why nothing changed on screen. The vault the
+// laptop has open is now one piece of state (server/deviceLink.ts laptopElsewhere) every one of them reads.
+describe("the vault open on the laptop is state every tool uses", () => {
+  const vaults = () => [{ name: "school2", path: A }, { name: "vault-chat", path: B }];
+  beforeAll(() => {
+    writeFileSync(join(A, "hw.md"), "# hw");
+    writeFileSync(join(B, "notes.md"), "# notes");
+  });
+
+  it("Show of this chat's file while the app has another vault open: sent (not 'offline'), naming the chat's vault so the app switches", async () => {
+    const app = laptopOn(B, (s) => (s.type === "show" ? { ok: true, vault: s.vault, landed: `opened the vault ${s.vault}; opened hw.md` } : null));
+    try {
+      const r = await show({ vault: A, vaults, emit: (ev) => void signal(A, ev), ackMs: { laptop: 3000, phone: 3000, board: 3000 } }, { path: "hw.md", where: "laptop" });
+      expect(r.text).not.toMatch(/isn't online/);
+      expect(r.ok).toBe(true);
+      expect(app.seen.map((s) => [s.type, s.vault, s.path])).toEqual([["show", "school2", "hw.md"]]);
+      expect(r.text).toBe("Shown on the laptop: opened the vault school2; opened hw.md.");
+    } finally {
+      app.close();
+    }
+  });
+
+  it("Show with the app on this chat's vault sends no vault (as before)", async () => {
+    const app = laptopOn(A, (s) => (s.type === "show" ? { ok: true, landed: "opened hw.md" } : null));
+    try {
+      const r = await show({ vault: A, vaults, emit: (ev) => void signal(A, ev), ackMs: { laptop: 3000, phone: 3000, board: 3000 } }, { path: "hw.md", where: "laptop" });
+      expect(r.ok).toBe(true);
+      expect(app.seen[0]!.vault).toBeUndefined();
+    } finally {
+      app.close();
+    }
+  });
+
+  it("Layout openInPane of a file of the open vault goes through", async () => {
+    const app = laptopOn(B, (s) => (s.type === "layout" ? { ok: true, landed: "opened", data: { results: [{ op: "openInPane", ok: true }], layout: { panes: [] } } } : null));
+    try {
+      const r = await layoutTool({ vault: A, emit: (ev) => signal(A, ev), ackMs: 3000 }, { action: "openInPane", pane: "left", path: "notes.md" });
+      expect(r.ok).toBe(true);
+      expect(app.seen.map((s) => s.type)).toEqual(["layout"]);
+    } finally {
+      app.close();
+    }
+  });
+
+  it("an applied change of this vault says where it is when the laptop has another vault open; the you layer says which is open", async () => {
+    const lines: ChangeLine[] = [];
+    _setChangeLineSink((_v, _c, l) => void lines.push(l));
+    const app = laptopOn(B, () => null);
+    try {
+      await gateOutcome(A, { plugin: ".vault-chat/plugins/wild-chat.js", version: "def43751", what: "A wilder look", asked: true, conv: "agent-chat", decision: "keep", reasons: [] });
+      expect(lines[0]).toMatchObject({ kind: "done", offer: "undo" });
+      expect(lines[0]!.text).toMatch(/^Done: A wilder look \(in the school2 vault; the laptop has vault-chat open, so it shows after he switches to school2/);
+      expect(youLayer(A).text).toMatch(/Laptop vault: vault-chat is open on the laptop, not this chat's vault \(school2\)/);
+      expect(youLayer(B).text).not.toMatch(/Laptop vault/);
+      // The core is one per box: no note.
+      await gateOutcome(A, { plugin: "app/core", version: "1", what: "core", asked: true, conv: "agent-chat", decision: "keep", reasons: [] });
+      expect(lines[1]!.text).toBe("Done: core");
+    } finally {
+      app.close();
+      _setChangeLineSink(null);
+    }
   });
 });

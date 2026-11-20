@@ -15,6 +15,7 @@ import { CORE_NAME, CORE_PART } from "../src/coreBundle";
 import { BUILT_IN, landing, type ChangeRecord } from "../src/pluginDrafts";
 import { autoUndoText, changeLineId, doneText, failedText, notYetText, offerText, plainWhat, plainWhy, UNDO_CHORD, type ChangeRef } from "../src/changeFlow";
 import { MAIN_ID } from "../src/threads";
+import { laptopElsewhere, vaultName } from "./deviceLink";
 
 export type ChangeLine = { kind: "done" | "failed" | "offer" | "auto"; plugin: string; version: string; text: string; level?: "info" | "error"; offer?: ChangeRef["offer"] };
 
@@ -69,9 +70,21 @@ export type GateOutcome = {
   reasons: string[];
 };
 
+/** A part whose copy in effect is the vault's own (an app plugin's or a vault plugin's records live in its vault's log;
+ *  the laptop runs the ones of the vault it has open). The core, the box's settings and box plugins are one per box. */
+export const perVaultPart = (plugin: string): boolean => (plugin.startsWith("app/") && plugin !== CORE_PART && plugin !== "app/settings-values") || plugin.startsWith(".vault-chat/plugins/");
+
+/** Where a change in `vault` is not on Carl's screen: the laptop has another vault open. The words after its line, or "". */
+export function elsewhereNote(vault: string, plugin: string): string {
+  if (!perVaultPart(plugin)) return "";
+  const open = laptopElsewhere(vault);
+  return open ? ` (in the ${vaultName(vault)} vault; the laptop has ${vaultName(open)} open, so it shows after he switches to ${vaultName(vault)}: Show a file of it on the laptop, or PluginAct app/vaults open)` : "";
+}
+
 /** The chat lines of a gate's end. */
 export async function gateOutcome(vault: string, o: GateOutcome): Promise<void> {
   const what = plainWhat(o.what, changeName(o.plugin));
+  const where = elsewhereNote(vault, o.plugin);
   if (o.decision === null) {
     if (o.asked) await sayChange(vault, o.conv, { kind: "failed", plugin: o.plugin, version: o.version, text: notYetText(what, plainWhy(o.reasons)), level: "error" });
     else logLine(`${o.plugin} ${o.version}: the gate could not run (${o.reasons.join("; ").slice(0, 300)}); the draft waits`);
@@ -83,11 +96,11 @@ export async function gateOutcome(vault: string, o: GateOutcome): Promise<void> 
     return;
   }
   if (o.decision === "keep") {
-    if (o.asked) await sayChange(vault, o.conv, { kind: "done", plugin: o.plugin, version: o.version, text: doneText(what), offer: "undo" });
+    if (o.asked) await sayChange(vault, o.conv, { kind: "done", plugin: o.plugin, version: o.version, text: doneText(what + where), offer: "undo" });
     else logLine(`${o.plugin} ${o.version}: applied silently (${what}); nothing on screen changes`);
     return;
   }
-  await sayChange(vault, null, { kind: "offer", plugin: o.plugin, version: o.version, text: offerText(what), offer: "try" });
+  await sayChange(vault, null, { kind: "offer", plugin: o.plugin, version: o.version, text: offerText(what + where), offer: "try" });
 }
 
 /** "<what> — Try it?" in Main for a change waiting for Carl (once). */

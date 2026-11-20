@@ -13,6 +13,7 @@
 // VC_ACTIVITY=0 turns writing off. Failure-silent (logged): nothing waits on it.
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { laptopElsewhere, vaultName } from "./deviceLink";
 import {
   ACTIVITY_DIR,
   ACTIVITY_LOG,
@@ -171,6 +172,9 @@ export function youLayer(vault: string, o: { since?: number | null; convId?: str
     // Keep the existing focus text, but make its vault-relative path unambiguous
     // even when pi is working in a different project clone. No other chat is read.
     if (layer.text) layer.text = layer.text.replace(/^Focus: .+$/m, line => `${line} — file vault: ${vault}/ (not the project cwd)`);
+    // Which vault the laptop has open, when it is not this chat's (state, from its feed: server/deviceLink.ts).
+    const open = laptopElsewhere(vault);
+    if (open) layer.text = `${layer.text ? `${layer.text}\n` : ""}Laptop vault: ${vaultName(open)} is open on the laptop, not this chat's vault (${vaultName(vault)}). Its panes, plugins and changes are that vault's; Show switches it to a file's vault.`;
     return layer;
   } catch (err) {
     console.warn(`[activity] you layer failed: ${(err as Error).message}`);

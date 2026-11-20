@@ -15,7 +15,7 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { signal, signalLog, type ConvLog } from "./convlog/log";
 import { CORE_PART_ID, GATE_RESULT, SETTINGS_PART, gateDecision, gateLineOf, gateRecordOf, partKind, type GateResult, type PartKind } from "../src/gateResult";
-import { gateOutcome } from "./changeNotices";
+import { elsewhereNote, gateOutcome } from "./changeNotices";
 import { startServiceJob, type JobEnv } from "./engine/jobs";
 import { masterDir } from "./master";
 import { killTree } from "./commands/proc";
@@ -287,6 +287,6 @@ export function submitGate(vault: string, c: { part: string; version: string; wh
   if (!r.job) return { ok: false, text: r.text };
   return {
     ok: true,
-    text: `Gating ${c.part} draft ${c.version} on a copy of real data (job ${r.job.id}; JobStatus follows it). Nothing reaches Carl until it passes. ${c.asked ? "Passed: it applies and this chat gets \"Done: …\" with Undo; failed: one plain line here says it didn't apply and why." : "A clear pass applies it silently, a clear fail drops it; if something Carl sees changes, Main gets \"… — Try it?\"."}`,
+    text: `Gating ${c.part} draft ${c.version} on a copy of real data (job ${r.job.id}; JobStatus follows it). Nothing reaches Carl until it passes. ${c.asked ? "Passed: it applies and this chat gets \"Done: …\" with Undo; failed: one plain line here says it didn't apply and why." : "A clear pass applies it silently, a clear fail drops it; if something Carl sees changes, Main gets \"… — Try it?\"."}${elsewhereNote(vault, c.part) ? ` Not on his screen yet: it is a change of this chat's vault${elsewhereNote(vault, c.part)}. Say so to Carl (or, if he wants it on screen now, Show a file of this vault on the laptop).` : ""}`,
   };
 }

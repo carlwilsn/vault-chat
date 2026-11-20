@@ -98,6 +98,22 @@ export function linkVault(client: LinkClient): string | null {
   return links.get(client)?.vault ?? null;
 }
 
+/** A vault's folder name (how Carl and the vault picker name it). */
+export const vaultName = (v: string): string => v.split(/[\\/]/).filter(Boolean).pop() ?? v;
+
+/**
+ * The laptop app has another vault open than `vault` (the one a chat, a file or a change belongs to): that open vault,
+ * else null (the same vault, or not known). The one answer every tool uses: Show switches the app there, Layout and
+ * PluginRead/Act act on the open one, a change applied in `vault` is not on screen until Carl switches, and the "you"
+ * layer says it. The truth is the app's newest feed poll (each names the vault it follows).
+ */
+export function laptopElsewhere(vault: string): string | null {
+  const v = linkVault("laptop");
+  if (!v) return null;
+  const norm = (x: string) => x.replace(/[\\/]+$/, "").toLowerCase();
+  return norm(v) === norm(vault) ? null : v;
+}
+
 const iso = (t: number) => new Date(t).toISOString().replace(/\.\d{3}Z$/, "Z");
 const ago = (ms: number) => (ms < 90_000 ? `${Math.max(0, Math.round(ms / 1000))} s` : ms < 90 * 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 3_600_000)} h`);
 
