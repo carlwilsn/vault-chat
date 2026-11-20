@@ -772,10 +772,10 @@ jobs:
           [ "$STATUS_V" = "$VB" ] || { note "FAIL (the running app reported ${STATUS_V:-nothing}, not $VB)"; ok=0; }
           [ -z "$lost" ] || { note "FAIL (app data lost: $lost)"; ok=0; }
           if [ -s "$U/result.json" ]; then
-            bad=$(jq -r '[.steps[] | select((.ok | not) and (.action | test("^keychain") | not))][0] | select(.) | "\(.i) \(.action): \(.error // "")"' "$U/result.json")
-            [ -z "$bad" ] && [ "$(jq '[.steps[] | select(.action | test("^keychain") | not)] | length' "$U/result.json")" -ge 6 ] \
+            bad=$(jq -r '[.steps[] | select((.ok | not) and (.action | test("keychain") | not))][0] | select(.) | "\(.i) \(.action): \(.error // "")"' "$U/result.json")
+            [ -z "$bad" ] && [ "$(jq '[.steps[] | select(.action | test("keychain") | not)] | length' "$U/result.json")" -ge 6 ] \
               || { note "FAIL (B: ${bad:-it stopped early})"; ok=0; }
-            kc=$(jq -r '[.steps[] | select(.action | test("^keychain"))] | map("\(.action | sub("^keychain: "; "")): \(if .ok then "yes" else "NO (\(.error // "" | .[0:120]))" end)") | join("; ")' "$U/result.json")
+            kc=$(jq -r '[.steps[] | select(.action | test("keychain"))] | map("\(.action | sub("^.*keychain: "; "")): \(if .ok then "yes" else "NO (\(.error // "" | .[0:120]))" end)") | join("; ")' "$U/result.json")
             note "keychain after the update: ${kc:-not reached}"
           else
             note "FAIL (B wrote no result: it did not relaunch or did not finish)"; ok=0
