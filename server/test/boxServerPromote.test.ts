@@ -10,7 +10,7 @@ import { createServer, type Server } from "node:http";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmp, cleanup, ROOT } from "./helpers";
-import { recordServerSwitches, type ServerSwitch } from "../serverSwitches";
+import { describeSwitchBack, failedPromotions, recordServerSwitches, startServerSwitches, type ServerSwitch } from "../serverSwitches";
 
 const UPDATE = join(ROOT, "server", "deploy", "vault-chat-update.sh");
 const dirs: string[] = [];
@@ -27,13 +27,13 @@ const git = (repo: string, ...args: string[]) => {
 };
 
 /** A fake gate run for <rev>: its checkout's dist-server (a bundle that answers build-info), assets, deploy files. */
-function gateRun(runs: string, run: string, rev: string, broken = false): void {
+function gateRun(runs: string, run: string, rev: string, broken: boolean | "readiness" = false): void {
   const d = join(runs, run, rev);
   mkdirSync(join(d, "dist-server"), { recursive: true });
   mkdirSync(join(d, "src-tauri", "assets"), { recursive: true });
   mkdirSync(join(d, "server", "deploy"), { recursive: true });
   writeFileSync(join(d, "dist-server", "vault-chat-server.mjs"),
-    `${broken ? "// CRASH: this server never comes up\n" : ""}if (process.argv[2] === "build-info") console.log(JSON.stringify({ version: "0.7.25", rev: "${rev}" }));\n`);
+    `${broken === "readiness" ? "// READYFAIL: up, but a readiness check fails\n" : broken ? "// CRASH: this server never comes up\n" : ""}if (process.argv[2] === "build-info") console.log(JSON.stringify({ version: "0.7.25", rev: "${rev}" }));\n`);
   writeFileSync(join(d, "dist-server", "server-version.json"), JSON.stringify({ version: "0.7.25", rev }));
   writeFileSync(join(d, "src-tauri", "assets", "phone.html"), `<html>${rev}</html>`);
   writeFileSync(join(d, "server", "deploy", "vault-chat-update.sh"), `#!/usr/bin/env bash\n# updater of ${rev}\nexit 0\n`);
@@ -74,7 +74,10 @@ describe("box server from the box", () => {
       if (req.url === "/api/v1/health") {
         if (readFileSync(join(at, "vault-chat-server.mjs"), "utf8").includes("CRASH")) { res.writeHead(503); return res.end(); }
         const m = JSON.parse(readFileSync(join(at, "server-version.json"), "utf8"));
-        return res.end(JSON.stringify({ ok: true, app: "vault-chat-server", version: m.version, rev: m.rev, releaseReadiness: { status: "healthy" }, busy: { runs: 0, workers: 0, inputs: 0 } }));
+        const readiness = readFileSync(join(at, "vault-chat-server.mjs"), "utf8").includes("READYFAIL")
+          ? { status: "failed", reason: "Actual release readiness failed: Voice: Required voice listener has no unique bot child owned by this server" }
+          : { status: "healthy" };
+        return res.end(JSON.stringify({ ok: true, app: "vault-chat-server", version: m.version, rev: m.rev, releaseReadiness: readiness, busy: { runs: 0, workers: 0, inputs: 0 } }));
       }
       const base = `http://127.0.0.1:${(server!.address() as { port: number }).port}`;
       if (req.url === "/release") return res.end(JSON.stringify({ tag_name: "v0.9.64", draft: false, assets: [{ name: "server-version.json", browser_download_url: `${base}/dl/server-version.json` }] }));
@@ -155,5 +158,23 @@ describe("box server from the box", () => {
     expect(readlinkSync(join(state, "current"))).toBe(`versions/${c1}`);
     expect(existsSync(join(state, "versions", "0.9.64"))).toBe(false);
     expect(record()).toBe(0);
+
+    // 5. C3 comes up but a readiness check fails (2026-11-20: the voice child's folder): switched back, and the
+    //    server's reason (which check) is in the mark and the switch-back record, not only "failed".
+    git(repo, "commit", "-q", "--allow-empty", "-m", "C3");
+    const c3 = git(repo, "rev-parse", "HEAD");
+    gateRun(runs, "ship-c", c3, "readiness");
+    r = await pass();
+    expect(r.code, r.out).toBe(1);
+    expect(readlinkSync(join(state, "current"))).toBe(`versions/${c1}`);
+    expect(readFileSync(join(state, "failed", c3), "utf8")).toContain("no unique bot child");
+    // Never silent: the server that owns the log hands each switch back to its notice (Carl's alerts) ...
+    const notices: string[] = [];
+    startServerSwitches(state, join(root, "no-vault"), (ev) => notices.push(describeSwitchBack(ev)));
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain(`box build ${c3.slice(0, 12)} failed to take over`);
+    expect(notices[0]).toContain("no unique bot child");
+    // ... and LaptopBuild lists the promotions that failed since C1 last took over (C2 and C3).
+    expect(failedPromotions(state, c1).map((ev) => ev.from?.rev)).toEqual([c2, c3]);
   }, 60_000);
 });

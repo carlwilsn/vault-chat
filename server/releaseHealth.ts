@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 /** Contract for release verification adapters. Box HTTP reachability is NOT laptop/Tauri health.
  * Offline laptops stay pending, not healthy and not a reason to revert every release. Explicit fresh negative
  * reports do fail. No timers, second deployment state machine or network listener lives in this policy.
@@ -82,8 +82,11 @@ export async function observeReleaseVoiceHealth(o: {
   try {
     const children = readFileSync(`/proc/${process.pid}/task/${process.pid}/children`, "utf8").trim().split(/\s+/).filter(Boolean);
     const directory = realpathSync(join(o.stateDir, "voice"));
+    // The pipeline runs a version from <state>/voice/versions/<v>/ (server/voicePipeline.ts launch); older servers ran it
+    // from <state>/voice itself. Either is this box's own voice folder.
+    const ours = (cwd: string) => cwd === directory || (dirname(dirname(cwd)) === directory && basename(dirname(cwd)) === "versions");
     const bots = children.filter(pid => {
-      try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").includes("bot.py") && realpathSync(`/proc/${pid}/cwd`) === directory; } catch { return false; }
+      try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").includes("bot.py") && ours(realpathSync(`/proc/${pid}/cwd`)); } catch { return false; }
     });
     if (bots.length !== 1) return { ...base, state: "failed", error: "Required voice listener has no unique bot child owned by this server" };
     const childStart = readFileSync(`/proc/${bots[0]}/stat`, "utf8").split(") ")[1]!.split(" ")[19];

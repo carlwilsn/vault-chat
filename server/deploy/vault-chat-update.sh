@@ -295,10 +295,10 @@ sha_ok() {  # sha_ok <file> <file.sha256>
 wait_for_version() {  # <version> <seconds> [revision] [legacy-fallback] [restart]
   # One monotonic budget includes submitting the restart and consuming every HTTP body.
   # Inline so the existing deploy tar/install closure always carries the executing check.
-  node - "$1" "$2" "${3:-}" "${4:-}" "${5:-}" "$SERVER_URL" "$HEALTH_POLL_S" "$UNIT" <<'NODE' &
+  node - "$1" "$2" "${3:-}" "${4:-}" "${5:-}" "$SERVER_URL" "$HEALTH_POLL_S" "$UNIT" "${READY_WHY_FILE:-}" <<'NODE' &
 const { execFile } = require("node:child_process");
 const { performance } = require("node:perf_hooks");
-const [want, seconds, revision, legacy, restart, url, poll, unit] = process.argv.slice(2);
+const [want, seconds, revision, legacy, restart, url, poll, unit, whyFile] = process.argv.slice(2);
 const budget = Number(seconds) * 1000, interval = Number(poll) * 1000;
 if (!Number.isFinite(budget) || budget <= 0 || !Number.isFinite(interval) || interval < 0) process.exit(1);
 const deadline = performance.now() + budget;
@@ -343,7 +343,12 @@ function run(file, args, limit) {
             typeof h.version === "string" && h.version.replace(/^v/, "") === want &&
             (!revision || h.rev === revision)) {
           const status = h.releaseReadiness?.status;
-          if (status === "failed") return 1;
+          if (status === "failed") {
+            // Only the server's fixed reason line (which check failed), never the rest of the document.
+            const why = String(h.releaseReadiness?.reason ?? "").replace(/[^ -~]/g, " ").slice(0, 200);
+            if (whyFile && why) { try { require("node:fs").writeFileSync(whyFile, why); } catch {} }
+            return 1;
+          }
           if (status === "healthy") return 0;
           if (legacy === "legacy-fallback" && status === undefined) return 0;
           pending = status === "pending";
@@ -623,6 +628,8 @@ node -e 'const fs=require("fs"); const f=process.argv[1];const fd=fs.openSync(f,
 point_current "versions/$slot"
 
 # ── 5. prove it, or roll back ───────────────────────────────────────────────
+# The server's reason when it reports failed readiness (which check), for the mark and the switch-back record.
+READY_WHY_FILE="$tmp/ready-why"; rm -f "$READY_WHY_FILE"
 status=0
 if front_on; then
   from="$(active_slot)"
@@ -651,7 +658,9 @@ elif [ "$status" = 2 ]; then
   refresh_self "versions/$slot/deploy"
   ensure_front || true
 else
-  fallback_failed_release "failed actual release readiness after install"
+  why="failed actual release readiness after install"
+  [ -s "$READY_WHY_FILE" ] && why="$why ($(head -c 200 "$READY_WHY_FILE"))"
+  fallback_failed_release "$why"
   exit 1
 fi
 

@@ -10,6 +10,7 @@
 //           "laptop now on build X" and runs its checks then, instead of polling. One-shot; expires.
 //   get     LaptopBuild asks the laptop live (a "build" signal on Show's channel, acked with the same record) and
 //           puts it next to the last report and the box's own server build. Offline / no answer are said as such.
+import { describeSwitchBack, failedPromotions } from "./serverSwitches";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -266,6 +267,9 @@ export async function laptopBuildTool(d: LaptopBuildDeps, args: Record<string, u
   if (last) lines.push(`Last reported at launch, ${ago(last.at, now)} (${last.at}):`, ...describe(last).map((l) => `- ${l}`));
   else lines.push("No launch report from the laptop yet (an app from before build reports, or it has not started since).");
   lines.push(`Box server: v${d.server.version}${d.server.rev ? ` (${short(d.server.rev)})` : ""}.`);
+  // Promotions that failed and left this build serving (the updater switched back): newer accepted builds are not live.
+  const failed = d.server.rev ? failedPromotions(d.stateDir, d.server.rev) : [];
+  if (failed.length) lines.push(`NEEDS ATTENTION: ${failed.length} newer box server build(s) failed to take over, so the box still runs this one:`, ...failed.slice(-5).map((ev) => `- ${ago(new Date(ev.at).toISOString(), now)}: ${describeSwitchBack(ev)}`));
   const cc = d.coreChange?.();
   if (cc) lines.push(`Last app/core change record: ${cc.change} ${cc.version} by ${cc.by}, ${ago(new Date(cc.at).toISOString(), now)}${cc.reason ? ` (${cc.reason.slice(0, 160)})` : ""}.`);
   const watches = readWatches(d.stateDir).filter((w) => w.conv === d.conv && w.expires > now);

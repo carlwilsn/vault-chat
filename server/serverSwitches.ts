@@ -72,11 +72,17 @@ function recordSwitches(file: string, type: ServerSwitch["type"], emit: (ev: Ser
 let timer: ReturnType<typeof setInterval> | null = null;
 /** At boot, on the server that owns the log: now, then every minute (the updater notes a handover after the new
  *  server is healthy). */
-export function startServerSwitches(stateDir: string, vault: string): void {
+export function startServerSwitches(stateDir: string, vault: string, onSwitchBack?: (ev: ServerSwitch) => void): void {
   const look = () => {
     try {
       const emit = (ev: ServerSwitch) => !!signal(vault, ev as unknown as Record<string, unknown>);
-      const n = recordServerSwitches(stateDir, emit);
+      // A switch back is a promotion that failed: never only a log line (2026-11-20: four box builds were switched
+      // back over three hours and nobody was told). onSwitchBack puts it in Carl's alerts.
+      const n = recordServerSwitches(stateDir, (ev) => {
+        if (!emit(ev)) return false;
+        if (ev.change === "switch") try { onSwitchBack?.(ev); } catch (e) { console.error(`[update] switch-back notice: ${(e as Error).message}`); }
+        return true;
+      });
       if (n) console.log(`[update] recorded ${n} server handover(s) in the log`);
       const v = recordVoiceSwitches(stateDir, emit);
       if (v) console.log(`[voice] recorded ${v} voice pipeline switch(es) in the log`);
@@ -88,4 +94,29 @@ export function startServerSwitches(stateDir: string, vault: string): void {
   timer = setInterval(look, 60_000);
   timer.unref?.();
   look();
+}
+
+/** A failed promotion in one line, for alerts and LaptopBuild. */
+export function describeSwitchBack(ev: ServerSwitch): string {
+  const name = (x: Side) => (x ? (x.rev ? x.rev.slice(0, 12) : `v${x.version ?? x.slot}`) : "unknown");
+  return `box build ${name(ev.from)} failed to take over (${ev.reason ?? "no reason recorded"}); the box went back to ${name(ev.to)}`;
+}
+
+/** The switch backs to the build now running since it last took over (newest last): promotions that failed and left
+ *  it serving. Empty once a newer build takes over. */
+export function failedPromotions(stateDir: string, rev: string): ServerSwitch[] {
+  let lines: string[];
+  try {
+    lines = readFileSync(join(stateDir, "server-switches.jsonl"), "utf8").split("\n");
+  } catch {
+    return [];
+  }
+  const out: ServerSwitch[] = [];
+  for (const l of lines) {
+    const ev = parseSwitch(l);
+    if (!ev) continue;
+    if (ev.change === "keep") out.length = 0;
+    else if (ev.to?.rev === rev) out.push(ev);
+  }
+  return out;
 }

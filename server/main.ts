@@ -128,7 +128,24 @@ async function main(): Promise<void> {
     });
   }
   // The box server's own handovers (server/deploy/vault-chat-update.sh notes each one): box.server.switch records.
-  (await import("./serverSwitches")).startServerSwitches(cfg.stateDir, cfg.vault);
+  // A switch back (a new build failed readiness and the box went back) is a failed promotion: it goes to Carl's in-app
+  // alerts at once and, once the push gate is up, through the self-updater's needs-you alert, never only a log line.
+  const switchBacks: string[] = [];
+  let switchBackAlert: ((line: string) => void) | null = null;
+  {
+    const sw = await import("./serverSwitches");
+    const { notificationAppend } = await import("./commands/phone");
+    sw.startServerSwitches(cfg.stateDir, cfg.vault, (ev) => {
+      const line = sw.describeSwitchBack(ev);
+      console.warn(`[update] needs you: ${line}`);
+      try {
+        notificationAppend(cfg.vault, JSON.stringify({ id: Math.random().toString(36).slice(2, 10) + Date.now().toString(36), ts: Date.now(), kind: "info", title: "Needs you: a box server update failed", body: line }));
+        signal(cfg.vault, { type: "notif" });
+      } catch { /* the push below still goes */ }
+      if (switchBackAlert) switchBackAlert(line);
+      else switchBacks.push(line);
+    });
+  }
   // The Mac friend channel (server/macFriend.ts): every few hours the box looks whether a release passed every Mac check
   // and soaked 24 h on Carl's laptop with no new app errors, and at most every 7 days points the friend's manifest at it
   // (a pushed tag that .github/workflows/mac-promote.yml turns into latest-mac.json). Box only (Linux + the repo).
@@ -269,6 +286,9 @@ async function main(): Promise<void> {
     }
   };
 
+  switchBackAlert = (line) => void alert("Needs you: a box server update failed", line, "vault-chat-update");
+  for (const line of switchBacks.splice(0)) switchBackAlert(line);
+
   const { startHttpServer, endLongPolls } = await import("./http");
   const { drainServer, SHUTDOWN_GRACE_MS } = await import("./drain");
   const { recentInput } = await import("./presence");
@@ -312,7 +332,10 @@ async function main(): Promise<void> {
         const delivery = await currentDeliveryHealth(SERVER_VERSION, SERVER_REV);
         const failed = !!b.error || b.voice?.state === "failed" || delivery.failed;
         const ready = b.ready && (!b.voice?.required || (b.voice.state === "ready" && b.voice.owned));
-        return { status: failed ? "failed" : ready ? "healthy" : "pending", reason: failed ? "Actual release readiness failed" : ready ? "Box ready; laptop verification tracked separately" : "Waiting for actual engine/voice readiness" };
+        // The reason names which check failed (fixed messages, no private data): the updater copies it into its
+        // switch-back record, which reaches Carl's alerts and LaptopBuild (server/serverSwitches.ts).
+        const why = b.error ?? (b.voice?.state === "failed" ? `Voice: ${b.voice.error ?? "failed"}` : delivery.failed ? "This release is recorded as failed in the shipping journal" : "");
+        return { status: failed ? "failed" : ready ? "healthy" : "pending", reason: failed ? `Actual release readiness failed: ${why}`.slice(0, 200) : ready ? "Box ready; laptop verification tracked separately" : "Waiting for actual engine/voice readiness" };
       })(),
       vault: cfg.vaultName,
       git: gitState,

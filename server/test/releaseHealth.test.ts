@@ -58,3 +58,37 @@ describe("B's instance-owned voice health extension", () => {
     expect(evaluateReleaseHealth({ ...opts, box: { ...box, voice } })).toMatchObject({ status: "failed", reason: voice.error });
   });
 });
+
+describe("voice readiness owns the pipeline run from a version folder", () => {
+  // 2026-11-20: the pipeline moved to <state>/voice/versions/<v>/ (95d79d51) while this check still required the
+  // child's cwd to be <state>/voice itself, so every new box build failed readiness and was switched back.
+  it.skipIf(process.platform !== "linux")("finds a bot.py child under voice/versions/<v> as this server's own", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { spawn } = await import("node:child_process");
+    const { createServer } = await import("node:net");
+    const { observeReleaseVoiceHealth } = await import("../releaseHealth");
+    const port = await new Promise<number>((resolve) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = (s.address() as { port: number }).port; s.close(() => resolve(p)); }); });
+    const state = mkdtempSync(join(tmpdir(), "vc-voice-health-"));
+    const vdir = join(state, "voice", "versions", "abcd1234");
+    mkdirSync(vdir, { recursive: true });
+    writeFileSync(join(vdir, "bot.py"), [
+      "import http.server, json, sys",
+      "class H(http.server.BaseHTTPRequestHandler):",
+      "    def do_GET(self):",
+      "        b = json.dumps({'ok': True, 'brain': 'pi', 'stt': 'auto', 'tts': 'auto'}).encode()",
+      "        self.send_response(200); self.send_header('content-type', 'application/json'); self.end_headers(); self.wfile.write(b)",
+      "    def log_message(self, *a): pass",
+      `s = http.server.HTTPServer(('127.0.0.1', ${port}), H)`,
+      "print('[voice ready]', flush=True)",
+      "s.serve_forever()",
+    ].join("\n"));
+    const child = spawn("python3", ["bot.py"], { cwd: vdir, stdio: ["ignore", "pipe", "inherit"] });
+    try {
+      await new Promise<void>((resolve, reject) => { child.stdout!.on("data", (b) => String(b).includes("[voice ready]") && resolve()); child.once("exit", () => reject(new Error("bot exited"))); });
+      const h = await observeReleaseVoiceHealth({ required: true, stateDir: state, port, startupDeadline: Date.now() + 60_000, pipeline: { running: true, settingUp: false, error: null } });
+      expect(h).toMatchObject({ state: "ready", owned: true });
+    } finally { child.kill("SIGKILL"); }
+  }, 20_000);
+});
