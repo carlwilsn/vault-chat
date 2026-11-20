@@ -174,9 +174,11 @@ test("Discard while trying: the windows fall back, the box writes only the recor
   await waitFor("the line", () => lineStateOf(notice) === "offered" && !!lastLine("change-try"));
   await clickLast("change-try");
   await waitFor("tried: the sidebar closes here", () => S().chatSidebarOpen === false);
+  assert.equal(document.documentElement.getAttribute("data-vc-settings-try"), CR.triedVersion(SETTINGS_DRAFT_ID), "the page says which draft it shows (the gate's Drive run waits for it)");
   const seq = readSettings().seq;
   await clickLast("change-undo");
   await waitFor("discarded", () => S().chatSidebarOpen === true && changes().at(-1)?.change === "discard");
+  assert.equal(document.documentElement.getAttribute("data-vc-settings-try"), null);
   assert.equal(readSettings().seq, seq, "no setting written");
   await waitFor("the line says undone", () => lineStateOf(notice) === "undone");
   CR.clearOutcome();

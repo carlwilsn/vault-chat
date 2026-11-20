@@ -200,7 +200,15 @@ export function changesOf(plugin: string): readonly ChangeRecord[] {
 /** This window shows the settings draft Carl tries (its window settings over the records), or the records again. */
 function syncSettingsTry(): void {
   const d = pendingSettingsDraft(settingsDraftsNow());
-  setSettingsTry(d && followTries()[SETTINGS_DRAFT_ID] === d.version ? windowValues(d.values) : null);
+  const on = !!d && followTries()[SETTINGS_DRAFT_ID] === d.version;
+  setSettingsTry(on ? windowValues(d!.values) : null);
+  // The page says which settings draft it shows (the gate's Drive run waits for it: server/gate.ts renderSettings).
+  try {
+    if (on) globalThis.document?.documentElement.setAttribute("data-vc-settings-try", d!.version);
+    else globalThis.document?.documentElement.removeAttribute("data-vc-settings-try");
+  } catch {
+    /* no DOM */
+  }
 }
 
 // ---------------------------------------------------------------- the vault plugins' slots (VaultPluginHost writes them)

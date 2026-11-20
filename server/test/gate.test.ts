@@ -163,6 +163,21 @@ describe("the one gate", () => {
     // Offered again (another window): judged once.
     expect((await post("/api/v2/changes/offer", { plugin: "app/settings-values", version: gv })).status).toBe(200);
     expect((await get(`/api/v2/gate?part=app/settings-values&version=${gv}`)).results).toHaveLength(1);
+    // A window setting is rendered in the real app's Drive copy first (when the laptop can): errors there drop it.
+    const { _setSettingsRender } = await import("../gate");
+    _setSettingsRender(async () => ({ fail: "errors only with the draft shown in the real app: TypeError: theme" }));
+    const dark = draftSettings({ chatSidebar: false }, "no sidebar", "agent");
+    const dv = (dark as { version: string }).version;
+    const refused = await post("/api/v2/changes/offer", { plugin: "app/settings-values", version: dv });
+    expect(refused.status).toBe(409);
+    expect(refused.json.error).toMatch(/TypeError: theme/);
+    expect((await get(`/api/v2/gate?part=app/settings-values&version=${dv}`)).results[0]).toMatchObject({ verdict: "fail", decision: "discard", runner: "settings+ui-drive" });
+    _setSettingsRender(async () => ({ ok: "rendered in the real app with no new errors" }));
+    const side = draftSettings({ chatSidebar: false }, "no sidebar", "agent");
+    const sv = (side as { version: string }).version;
+    expect((await post("/api/v2/changes/offer", { plugin: "app/settings-values", version: sv })).status).toBe(200);
+    expect((await get(`/api/v2/gate?part=app/settings-values&version=${sv}`)).results[0]).toMatchObject({ verdict: "borderline", decision: "stage", runner: "settings+ui-drive", reasons: expect.arrayContaining(["rendered in the real app with no new errors"]) });
+    _setSettingsRender(null);
     // The Plugins tool's submit runs the same gate at once.
     const { pluginToolAsync } = await import("../supervisorTools");
     expect(await pluginToolAsync(A.path, { action: "submit", plugin: "settings-values" })).toMatchObject({ ok: true, text: expect.stringMatching(/passed the gate and waits for Carl/) });

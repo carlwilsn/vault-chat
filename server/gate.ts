@@ -70,13 +70,45 @@ export function gateResults(vault: string, part?: string | null, version?: strin
 
 type Judged = { version: string; what: string; verdict: "pass" | "borderline" | "fail"; reasons: string[]; runner: string; data: string };
 
+type Render = (vault: string, version: string) => Promise<{ ok: string } | { fail: string } | { skip: string }>;
+
+/**
+ * A settings draft rendered in the real laptop app's hidden, read-only Drive copy (src/driveOnLaptop.ts) before Carl
+ * sees it: the copy as it is, then a fresh copy showing the draft (tries {app/settings-values: version}; the page says
+ * so: html[data-vc-settings-try]). Errors only with the draft fail it; a laptop that is away, busy, or whose app does not
+ * show the draft yet is a skip (its values were checked; Carl's Try still shows it on his windows only).
+ */
+const driveRender: Render = async (vault, version) => {
+  const live = (await gateDriveRoute(vault, { steps: [{ wait: 2000 }], timeoutMs: 60_000 })).body as { unavailable?: string; steps?: { errors: string[] } | null; error?: string | null };
+  if (live.unavailable || !live.steps) return { skip: live.unavailable ?? live.error ?? "no result" };
+  const draft = (await gateDriveRoute(vault, { steps: [{ waitFor: `html[data-vc-settings-try="${version}"]`, timeout: 20_000 }, { wait: 2000 }], tries: { [SETTINGS_PART]: version }, timeoutMs: 60_000 })).body as { unavailable?: string; tries?: Record<string, string> | null; steps?: { steps: { ok: boolean; error?: string }[]; errors: string[] } | null; error?: string | null };
+  if (draft.unavailable) return { skip: draft.unavailable };
+  if (draft.tries?.[SETTINGS_PART] !== version || !draft.steps?.steps[0]?.ok) return { skip: draft.tries?.[SETTINGS_PART] !== version ? "the laptop's app does not run a gate's tries yet" : `the draft never showed there (${draft.steps?.steps[0]?.error ?? draft.error ?? "no result"})` };
+  const seen = new Set(live.steps.errors);
+  const fresh = draft.steps.errors.filter((e) => !seen.has(e));
+  return fresh.length ? { fail: `errors only with the draft shown in the real app: ${fresh.slice(0, 3).join(" | ").slice(0, 400)}` } : { ok: "rendered in the real app with no new errors" };
+};
+let renderSettings: Render = driveRender;
+/** Tests: how a settings draft is rendered (null: in the Drive copy). */
+export function _setSettingsRender(fn: Render | null): void {
+  renderSettings = fn ?? driveRender;
+}
+
 /** The in-box runners: the settings draft (server/settings.ts settingsDraftGate) and a migration draft (its dry run on
  *  a copy of the plugin's real state, server/migrations.ts tryMigration: a throw, a timeout or a non-object fails it). */
 async function judgeInBox(vault: string, part: string, version: string | null): Promise<Judged | { error: string }> {
   const kind = partKind(part);
   if (kind === "settings") {
     const j = settingsDraftGate(version);
-    return "error" in j ? j : { ...j, runner: "settings", data: "the box's settings now" };
+    if ("error" in j) return j;
+    // A draft Carl would see (a window setting): rendered in the real app's Drive copy first, when the laptop can.
+    if (j.verdict === "borderline") {
+      const r = await renderSettings(vault, j.version).catch((e) => ({ skip: String((e as Error)?.message ?? e) }));
+      if ("fail" in r) return { ...j, verdict: "fail", reasons: [r.fail], runner: "settings+ui-drive", data: "Carl's real data in the laptop app's hidden Drive copy" };
+      if ("ok" in r) return { ...j, reasons: [...j.reasons, r.ok], runner: "settings+ui-drive", data: "Carl's real data in the laptop app's hidden Drive copy" };
+      return { ...j, reasons: [...j.reasons, `not rendered in the real app (${r.skip})`], runner: "settings", data: "the box's settings now" };
+    }
+    return { ...j, runner: "settings", data: "the box's settings now" };
   }
   if (kind === "migration") {
     const d = migrationDraft(vault, part);
