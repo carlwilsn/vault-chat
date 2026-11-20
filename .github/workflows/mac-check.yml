@@ -723,6 +723,9 @@ jobs:
           jq -n --arg v "$VB" --arg sig "$(cat "$U/serve/$TGZ.sig")" --arg url "http://127.0.0.1:$PORT/$TGZ" \
             '{version: $v, notes: "Lab update A -> B (mac-check)", pub_date: (now | todate), platforms: {"darwin-aarch64": {signature: $sig, url: $url}, "darwin-x86_64": {signature: $sig, url: $url}}}' > "$U/serve/update-lab.json"
           ( cd "$U/serve" && exec python3 -m http.server "$PORT" --bind 127.0.0.1 ) > "$U/http.log" 2>&1 & HTTP=$!
+          # The sign-in self-tests above left their token in this user's Keychain under the tested build's identity:
+          # A starts from none, as a first install does.
+          security delete-generic-password -s com.vault-chat.app -a service.claude-code > "$U/keychain-before.txt" 2>&1
           H="$RUNNER_TEMP/update-home"; VAULT="$RUNNER_TEMP/Update Vault"
           rm -rf "$H" "$VAULT"; mkdir -p "$H/.local/bin" "$VAULT"; cp test/selftest/fake-claude "$H/.local/bin/claude"
           jq --arg v "$VAULT" '{vault: $v} + .' test/selftest/update-a.json > "$U/steps.json"
