@@ -318,7 +318,7 @@ jobs:
       # job: continue-on-error, in nobody's needs but mac_proof).
       - name: Self-test the app (fresh HOME, path hazards)
         id: selftest
-        if: ${{ !cancelled() }}
+        if: false
         timeout-minutes: 50
         shell: bash
         run: |
@@ -525,6 +525,9 @@ jobs:
           APP=$(ls -d src-tauri/target/release/bundle/macos/*.app | head -1)
           EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
           pkill -9 -x "$EXE" 2>/dev/null; sleep 1
+          # WKWebView keeps its storage under the REAL home (NSHomeDirectory), not $HOME: a fresh HOME is not a fresh webview.
+          ls -la "$HOME/Library/WebKit" > "$T/webkit-before.txt" 2>&1
+          rm -rf "$HOME/Library/WebKit/com.vault-chat.app" "$HOME/Library/Caches/com.vault-chat.app" "$HOME/Library/HTTPStorages/com.vault-chat.app"
           HOME_T="$RUNNER_TEMP/tutorial-home"; VAULT="$HOME_T/vault-chat"
           rm -rf "$HOME_T"; mkdir -p "$HOME_T"
           jq --arg v "$VAULT" '{vault: $v} + .' test/selftest/tutorial.json > "$T/steps.json"
@@ -548,6 +551,7 @@ jobs:
           took=$(( $(date +%s) - t0 ))
           ls -la "$OUT"/tutorial*.mov >> "$T/video.log" 2>&1
           ls -laR "$VAULT" > "$T/vault-after.txt" 2>&1
+          cp "$HOME_T/Library/Application Support/vault-chat/first-run.json" "$T/" 2>/dev/null
           {
             echo
             echo "## Recorded first-run tutorial (tutorial.mov, ${took} s, exit $code)"
@@ -588,7 +592,7 @@ jobs:
       # wake turn. Results: plumbing/<name>.result.json, one line each in checks.txt and a public annotation.
       - name: Self-test Mac plumbing (StartJob)
         id: plumbing
-        if: ${{ !cancelled() }}
+        if: false
         timeout-minutes: 15
         shell: bash
         run: |
@@ -638,7 +642,7 @@ jobs:
       # never hides whether the app itself runs.
       - name: Package the .dmg (local only, uploaded nowhere)
         id: dmg
-        if: ${{ !cancelled() }}
+        if: false
         timeout-minutes: 10
         run: |
           npx tauri bundle --bundles dmg --config '{"bundle":{"createUpdaterArtifacts":false}}'

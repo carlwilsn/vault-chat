@@ -248,6 +248,7 @@ export function PdfView({
     let stopSync: (() => void) | null = null;
 
     const renderPage = async (idx: number) => {
+      console.error("[pdfdbg] renderPage", idx, cancelled, !!pageStates[idx], !!wrappers[idx], pageStates[idx]?.rendered, !!pageStates[idx]?.renderTask);
       if (cancelled) return;
       const state = pageStates[idx];
       const wrap = wrappers[idx];
@@ -283,7 +284,9 @@ export function PdfView({
       state.renderTask = task;
       try {
         await task.promise;
-      } catch {
+        console.error("[pdfdbg] rendered", idx, work.width, work.height);
+      } catch (e) {
+        console.error("[pdfdbg] render threw", idx, String(e));
         // RenderingCancelledException — page was torn down mid-render.
         state.renderTask = null;
         work.width = work.height = 0;
@@ -295,6 +298,7 @@ export function PdfView({
         return;
       }
       const canvas = await showStatic(work);
+      console.error("[pdfdbg] showStatic", idx, canvas === work ? "work" : "shown", canvas.width, cancelled, state.renderTask === task);
       if (cancelled || state.renderTask !== task) {
         state.renderTask = state.renderTask === task ? null : state.renderTask;
         return;
@@ -305,6 +309,7 @@ export function PdfView({
       canvas.className = "pdf-page shadow-md rounded";
       canvas.dataset.page = String(idx + 1);
       wrap.appendChild(canvas);
+      console.error("[pdfdbg] appended", idx);
 
       const textLayerDiv = document.createElement("div");
       textLayerDiv.className = "pdf-text-layer";
@@ -389,6 +394,7 @@ export function PdfView({
           return;
         }
         setPages(doc!.numPages);
+        console.error("[pdfdbg] doc pages", doc!.numPages, host.clientWidth);
 
         const containerWidth = host.clientWidth - 32;
 
@@ -484,6 +490,7 @@ export function PdfView({
         const RENDER_MARGIN = 1200;
         const KEEP_MARGIN = 5000;
         const syncWindow = () => {
+          console.error("[pdfdbg] sync", wrappers.length, JSON.stringify(scroller.getBoundingClientRect()), wrappers[0] ? JSON.stringify(wrappers[0].getBoundingClientRect()) : "-");
           syncRaf = 0;
           if (cancelled || !wrappers.length) return;
           const sr = scroller.getBoundingClientRect();
