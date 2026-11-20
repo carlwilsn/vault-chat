@@ -59,11 +59,25 @@ async function publishedSha(name) {
   return line.trim().split(/\s+/)[0];
 }
 
+// Windows' own bsdtar (System32, every image since Windows 10 1803) reads a
+// zip and needs no PowerShell module; Expand-Archive stays as the fallback.
+// Named by full path: on CI runners a bare `tar` is Git's GNU tar, which
+// can't read a zip and takes "C:" for a remote host.
+function expandZipWindows(archivePath, into) {
+  const bsdtar = resolve(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe");
+  if (existsSync(bsdtar)) {
+    const t = spawnSync(bsdtar, ["-xf", archivePath, "-C", into], { stdio: "inherit" });
+    if (t.status === 0) return;
+    console.error(`tar.exe could not expand ${archivePath} (status ${t.status}${t.error ? `, ${t.error.message}` : ""}); trying Expand-Archive`);
+  }
+  const r = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command",
+    `$ErrorActionPreference='Stop'; Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${into}' -Force`], { stdio: "inherit" });
+  if (r.status !== 0) throw new Error(`Expand-Archive failed for ${archivePath} (status ${r.status}${r.error ? `, ${r.error.message}` : ""})`);
+}
+
 function extract(archivePath, into) {
   if (IS_WINDOWS) {
-    const r = spawnSync("powershell", ["-NoProfile", "-Command",
-      `Expand-Archive -Path '${archivePath}' -DestinationPath '${into}' -Force`], { stdio: "inherit" });
-    if (r.status !== 0) throw new Error(`Expand-Archive failed for ${archivePath}`);
+    expandZipWindows(archivePath, into);
   } else {
     // -J: the Linux build ships as .tar.xz; tar on every CI runner reads it.
     const r = spawnSync("tar", ["xJf", archivePath, "-C", into], { stdio: "inherit" });
