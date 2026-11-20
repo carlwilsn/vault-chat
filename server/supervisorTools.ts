@@ -27,7 +27,7 @@ import { isMigrationId } from "../src/migrations";
 import { migrationChange, migrationDraft } from "./migrations";
 import { PRESET_DRAFT_FILE, parseDraft } from "../src/appPreset";
 import { PRESET_PART, gateLine } from "../src/gateResult";
-import { gateResults, inBoxGate, settingsGate, submitGate } from "./gate";
+import { coreSubmit, gateResults, inBoxGate, settingsGate, submitGate } from "./gate";
 
 export const PLUGIN_TOOL = "Plugins";
 
@@ -222,6 +222,11 @@ async function migrationAction(vault: string, action: string, a: Record<string, 
 export async function pluginToolAsync(vault: string, a: Record<string, unknown>, ctx?: PluginToolCtx): Promise<{ ok: boolean; text: string }> {
   const action = String(a.action ?? "");
   if (action === "submit" && /^(?:app\/)?settings-values$/i.test(pluginIdOf(String(a.plugin ?? "").trim()))) return settingsSubmit(vault, a, ctx);
+  if (action === "submit" && /^(?:app\/)?core$/i.test(pluginIdOf(String(a.plugin ?? "").trim()))) {
+    const r = coreSubmit(null, ctx?.convId ?? null);
+    if ("error" in r) return { ok: false, text: r.error };
+    return { ok: r.result.verdict !== "fail", text: `${r.result.verdict === "fail" ? "The gate dropped the core bundle" : "The core bundle passed the gate"} ${r.result.version}: ${r.result.reasons.join("; ")}` };
+  }
   if ((action === "submit" || action === "keep" || action === "discard" || action === "back") && isMigrationId(pluginIdOf(String(a.plugin ?? "").trim()))) {
     try {
       return await migrationAction(vault, action, a);

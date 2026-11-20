@@ -149,6 +149,56 @@ export function coreCommits(repo: string, commit: string, n = 40, exec: Exec = r
   return out;
 }
 
+/**
+ * The gate's runner for a core bundle (src/gateResult.ts, kind frontend-core), on the box's stored bytes before any
+ * laptop is offered it: its manifest is one a loader takes, every file is there with the size and sha256 the manifest
+ * says (a torn or tampered build fails), index.html loads only files the bundle has (a missing chunk would leave the
+ * window blank until the loader falls back), and it needs no newer box than this one. pass: nothing found. Pure reading.
+ */
+export function judgeCore(stateDir: string, version: string): { verdict: "pass" | "fail"; reasons: string[]; commit: string | null } {
+  if (!CORE_VERSION_RE.test(version)) return { verdict: "fail", reasons: ["not a core bundle version"], commit: null };
+  let text: string;
+  try {
+    text = readFileSync(join(coreRoot(stateDir), version, "manifest.json"), "utf8");
+  } catch {
+    return { verdict: "fail", reasons: [`no stored bundle ${version}`], commit: null };
+  }
+  if (!createHash("sha256").update(text).digest("hex").startsWith(version)) return { verdict: "fail", reasons: ["its manifest does not hash to its version"], commit: null };
+  let m: CoreManifest;
+  try {
+    m = JSON.parse(text) as CoreManifest;
+  } catch {
+    return { verdict: "fail", reasons: ["its manifest is not JSON"], commit: null };
+  }
+  const bad = manifestProblem(m);
+  if (bad) return { verdict: "fail", reasons: [`its manifest is not one a loader takes: ${bad}`], commit: null };
+  const reasons: string[] = [];
+  if (m.needs.boxApi > CORE_BOX_API) reasons.push(`it needs box API ${m.needs.boxApi}; this box has ${CORE_BOX_API}`);
+  const files = new Set(m.files.map((f) => f.path));
+  for (const f of m.files) {
+    let b: Buffer;
+    try {
+      b = readFileSync(join(coreRoot(stateDir), version, "files", f.path));
+    } catch {
+      reasons.push(`${f.path} is missing`);
+      continue;
+    }
+    if (b.length !== f.size || createHash("sha256").update(b).digest("hex") !== f.sha256) reasons.push(`${f.path} is not the file its manifest names`);
+    if (reasons.length > 8) break;
+  }
+  try {
+    const html = readFileSync(join(coreRoot(stateDir), version, "files", "index.html"), "utf8");
+    for (const [, ref] of html.matchAll(/<(?:script|link)\b[^>]*?\b(?:src|href)=["']([^"'#?]+)/gi)) {
+      if (/^(?:[a-z]+:)?\/\//i.test(ref) || ref.startsWith("data:")) continue;
+      const p = ref.replace(/^\.?\//, "");
+      if (!files.has(p)) reasons.push(`index.html loads ${p}, which the bundle does not have`);
+    }
+  } catch {
+    /* reported above as missing */
+  }
+  return reasons.length ? { verdict: "fail", reasons: reasons.slice(0, 10), commit: m.commit } : { verdict: "pass", reasons: [`${m.files.length} files as the manifest says; index.html loads only its own files; box API ${m.needs.boxApi}`], commit: m.commit };
+}
+
 export function pendingCore(stateDir: string, changes: readonly ChangeRecord[], on = true, commitsOf: (commit: string) => CoreCommit[] = () => []): BoxPendingChange | null {
   if (!on) return null;
   const newest = storedCores(stateDir)[0];

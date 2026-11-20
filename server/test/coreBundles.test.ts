@@ -280,6 +280,28 @@ describe("core bundles on the box", () => {
     expect(runs).toBe(2);
     expect(core.readPublisher(state).attempts.filter((a) => a.commit === main).every((a) => a.state === "failed")).toBe(true);
   });
+
+  it("the one gate judges each built bundle once before any laptop sees it: a missing chunk or a torn file is discarded by the gate", async () => {
+    const cards = async () => ((await getJson("/api/v2/changes?surface=laptop")).changes as { plugin: string; version: string }[]).filter((c) => c.plugin === CORE_PART).map((c) => c.version);
+    const results = async (v: string) => (await getJson(`/api/v2/gate?part=app/core&version=${v}`)).results as { verdict: string; decision: string | null; runner: string; reasons: string[] }[];
+    const good = build("gate-good", { "index.html": '<script type="module" src="/assets/app-g.js"></script>', "assets/app-g.js": "1" }, NEEDS, 600, "2026-11-19T00:00:01Z");
+    expect(await cards()).toEqual([good.version]);
+    expect(await results(good.version)).toMatchObject([{ verdict: "pass", decision: null, runner: "core-bundle" }]);
+    await cards();
+    expect(await results(good.version)).toHaveLength(1); // judged once
+    // index.html loads a chunk the bundle does not have: the window would stay blank.
+    const blank = build("gate-blank", { "index.html": '<script type="module" src="./assets/app-missing.js"></script>' }, NEEDS, 700, "2026-11-19T00:00:02Z");
+    expect(await cards()).toEqual([]);
+    expect((await results(blank.version))[0]).toMatchObject({ verdict: "fail", decision: "discard", reasons: [expect.stringMatching(/index\.html loads assets\/app-missing\.js/)] });
+    expect(sup.supervisorOf(A.path).changes(CORE_PART).at(-1)).toMatchObject({ change: "discard", version: blank.version, by: "gate" });
+    // A file torn on disk after the build.
+    const torn = build("gate-torn", { "index.html": '<script src="assets/app-t.js"></script>', "assets/app-t.js": "console.log(1)" }, NEEDS, 800, "2026-11-19T00:00:03Z");
+    writeFileSync(join(root, torn.version, "files", "assets", "app-t.js"), "console.log(2)");
+    expect(await cards()).toEqual([]);
+    expect((await results(torn.version))[0]?.reasons.join(" ")).toMatch(/assets\/app-t\.js is not the file its manifest names/);
+    // Submit runs it again on its word.
+    expect((await post("/api/v2/gate", { part: "app/core", version: good.version })).json.result).toMatchObject({ verdict: "pass" });
+  });
 });
 
 describe("what a bundle needs, and what the laptop takes", () => {

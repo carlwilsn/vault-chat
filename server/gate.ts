@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { signal, signalLog, type ConvLog } from "./convlog/log";
-import { GATE_RESULT, SETTINGS_PART, gateDecision, gateLineOf, gateRecordOf, partKind, type GateResult, type PartKind } from "../src/gateResult";
+import { CORE_PART_ID, GATE_RESULT, SETTINGS_PART, gateDecision, gateLineOf, gateRecordOf, partKind, type GateResult, type PartKind } from "../src/gateResult";
 import { gateOutcome } from "./changeNotices";
 import { startServiceJob, type JobEnv } from "./engine/jobs";
 import { masterDir } from "./master";
@@ -22,6 +22,7 @@ import { killTree } from "./commands/proc";
 import { settingsDraftGate } from "./settings";
 import { setPluginChange } from "./supervisor";
 import { migrationChange, migrationDraft, tryMigration } from "./migrations";
+import { coreStateDir, coreVault, judgeCore, storedCores } from "./coreBundles";
 import { askLaptop } from "./driveTool";
 import { controlDown } from "./deviceLink";
 import { checkSteps } from "../src/driveSteps";
@@ -123,12 +124,48 @@ export async function inBoxGate(vault: string, part: string, o: { asked?: boolea
 /** The settings draft's gate (inBoxGate for app/settings-values). */
 export const settingsGate = (vault: string, o: Parameters<typeof inBoxGate>[2] = {}) => inBoxGate(vault, SETTINGS_PART, o);
 
+// ---------------------------------------------------------------- the app's core bundle: judged in the box
+
+/**
+ * The core bundle's gate (server/coreBundles.ts judgeCore), on the box's stored bytes, once per version: run when a
+ * built bundle would first be listed for the laptops (server/changesPending.ts) and on submit (`again`). A fail is a
+ * discard by "gate" (the bundle never lands, Try or quietly); a pass lets it go on as before (applied quietly when
+ * nothing on Carl's screen changes, else "Try it?"). The records are the core's vault's (one core for the box).
+ */
+export function coreGate(vault: string, stateDir: string, version: string, o: { again?: boolean; conv?: string | null } = {}): GateResult {
+  if (!o.again) {
+    const done = gateResults(vault, CORE_PART_ID, version)[0];
+    if (done) return done;
+  }
+  const j = judgeCore(stateDir, version);
+  const result: GateResult = { part: CORE_PART_ID, kind: "frontend-core", version, verdict: j.verdict, decision: j.verdict === "fail" ? "discard" : null, reasons: j.reasons, runner: "core-bundle", data: "the box's stored build", what: j.commit ? `the app's frontend from main ${j.commit.slice(0, 12)}` : "", asked: false, ...(o.conv ? { conv: o.conv } : {}), at: Date.now() };
+  if (j.verdict === "fail") {
+    const w = setPluginChange(vault, { plugin: CORE_PART_ID, change: "discard", version, by: "gate", reason: `the gate failed: ${j.reasons.join("; ").slice(0, 260)}` }, "gate");
+    if ("error" in w) result.reasons = [...result.reasons, `(the discard was refused: ${w.error})`];
+  }
+  recordGate(vault, result);
+  return result;
+}
+
+/** The core gate on its word (submit, POST /api/v2/gate): the newest stored bundle, or `version`, judged again. */
+export function coreSubmit(version: string | null, conv: string | null = null): { result: GateResult } | { error: string } {
+  const dir = coreStateDir();
+  if (!dir) return { error: "this box keeps no core bundles" };
+  const v = version ?? storedCores(dir)[0]?.version;
+  if (!v) return { error: "no core bundle is stored" };
+  return { result: coreGate(coreVault() ?? "", dir, v, { again: true, conv }) };
+}
+
 /** GET /api/v2/gate?part=&version= (the results, newest first); POST {part, asked?, land?, conv?}: a gate the box runs
  *  itself (the settings draft; the others run as the Plugins tool's job). */
 export async function gateRoute(vault: string, method: string, query: URLSearchParams, body: Record<string, unknown> | null): Promise<{ status: number; body: unknown }> {
   if (method === "GET") return { status: 200, body: { results: gateResults(vault, query.get("part"), query.get("version")).slice(0, Math.max(1, Math.min(200, Number(query.get("limit")) || 20))) } };
   if (method !== "POST") return { status: 405, body: { error: "GET or POST" } };
   const part = String(body?.part ?? "");
+  if (partKind(part) === "frontend-core") {
+    const r = coreSubmit(String(body?.version ?? "") || null, typeof body?.conv === "string" ? body.conv : null);
+    return "error" in r ? { status: 409, body: { error: r.error } } : { status: 200, body: { result: r.result, fresh: true } };
+  }
   if (partKind(part) !== "settings" && partKind(part) !== "migration") return { status: 400, body: { error: `${part || "(no part)"}: only the settings draft's and migrations' gates run in the box; the others run with the Plugins tool's submit (scripts/gate.ts)` } };
   const r = await inBoxGate(vault, part, { asked: body?.asked === true, land: body?.land !== false, conv: typeof body?.conv === "string" ? body.conv : null, again: true });
   return "error" in r ? { status: 409, body: { error: r.error } } : { status: 200, body: r };
@@ -185,7 +222,7 @@ function runGateScript(repo: string, args: string[], signal: AbortSignal, log: (
   });
 }
 
-const RUNNER: Record<PartKind, string> = { "ui-plugin": "ui-harness", preset: "preset+ui-harness", "box-plugin": "box-copy", settings: "settings", migration: "migration-dry-run", "frontend-core": "frontend-core" };
+const RUNNER: Record<PartKind, string> = { "ui-plugin": "ui-harness", preset: "preset+ui-harness", "box-plugin": "box-copy", settings: "settings", migration: "migration-dry-run", "frontend-core": "core-bundle" };
 
 /**
  * Hand one part's candidate to the gate as a background job of the conversation (plugins, the preset, box plugins).

@@ -13,7 +13,9 @@
 //                                                              something (server/settings.ts settingsDraftGate)
 //   migration      migrate/<name>                              its dry run on a copy of the plugin's real state, in the
 //                                                              box (server/gate.ts inBoxGate); Keep stays Carl's
-//   frontend-core  app/core                                    (not gated yet)
+//   frontend-core  app/core (a core bundle the box built)      its stored bytes: every file as the manifest says,
+//                                                              index.html loads only its own files, no newer box API
+//                                                              (server/coreBundles.ts judgeCore), once per bundle
 //
 // The verdict (Kayenta's success / marginal / failure): pass (nothing Carl can see changes, nothing new breaks),
 // borderline (something he can see changes: is it what was asked for?), fail (it breaks: dropped). null: the gate could

@@ -26,6 +26,7 @@ import { VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES, parseVaultPluginMeta, vaultPl
 import { slotCode } from "./pluginDrafts";
 import { pendingMigrations } from "./migrations";
 import { coreCommits, coreRepo, coreStateDir, coreVault, pendingCore } from "./coreBundles";
+import { coreGate } from "./gate";
 import { CORE_PART } from "../src/coreBundle";
 import { supervisorOf } from "./supervisor";
 import { surfaceOff, type Surface } from "./surfaces";
@@ -119,8 +120,10 @@ export function pendingOnBox(vault: string, surface: ChangeSurface = "laptop", s
   // vault's records), tried in the laptop's windows only.
   const coreDir = coreStateDir();
   if (coreDir) {
-    const c = pendingCore(coreDir, supervisorOf(coreVault() ?? vault).changes(CORE_PART), corePublishOn(), (commit) => coreCommits(coreRepo(), commit));
-    if (c) out.push(c);
+    const cv = coreVault() ?? vault;
+    const c = pendingCore(coreDir, supervisorOf(cv).changes(CORE_PART), corePublishOn(), (commit) => coreCommits(coreRepo(), commit));
+    // The one gate (server/gate.ts coreGate), once per bundle: a bundle that fails it is discarded and reaches nobody.
+    if (c && coreGate(cv, coreDir, c.version).verdict !== "fail") out.push(c);
   }
   // Migration drafts (src/migrations.ts): a plugin's state reshaped; Try runs it on a copy of real data (the laptop).
   out.push(...pendingMigrations(vault));
