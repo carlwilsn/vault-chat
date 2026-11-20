@@ -5,9 +5,11 @@
 // installed Claude Code, and the box only ran it because one was copied in by
 // hand. So the app fetches the pinned CLI for its platform when there is none.
 //
-// What is pinned here is the wiring that cannot be seen from the Rust alone:
-// that the version it fetches is the version the rest of vault-chat runs, and
-// that what it fetches is found by both the sign-in and the server.
+// What is pinned here is the wiring: that the version it fetches is the version
+// the rest of vault-chat runs, and that what it fetches is found by both the
+// sign-in and the server. The fetch itself lives in the server bundle
+// (server/engine/claude/cliFetch.ts, tested in server/test/cliFetch.test.ts);
+// the shell only runs it (src-tauri/src/claude_cli.rs).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -16,9 +18,10 @@ import { join } from "node:path";
 const root = join(import.meta.dirname, "..", "..");
 const read = (p: string) => readFileSync(join(root, p), "utf8");
 const rs = read("src-tauri/src/claude_cli.rs");
+const ts = read("server/engine/claude/cliFetch.ts");
 
 test("the CLI the app fetches is the CLI the rest of vault-chat runs", () => {
-  const pinned = rs.match(/pub const CLI_VERSION: &str = "([\d.]+)"/)?.[1];
+  const pinned = ts.match(/export const CLI_VERSION = "([\d.]+)"/)?.[1];
   assert.ok(pinned, "the version is pinned in one place");
   const pkg = JSON.parse(read("package.json"));
   const sdk = String(pkg.dependencies["@anthropic-ai/claude-agent-sdk"]).replace(/^[^\d]*/, "");
@@ -27,16 +30,16 @@ test("the CLI the app fetches is the CLI the rest of vault-chat runs", () => {
 
 test("every machine the app ships for has a CLI to fetch", () => {
   for (const want of ["win32-x64", "darwin-arm64", "darwin-x64", "linux-x64"]) {
-    assert.ok(rs.includes(`"${want}"`), `no package for ${want}`);
+    assert.ok(ts.includes(`"${want}"`), `no package for ${want}`);
   }
-  assert.match(rs, /registry\.npmjs\.org/, "from the registry the SDK itself pins");
+  assert.match(ts, /registry\.npmjs\.org/, "from the registry the SDK itself pins");
 });
 
 test("a download is checked before it becomes the thing every turn runs on", () => {
-  assert.match(rs, /sha512-/, "against the hash npm publishes for that exact version");
-  assert.match(rs, /did not match what npm published/);
+  assert.match(ts, /sha512-/, "against the hash npm publishes for that exact version");
+  assert.match(ts, /did not match what npm published/);
   // And it has to actually run here before it replaces anything.
-  assert.match(rs, /would not run here/);
+  assert.match(ts, /would not run here/);
 });
 
 test("what it fetches is what the sign-in and the server then use", () => {
@@ -56,4 +59,11 @@ test("the sign-in offers to get one, and never downloads by itself", () => {
   assert.match(ui, /data-el="claude-cli-get"/, "and offers to get one when it has not");
   const effect = ui.slice(ui.indexOf("useEffect("), ui.indexOf("const command ="));
   assert.doesNotMatch(effect, /ensureCli/, "nothing downloads Claude Code just because Settings was opened");
+});
+
+test("the shell runs the fetch from the server bundle (the slot's, then the installer's), it does not carry it", () => {
+  assert.match(rs, /"fetch-claude-cli"/, "the shell starts the server bundle's fetch-claude-cli");
+  assert.match(rs, /server_bundles/, "from the server bundles the app can run, the slot's first");
+  assert.doesNotMatch(rs, /registry\.npmjs\.org|Sha512|reqwest/, "no download logic is left in the shell");
+  assert.match(read("server/build.mjs"), /process\.argv\[2\] === "fetch-claude-cli"[\s\S]*cliFetch/, "the bundle's entry routes it without loading the server");
 });

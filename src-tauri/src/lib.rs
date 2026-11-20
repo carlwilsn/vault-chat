@@ -4336,9 +4336,10 @@ async fn claude_cli_ensure(app: tauri::AppHandle) -> Result<ClaudeCliReady, Stri
         .path()
         .app_local_data_dir()
         .map_err(|e| format!("no app data directory: {e}"))?;
+    let resources = app.path().resource_dir().ok();
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        claude_cli::fetch(&state_dir, |done, total| {
+        claude_cli::fetch(&state_dir, resources.as_deref(), |done, total| {
             let _ = handle.emit("claude-cli-progress", (done, total));
         })
         .map(|(cli, version)| {

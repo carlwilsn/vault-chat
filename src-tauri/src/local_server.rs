@@ -110,7 +110,7 @@ pub fn node_bin(resource_dir: Option<&Path>) -> String {
 
 /// No console window for a console program started from this GUI app (Windows
 /// flashes one up otherwise).
-fn no_window(cmd: &mut Command) {
+pub(crate) fn no_window(cmd: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -155,7 +155,16 @@ pub fn ensure(vault: &str, state_dir: &Path, resource_dir: Option<&Path>, node: 
         }
     }
 
-    // A slot's server first (unless a development run names its own bundle), then the installer's own.
+    let candidates = server_bundles(state_dir, resource_dir);
+    if candidates.is_empty() {
+        return Err("this build carries no vault-chat server to run; connect a box instead".to_string());
+    }
+    run_first(vault, state_dir, candidates, node)
+}
+
+/// The server bundles this app can run, in order: a slot's (`Some(version)`; unless a development run names its own
+/// bundle), then the installer's own. Also what the shell runs the server's tool commands with (claude_cli.rs).
+pub fn server_bundles(state_dir: &Path, resource_dir: Option<&Path>) -> Vec<(Option<String>, PathBuf)> {
     let named = std::env::var("VC_LOCAL_SERVER_BUNDLE").map(|p| Path::new(&p).is_file()).unwrap_or(false);
     let mut candidates: Vec<(Option<String>, PathBuf)> = Vec::new();
     if !named {
@@ -166,10 +175,7 @@ pub fn ensure(vault: &str, state_dir: &Path, resource_dir: Option<&Path>, node: 
     if let Some(b) = bundle(resource_dir) {
         candidates.push((None, b));
     }
-    if candidates.is_empty() {
-        return Err("this build carries no vault-chat server to run; connect a box instead".to_string());
-    }
-    run_first(vault, state_dir, candidates, node)
+    candidates
 }
 
 /// Start the first candidate that comes up; a slot's (`Some(version)`) that does not is marked bad on the way.

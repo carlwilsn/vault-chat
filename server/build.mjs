@@ -127,6 +127,11 @@ const result = await build({
     contents: `import { SERVER_VERSION, SERVER_REV } from "./server/config";
 if (process.argv.length === 3 && process.argv[2] === "build-info") {
   process.stdout.write(JSON.stringify({ version: SERVER_VERSION, rev: SERVER_REV }) + "\\n");
+} else if (process.argv[2] === "fetch-claude-cli") {
+  // The laptop shell's claude_cli_ensure (src-tauri/src/claude_cli.rs): fetch the pinned CLI, nothing else loaded.
+  const { fetchClaudeCliMain } = await import("./server/engine/claude/cliFetch.ts");
+  const code = await fetchClaudeCliMain(process.argv.slice(3));
+  process.stdout.write("", () => process.exit(code));
 } else if (process.argv.length === 2 ||
     (process.argv.length === 3 && process.argv[2] === "record-ui") ||
     ["master", "projects", "install-claude-cli"].includes(process.argv[2])) {

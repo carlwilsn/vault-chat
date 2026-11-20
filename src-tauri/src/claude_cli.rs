@@ -13,45 +13,21 @@
 //! Where it lands is where everything already looks: `<state>/claude/bin/claude`
 //! is the first place the sign-in driver tries (claude_login::candidates_in) and
 //! the server is handed the same path (VC_CLAUDE_BIN), so one copy serves both.
-use std::fs::{self, File};
-use std::io::{Read, Write};
+//!
+//! How it is found, fetched and checked is not the shell's: it lives in the server bundle the app carries
+//! (server/engine/claude/cliFetch.ts), so it changes with the server (and its slot, local_server.rs), never an
+//! installer. The shell only runs `node <server bundle> fetch-claude-cli <state dir>` and relays its lines; a slot's
+//! bundle that does not answer is passed over for the installer's own. What stays here is the startup adoption of a
+//! CLI already fetched (adopt), before any server runs.
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-
-use base64::Engine as _;
-use sha2::{Digest, Sha512};
-
-/// The CLI the SDK pins. Kept in step with package.json's
-/// @anthropic-ai/claude-agent-sdk by a test, so the app, the box and this
-/// fetch all run the same Claude Code.
-pub const CLI_VERSION: &str = "0.3.321";
-
-const REGISTRY: &str = "https://registry.npmjs.org";
-
-/// The npm package holding the native CLI for a platform, or None for one
-/// Anthropic does not publish (every such machine keeps the paste fallback).
-pub fn package_for(os: &str, arch: &str) -> Option<String> {
-    let suffix = match (os, arch) {
-        ("windows", "x86_64") => "win32-x64",
-        ("windows", "aarch64") => "win32-arm64",
-        ("macos", "x86_64") => "darwin-x64",
-        ("macos", "aarch64") => "darwin-arm64",
-        ("linux", "x86_64") => "linux-x64",
-        ("linux", "aarch64") => "linux-arm64",
-        _ => return None,
-    };
-    Some(format!("@anthropic-ai/claude-agent-sdk-{suffix}"))
-}
-
-fn this_package() -> Option<String> {
-    package_for(std::env::consts::OS, std::env::consts::ARCH)
-}
 
 pub fn exe_name() -> &'static str {
     if cfg!(windows) { "claude.exe" } else { "claude" }
 }
 
-/// Where the app keeps the CLI it fetched.
+/// Where the app keeps the CLI it fetched (server/engine/claude/cliFetch.ts cliPath).
 pub fn cli_path(state_dir: &Path) -> PathBuf {
     state_dir.join("claude").join("bin").join(exe_name())
 }
@@ -59,45 +35,16 @@ pub fn cli_path(state_dir: &Path) -> PathBuf {
 /// `<cli> --version` → what it reported, or None if it did not run.
 fn probe(cli: &Path) -> Option<String> {
     let mut cmd = Command::new(cli);
-    // A Mac's login-shell PATH (claude_signin::user_path): an installed `claude` (Homebrew, nvm, ~/.local/bin) is
-    // found instead of fetched again, and a CLI that runs `node` finds it. Unchanged elsewhere.
+    // A Mac's login-shell PATH (claude_signin::user_path): a CLI that runs `node` finds it. Unchanged elsewhere.
     #[cfg(unix)]
     cmd.env("PATH", crate::claude_signin::user_path());
-    let out = cmd
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+    crate::local_server::no_window(&mut cmd);
+    let out = cmd.arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).output().ok()?;
     if !out.status.success() {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (!text.is_empty()).then_some(text)
-}
-
-/// The CLI this app already has, if it has one that runs.
-pub fn have(state_dir: &Path) -> Option<(PathBuf, String)> {
-    let p = cli_path(state_dir);
-    probe(&p).map(|v| (p, v))
-}
-
-/// Claude Code this machine already has, wherever an installer left it.
-fn already_here() -> Option<(PathBuf, String)> {
-    let home = std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .or_else(|| std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()))
-        .map(PathBuf::from);
-    let mut look: Vec<PathBuf> = Vec::new();
-    if let Some(home) = home.as_ref() {
-        look.push(home.join(".local").join("state").join("vault-chat-server").join("claude").join("bin").join(exe_name()));
-        look.push(home.join(".local").join("state").join("vault-chat-server").join("claude").join("cli").join(exe_name()));
-        look.push(home.join(".local").join("bin").join(exe_name()));
-    }
-    // And whatever answers on PATH.
-    look.push(PathBuf::from(exe_name()));
-    look.into_iter().find_map(|p| probe(&p).map(|v| (p, v)))
 }
 
 /// Point everything in this process at the CLI the app fetched, if it has one.
@@ -107,162 +54,81 @@ fn already_here() -> Option<(PathBuf, String)> {
 /// findClaude) — and a server the app starts inherits this process's environment,
 /// so one call covers the sign-in and the no-box engine both.
 pub fn adopt(state_dir: &Path) -> Option<PathBuf> {
-    let (path, _) = have(state_dir)?;
-    std::env::set_var("VC_CLAUDE_BIN", &path);
-    Some(path)
+    let p = cli_path(state_dir);
+    probe(&p)?;
+    std::env::set_var("VC_CLAUDE_BIN", &p);
+    Some(p)
 }
 
-/// What the registry says about the pinned version: where to get it, and the
-/// hash it must have.
-fn registry_entry(package: &str) -> Result<(String, String), String> {
-    let url = format!("{REGISTRY}/{package}/{CLI_VERSION}");
-    let body: serde_json::Value = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| format!("no http client: {e}"))?
-        .get(&url)
-        .send()
-        .map_err(|e| format!("asking npm for {package}: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("npm has no {package}@{CLI_VERSION}: {e}"))?
-        .json()
-        .map_err(|e| format!("npm answered with something else: {e}"))?;
-    let tarball = body["dist"]["tarball"].as_str().unwrap_or_default().to_string();
-    let integrity = body["dist"]["integrity"].as_str().unwrap_or_default().to_string();
-    if tarball.is_empty() || !integrity.starts_with("sha512-") {
-        return Err(format!("npm gave no verifiable download for {package}@{CLI_VERSION}"));
-    }
-    Ok((tarball, integrity))
+/// One line the server's fetch-claude-cli writes.
+#[derive(serde::Deserialize)]
+struct Line {
+    progress: Option<(u64, u64)>,
+    ok: Option<Fetched>,
+    error: Option<String>,
+}
+#[derive(serde::Deserialize)]
+struct Fetched {
+    cli: String,
+    version: String,
 }
 
-/// base64(sha512(file)), in the form npm publishes it.
-fn integrity_of(path: &Path) -> Result<String, String> {
-    let mut f = File::open(path).map_err(|e| format!("reading the download: {e}"))?;
-    let mut hasher = Sha512::new();
-    let mut buf = vec![0u8; 1 << 20];
-    loop {
-        let n = f.read(&mut buf).map_err(|e| format!("reading the download: {e}"))?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(format!("sha512-{}", base64::engine::general_purpose::STANDARD.encode(hasher.finalize())))
-}
-
-/// Fetch the pinned CLI for this machine and put it where everything looks.
-///
-/// `progress` is called with (bytes so far, total) as it downloads, so the app
-/// can say more than "wait". Returns the path and the version it reported.
-///
-/// Nothing is replaced until the new binary has answered `--version` here: a
-/// truncated download or a binary for another machine must not become the thing
-/// every turn runs on.
-pub fn fetch(state_dir: &Path, mut progress: impl FnMut(u64, u64)) -> Result<(PathBuf, String), String> {
-    if let Some(found) = have(state_dir) {
-        return Ok(found);
-    }
-    // A machine that already has Claude Code — Carl's, today — keeps using it
-    // rather than spending 350 MB to end up where it already was. The places
-    // are the ones the sign-in driver looks in too (claude_login::candidates_in):
-    // the box's pinned copy, the installer's, then whatever is on PATH.
-    if let Some(found) = already_here() {
-        return Ok(found);
-    }
-    let package = this_package()
-        .ok_or_else(|| format!("Anthropic publishes no Claude Code for {}-{}", std::env::consts::OS, std::env::consts::ARCH))?;
-    let (tarball, integrity) = registry_entry(&package)?;
-
-    let dir = state_dir.join("claude");
-    fs::create_dir_all(dir.join("bin")).map_err(|e| format!("could not make {}: {e}", dir.display()))?;
-    let download = dir.join("incoming.tgz");
-    let _ = fs::remove_file(&download);
-
-    let mut res = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(20 * 60))
-        .build()
-        .map_err(|e| format!("no http client: {e}"))?
-        .get(&tarball)
-        .send()
-        .map_err(|e| format!("downloading Claude Code: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("downloading Claude Code: {e}"))?;
-    let total = res.content_length().unwrap_or(0);
-    {
-        let mut out = File::create(&download).map_err(|e| format!("could not write {}: {e}", download.display()))?;
-        let mut done: u64 = 0;
-        let mut buf = vec![0u8; 1 << 20];
-        loop {
-            let n = res.read(&mut buf).map_err(|e| format!("downloading Claude Code: {e}"))?;
-            if n == 0 {
-                break;
-            }
-            out.write_all(&buf[..n]).map_err(|e| format!("writing the download: {e}"))?;
-            done += n as u64;
+/// Run one server bundle's fetch-claude-cli: Ok(Ok(found)) or Ok(Err(its error)); Err when it gave no answer at all
+/// (it would not start, or exited without a last line): the next bundle is tried.
+fn run_fetch(node: &str, bundle: &Path, state_dir: &Path, progress: &mut impl FnMut(u64, u64)) -> Result<Result<(PathBuf, String), String>, String> {
+    let mut cmd = Command::new(node);
+    crate::local_server::no_window(&mut cmd);
+    #[cfg(unix)]
+    cmd.env("PATH", crate::claude_signin::user_path());
+    let mut child = cmd
+        .arg(bundle)
+        .arg("fetch-claude-cli")
+        .arg(state_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("could not run {node}: {e}"))?;
+    let out = child.stdout.take().ok_or("no output")?;
+    let mut answer = None;
+    for line in BufReader::new(out).lines() {
+        let Ok(line) = line else { break };
+        let Ok(l) = serde_json::from_str::<Line>(&line) else { continue };
+        if let Some((done, total)) = l.progress {
             progress(done, total);
         }
+        if let Some(f) = l.ok {
+            answer = Some(Ok((PathBuf::from(f.cli), f.version)));
+        } else if let Some(e) = l.error {
+            answer = Some(Err(e));
+        }
     }
+    let _ = child.wait();
+    answer.ok_or_else(|| format!("{} gave no answer", bundle.display()))
+}
 
-    let got = integrity_of(&download)?;
-    if got != integrity {
-        let _ = fs::remove_file(&download);
-        return Err("the download did not match what npm published for this version".to_string());
+/// Fetch the pinned CLI for this machine (or find the one it has) through the server bundle: the slot's, then the
+/// installer's own. `progress` is called with (bytes so far, total) as it downloads. Returns the path and the version
+/// it reported.
+pub fn fetch(state_dir: &Path, resource_dir: Option<&Path>, mut progress: impl FnMut(u64, u64)) -> Result<(PathBuf, String), String> {
+    let node = crate::local_server::node_bin(resource_dir);
+    let bundles = crate::local_server::server_bundles(state_dir, resource_dir);
+    if bundles.is_empty() {
+        return Err("this build carries no vault-chat server to fetch Claude Code with".to_string());
     }
-
-    // tar is on every machine this runs on: Windows has carried bsdtar since
-    // Windows 10, and macOS and Linux have always had one.
-    let unpack = dir.join("incoming");
-    let _ = fs::remove_dir_all(&unpack);
-    fs::create_dir_all(&unpack).map_err(|e| format!("could not make {}: {e}", unpack.display()))?;
-    let status = Command::new("tar")
-        .arg("-xzf")
-        .arg(&download)
-        .arg("-C")
-        .arg(&unpack)
-        .status()
-        .map_err(|e| format!("unpacking Claude Code (is tar there?): {e}"))?;
-    if !status.success() {
-        return Err(format!("unpacking Claude Code failed ({status})"));
+    let mut last = String::new();
+    for (_, bundle) in bundles {
+        match run_fetch(&node, &bundle, state_dir, &mut progress) {
+            Ok(answer) => return answer,
+            Err(e) => last = e,
+        }
     }
-    // npm tarballs put everything under package/, and the binary carries the
-    // platform's own name there: `package/claude.exe` in the win32-x64 package,
-    // `package/claude` in linux-x64 and darwin — both read off the real
-    // packages rather than assumed.
-    let unpacked = unpack.join("package").join(exe_name());
-    if !unpacked.is_file() {
-        return Err(format!("the download held no {}", exe_name()));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&unpacked, fs::Permissions::from_mode(0o755)).map_err(|e| format!("making it runnable: {e}"))?;
-    }
-    let version = probe(&unpacked).ok_or_else(|| "the downloaded Claude Code would not run here".to_string())?;
-
-    let dest = cli_path(state_dir);
-    let _ = fs::remove_file(&dest);
-    fs::rename(&unpacked, &dest).map_err(|e| format!("putting Claude Code in place: {e}"))?;
-    let _ = fs::remove_dir_all(&unpack);
-    let _ = fs::remove_file(&download);
-    Ok((dest, version))
+    Err(last)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn every_machine_the_app_ships_for_has_a_cli_to_fetch() {
-        for (os, arch) in [("windows", "x86_64"), ("macos", "aarch64"), ("macos", "x86_64"), ("linux", "x86_64")] {
-            let p = package_for(os, arch).unwrap_or_else(|| panic!("no package for {os}-{arch}"));
-            assert!(p.starts_with("@anthropic-ai/claude-agent-sdk-"), "{p}");
-        }
-        // And this machine is one of them, whichever it is.
-        assert!(this_package().is_some(), "no Claude Code for {}-{}", std::env::consts::OS, std::env::consts::ARCH);
-        // Somewhere Anthropic does not publish: the app says so rather than
-        // downloading something that cannot run.
-        assert_eq!(package_for("linux", "riscv64"), None);
-    }
 
     #[test]
     fn it_lands_where_the_sign_in_and_the_server_both_look() {
@@ -272,38 +138,33 @@ mod tests {
     }
 
     #[test]
-    fn nothing_fetched_means_nothing_claimed() {
+    fn nothing_fetched_means_nothing_adopted() {
         let dir = std::env::temp_dir().join(format!("vc-cli-have-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(have(&dir).is_none(), "an empty state dir has no Claude Code");
+        assert!(adopt(&dir).is_none(), "an empty state dir has no Claude Code");
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// The whole claim, against the real registry: a machine with no Claude Code
-    /// gets one that runs. ~350 MB, so it is not part of the ordinary run —
-    /// `--ignored` runs it, and the windows-latest job does.
+    /// The shell only relays: progress lines become events, the last line is the answer, and a bundle that gives no
+    /// answer is passed over for the next. "/bin/sh" stands in for node, each bundle a script.
+    #[cfg(unix)]
     #[test]
-    #[ignore = "downloads the real Claude Code (~350 MB)"]
-    fn a_machine_with_no_claude_code_fetches_one_that_runs() {
-        let dir = std::env::temp_dir().join(format!("vc-cli-fetch-{}", std::process::id()));
+    fn it_relays_the_servers_lines_and_passes_over_a_bundle_that_gives_no_answer() {
+        let dir = std::env::temp_dir().join(format!("vc-cli-relay-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let started = std::time::Instant::now();
-        let mut last = 0u64;
-        let (path, version) = fetch(&dir, |done, total| {
-            if done - last > 50_000_000 {
-                last = done;
-                eprintln!("  {} MB of {} MB", done / 1_000_000, total / 1_000_000);
-            }
-        })
-        .expect("a CLI");
-        eprintln!("fetched {version} to {} in {:?}", path.display(), started.elapsed());
-        assert!(path.exists());
-        assert!(version.contains('.'), "a version, not {version}");
-        // Asked again, the same one — no second download.
-        let again = std::time::Instant::now();
-        let (p2, _) = fetch(&dir, |_, _| {}).expect("the same CLI");
-        assert_eq!(p2, path);
-        assert!(again.elapsed() < std::time::Duration::from_secs(30), "it downloaded again");
+        let mute = dir.join("mute.sh");
+        std::fs::write(&mute, "exit 1\n").unwrap();
+        let good = dir.join("good.sh");
+        std::fs::write(&good, "test \"$1\" = fetch-claude-cli || exit 9\necho '{\"progress\":[5,10]}'\necho 'noise'\necho '{\"ok\":{\"cli\":\"/x/claude\",\"version\":\"1.2.3 (Claude Code)\"}}'\n").unwrap();
+        let bad = dir.join("bad.sh");
+        std::fs::write(&bad, "echo '{\"error\":\"npm has none\"}'\n").unwrap();
+        let mut seen = vec![];
+        assert!(run_fetch("/bin/sh", &mute, &dir, &mut |d, t| seen.push((d, t))).is_err());
+        let got = run_fetch("/bin/sh", &good, &dir, &mut |d, t| seen.push((d, t))).unwrap().unwrap();
+        assert_eq!(got, (PathBuf::from("/x/claude"), "1.2.3 (Claude Code)".to_string()));
+        assert_eq!(seen, vec![(5, 10)]);
+        assert_eq!(run_fetch("/bin/sh", &bad, &dir, &mut |_, _| {}).unwrap(), Err("npm has none".to_string()));
         std::fs::remove_dir_all(&dir).ok();
     }
 }
