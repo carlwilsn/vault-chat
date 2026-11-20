@@ -524,8 +524,42 @@ class ReplyEnd(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-async def speak_channel(call: dict, task: PipelineTask, quiet: Quiet):
-    """The conversation's speech outside a request (typed turns, results): said when both are quiet."""
+class SpeechCut(FrameProcessor):
+    """Below the brain, above the TTS: where the speak channel's interrupt stops the voice. Queued at the task, that
+    interruption ran down the whole pipeline: it cancelled the brain's request in flight (his line, before a word of its
+    reply came back: brain.jsonl turn.cut spokenChars 0) and reset his turn while it was being heard. From here it stops
+    only what is being said and queued to be said. Never the brain's reply while it streams: that reply answers his
+    newest line (an interruption here made the TTS drop the rest of it), and his own barge-in stops it the usual way."""
+
+    def __init__(self):
+        super().__init__()
+        self.replying = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if direction == FrameDirection.DOWNSTREAM:
+            if isinstance(frame, LLMFullResponseStartFrame):
+                self.replying = True
+            elif isinstance(frame, (LLMFullResponseEndFrame, InterruptionFrame)):
+                self.replying = False
+        await self.push_frame(frame, direction)
+
+    async def cut(self) -> None:
+        if self.replying:
+            return
+        await self.push_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM)
+
+
+async def speak_channel(call: dict, task: PipelineTask, quiet: Quiet, cut=None):
+    """The conversation's speech outside a request (typed turns, results): said when both are quiet. `cut` stops what the
+    voice is saying (SpeechCut.cut, below the brain); without one (tests), an interruption queued at the task."""
+
+    async def stop():
+        if cut is not None:
+            await cut()
+        else:
+            await task.queue_frame(InterruptionFrame())
+
     url = f"{call['base']}/api/v1/brain/call/{call['id']}/speak"
     headers = {"Authorization": f"Bearer {call['token']}"}
     flow = ResultFlow()
@@ -575,14 +609,14 @@ async def speak_channel(call: dict, task: PipelineTask, quiet: Quiet):
                                     while not pending.empty():
                                         pending.get_nowait()
                                         pending.task_done()
-                                    await task.queue_frame(InterruptionFrame())
+                                    await stop()
                                     consumer = group.create_task(say_pending())
                                 elif msg.get("text"):
                                     await pending.put(msg)
                         finally:
                             consumer.cancel()
                             flow.started(None, quiet.gate.user_turns)
-                            await task.queue_frame(InterruptionFrame())
+                            await stop()
         except asyncio.CancelledError:
             return
         except Exception as e:  # the server restarted: reconnect
@@ -685,6 +719,7 @@ async def run_call(connection, call: dict):
     pair = LLMContextAggregatorPair(context, user_params=user_params)
     stats = CallStats((call.get("elKey"), call.get("token")))
     quiet = Quiet()
+    speech_cut = SpeechCut()
     after_stt = AfterStt(quiet, stats, call["id"])
     pipeline = Pipeline(
         [
@@ -700,6 +735,7 @@ async def run_call(connection, call: dict):
             ReplyEnd(quiet),
             ReplyHold(quiet),
             StageCount(stats, {LLMFullResponseEndFrame: "replies", TTSSpeakFrame: "speak"}),
+            speech_cut,
             make_tts(call),
             StageCount(stats, {TTSAudioRawFrame: "tts_audio"}),
             transport.output(),
@@ -728,7 +764,7 @@ async def run_call(connection, call: dict):
         # A provider's error (an STT refusing the key, a TTS out of quota) used to go only to the discarded stderr.
         stats.error(getattr(getattr(frame, "processor", None), "name", None) or "pipeline", getattr(frame, "error", frame))
 
-    side = asyncio.create_task(speak_channel(call, task, quiet)) if BRAIN == "pi" else None
+    side = asyncio.create_task(speak_channel(call, task, quiet, speech_cut.cut)) if BRAIN == "pi" else None
     after_stt.start(task)
     # The device offered this call again (its connection dropped and it reconnected): this pipeline replaces the old
     # one, which ends without ending the call on the box.

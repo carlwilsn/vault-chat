@@ -814,3 +814,37 @@ describe("one line in the local voice (the first-run tutorial's narration)", () 
     bot.close();
   });
 });
+
+it("a voice line's own turn never sends the speak channel an interrupt (it cancelled the line's request: no reply streamed back); a line said on the channel is still stopped by the next turn", async () => {
+  // 2026-11-20 (and every voice line since 11-04): the request's revoke and its turn's start each wrote `interrupt` to the
+  // speak channel; bot.py turned it into a Pipecat interruption that cancelled the request 15-140 ms in (turn.cut
+  // spokenChars 0), so no reply ever came back on the request itself.
+  const c = await call();
+  const ac = new AbortController();
+  const res = await fetch(`${base}/api/v1/brain/call/${c.id}/speak`, { headers: { authorization: `Bearer ${c.token}` }, signal: ac.signal });
+  const reader = res.body!.getReader();
+  let got = "";
+  const reading = (async () => { try { for (;;) { const r = await reader.read(); if (r.done) return; got += new TextDecoder().decode(r.value); } } catch {} })();
+  const msgs = () => got.split("\n").filter((l) => l.startsWith("data:")).map((l) => JSON.parse(l.slice(5)));
+  await until(() => brainEvents().some((e) => e.ev === "speak.open" && e.call === c.id));
+  const response = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "What is seven times eight?" }] }) });
+  await until(() => eng.messages.length === 1);
+  eng.emit({ type: "vc_turn_start", kind: "user", origin: "voice" });
+  eng.emit({ type: "message_start", message: { role: "assistant" } });
+  eng.emit(delta("Fifty-six. "));
+  eng.emit({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Fifty-six." }] } });
+  eng.emit({ type: "vc_turn_end", status: "completed" });
+  const completion = (await sse(await response)).join("\n");
+  expect(completion).toContain("Fifty-six.");
+  expect(msgs().filter((m) => m.interrupt)).toEqual([]);
+  // A typed line from his device: its reply is said on the channel; the next turn stops it there.
+  eng.emit({ type: "vc_turn_start", kind: "user", origin: "board" });
+  eng.emit(delta("A typed reply. "));
+  eng.emit({ type: "vc_turn_end", status: "completed" });
+  await until(() => got.includes("A typed reply."));
+  eng.emit({ type: "vc_turn_start", kind: "wake" });
+  await until(() => msgs().some((m) => m.interrupt));
+  ac.abort(); await reading;
+  expect(msgs().filter((m) => m.interrupt)).toHaveLength(1);
+  expect(brainEvents().filter((e) => e.ev === "turn.cut" && e.call === c.id)).toEqual([]);
+});

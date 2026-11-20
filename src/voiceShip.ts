@@ -7,8 +7,10 @@
 // call end and when the page hides. The box's own agent reads them there, no
 // SSH. The board's voice lines go to board.jsonl by its own log (board/src/log.ts).
 
-/** The lines worth shipping (the rest stay in the device's local trail). */
-export const SHIPPED = /^voice (end|start|dropout|mic|output|devices|closed|turn|silent playback|playback|filler in silence|long task|audio|connected|session|transport|interruption|media device|connection poor|update|mute|status|metadata|timeout|reconnect|handoff|moved|console)/;
+/** The lines worth shipping (the rest stay in the device's local trail). "voice brain ..." is the call's own client
+ *  (src/voiceBrainClient.ts): a refused play(), its connection states, barge-ins, each reply's playback; 2026-11-20 a
+ *  call he heard nothing of left no line of it on the box. */
+export const SHIPPED = /^voice (brain|end|start|dropout|mic|output|devices|closed|turn|silent playback|playback|filler in silence|long task|audio|connected|session|transport|interruption|media device|connection poor|update|mute|status|metadata|timeout|reconnect|handoff|moved|console)/;
 
 /** The laptop app's lines worth shipping (source "app" → <state>/logs/app.jsonl, src/appShip.ts): its errors and its
  *  connection to the box (box.feed: dropped with the error, connected with how long it was down). */

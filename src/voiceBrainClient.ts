@@ -70,6 +70,12 @@ export const THINKING_MAX_MS = 20_000;
 export const BARGE_RMS = 0.05;
 export const BARGE_MS = 75;
 export const RESUME_MS = 900;
+/** Silenced by a barge-in this long while the reply still plays: the box did not take it as an interruption (or what
+ *  set it off was never him: the reply's own echo, a fan under AGC, which kept it silent to the end), so the sound comes
+ *  back and stays for the rest of that reply. */
+export const DUCK_MAX_MS = 2_000;
+/** The reply's audio arriving while its element is paused (a play() the WebView refused): asked again this often. */
+export const REPLAY_EVERY_MS = 1_000;
 /** How often the levels are read. */
 export const TICK_MS = 25;
 /** The window his level is measured over: longer than a tick, so every sample counts. At 512 (10.7 ms read every
@@ -133,6 +139,16 @@ export class BrainConversation {
   private bargeSince: number | null = null;
   /** The last SPEECH_WINDOW ticks of his level (voiced()). */
   private loudBits = 0;
+  /** When the reply was silenced (barge-in), and whether a long one gave the sound back for the rest of this reply. */
+  private duckedAt = 0;
+  private duckHeld = false;
+  /** The element's last refused play() (its message), when play() was last asked, and the gesture retry's remover. */
+  private playError: string | null = null;
+  private replayAt = -Infinity;
+  private unGesture: (() => void) | null = null;
+  /** The stretch of reply now audible: when it started, how often and how long it was silenced, whether its element
+   *  was paused under it. Said once when it ends ("voice brain playback"), so a call he heard nothing of says why. */
+  private stretch: { at: number; ducks: number; duckedMs: number; capped: number; pausedTicks: number } | null = null;
   /** Offering the dropped connection again (reconnect), and when that last happened. */
   private reconnecting = false;
   private reconnectAt = -Infinity;
@@ -213,7 +229,7 @@ export class BrainConversation {
     pc.ontrack = (ev) => {
       const stream = ev.streams[0] ?? new MediaStream([ev.track]);
       this.el.srcObject = stream;
-      void this.el.play().catch((e) => this.o.log?.("voice brain play", { error: String((e as Error)?.message ?? e).slice(0, 200) }));
+      this.playEl("track");
       const an = this.ctx.createAnalyser();
       an.fftSize = 512;
       this.ctx.createMediaStreamSource(stream).connect(an);
@@ -240,6 +256,57 @@ export class BrainConversation {
     };
   }
 
+  /** Play the reply's element; a refusal is said once (shipped) and asked again on his next click or key. */
+  private playEl(why: string): void {
+    let p: Promise<void> | undefined;
+    try {
+      p = this.el.play();
+    } catch (e) {
+      p = Promise.reject(e);
+    }
+    void p?.then(
+      () => {
+        if (this.playError === null) return;
+        this.o.log?.("voice brain play", { ok: true, why, after: this.playError });
+        this.playError = null;
+      },
+      (e) => {
+        const error = String((e as Error)?.message ?? e).slice(0, 200);
+        if (error !== this.playError) this.o.log?.("voice brain play", { error, why });
+        this.playError = error;
+        this.retryOnGesture();
+      },
+    );
+  }
+
+  private retryOnGesture(): void {
+    if (this.unGesture || this.ended || typeof document === "undefined") return;
+    const go = () => {
+      this.unGesture?.();
+      if (!this.ended) this.playEl("gesture");
+    };
+    document.addEventListener("pointerdown", go, true);
+    document.addEventListener("keydown", go, true);
+    this.unGesture = () => {
+      document.removeEventListener("pointerdown", go, true);
+      document.removeEventListener("keydown", go, true);
+      this.unGesture = null;
+    };
+  }
+
+  /** The audible stretch of reply ended: what happened to it, once. */
+  private endStretch(now: number): void {
+    const s = this.stretch;
+    if (!s) return;
+    this.stretch = null;
+    const el = this.el as HTMLAudioElement & { sinkId?: string };
+    this.o.log?.("voice brain playback", {
+      ms: now - s.at, ducks: s.ducks, duckedMs: s.duckedMs, capped: s.capped, pausedTicks: s.pausedTicks,
+      paused: el.paused ?? null, muted: el.muted ?? null, volume: el.volume, sink: el.sinkId ? "pinned" : "default",
+      ctx: (this.ctx as { state?: string }).state ?? null, playError: this.playError,
+    });
+  }
+
   private tick(buf: Float32Array, lbuf: Float32Array): void {
     if (this.ended) return;
     const now = this.d.now();
@@ -248,7 +315,20 @@ export class BrainConversation {
       if (rms(buf) > PLAYING_RMS) {
         this.lastPlaying = now;
         this.thinkingSince = null;
+        this.stretch ??= { at: now, ducks: 0, duckedMs: 0, capped: 0, pausedTicks: 0 };
+        // The reply arrives but its element is not playing (the analyser hears the track, he hears nothing).
+        if (this.el.paused === true) {
+          this.stretch.pausedTicks++;
+          if (now - this.replayAt >= REPLAY_EVERY_MS) {
+            this.replayAt = now;
+            this.playEl("audio while paused");
+          }
+        }
       }
+    }
+    if (this.stretch && now - this.lastPlaying >= SPEAKING_HANG_MS) {
+      this.duckHeld = false;
+      this.endStretch(now);
     }
     if (!this.muted) {
       this.levelAn.getFloatTimeDomainData(lbuf);
@@ -257,18 +337,27 @@ export class BrainConversation {
       const playing = now - this.lastPlaying < SPEAKING_HANG_MS;
       if (playing && level > BARGE_RMS) {
         this.bargeSince ??= now;
-        if (!this.ducked && now - this.bargeSince >= BARGE_MS) {
+        if (!this.ducked && !this.duckHeld && now - this.bargeSince >= BARGE_MS) {
           this.ducked = true;
+          this.duckedAt = now;
           this.el.volume = 0;
+          if (this.stretch) this.stretch.ducks++;
           this.o.log?.("voice brain barge-in", { level: Math.round(level * 1000) / 1000 });
         }
       } else if (level <= BARGE_RMS) this.bargeSince = null;
       if (this.ducked) {
         if (level > SPEECH_RMS) this.lastSpeech = now;
         // The reply stopped (the box took the interruption), or he stopped and it went on (it didn't): sound back.
-        if (!playing || now - this.lastSpeech >= RESUME_MS) {
+        // Still playing DUCK_MAX_MS later: the box didn't take it either, whatever the level says.
+        const capped = playing && now - this.duckedAt >= DUCK_MAX_MS;
+        if (!playing || now - this.lastSpeech >= RESUME_MS || capped) {
           this.ducked = false;
           this.el.volume = this.volume;
+          if (this.stretch) {
+            this.stretch.duckedMs += now - this.duckedAt;
+            if (capped) this.stretch.capped++;
+          }
+          if (capped) this.duckHeld = true;
         }
       }
       const v = voiced(this.loudBits, level > SPEECH_RMS);
@@ -344,7 +433,9 @@ export class BrainConversation {
   }
 
   private teardown(): void {
+    this.endStretch(this.d.now());
     this.ended = true;
+    this.unGesture?.();
     if (this.timer) clearInterval(this.timer);
     for (const t of this.mic.getTracks()) t.stop();
     try {

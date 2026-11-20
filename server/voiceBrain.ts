@@ -164,6 +164,8 @@ type Call = {
   speak: Speakable;
   /** The pipeline's speak channel(s). */
   channels: Set<ServerResponse>;
+  /** A line went out on the speak channel since its last interrupt (revokeSpeech: only then is there one to stop). */
+  channelSaid: boolean;
   untap: () => void;
   engine: BrainEngine;
   turns: number;
@@ -277,6 +279,7 @@ export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: un
     ownTurn: true,
     speak: new Speakable(),
     channels: new Set(),
+    channelSaid: false,
     untap: () => {},
     engine,
     turns: 0,
@@ -367,6 +370,7 @@ export function announce(vault: string, text: string): number {
 
 `;
     for (const ch of c.channels) ch.write(line);
+    if (c.channels.size) c.channelSaid = true;
     n++;
   }
   return n;
@@ -393,13 +397,20 @@ function callOf(req: IncomingMessage, id?: string): Call | null {
 
 // ---------------------------------------------------------------- pi's events → speech
 
-/** Revoke transport work with the call's existing utterance identity; pi remains the only turn queue. */
+/** Revoke transport work with the call's existing utterance identity; pi remains the only turn queue.
+ *  The speak channel is told to stop (its `interrupt`) only when it has something of ours to stop: a line said on it
+ *  since its last stop, and no request of his open. The pipeline turns that interrupt into a Pipecat interruption, which
+ *  also cancels the request it has in flight: every voice line used to cut its own request 15-140 ms in (this revoke,
+ *  from the request itself and from its turn's start), so no reply ever streamed back on the request (brain.jsonl:
+ *  turn.cut spokenChars 0 on every line, 2026-11-12 and 2026-11-20) and each one had to wait for a gap on the channel. */
 function revokeSpeech(c: Call): void {
   c.utt++;
   c.speak.flush();
   c.msg = null;
   if (c.held) clearTimeout(c.held.timer);
   c.held = null;
+  if (!c.channelSaid || (c.sink && !c.sink.done)) return;
+  c.channelSaid = false;
   for (const ch of c.channels) ch.write(`data: ${JSON.stringify({ interrupt: true, utt: c.utt })}\n\n`);
 }
 
@@ -517,6 +528,7 @@ function say(c: Call, pieces: string[]): void {
 function toChannel(c: Call, p: string, utt: number): void {
   const line = `data: ${JSON.stringify({ text: p, utt, at: Date.now() })}\n\n`;
   for (const ch of c.channels) ch.write(line);
+  if (c.channels.size) c.channelSaid = true;
 }
 
 /** No more words came after the cut (a noise cut it, not him): what the turn said is said after all. */
