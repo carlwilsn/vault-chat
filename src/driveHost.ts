@@ -14,7 +14,7 @@ export type DriveHost = {
   onReply(fn: (m: DriveReply) => void): () => void;
   close(): void;
 };
-export type DriveHostFactory = () => Promise<DriveHost>;
+export type DriveHostFactory = (tries?: Record<string, string> | null) => Promise<DriveHost>;
 
 const KEEP_WARM_MS = 3 * 60_000;
 const READY_MS = 60_000;
@@ -86,7 +86,7 @@ export const DRIVE_WINDOW_OPTIONS = {
   resizable: false,
 } as const;
 
-async function nativeHost(): Promise<DriveHost> {
+async function nativeHost(tries?: Record<string, string> | null): Promise<DriveHost> {
   const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
   const { availableMonitors, PhysicalPosition } = await import("@tauri-apps/api/window");
   const { listen, emitTo } = await import("@tauri-apps/api/event");
@@ -104,7 +104,7 @@ async function nativeHost(): Promise<DriveHost> {
   const w = window.innerWidth || 1400;
   const h = window.innerHeight || 900;
   // No x/y here: Windows would ignore an off-monitor one and show the window on screen (2026-11-17, v0.9.38).
-  const win = new WebviewWindow(DRIVE_LABEL, { ...DRIVE_WINDOW_OPTIONS, width: w, height: h });
+  const win = new WebviewWindow(DRIVE_LABEL, { ...DRIVE_WINDOW_OPTIONS, ...(tries ? { url: `${DRIVE_WINDOW_OPTIONS.url}&tries=${encodeURIComponent(JSON.stringify(tries))}` } : {}), width: w, height: h });
   let host: DriveHost | null = null;
   const close = () => {
     unlisten();
@@ -147,10 +147,12 @@ async function nativeHost(): Promise<DriveHost> {
 }
 
 /** The Drive copy as a hidden same-origin frame of this page (a browser; the preview harness). */
-export async function driveFrameHost(): Promise<DriveHost> {
+export async function driveFrameHost(tries?: Record<string, string> | null): Promise<DriveHost> {
   const f = document.createElement("iframe");
   const params = new URLSearchParams(location.search);
   params.set("view", "drive");
+  if (tries) params.set("tries", JSON.stringify(tries));
+  else params.delete("tries");
   f.src = `${location.pathname}?${params.toString()}`;
   f.setAttribute("aria-hidden", "true");
   f.tabIndex = -1;
@@ -182,8 +184,14 @@ export function setDriveHostFactory(f: DriveHostFactory | null): void {
 
 let warm: { host: DriveHost; timer: ReturnType<typeof setTimeout> | null } | null = null;
 
-/** The Drive copy, opened (or the warm one), and ready, or why not. */
-export async function openDriveHost(): Promise<{ host: DriveHost; error?: string; note?: string }> {
+/** The Drive copy, opened (or the warm one), and ready, or why not. `tries`: a gate run's drafts (src/driveGuard.ts
+ *  driveTries): always a fresh copy started with them (never the warm one), closed after its run. */
+export async function openDriveHost(tries?: Record<string, string> | null): Promise<{ host: DriveHost; error?: string; note?: string }> {
+  if (tries && warm) {
+    if (warm.timer) clearTimeout(warm.timer);
+    warm.host.close();
+    warm = null;
+  }
   if (warm) {
     if (warm.timer) clearTimeout(warm.timer);
     warm.timer = null;
@@ -192,7 +200,7 @@ export async function openDriveHost(): Promise<{ host: DriveHost; error?: string
     warm.host.close();
     warm = null;
   }
-  const host = await (factory ?? (isTauri() ? nativeHost : driveFrameHost))();
+  const host = await (factory ?? (isTauri() ? nativeHost : driveFrameHost))(tries ?? null);
   warm = { host, timer: null };
   const r = await host.ready;
   if (!r.ok) {

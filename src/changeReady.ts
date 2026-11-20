@@ -41,6 +41,7 @@ import { isMigrationId, summaryLine, type MigrationSummary } from "./migrations"
 import { CORE_NAME, CORE_PART, coreCard, coreChangesSince, type CoreCandidate, type CoreCommit, type CoreLook } from "./coreBundle";
 import { provideCoreTrying } from "./coreFollow";
 import { UNDO_CHORD, plainWhy } from "./changeFlow";
+import { driveTries } from "./driveGuard";
 import { BUILT_IN, KEEP_TYPING_MS, KEEP_WATCH_MS, TRY_SLOW_MS, draftStaged, draftWhat, landing, slowMedian, watchedKeep, type ChangeRecord, type SlotCode } from "./pluginDrafts";
 
 export const CHANGES_PLUGIN = { id: "app/changes", name: "Changes" } as const;
@@ -57,6 +58,8 @@ let tries: Tries = NONE;
 const tryListeners = new Set<() => void>();
 
 function readTries(v: string | null): Tries {
+  // A gate run in the Drive window (src/driveGuard.ts): the drafts it was handed, whatever the storage copy says.
+  if (driveTries) return driveTries;
   try {
     const raw = v ? globalThis.localStorage?.getItem(TRY_KEY + v) : null;
     const o = raw ? JSON.parse(raw) : null;
@@ -166,6 +169,7 @@ export function _setProcessStart(fn: typeof processStart): void {
  * again in the same run (a core Try loads the new core) keeps it. Returns what was dropped.
  */
 export async function dropTriesFromBefore(): Promise<string[]> {
+  if (driveTries) return [];
   const cur = followTries();
   if (!Object.keys(cur).length || !tryVault) return [];
   const start = await processStart();

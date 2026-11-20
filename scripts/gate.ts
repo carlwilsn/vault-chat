@@ -7,7 +7,9 @@
 //
 // <part> and its candidate:
 //   an app plugin (composer, app/composer) or a vault plugin (pen-cursor, .vault-chat/plugins/pen-cursor.js): its
-//       <name>.draft.js; runner ui-harness (scripts/draft-check.ts: the live copy and the draft side by side in the app)
+//       <name>.draft.js; runner ui-drive for an app plugin when the laptop can run it (the real app's hidden, read-only
+//       Drive copy on Carl's real data: the copy in effect, then a fresh copy running the draft; POST /api/v2/gate/drive),
+//       else (or --harness) ui-harness (scripts/draft-check.ts: the live copy and the draft side by side in the harness)
 //   preset (app/preset): .vault-chat/app-plugins/preset.draft.json; runner preset (src/gateChecks.ts presetGate: a preset,
 //       every mount an app plugin this app has), then ui-harness with the draft preset tried
 //   box/<name>: .vault-chat/box-plugins/<name>.draft.js; runner box-copy (server/gateBox.ts: live copy and draft loaded
@@ -32,7 +34,7 @@ import { PRESET_DRAFT_FILE } from "../src/appPreset.ts";
 import { boxPluginName, boxSlot, draftWhat, versionOf, type DraftSlot } from "../src/pluginDrafts.ts";
 import { GATE_LINE, PRESET_PART, SETTINGS_PART, gateDecision, partKind, type GateResult, type GateVerdict, type PartKind } from "../src/gateResult.ts";
 import { PRESET_SKIPPED_RE, presetGate } from "../src/gateChecks.ts";
-import { captureRealData, draftCheck, slotFor, type Step } from "./draft-check.ts";
+import { captureRealData, draftCheck, judge, slotFor, type Side, type Step } from "./draft-check.ts";
 import { boxUrl, postBoxChange } from "./boxChange.ts";
 
 /** The part a word names: preset, settings, box/<name>, else an app or vault plugin (draft-check's slotFor). */
@@ -52,7 +54,7 @@ export function partOf(word: string): { part: string; kind: PartKind; slot: Draf
   return { part: slot.plugin, kind, slot };
 }
 
-export type RunOpts = { vault: string; data?: string; synthetic?: boolean; scenario?: string; steps?: Step[]; keys?: number; runs?: number; port?: number; box?: string };
+export type RunOpts = { vault: string; data?: string; synthetic?: boolean; harness?: boolean; scenario?: string; steps?: Step[]; keys?: number; runs?: number; port?: number; box?: string };
 export type Judged = { verdict: GateVerdict; reasons: string[]; version: string; what: string; runner: string; data?: string; detail?: unknown };
 
 const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : undefined);
@@ -72,10 +74,49 @@ async function scratchVault(o: RunOpts, scratch: string): Promise<{ dir: string;
   return { dir: await captureRealData(o.vault, scratch), data: "a fresh copy of the box's real data" };
 }
 
+// ---------------------------------------------------------------- the UI runner on the real app (Drive)
+
+type DriveSide = { unavailable?: string; ok?: boolean; error?: string | null; tries?: Record<string, string> | null; steps?: { ok: boolean; steps: { ok: boolean; error?: string }[]; errors: string[]; text: string } | null };
+
+async function driveSide(o: RunOpts, steps: Step[], tries?: Record<string, string>): Promise<DriveSide> {
+  const url = `${boxUrl(o.box)}/api/v2/gate/drive?vault=${encodeURIComponent(o.vault.replace(/[\\/]+$/, "").split(/[\\/]/).pop()!)}`;
+  const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ steps, ...(tries ? { tries } : {}) }), signal: AbortSignal.timeout(300_000) });
+  const body = (await r.json().catch(() => ({}))) as DriveSide & { error?: string };
+  if (!r.ok) return { unavailable: body.error ?? `the box refused it (${r.status})` };
+  return body;
+}
+
+/**
+ * An app plugin's draft judged in the real laptop app's hidden, read-only Drive copy on Carl's real data (the copy in
+ * effect, then a fresh copy running the draft), instead of the preview harness. Null (with why) when that can't be
+ * relied on: the laptop is off, busy or refuses, its app knows no tries yet, or the draft's copy never mounted there
+ * (not synced yet, or it failed: the harness then judges it).
+ */
+export async function judgeOnLaptop(part: string, version: string, o: RunOpts): Promise<{ v: ReturnType<typeof judge> } | { skip: string }> {
+  if (!/^app\/[a-z][a-z0-9-]*$/.test(part)) return { skip: "only app plugins carry a draft mark the Drive copy can see" };
+  const mark = `[data-vc-plugin="${part}"][data-vc-copy="draft"]`;
+  const live = await driveSide(o, [{ wait: 3000 }]);
+  if (live.unavailable || !live.steps) return { skip: live.unavailable ?? live.error ?? "the laptop gave no result" };
+  const draft = await driveSide(o, [{ waitFor: mark, timeout: 30_000 }, { wait: 3000 }], { [part]: version });
+  if (draft.unavailable) return { skip: draft.unavailable };
+  if (!draft.tries || draft.tries[part] !== version) return { skip: "the laptop's app does not run a gate's tries yet (an older core)" };
+  if (!draft.steps || !draft.steps.steps[0]?.ok) return { skip: `the draft's copy never mounted on the laptop (${draft.steps?.steps[0]?.error ?? draft.error ?? "no result"})` };
+  const side = (d: DriveSide): Side => ({ errors: d.steps!.errors, text: d.steps!.text.split("\n"), ran: true, typingMs: [] });
+  const v = judge(part, version, side(live), side(draft));
+  v.data = "Carl's real data in the laptop app's hidden Drive copy";
+  return { v };
+}
+
 /** Run the runner for one part's candidate. Throws when it can't run (no candidate, no data). */
 export async function judgePart(p: ReturnType<typeof partOf>, o: RunOpts): Promise<Judged> {
   if (p.kind === "ui-plugin") {
     const draft = read(join(o.vault, p.slot!.dir, p.slot!.draft));
+    // The real app first (Drive), where it can be relied on; the preview harness on a copy of real data otherwise.
+    if (draft !== undefined && !o.data && !o.synthetic && !o.harness) {
+      const d = await judgeOnLaptop(p.part, versionOf(draft), o).catch((e) => ({ skip: String((e as Error)?.message ?? e) }));
+      if ("v" in d) return { verdict: d.v.verdict, reasons: d.v.reasons, version: d.v.version, what: draftWhat(draft), runner: "ui-drive", data: d.v.data, detail: { textAdded: d.v.textAdded.slice(0, 40), textRemoved: d.v.textRemoved.slice(0, 40) } };
+      console.log(`the real app's Drive copy can't judge it now (${d.skip}): the preview harness does`);
+    }
     const v = await draftCheck({ plugin: p.part, vault: o.vault, data: o.data, synthetic: o.synthetic, scenario: o.scenario, steps: o.steps, keys: o.keys, runs: o.runs, port: o.port });
     return { verdict: v.verdict, reasons: v.reasons, version: v.version, what: draft ? draftWhat(draft) : "", runner: "ui-harness", data: v.data, detail: { typing: v.typing, textAdded: v.textAdded.slice(0, 40), textRemoved: v.textRemoved.slice(0, 40) } };
   }
@@ -145,7 +186,7 @@ async function main(argv: string[]): Promise<number> {
   } else {
     const num = (f: string) => (value(f) !== undefined ? Number(value(f)) : undefined);
     const steps = value("--steps") ? (JSON.parse(readFileSync(value("--steps")!, "utf8")) as Step[]) : undefined;
-    const j = await judgePart(p, { vault, data: value("--data"), synthetic: argv.includes("--synthetic"), scenario: value("--scenario"), steps, keys: num("--keys"), runs: num("--runs"), port: num("--port"), box: value("--box") });
+    const j = await judgePart(p, { vault, data: value("--data"), synthetic: argv.includes("--synthetic"), harness: argv.includes("--harness"), scenario: value("--scenario"), steps, keys: num("--keys"), runs: num("--runs"), port: num("--port"), box: value("--box") });
     result = { part: p.part, kind: p.kind, version: j.version, verdict: j.verdict, decision: null, reasons: j.reasons, runner: j.runner, ...(j.data ? { data: j.data } : {}), what: j.what, asked, ...(conv ? { conv } : {}), at: Date.now() };
     console.log(`${j.verdict.toUpperCase()}: ${p.part} ${j.version} (${j.runner}${j.data ? ` on ${j.data}` : ""})`);
     for (const r of j.reasons) console.log(`- ${r}`);

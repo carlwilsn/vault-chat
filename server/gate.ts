@@ -21,6 +21,10 @@ import { masterDir } from "./master";
 import { killTree } from "./commands/proc";
 import { settingsDraftGate } from "./settings";
 import { setPluginChange } from "./supervisor";
+import { askLaptop } from "./driveTool";
+import { controlDown } from "./deviceLink";
+import { checkSteps } from "../src/driveSteps";
+import { cleanDriveTries } from "../src/driveGuard";
 
 // ---------------------------------------------------------------- the record, and the one place it is read
 
@@ -97,6 +101,30 @@ export async function gateRoute(vault: string, method: string, query: URLSearchP
   if (partKind(part) !== "settings") return { status: 400, body: { error: `${part || "(no part)"}: only the settings draft's gate runs in the box; the others run with the Plugins tool's submit (scripts/gate.ts)` } };
   const r = await settingsGate(vault, { asked: body?.asked === true, land: body?.land !== false, conv: typeof body?.conv === "string" ? body.conv : null, again: true });
   return "error" in r ? { status: 409, body: { error: r.error } } : { status: 200, body: r };
+}
+
+// ---------------------------------------------------------------- the UI runner on the real app (Drive)
+
+/**
+ * POST /api/v2/gate/drive {steps, tries?, idleMs?, timeoutMs?}: one side of the UI runner in the real laptop app's hidden,
+ * read-only Drive copy (src/driveOnLaptop.ts) on Carl's real data, with `tries` (the drafts that copy runs instead of
+ * the copies in effect). Never while he uses the app (idle 5 min unless idleMs says less). Answers what the laptop
+ * acked: {ok, tries (echoed: an app that knows tries), steps: {ok, steps, errors, text}} or {unavailable: why}.
+ */
+export async function gateDriveRoute(vault: string, body: Record<string, unknown> | null, emit: (ev: Record<string, unknown>) => void = (ev) => void signal(vault, ev)): Promise<{ status: number; body: unknown }> {
+  const steps = checkSteps(body?.steps ?? []);
+  if (typeof steps === "string") return { status: 400, body: { error: `bad steps: ${steps}` } };
+  const tries = body?.tries === undefined ? null : cleanDriveTries(body.tries);
+  if (body?.tries !== undefined && !tries) return { status: 400, body: { error: "tries: {app/<name> | .vault-chat/plugins/<file>: 8-hex version}" } };
+  const down = controlDown("laptop");
+  if (down) return { status: 200, body: { unavailable: down } };
+  const idleMs = typeof body?.idleMs === "number" && body.idleMs >= 0 ? Math.min(body.idleMs, 3_600_000) : 5 * 60_000;
+  const timeoutMs = typeof body?.timeoutMs === "number" && body.timeoutMs > 0 ? Math.min(body.timeoutMs, 180_000) : 90_000;
+  const { ack } = await askLaptop({ emit }, "drive", { steps, ...(tries ? { tries } : {}), force: false, idleMs, timeoutMs }, timeoutMs + 75_000);
+  if (!ack) return { status: 200, body: { unavailable: "the laptop did not answer" } };
+  const data = (ack.data ?? {}) as { refused?: boolean; aborted?: string; tries?: unknown; steps?: { ok: boolean; steps: unknown[]; errors: string[]; text: string } };
+  if (data.refused || data.aborted) return { status: 200, body: { unavailable: ack.error ?? data.aborted ?? "refused" } };
+  return { status: 200, body: { ok: ack.ok, error: ack.error ?? null, tries: cleanDriveTries(data.tries), steps: data.steps ?? null } };
 }
 
 // ---------------------------------------------------------------- the job: scripts/gate.ts

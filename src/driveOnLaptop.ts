@@ -10,16 +10,19 @@
 import { checkSteps, type Shot, type StepsResult } from "./driveSteps";
 import type { TimingResult, TimingMetric } from "./driveTiming";
 import { openDriveHost, releaseDriveHost } from "./driveHost";
+import { cleanDriveTries } from "./driveGuard";
 import type { DriveReply } from "./driveProtocol";
 import { idleMs, noteInput, onInput } from "./userActivity";
 
-export type DriveSignal = { type: "drive" | "timing"; id: string; to?: string; steps?: unknown; force?: unknown; idleMs?: unknown; timeoutMs?: unknown; keys?: unknown; toggles?: unknown; metrics?: unknown };
+export type DriveSignal = { type: "drive" | "timing"; id: string; to?: string; steps?: unknown; force?: unknown; idleMs?: unknown; timeoutMs?: unknown; tries?: unknown; keys?: unknown; toggles?: unknown; metrics?: unknown };
 export type DriveAckData = {
   where?: string;
   note?: string;
   refused?: boolean;
   aborted?: string;
   idleSec?: number | null;
+  /** The drafts the Drive copy ran instead of the copies in effect (a gate run): an app that echoes them knows tries. */
+  tries?: Record<string, string> | null;
   steps?: Omit<StepsResult, "shots"> & { shots: { name: string; width: number; height: number }[] };
   timing?: TimingResult;
 };
@@ -66,7 +69,8 @@ async function runDrive(sig: DriveSignal): Promise<DriveAck> {
     abortRun?.(abortWhy);
   });
   try {
-    const opened = await openDriveHost();
+    const tries = sig.type === "drive" ? cleanDriveTries(sig.tries) : null;
+    const opened = await openDriveHost(tries);
     if (abortWhy) {
       releaseDriveHost(true);
       return { ok: false, error: `${abortWhy}; stopped before anything ran.`, data: { aborted: abortWhy, idleSec } };
@@ -106,8 +110,8 @@ async function runDrive(sig: DriveSignal): Promise<DriveAck> {
       abortWhy = reply.aborted;
       noteInput("keydown");
     }
-    releaseDriveHost(!!abortWhy);
-    const base: DriveAckData = { where: host.where, ...(opened.note ? { note: opened.note } : {}), idleSec, ...(abortWhy ? { aborted: abortWhy } : {}) };
+    releaseDriveHost(!!abortWhy || !!tries);
+    const base: DriveAckData = { where: host.where, ...(tries ? { tries } : {}), ...(opened.note ? { note: opened.note } : {}), idleSec, ...(abortWhy ? { aborted: abortWhy } : {}) };
     if ("timeout" in reply) return { ok: false, error: `the run did not finish within ${Math.round(timeoutMs / 1000)} s`, data: base };
     if (reply.error) return { ok: false, error: reply.error, data: base };
     if (reply.steps) {

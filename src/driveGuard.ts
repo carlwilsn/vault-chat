@@ -54,3 +54,24 @@ if (isDriveWindow && typeof window !== "undefined") {
     console.warn("[drive] could not isolate storage:", e);
   }
 }
+
+/** The tries a gate run handed this Drive window (`?tries=` JSON, src/driveHost.ts openDriveHost): which drafts it runs
+ *  instead of the copies in effect (src/changeReady.ts readTries). Only an app plugin, a vault plugin or the preset, each
+ *  at an 8-hex version. Never Carl's tries (his window's storage is not read for them here). */
+export function cleanDriveTries(v: unknown): Record<string, string> | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const out: Record<string, string> = {};
+  for (const [k, x] of Object.entries(v as Record<string, unknown>).slice(0, 8))
+    if ((/^app\/[a-z][a-z0-9-]{0,40}$/.test(k) || /^\.vault-chat\/plugins\/[^/]{1,80}\.m?js$/i.test(k)) && typeof x === "string" && /^[0-9a-f]{8}$/.test(x)) out[k] = x;
+  return Object.keys(out).length ? out : null;
+}
+
+export const driveTries: Record<string, string> | null = (() => {
+  if (!isDriveWindow || typeof location === "undefined") return null;
+  try {
+    const raw = new URLSearchParams(location.search).get("tries");
+    return raw ? cleanDriveTries(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+})();

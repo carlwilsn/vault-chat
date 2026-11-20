@@ -90,8 +90,10 @@ let opened = 0;
 let closed = 0;
 let readyFail: string | null = null;
 let answer: (req: Req, aborted: Promise<string>) => Promise<Record<string, unknown>> = async () => ({});
-const fakeFactory = async () => {
+const tried: (Record<string, string> | null)[] = [];
+const fakeFactory = async (tries?: Record<string, string> | null) => {
   opened++;
+  tried.push(tries ?? null);
   const fns = new Set<(m: any) => void>();
   const aborts = new Map<string, (why: string) => void>();
   const reply = (m: any) => setTimeout(() => fns.forEach((f) => f(m)), 5);
@@ -179,6 +181,31 @@ test("idle: the steps run in the Drive copy; outcomes, errors, text and screensh
   assert.match(r.text, /Visible text at the end:\nNotes\nhi/);
   assert.equal(r.images.length, 1);
   assert.deepEqual(Buffer.from(r.images[0]!.data, "base64"), pic);
+});
+
+test("the gate's UI runner on the real app: a draft is run in a fresh Drive copy started with it (echoed), never the warm one; bad tries are refused", async () => {
+  _resetUserActivity();
+  const { gateDriveRoute } = await import("../../server/gate.ts");
+  const { cleanDriveTries } = await import("../../src/driveGuard.ts");
+  assert.deepEqual(cleanDriveTries({ "app/notes": "0123abcd", "box/x": "0123abcd", "app/chat": "nothex!!", ".vault-chat/plugins/pen.js": "89abcdef" }), { "app/notes": "0123abcd", ".vault-chat/plugins/pen.js": "89abcdef" });
+  assert.equal(cleanDriveTries({ "app/chat": "zz" }), null);
+  answer = async (req) => stepsOk(req.steps ?? []);
+  const live = await gateDriveRoute(vault, { steps: [{ wait: 10 }], idleMs: 0 }, emit);
+  assert.equal(live.status, 200);
+  assert.equal((live.body as any).tries, null, "the copy in effect");
+  assert.equal(tried.at(-1), null);
+  const n = opened;
+  const draft = await gateDriveRoute(vault, { steps: [{ waitFor: '[data-vc-copy="draft"]', timeout: 50 }], tries: { "app/notes": "0123abcd" }, idleMs: 0 }, emit);
+  assert.deepEqual((draft.body as any).tries, { "app/notes": "0123abcd" }, "the laptop says it ran the draft");
+  assert.equal((draft.body as any).steps.ok, true);
+  assert.equal(opened, n + 1, "a fresh copy, started with the tries");
+  assert.deepEqual(tried.at(-1), { "app/notes": "0123abcd" });
+  assert.equal((await gateDriveRoute(vault, { steps: [], tries: { "box/x": "0123abcd" } }, emit)).status, 400);
+  // Carl at the laptop: the gate does not run there (the harness judges instead).
+  const { noteInput } = await import("../../src/userActivity.ts");
+  noteInput("keydown");
+  assert.match(String(((await gateDriveRoute(vault, { steps: [{ wait: 10 }] }, emit)).body as any).unavailable), /Carl is using the laptop/);
+  _resetUserActivity();
 });
 
 test("a failing step: said with its error and what was not run", async () => {
