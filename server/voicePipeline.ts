@@ -3,9 +3,19 @@
 // once with uv from the pinned requirements (again only when they change), and keeps the pipeline running on
 // loopback for the single voice brain (server/voiceBrain.ts). It stops with the server; VC_VOICE_PIPELINE=off
 // disables startup without selecting another transport. Its log: <state>/logs/voice-pipeline.log.
+//
+// The pipeline is a versioned part of the box, like the box server: each set of its files (bot.py, listener.py,
+// local_voice.py, the requirements) is a version (the first 8 hex of their sha256) kept in <state>/voice/versions/<v>/,
+// and <state>/voice/part.json says which runs (current), which ran before (previous), which came up at least once
+// (proven) and which failed here (bad). A new version is taken when this server brings one (its handover is the
+// server's: the updater waits for no live call before a new server takes over, and the old server's pipeline stops with
+// it). A version not yet proven that exits or does not say "[voice ready]" within READY_WAIT_MS is marked bad and the
+// previous one starts in its place, when it runs on the same Python environment (same requirements). A port conflict
+// is never the version's fault. Each take and switch back is a line in <state>/voice/switches.jsonl, written to the log
+// as a `box.voice.switch` record (server/serverSwitches.ts).
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import { voicePort } from "./voicePorts";
@@ -20,6 +30,8 @@ export type PipelineOptions = {
   /** Calls speak with the local voice now (server/voiceProvider.ts): its packages are installed before the first
    * launch and its models fetched at startup. An install on the ElevenLabs voice never installs them. */
   wantsLocal?: () => boolean;
+  /** Tests: how long a version not yet proven has to say ready (default READY_WAIT_MS). */
+  readyWaitMs?: number;
 };
 
 let child: ChildProcess | null = null;
@@ -53,6 +65,67 @@ export async function checkVoicePort(o: PipelineOptions): Promise<void> {
 }
 let lastError: string | null = null;
 let current: { o: PipelineOptions; dir: string } | null = null;
+
+/** How long a version not yet proven has to say "[voice ready]" (after its environment is made) before it is dropped. */
+export const READY_WAIT_MS = 180_000;
+/** The pipeline's files, by name. */
+const PIPELINE_FILES: [string, string][] = [["bot.py", BOT_PY], ["listener.py", LISTENER_PY], ["local_voice.py", LOCAL_VOICE_PY], ["requirements.txt", REQUIREMENTS], ["requirements-local.txt", LOCAL_REQUIREMENTS]];
+/** This server's pipeline version: the first 8 hex of the sha256 over its files (names and bytes). */
+export function pipelineVersion(files: [string, string][] = PIPELINE_FILES): string {
+  const h = createHash("sha256");
+  for (const [n, b] of files) h.update(n).update("\0").update(b).update("\0");
+  return h.digest("hex").slice(0, 8);
+}
+export type VoicePart = { current: string | null; previous: string | null; proven: string[]; bad: string[] };
+const partFile = (root: string) => join(root, "part.json");
+export function readVoicePart(root: string): VoicePart {
+  try {
+    const o = JSON.parse(readFileSync(partFile(root), "utf8"));
+    const list = (x: unknown) => (Array.isArray(x) ? x.filter((v): v is string => typeof v === "string" && /^[0-9a-f]{8}$/.test(v)).slice(-50) : []);
+    const one = (x: unknown) => (typeof x === "string" && /^[0-9a-f]{8}$/.test(x) ? x : null);
+    return { current: one(o.current), previous: one(o.previous), proven: list(o.proven), bad: list(o.bad) };
+  } catch {
+    return { current: null, previous: null, proven: [], bad: [] };
+  }
+}
+function writeVoicePart(root: string, p: VoicePart): void {
+  writeFileSync(partFile(root) + ".tmp", JSON.stringify(p) + "\n");
+  renameSync(partFile(root) + ".tmp", partFile(root));
+}
+/** One take ("keep") or switch back ("switch") for the log (server/serverSwitches.ts startVoiceSwitches). */
+function noteSwitch(root: string, change: "keep" | "switch", to: string, from: string | null, reason?: string): void {
+  try {
+    appendFileSync(join(root, "switches.jsonl"), JSON.stringify({ change, at: Date.now(), to: { slot: to, version: to, rev: null, source: "box" }, from: from ? { slot: from, version: from, rev: null, source: "box" } : null, ...(reason ? { reason } : {}) }) + "\n");
+  } catch { /* the log line is best effort; the part file is the truth */ }
+}
+const reqOf = (dir: string) => { try { return createHash("sha256").update(readFileSync(join(dir, "requirements.txt"))).digest("hex").slice(0, 16); } catch { return null; } };
+/** Whether version `v` is kept on disk whole and runs on the environment made for `want` (its requirements' hash). */
+const runnableOn = (root: string, v: string | null, want: string): v is string =>
+  !!v && existsSync(join(root, "versions", v, "bot.py")) && reqOf(join(root, "versions", v)) === want;
+/** The version to run now, from this server's own (`mine`) and the part file; records a take of `mine`. */
+export function chooseVersion(root: string, mine: string, want: string): string {
+  const p = readVoicePart(root);
+  if (p.bad.includes(mine)) return runnableOn(root, p.current, want) && !p.bad.includes(p.current) ? p.current : runnableOn(root, p.previous, want) && !p.bad.includes(p.previous) ? p.previous : mine;
+  if (p.current !== mine) {
+    const from = p.current;
+    writeVoicePart(root, { ...p, current: mine, previous: from ?? p.previous });
+    noteSwitch(root, "keep", mine, from);
+  }
+  return mine;
+}
+/** `v` failed here: never again; back to the previous version when it runs on the same environment. */
+export function dropVersion(root: string, v: string, want: string, reason: string): string | null {
+  const p = readVoicePart(root);
+  const bad = p.bad.includes(v) ? p.bad : [...p.bad, v];
+  const back = [p.previous, p.current].find((x) => x !== v && runnableOn(root, x, want) && !bad.includes(x!)) ?? null;
+  writeVoicePart(root, { current: back ?? p.current, previous: back ? v : p.previous, proven: p.proven, bad });
+  if (back) noteSwitch(root, "switch", back, v, reason);
+  return back;
+}
+function markProven(root: string, v: string): void {
+  const p = readVoicePart(root);
+  if (!p.proven.includes(v)) writeVoicePart(root, { ...p, proven: [...p.proven, v] });
+}
 let localSetup: Promise<void> | null = null;
 let localError: string | null = null;
 const localStampWant = () => createHash("sha256").update(REQUIREMENTS).update(LOCAL_REQUIREMENTS).digest("hex").slice(0, 16);
@@ -62,7 +135,7 @@ const localInstalled = (dir: string) => {
 
 /** What the pipeline is doing (health, Settings). */
 export function pipelineState() {
-  return { wanted, running: ready && !!child && child.exitCode === null, settingUp: !!setup, error: lastError, failure };
+  return { wanted, running: ready && !!child && child.exitCode === null, settingUp: !!setup, error: lastError, failure, version: runningVersion };
 }
 
 /** The Nix store's libstdc++ and zlib (the wheels' native code needs them; NixOS has no /usr/lib): newest first. */
@@ -86,11 +159,19 @@ function nixLibs(): string[] {
 async function prepare(o: PipelineOptions): Promise<string> {
   const dir = join(o.stateDir, "voice");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "bot.py"), BOT_PY);
-  writeFileSync(join(dir, "listener.py"), LISTENER_PY);
+  // The environment is made from the requirements at the voice folder's top (as before); each version's files are
+  // kept in versions/<v>/ beside it.
   writeFileSync(join(dir, "requirements.txt"), REQUIREMENTS);
-  writeFileSync(join(dir, "local_voice.py"), LOCAL_VOICE_PY);
   writeFileSync(join(dir, "requirements-local.txt"), LOCAL_REQUIREMENTS);
+  const vdir = join(dir, "versions", pipelineVersion());
+  if (!existsSync(join(vdir, "bot.py"))) {
+    mkdirSync(vdir, { recursive: true });
+    for (const [n, b] of PIPELINE_FILES) writeFileSync(join(vdir, n), b);
+  }
+  // Keep this version and the two the part file names (the one to go back to); older ones go.
+  const part = readVoicePart(dir);
+  const keep = new Set([pipelineVersion(), part.current, part.previous].filter(Boolean));
+  for (const v of readdirSync(join(dir, "versions"))) if (!keep.has(v)) rmSync(join(dir, "versions", v), { recursive: true, force: true });
   const want = createHash("sha256").update(REQUIREMENTS).digest("hex").slice(0, 16);
   const stamp = join(dir, "venv.stamp");
   const python = join(dir, "venv", "bin", "python");
@@ -150,12 +231,36 @@ export function localVoiceReady(): { ready: boolean; error: string | null } {
   return { ready: false, error: localError ?? "Setting up the local voice (the first time takes a few minutes)" };
 }
 
-function launch(o: PipelineOptions, dir: string, session: number): void {
+const envWant = () => createHash("sha256").update(REQUIREMENTS).digest("hex").slice(0, 16);
+let watch: ReturnType<typeof setTimeout> | null = null;
+let runningVersion: string | null = null;
+
+function launch(o: PipelineOptions, dir: string, session: number, forced?: string): void {
   if (!wanted || child || session !== generation) return;
   current = { o, dir };
   const libs = nixLibs();
+  const version = forced ?? chooseVersion(dir, pipelineVersion(), envWant());
+  runningVersion = version;
+  const proven = readVoicePart(dir).proven.includes(version);
+  const wait = o.readyWaitMs ?? READY_WAIT_MS;
+  // A version not proven here that does not come up: dropped, and the previous one starts in its place.
+  const giveUp = (reason: string) => {
+    if (watch) { clearTimeout(watch); watch = null; }
+    if (readVoicePart(dir).proven.includes(version) || !wanted || session !== generation) return false;
+    const back = dropVersion(dir, version, envWant(), reason);
+    o.log?.(`[voice] pipeline ${version} ${reason}; ${back ? `back to ${back}` : "no earlier version to go back to"}`);
+    if (!back) return false;
+    const old = child;
+    child = null; ready = false; failure = null; lastError = null;
+    if (old && old.exitCode === null && old.signalCode === null) { old.once("exit", () => launch(o, dir, session, back)); old.kill("SIGTERM"); }
+    else launch(o, dir, session, back);
+    return true;
+  };
+  if (watch) clearTimeout(watch);
+  watch = proven ? null : setTimeout(() => { if (child && runningVersion === version) giveUp(`did not say ready in ${Math.round(wait / 1000)} s`); }, wait);
+  watch?.unref?.();
   const p = spawn(join(dir, "venv", "bin", "python"), ["bot.py"], {
-    cwd: dir,
+    cwd: join(dir, "versions", version),
     env: {
       ...process.env,
       VC_VOICE_PORT: String(o.port),
@@ -183,7 +288,11 @@ function launch(o: PipelineOptions, dir: string, session: number): void {
     }
     // Bounded startup markers only: provider exceptions can contain credentials.
     diagnostics = (diagnostics + b.toString("utf8")).slice(-4096);
-    if (child === p && session === generation && diagnostics.includes("[voice ready]")) ready = true;
+    if (child === p && session === generation && !ready && diagnostics.includes("[voice ready]")) {
+      ready = true;
+      if (watch) { clearTimeout(watch); watch = null; }
+      markProven(dir, version);
+    }
     const bind = /\[voice bind\] port=\d+ errno=(\d+)/.exec(diagnostics);
     if (child === p && session === generation && bind) {
       if (bind[1] === "98") conflict(o);
@@ -202,6 +311,7 @@ function launch(o: PipelineOptions, dir: string, session: number): void {
     child = null; ready = false;
     if (!wanted) return;
     if (code === 98) conflict(o);
+    else if (giveUp(`exited (${code}) before it was ready`)) return;
     else if (!failure) fail(o, "VOICE_START_FAILED", `Voice pipeline exited (${code}); check the Python environment.`);
     // A failed bind/start is terminal until an explicit off/on. Never try a fallback port.
   });
@@ -239,6 +349,7 @@ export async function wantPipeline(o: PipelineOptions, on: boolean): Promise<voi
 
 /** Release only the ChildProcess spawned by this controller; never search/kill port occupants. */
 export function stopPipeline(): void {
+  if (watch) { clearTimeout(watch); watch = null; }
   wanted = false; generation++; ready = false; current = null;
   const owned = child; child = null;
   if (owned && owned.exitCode === null && owned.signalCode === null) owned.kill("SIGTERM");

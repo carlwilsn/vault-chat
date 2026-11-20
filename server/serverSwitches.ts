@@ -8,9 +8,11 @@ import { join } from "node:path";
 import { signal } from "./convlog/log";
 
 export const SERVER_SWITCH = "box.server.switch";
+/** The voice pipeline's takes and switches back (server/voicePipeline.ts writes <state>/voice/switches.jsonl). */
+export const VOICE_SWITCH = "box.voice.switch";
 
 type Side = { slot: string; version: string | null; rev: string | null; source: "box" | "github" } | null;
-export type ServerSwitch = { type: typeof SERVER_SWITCH; change: "keep" | "switch"; by: "auto"; at: number; to: Side; from: Side; reason?: string };
+export type ServerSwitch = { type: typeof SERVER_SWITCH | typeof VOICE_SWITCH; change: "keep" | "switch"; by: "auto"; at: number; to: Side; from: Side; reason?: string };
 
 const side = (v: unknown): Side => {
   if (!v || typeof v !== "object") return null;
@@ -22,7 +24,7 @@ const side = (v: unknown): Side => {
 };
 
 /** One updater line as a record, or null when it is not one. */
-export function parseSwitch(line: string): ServerSwitch | null {
+export function parseSwitch(line: string, type: ServerSwitch["type"] = SERVER_SWITCH): ServerSwitch | null {
   let o: Record<string, unknown>;
   try {
     o = JSON.parse(line);
@@ -33,13 +35,21 @@ export function parseSwitch(line: string): ServerSwitch | null {
   const to = side(o.to);
   if (!to) return null;
   const reason = typeof o.reason === "string" && o.reason.trim() ? o.reason.trim().slice(0, 300) : undefined;
-  return { type: SERVER_SWITCH, change: o.change, by: "auto", at: Number(o.at) || Date.now(), to, from: side(o.from), ...(reason ? { reason } : {}) };
+  return { type, change: o.change, by: "auto", at: Number(o.at) || Date.now(), to, from: side(o.from), ...(reason ? { reason } : {}) };
 }
 
 /** Write the updater's new lines as records (emit: the main vault's signal). Returns how many were written. */
 export function recordServerSwitches(stateDir: string, emit: (ev: ServerSwitch) => boolean): number {
-  const file = join(stateDir, "server-switches.jsonl");
-  const seenFile = join(stateDir, "server-switches.seen");
+  return recordSwitches(join(stateDir, "server-switches.jsonl"), SERVER_SWITCH, emit);
+}
+
+/** The voice pipeline's lines as `box.voice.switch` records. */
+export function recordVoiceSwitches(stateDir: string, emit: (ev: ServerSwitch) => boolean): number {
+  return recordSwitches(join(stateDir, "voice", "switches.jsonl"), VOICE_SWITCH, emit);
+}
+
+function recordSwitches(file: string, type: ServerSwitch["type"], emit: (ev: ServerSwitch) => boolean): number {
+  const seenFile = file.replace(/\.jsonl$/, ".seen");
   if (!existsSync(file)) return 0;
   const buf = readFileSync(file);
   let seen = Number(existsSync(seenFile) ? readFileSync(seenFile, "utf8").trim() : 0) || 0;
@@ -49,7 +59,7 @@ export function recordServerSwitches(stateDir: string, emit: (ev: ServerSwitch) 
   while (seen < buf.length) {
     const nl = buf.indexOf(10, seen);
     if (nl < 0) break; // a line still being written
-    const rec = parseSwitch(buf.subarray(seen, nl).toString("utf8"));
+    const rec = parseSwitch(buf.subarray(seen, nl).toString("utf8"), type);
     if (rec && !emit(rec)) break; // the log could not be written: try again next time
     if (rec) n++;
     seen = nl + 1;
@@ -65,8 +75,11 @@ let timer: ReturnType<typeof setInterval> | null = null;
 export function startServerSwitches(stateDir: string, vault: string): void {
   const look = () => {
     try {
-      const n = recordServerSwitches(stateDir, (ev) => !!signal(vault, ev as unknown as Record<string, unknown>));
+      const emit = (ev: ServerSwitch) => !!signal(vault, ev as unknown as Record<string, unknown>);
+      const n = recordServerSwitches(stateDir, emit);
       if (n) console.log(`[update] recorded ${n} server handover(s) in the log`);
+      const v = recordVoiceSwitches(stateDir, emit);
+      if (v) console.log(`[voice] recorded ${v} voice pipeline switch(es) in the log`);
     } catch (e) {
       console.error(`[update] ${(e as Error).message}`);
     }
