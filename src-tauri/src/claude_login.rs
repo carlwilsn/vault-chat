@@ -67,6 +67,10 @@ fn candidates_in(want: Option<&str>, state: Option<&std::path::Path>, home: Opti
 fn probe(cli: &str) -> Option<String> {
     let mut cmd = std::process::Command::new(cli);
     cmd.arg("--version").stdin(std::process::Stdio::null());
+    // A bare `claude` is looked up on the PATH a terminal has (a Mac's login shell: Homebrew, nvm, ~/.local/bin),
+    // not launchd's bare one. Unchanged elsewhere.
+    #[cfg(unix)]
+    cmd.env("PATH", crate::claude_signin::user_path());
     // A GUI app starting a console program gets a terminal window flashed up
     // for it — the "terminal popup" Carl saw when he pressed the button.
     #[cfg(windows)]

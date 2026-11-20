@@ -344,13 +344,20 @@ jobs:
             local name=$1 home=$2 vault=${3:-} steps res code pid guard t0 src=${STEPS:-$SMOKE}
             steps="$ST/$name.steps.json"; res="$ST/$name.result.json"
             rm -rf "$home"; mkdir -p "$home"
-            if [ -n "${FAKE_CLAUDE:-}" ]; then mkdir -p "$home/.local/bin" && cp "$FAKE_CLAUDE" "$home/.local/bin/claude"; fi
+            # LOGIN_ONLY=1: the stand-in `claude` sits in a folder only the login shell's ~/.zprofile puts on PATH (as
+            # nvm or a custom install would), and the app starts with launchd's bare PATH, as from Finder or the Dock.
+            local pre=""
+            if [ -n "${FAKE_CLAUDE:-}" ] && [ -n "${LOGIN_ONLY:-}" ]; then
+              mkdir -p "$home/login-only-bin" && cp "$FAKE_CLAUDE" "$home/login-only-bin/claude"
+              printf 'export PATH="$HOME/login-only-bin:$PATH"\n' > "$home/.zprofile"
+              pre="env PATH=/usr/bin:/bin:/usr/sbin:/sbin SHELL=/bin/zsh"
+            elif [ -n "${FAKE_CLAUDE:-}" ]; then mkdir -p "$home/.local/bin" && cp "$FAKE_CLAUDE" "$home/.local/bin/claude"; fi
             if [ -n "$vault" ]; then jq --arg v "$vault" '{vault: $v} + .' "$src" > "$steps"; else cp "$src" "$steps"; fi
             echo "::group::self-test $name (vault: ${vault:-a fresh temp dir})"
             t0=$(date +%s)
             # ANTHROPIC_BASE_URL: nowhere, so no server check ever sends a fake token to the real API.
             HOME="$home" VC_SELFTEST="$steps" VC_SELFTEST_OUT="$res" VC_SELFTEST_TIMEOUT=420 ANTHROPIC_BASE_URL=http://127.0.0.1:9 \
-              "$APP/Contents/MacOS/$EXE" > "$ST/$name.app.log" 2>&1 &
+              $pre "$APP/Contents/MacOS/$EXE" > "$ST/$name.app.log" 2>&1 &
             pid=$!
             # The fresh-HOME run on video (selftest.mov in the proof): the note made, typed into, saved.
             local rec=""
@@ -414,6 +421,14 @@ jobs:
             run signin "$RUNNER_TEMP/st-home-signin"
           STEPS="$GITHUB_WORKSPACE/test/selftest/signin-refused.json" FAKE_CLAUDE="$GITHUB_WORKSPACE/test/selftest/fake-claude-refused" \
             run signin-refused "$RUNNER_TEMP/st-home-refused"
+          # The sign-in with launchd's bare PATH and `claude` only on the login shell's PATH (claude_signin::user_path):
+          # the fake token must reach the key store, i.e. that `claude` ran. (Skipped on a release older than user_path.)
+          if grep -q "fn user_path" src-tauri/src/claude_signin.rs; then
+            STEPS="$GITHUB_WORKSPACE/test/selftest/signin.json" FAKE_CLAUDE="$GITHUB_WORKSPACE/test/selftest/fake-claude" LOGIN_ONLY=1 \
+              run signin-login-path "$RUNNER_TEMP/st-home-loginpath"
+          else
+            row signin-login-path "skipped" "-" "-" "the checked release predates claude_signin::user_path"
+          fi
           if grep -rl "SELFTEST-fake-token" "$ST" > "$ST/token-leaks.txt" 2>/dev/null; then
             echo "::error::the fake sign-in token appeared in: $(tr '\n' ' ' < "$ST/token-leaks.txt")"
             row "token never in results/logs" "FAIL" "-" "-" "$(head -3 "$ST/token-leaks.txt" | tr '\n' ' ')"; failed=1
@@ -633,6 +648,23 @@ jobs:
           kill -9 "$FAKE" 2>/dev/null
           echo "::notice title=Mac plumbing self-tests::$lines"
           [ "$failed" = 0 ] || { echo "::error::a Mac plumbing self-test failed (see plumbing/)"; exit 1; }
+
+      # The sign-in module's Rust tests on macOS itself (the real pty with the fake claude, the login shell's PATH
+      # read past rc-file noise, a hung shell given up on): the release build's dependencies are reused, only the
+      # crate is rebuilt with its tests. Its outcome is a line in checks.txt.
+      - name: Rust tests of the Mac sign-in (claude_signin)
+        id: rust_signin
+        if: ${{ !cancelled() }}
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          set -o pipefail
+          OUT="$RUNNER_TEMP/mac-proof"; mkdir -p "$OUT"
+          if cargo test --release --manifest-path src-tauri/Cargo.toml --lib claude_signin 2>&1 | tee "$OUT/rust-signin-tests.txt" | tail -n 30; then
+            echo "rust claude_signin tests: pass ($(grep -Eo '[0-9]+ passed' "$OUT/rust-signin-tests.txt" | tail -1))" | tee -a "$OUT/checks.txt"
+          else
+            echo "rust claude_signin tests: FAIL (see rust-signin-tests.txt)" | tee -a "$OUT/checks.txt"; exit 1
+          fi
 
       # After the launch check, so a Finder-scripting hiccup in the DMG layout
       # never hides whether the app itself runs.
