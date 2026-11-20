@@ -12,6 +12,17 @@
 //!
 //! One server per vault, as a box serves one vault. It is started on demand and
 //! stopped with the app.
+//!
+//! Which server runs is a swappable part, not the installer's: a server build kept in a versioned slot under the
+//! app's state dir runs before the one the installer carries, and falls back to it. The shell only picks, checks and
+//! starts; what fills a slot is the server's business (it is told where the slots are, VC_SERVER_SLOTS).
+//!   <state>/server-slots/current.json   {"version": "<8 hex>", "sha256": "<64 hex>"}: the slot to run
+//!   <state>/server-slots/<version>/vault-chat-server.mjs   its bundle; the file must hash to sha256
+//!   <state>/server-slots/bad.json       versions that failed to start here: never run again
+//! A slot whose file is missing or hashes otherwise is skipped; one that exits or does not answer health within
+//! READY_WAIT is marked bad and the installer's own server is started instead, in the same call.
+
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -22,7 +33,7 @@ use std::time::{Duration, Instant};
 /// How long to let a cold server finish booting before giving up on it.
 const READY_WAIT: Duration = Duration::from_secs(90);
 
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, Debug)]
 pub struct LocalServer {
     /// What the clients use as the box url.
     pub url: String,
@@ -144,9 +155,98 @@ pub fn ensure(vault: &str, state_dir: &Path, resource_dir: Option<&Path>, node: 
         }
     }
 
-    let bundle = bundle(resource_dir).ok_or_else(|| {
-        "this build carries no vault-chat server to run; connect a box instead".to_string()
-    })?;
+    // A slot's server first (unless a development run names its own bundle), then the installer's own.
+    let named = std::env::var("VC_LOCAL_SERVER_BUNDLE").map(|p| Path::new(&p).is_file()).unwrap_or(false);
+    let mut candidates: Vec<(Option<String>, PathBuf)> = Vec::new();
+    if !named {
+        if let Some(slot) = slot_bundle(state_dir) {
+            candidates.push((Some(slot.version), slot.path));
+        }
+    }
+    if let Some(b) = bundle(resource_dir) {
+        candidates.push((None, b));
+    }
+    if candidates.is_empty() {
+        return Err("this build carries no vault-chat server to run; connect a box instead".to_string());
+    }
+    run_first(vault, state_dir, candidates, node)
+}
+
+/// Start the first candidate that comes up; a slot's (`Some(version)`) that does not is marked bad on the way.
+fn run_first(vault: &str, state_dir: &Path, candidates: Vec<(Option<String>, PathBuf)>, node: &str) -> Result<LocalServer, String> {
+    let mut last = String::new();
+    for (version, path) in candidates {
+        match start(vault, state_dir, &path, node) {
+            Ok(s) => return Ok(s),
+            Err(e) if e == STOPPED => return Err(e),
+            Err(e) => {
+                if let Some(v) = version {
+                    eprintln!("local server: slot {v} did not start ({e}); running the installer's own");
+                    mark_bad(state_dir, &v);
+                }
+                last = e;
+            }
+        }
+    }
+    Err(last)
+}
+
+const STOPPED: &str = "the app stopped while the server was starting";
+
+/// A server build kept in a slot (see the module doc).
+#[derive(Debug, PartialEq)]
+pub struct Slot {
+    pub version: String,
+    pub path: PathBuf,
+}
+
+fn slots_dir(state_dir: &Path) -> PathBuf {
+    state_dir.join("server-slots")
+}
+
+fn read_bad(state_dir: &Path) -> Vec<String> {
+    std::fs::read(slots_dir(state_dir).join("bad.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// Never run `version` here again.
+fn mark_bad(state_dir: &Path, version: &str) {
+    let mut bad = read_bad(state_dir);
+    if !bad.iter().any(|b| b == version) {
+        bad.push(version.to_string());
+    }
+    let dir = slots_dir(state_dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let tmp = dir.join("bad.json.tmp");
+    if std::fs::write(&tmp, serde_json::to_vec(&bad).unwrap_or_default()).is_ok() {
+        let _ = std::fs::rename(&tmp, dir.join("bad.json"));
+    }
+}
+
+/// The slot to run: set in current.json, its file there and hashing to the sha256 named, not marked bad. Else None
+/// (the installer's own server runs).
+pub fn slot_bundle(state_dir: &Path) -> Option<Slot> {
+    #[derive(serde::Deserialize)]
+    struct Current {
+        version: String,
+        sha256: String,
+    }
+    let dir = slots_dir(state_dir);
+    let cur: Current = serde_json::from_slice(&std::fs::read(dir.join("current.json")).ok()?).ok()?;
+    let hex_ok = |s: &str, n: usize| s.len() == n && s.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c));
+    if !hex_ok(&cur.version, 8) || !hex_ok(&cur.sha256, 64) || !cur.sha256.starts_with(&cur.version) {
+        return None;
+    }
+    if read_bad(state_dir).contains(&cur.version) {
+        return None;
+    }
+    let path = dir.join(&cur.version).join("vault-chat-server.mjs");
+    let bytes = std::fs::read(&path).ok()?;
+    let sha: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    (sha == cur.sha256).then_some(Slot { version: cur.version, path })
+}
+
+/// Start the server bundle at `bundle` for `vault` and wait until it answers health (READY_WAIT).
+fn start(vault: &str, state_dir: &Path, bundle: &Path, node: &str) -> Result<LocalServer, String> {
     let port = free_port()?;
     // The voice pipeline insists on an explicit port off the box's default, and
     // the app owns voice itself, so it is left off here.
@@ -157,7 +257,7 @@ pub fn ensure(vault: &str, state_dir: &Path, resource_dir: Option<&Path>, node: 
     let mut cmd = Command::new(node);
     no_window(&mut cmd);
     let child = cmd
-        .arg(&bundle)
+        .arg(bundle)
         .env("VC_PORT", port.to_string())
         .env("VC_VOICE_PORT", voice_port.to_string())
         .env("VC_VOICE_PIPELINE", "off")
@@ -165,6 +265,7 @@ pub fn ensure(vault: &str, state_dir: &Path, resource_dir: Option<&Path>, node: 
         .env("VC_STATE_DIR", &own)
         .env("VC_LOCALSTORAGE", own.join("settings.json"))
         .env("VC_TOKEN_FILE", own.join("token"))
+        .env("VC_SERVER_SLOTS", slots_dir(state_dir))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -181,7 +282,7 @@ pub fn ensure(vault: &str, state_dir: &Path, resource_dir: Option<&Path>, node: 
         {
             let mut guard = STARTING.lock().map_err(|_| "local server registry is poisoned".to_string())?;
             let Some(c) = guard.as_mut().and_then(|m| m.get_mut(&pid)) else {
-                return Err("the app stopped while the server was starting".to_string());
+                return Err(STOPPED.to_string());
             };
             if let Ok(Some(status)) = c.try_wait() {
                 if let Some(m) = guard.as_mut() {
@@ -201,7 +302,7 @@ pub fn ensure(vault: &str, state_dir: &Path, resource_dir: Option<&Path>, node: 
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    let child = take().ok_or_else(|| "the app stopped while the server was starting".to_string())?;
+    let child = take().ok_or_else(|| STOPPED.to_string())?;
 
     let mut guard = LIVE.lock().map_err(|_| "local server registry is poisoned".to_string())?;
     guard
@@ -278,6 +379,66 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
         }
         assert!(!health_ok(&s.url), "the server outlived stop_all()");
+
+        // The same server build kept in a slot runs from there, and is not marked bad.
+        let built = bundle(None).expect("dist-server built");
+        let v = slot(&state, &std::fs::read(&built).unwrap());
+        assert!(slot_bundle(&state).is_some());
+        let s = ensure(vault.to_str().unwrap(), &state, None, "node").expect("a server from the slot");
+        assert!(health_ok(&s.url));
+        assert!(!read_bad(&state).contains(&v));
+        stop_all();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn slot(state: &Path, body: &[u8]) -> String {
+        let sha: String = Sha256::digest(body).iter().map(|b| format!("{b:02x}")).collect();
+        let v = sha[..8].to_string();
+        let d = state.join("server-slots").join(&v);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("vault-chat-server.mjs"), body).unwrap();
+        std::fs::write(state.join("server-slots/current.json"), format!(r#"{{"version":"{v}","sha256":"{sha}"}}"#)).unwrap();
+        v
+    }
+
+    #[test]
+    fn a_slot_runs_only_when_intact_and_not_marked_bad() {
+        let state = std::env::temp_dir().join(format!("vc-slots-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&state);
+        assert_eq!(slot_bundle(&state), None, "no slot: the installer's own");
+        let v = slot(&state, b"// a newer server\n");
+        assert_eq!(slot_bundle(&state), Some(Slot { version: v.clone(), path: state.join("server-slots").join(&v).join("vault-chat-server.mjs") }));
+        // Changed on disk: not the build the pointer names.
+        std::fs::write(state.join("server-slots").join(&v).join("vault-chat-server.mjs"), b"// tampered\n").unwrap();
+        assert_eq!(slot_bundle(&state), None);
+        let v = slot(&state, b"// another\n");
+        assert!(slot_bundle(&state).is_some());
+        mark_bad(&state, &v);
+        assert_eq!(slot_bundle(&state), None, "a slot that failed here is never run again");
+        std::fs::write(state.join("server-slots/current.json"), r#"{"version":"../../x","sha256":"0"}"#).unwrap();
+        assert_eq!(slot_bundle(&state), None);
+        std::fs::remove_dir_all(&state).ok();
+    }
+
+    /// A slot whose server dies at start is marked bad and the installer's own is started in the same call.
+    #[cfg(unix)]
+    #[test]
+    fn a_slot_that_does_not_start_falls_back_to_the_installers_own() {
+        let root = std::env::temp_dir().join(format!("vc-slot-fallback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let state = root.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let ran = root.join("baked-ran");
+        let v = slot(&state, b"exit 3\n");
+        let baked = root.join("baked.sh");
+        std::fs::write(&baked, format!("touch '{}'\nexit 4\n", ran.display())).unwrap();
+        let s = slot_bundle(&state).unwrap();
+        // "/bin/sh" stands in for node: each bundle is a script that exits at once.
+        let err = run_first(root.to_str().unwrap(), &state, vec![(Some(s.version), s.path), (None, baked)], "/bin/sh").unwrap_err();
+        assert!(err.contains("stopped while starting"), "{err}");
+        assert!(ran.is_file(), "the installer's own server was started after the slot's failed");
+        assert_eq!(read_bad(&state), vec![v]);
+        assert_eq!(slot_bundle(&state), None);
         std::fs::remove_dir_all(&root).ok();
     }
 
