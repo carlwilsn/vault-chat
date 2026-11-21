@@ -13,17 +13,10 @@ type Phase =
   | { kind: "available"; update: Update }
   | { kind: "downloading"; downloaded: number; total: number | null }
   | { kind: "installing" }
-  | { kind: "error"; message: string }
-  | { kind: "checked"; message: string };
+  | { kind: "error"; message: string };
 
 /** The Mac app (the friend channel, latest-mac.json): never installs by itself, only when its user clicks. */
 const isMacApp = typeof navigator !== "undefined" && /Macintosh/.test(navigator.userAgent);
-
-/** "Check for updates" (Settings): the banner checks now and says what it found. */
-export const CHECK_UPDATES_EVENT = "vc:check-updates";
-export function checkForUpdatesNow(): void {
-  window.dispatchEvent(new Event(CHECK_UPDATES_EVENT));
-}
 
 const isDev = import.meta.env.DEV;
 
@@ -83,19 +76,14 @@ export function UpdateBanner() {
       }
     };
 
-    const runCheck = async (asked = false) => {
+    const runCheck = async () => {
       try {
         const update = await check();
-        if (cancelled) return;
-        if (!update) {
-          if (asked) setPhase({ kind: "checked", message: "vault-chat is up to date." });
-          return;
-        }
-        if (unattended && !asked) await applyUnattended(update);
+        if (cancelled || !update) return;
+        if (unattended) await applyUnattended(update);
         else setPhase({ kind: "available", update });
       } catch (e) {
         console.warn("[updater] check failed:", e);
-        if (asked && !cancelled) setPhase({ kind: "checked", message: `Could not check for updates: ${String(e).slice(0, 160)}` });
       }
     };
 
@@ -106,12 +94,9 @@ export function UpdateBanner() {
       if (cancelled || selfTest) return;
       void runCheck();
       timer = window.setInterval(() => void runCheck(), RECHECK_MS);
-      window.addEventListener(CHECK_UPDATES_EVENT, onAsk);
     });
-    const onAsk = () => void runCheck(true);
     return () => {
       cancelled = true;
-      window.removeEventListener(CHECK_UPDATES_EVENT, onAsk);
       if (timer !== undefined) clearInterval(timer);
     };
   }, []);
@@ -119,16 +104,6 @@ export function UpdateBanner() {
   if (phase.kind === "idle" || phase.kind === "error") return null;
 
   const dismiss = () => setPhase({ kind: "idle" });
-
-  if (phase.kind === "checked")
-    return (
-      <div className="fixed bottom-4 right-4 w-80 z-50 rounded-lg border border-border bg-card shadow-xl flex items-start gap-2 p-3 text-[11.5px] text-muted-foreground" data-el="update-checked">
-        <span className="flex-1">{phase.message}</span>
-        <button onClick={dismiss} className="text-muted-foreground hover:text-foreground" title="Dismiss">
-          <X className="h-3.5 w-3.5" />
-        </button>
-      </div>
-    );
 
   const install = async () => {
     if (phase.kind !== "available") return;

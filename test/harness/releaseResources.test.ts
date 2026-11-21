@@ -343,10 +343,11 @@ test("a promotion (mac-promote) re-checks the release and never moves the friend
   assert.doesNotMatch(run, /releases\/latest/);
 });
 
-test("the Mac app never installs an update by itself; Settings has Check for updates", () => {
+test("the Mac app never installs an update by itself; the app checks by itself (no manual Check for updates)", () => {
   const banner = read("src/UpdateBanner.tsx");
   assert.match(banner, /const unattended = isRunInBackground\(\) && !isMacApp;/);
-  assert.match(banner, /if \(unattended && !asked\) await applyUnattended/);
-  assert.match(banner, /export const CHECK_UPDATES_EVENT = "vc:check-updates";/);
-  assert.match(read("src/plugins/settings/Pane.tsx"), /onClick=\{\(\) => window\.dispatchEvent\(new Event\("vc:check-updates"\)\)\}/);
+  assert.match(banner, /if \(unattended\) await applyUnattended/);
+  assert.match(banner, /window\.setInterval\(\(\) => void runCheck\(\), RECHECK_MS\)/);
+  assert.doesNotMatch(banner, /vc:check-updates/);
+  assert.doesNotMatch(read("src/plugins/settings/Pane.tsx"), /Check for updates|vc:check-updates/);
 });
