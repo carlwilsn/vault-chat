@@ -7,7 +7,7 @@ import { makeRig, type Rig } from "./longRig";
 import { cleanup } from "./helpers";
 import { agentToolSpecs, sideToolSpecs, voiceSideToolSpecs } from "../engine/engine";
 import { offersText, pluginOfferTool } from "../pluginOffersTool";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
