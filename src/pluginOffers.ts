@@ -28,7 +28,8 @@
 export type JsonSchema = Record<string, unknown>;
 export type OfferState = { description?: string; read: () => unknown };
 export type OfferAction = { description?: string; args?: JsonSchema; run: (args: Record<string, unknown>) => unknown };
-export type OfferEvent = { description?: string };
+/** `before: false`: the event carries no before-value (its part's state is not something to put back, e.g. hover). */
+export type OfferEvent = { description?: string; before?: boolean };
 export type Offers = {
   state?: Record<string, OfferState>;
   actions?: Record<string, OfferAction>;
@@ -45,12 +46,19 @@ export type OffersDescription = {
   events: { name: string; description: string }[];
 };
 /** `seq` (a watch's answer only): this app's event counter (every plugin's events share it), for watch's `after`. */
-export type OfferEventRecord = { event: string; at: number; seq?: number; payload?: unknown };
+/**
+ * `before` (report 22, "tag every write"): what the part's state was, where it changed, at its previous event (or its
+ * mount): the old values of the state names (and, inside them, the keys or the id'd items) that differ now. With it
+ * the agent can put a change back by hand. Absent: nothing readable changed, or the event opts out.
+ */
+export type OfferEventRecord = { event: string; at: number; seq?: number; payload?: unknown; before?: unknown };
 /** Each kept event's number, beside the record (a read's events stay as they were). */
 const SEQS = new WeakMap<OfferEventRecord, number>();
 const seqOf = (r: OfferEventRecord) => SEQS.get(r) ?? 0;
 
-type Entry = { id: string; name: string; offers: Offers; events: OfferEventRecord[]; alive: () => boolean };
+type Entry = { id: string; name: string; offers: Offers; events: OfferEventRecord[]; alive: () => boolean; snap?: Map<string, Snap> };
+/** One state name's value as last seen: its JSON (to compare) and the value (to give back as the before). */
+type Snap = { json: string; value: unknown };
 /** What a subscriber is handed: which plugin emitted, the event, when, its payload. */
 export type PluginEvent = { plugin: { id: string; name: string }; event: string; at: number; payload?: unknown };
 type Sub = { word: string; event: string; fn: (e: PluginEvent) => void; alive: () => boolean };
@@ -128,6 +136,10 @@ export function declareOffers(id: string, name: string, offers: Offers, alive: (
   const entry: Entry = { id, name, offers, events: [], alive };
   const reg = registry();
   reg.set(id, [...(reg.get(id) ?? []), entry]);
+  // The first snapshot once the part has drawn (its state may read empty during mount).
+  queueMicrotask(() => {
+    if (alive() && !entry.snap) entry.snap = snapshot(offers);
+  });
   const undo = () => {
     const list = (reg.get(id) ?? []).filter((e) => e !== entry);
     if (list.length) reg.set(id, list);
@@ -137,7 +149,8 @@ export function declareOffers(id: string, name: string, offers: Offers, alive: (
     emit(event, payload) {
       if (!alive() || !(reg.get(id) ?? []).includes(entry)) return;
       if (!offers.events || !Object.prototype.hasOwnProperty.call(offers.events, event)) return;
-      const rec: OfferEventRecord = { event: String(event), at: Date.now(), ...(payload === undefined ? {} : { payload: plain(payload) }) };
+      const before = offers.events[event]?.before === false ? undefined : beforeOf(entry);
+      const rec: OfferEventRecord = { event: String(event), at: Date.now(), ...(payload === undefined ? {} : { payload: plain(payload) }), ...(before === undefined ? {} : { before }) };
       SEQS.set(rec, nextSeq());
       entry.events.push(rec);
       if (entry.events.length > MAX_EVENTS) entry.events.splice(0, entry.events.length - MAX_EVENTS);
@@ -150,6 +163,80 @@ export function declareOffers(id: string, name: string, offers: Offers, alive: (
     },
   };
   return { undo, handle };
+}
+
+/** A state value bigger than this (as JSON) is compared but given back only as a mark: the event stays small. */
+const MAX_SNAP_CHARS = 20_000;
+const BIG = "[too large to keep]";
+
+/** Every state name's value now (a selector that throws or answers a promise is left out). */
+function snapshot(o: Offers): Map<string, Snap> {
+  const out = new Map<string, Snap>();
+  for (const [n, s] of Object.entries(o.state ?? {})) {
+    try {
+      const v = s.read();
+      if (v && typeof (v as Promise<unknown>).then === "function") continue;
+      const value = plain(v);
+      const json = JSON.stringify(value) ?? "null";
+      out.set(n, { json, value: json.length > MAX_SNAP_CHARS ? BIG : value });
+    } catch {
+      /* a selector's throw is its own; it has no before */
+    }
+  }
+  return out;
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+const itemKey = (v: unknown): string | null => {
+  if (!isObj(v)) return null;
+  for (const k of ["id", "key", "path"]) if (typeof v[k] === "string" || typeof v[k] === "number") return `${k}:${v[k]}`;
+  return null;
+};
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * The old side of what changed between `was` and `now`: objects give the old values of the keys that differ
+ * (null: the key is new); lists of id'd items give {changed: old items that changed or went, added: the new ids};
+ * anything else is the old value whole.
+ */
+export function beforeDiff(was: unknown, now: unknown, depth = 0): unknown {
+  if (same(was, now)) return undefined;
+  if (depth < 3 && isObj(was) && isObj(now)) {
+    const out: Record<string, unknown> = {};
+    for (const k of new Set([...Object.keys(was), ...Object.keys(now)])) {
+      if (!(k in was)) {
+        out[k] = null;
+        continue;
+      }
+      const d = beforeDiff(was[k], now[k], depth + 1);
+      if (d !== undefined) out[k] = d;
+    }
+    return out;
+  }
+  if (Array.isArray(was) && Array.isArray(now) && was.length + now.length > 0 && [...was, ...now].every((x) => itemKey(x))) {
+    const old = new Map(was.map((x) => [itemKey(x)!, x]));
+    const cur = new Map(now.map((x) => [itemKey(x)!, x]));
+    const changed = [...old].filter(([k, x]) => !cur.has(k) || !same(x, cur.get(k))).map(([, x]) => x);
+    const added = [...cur.keys()].filter((k) => !old.has(k));
+    return { changed, ...(added.length ? { added } : {}) };
+  }
+  return was === undefined ? null : was;
+}
+
+/** The before of this event: the state names that differ from the last snapshot, their old side; then snapshot anew. */
+function beforeOf(e: Entry): unknown {
+  if (!e.offers.state || !Object.keys(e.offers.state).length) return undefined;
+  const was = e.snap;
+  const now = snapshot(e.offers);
+  e.snap = now;
+  if (!was) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [n, s] of now) {
+    const w = was.get(n);
+    if (!w || w.json === s.json) continue;
+    out[n] = w.value === BIG || s.value === BIG ? w.value : beforeDiff(w.value, s.value);
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 /** The newest live instance of each plugin. */

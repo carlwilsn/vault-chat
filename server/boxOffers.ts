@@ -123,7 +123,7 @@ export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
     name: "History",
     state: {
       recent: {
-        description: "the newest 30 things Carl did in the app's parts (offer events: opened a file, switched chat, …), kept in the event log",
+        description: "the newest 30 things Carl did in the app's parts (offer events: opened a file, switched chat, …), kept in the event log; (before: …) is what that part's state was before it, to put it back by hand",
         read: async () => (await import("./offerLog")).searchOfferEvents(logs(), { limit: 30 }).map(line),
       },
     },
@@ -168,8 +168,8 @@ export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
 const noArgs = obj({});
 
 /** One history record as a line Carl could read. */
-function line(r: { at: number; device: string; plugin: string; event: string; payload?: string }): string {
-  return `${new Date(r.at).toISOString().slice(0, 16).replace("T", " ")} ${r.device} ${r.plugin} ${r.event}${r.payload ? ` ${r.payload}` : ""}`;
+function line(r: { at: number; device: string; plugin: string; event: string; payload?: string; before?: string }): string {
+  return `${new Date(r.at).toISOString().slice(0, 16).replace("T", " ")} ${r.device} ${r.plugin} ${r.event}${r.payload ? ` ${r.payload}` : ""}${r.before ? ` (before: ${r.before})` : ""}`;
 }
 
 export function describeBoxOffer(o: BoxOffer): OffersDescription {

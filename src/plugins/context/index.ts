@@ -19,7 +19,7 @@ export function contextOffers(ctx: Pick<ContextApi, "get">): Offers {
       at: { description: "When the context last changed (ms since epoch).", read: () => ctx.get().at },
     },
     events: {
-      changed: { description: "The selection, hover, focus or open file changed ({changed: [keys]}); throttled." },
+      changed: { description: "The selection, hover, focus or open file changed ({changed: [keys]}); throttled.", before: false },
     },
   };
 }

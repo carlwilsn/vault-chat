@@ -7,11 +7,12 @@ import { redact } from "./boxOffers";
 export const OFFER_EVENT = "offer.event";
 const MAX_EVENTS = 50;
 
-export type OfferLogRecord = { seq: number; at: number; device: string; plugin: string; event: string; payload?: string };
+/** `before`: what the part's state was before this event, where it changed (src/pluginOffers.ts): the agent's undo. */
+export type OfferLogRecord = { seq: number; at: number; device: string; plugin: string; event: string; payload?: string; before?: string };
 
 const str = (v: unknown, n: number) => (typeof v === "string" ? v.slice(0, n) : "");
 
-/** POST /api/v2/offer-events {events: [{plugin, event, at, payload?}], client}: each kept as one record. */
+/** POST /api/v2/offer-events {events: [{plugin, event, at, payload?, before?}], client}: each kept as one record. */
 export function offerEventsRoute(vault: string, body: Record<string, unknown> | null): { status: number; body: unknown } {
   const list = Array.isArray(body?.events) ? (body!.events as unknown[]).slice(0, MAX_EVENTS) : null;
   if (!list) return { status: 400, body: { error: "events: [{plugin, event, at, payload?}]" } };
@@ -24,7 +25,8 @@ export function offerEventsRoute(vault: string, body: Record<string, unknown> | 
     if (!plugin || !event) continue;
     const at = Number.isFinite(Number(e.at)) ? Number(e.at) : Date.now();
     const payload = typeof e.payload === "string" ? redact(e.payload.slice(0, 500)) : undefined;
-    if (signal(vault, { type: OFFER_EVENT, device, plugin, event, at, ...(payload ? { payload } : {}) })) kept++;
+    const before = typeof e.before === "string" ? redact(e.before.slice(0, 2_000)) : undefined;
+    if (signal(vault, { type: OFFER_EVENT, device, plugin, event, at, ...(payload ? { payload } : {}), ...(before ? { before } : {}) })) kept++;
   }
   return { status: 200, body: { ok: true, kept } };
 }
@@ -42,7 +44,7 @@ export function offerEvents(vaults: string[]): OfferLogRecord[] {
     for (const r of recs as { seq: number; at: number; signal?: Record<string, unknown> }[]) {
       const s = r.signal;
       if (s?.type !== OFFER_EVENT) continue;
-      out.push({ seq: r.seq, at: Number(s.at) || r.at, device: String(s.device ?? ""), plugin: String(s.plugin ?? ""), event: String(s.event ?? ""), ...(typeof s.payload === "string" ? { payload: s.payload } : {}) });
+      out.push({ seq: r.seq, at: Number(s.at) || r.at, device: String(s.device ?? ""), plugin: String(s.plugin ?? ""), event: String(s.event ?? ""), ...(typeof s.payload === "string" ? { payload: s.payload } : {}), ...(typeof s.before === "string" ? { before: s.before } : {}) });
     }
   }
   return out.sort((a, b) => a.at - b.at);
