@@ -17,7 +17,7 @@ import { autoUndoText, changeLineId, doneText, failedText, notYetText, offerText
 import { MAIN_ID } from "../src/threads";
 import { laptopElsewhere, vaultName } from "./deviceLink";
 
-export type ChangeLine = { kind: "done" | "failed" | "offer" | "auto"; plugin: string; version: string; text: string; level?: "info" | "error"; offer?: ChangeRef["offer"] };
+export type ChangeLine = { kind: "done" | "failed" | "offer" | "auto"; plugin: string; version: string; text: string; level?: "info" | "error"; offer?: ChangeRef["offer"]; vault?: string };
 
 /** Tests: where lines go instead of the conversation log. */
 let sink: ((vault: string, conv: string, line: ChangeLine) => void) | null = null;
@@ -40,8 +40,11 @@ export function changeName(plugin: string): string {
 }
 
 /** Write one change line into a conversation (null: Main), once. Never throws. */
-export async function sayChange(vault: string, conv: string | null, line: ChangeLine): Promise<void> {
+export async function sayChange(vault: string, conv: string | null, line0: ChangeLine): Promise<void> {
   const convId = conv || MAIN_ID;
+  // A part that is one per vault names its vault: the line's Undo acts on that vault's records even when the laptop has
+  // another open (src/changeElsewhere.ts).
+  const line: ChangeLine = !line0.vault && perVaultPart(line0.plugin) ? { ...line0, vault: vaultName(vault) } : line0;
   if (sink) return sink(vault, convId, line);
   try {
     const c = await import("./engine/convs");
@@ -50,7 +53,7 @@ export async function sayChange(vault: string, conv: string | null, line: Change
     const p = c.pictureOf(vault, convId);
     if (!p || p.items.some((x) => x.id === id)) return;
     await c.writeNotes(vault, convId, [
-      { kind: "notice", text: line.text, level: line.level ?? "info", clientId: id, change: { plugin: line.plugin, version: line.version, ...(line.offer ? { offer: line.offer } : {}) } },
+      { kind: "notice", text: line.text, level: line.level ?? "info", clientId: id, change: { plugin: line.plugin, version: line.version, ...(line.offer ? { offer: line.offer } : {}), ...(line.vault ? { vault: line.vault } : {}) } },
     ]);
   } catch (e) {
     logLine(`could not write "${line.text}" into ${convId}: ${(e as Error).message}`);

@@ -20,7 +20,8 @@ import { landing, type ChangeRecord } from "./pluginDrafts";
 /** What a chat line offers for a change: Undo of an applied one, Try of a staged one, or nothing (a plain line). */
 export type ChangeOffer = "undo" | "try";
 /** The change a chat line is about (a notice's `change`). */
-export type ChangeRef = { plugin: string; version: string; offer?: ChangeOffer };
+/** `vault`: the vault (its name) whose records the change is in, for a part that is one per vault (an app or vault plugin). */
+export type ChangeRef = { plugin: string; version: string; offer?: ChangeOffer; vault?: string };
 
 /** How long after a change applied the app must keep reporting healthy (else it reverts by itself). */
 export const DEADMAN_MS = 10 * 60_000;

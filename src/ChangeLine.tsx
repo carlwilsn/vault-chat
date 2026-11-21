@@ -6,6 +6,7 @@ import { useState } from "react";
 import { lineState, stateWords, type ChangeRef } from "./changeFlow";
 import { changesOf, discardChange, keepChange, migrationTryOf, switchBack, tryChange, useMigrationTry, usePendingChanges, useTried } from "./changeReady";
 import { useSupervisorVersion } from "./pluginSupervisorApp";
+import { useElsewhere } from "./changeElsewhere";
 
 const btn = "shrink-0 rounded-md border border-border/70 px-2 py-0.5 text-[11px] leading-snug text-foreground/90 hover:bg-accent/60 disabled:opacity-50";
 
@@ -18,7 +19,9 @@ export function ChangeLine({ change }: { change: ChangeRef }) {
   const [err, setErr] = useState<string | null>(null);
   const mine = pending.find((p) => p.plugin === change.plugin && p.version === change.version) ?? null;
   const waiting = !!mine;
-  const s = lineState(change, changesOf(change.plugin), waiting, tried);
+  // A change of a vault the laptop does not have open: that vault's records, and Undo written there.
+  const away = useElsewhere(change);
+  const s = away ? lineState(change, away.changes ?? [], false, null) : lineState(change, changesOf(change.plugin), waiting, tried);
   const act = async (fn: () => Promise<{ ok: boolean; text: string }> | unknown) => {
     if (busy) return;
     setBusy(true);
@@ -35,10 +38,11 @@ export function ChangeLine({ change }: { change: ChangeRef }) {
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5 ml-1.5 align-middle" data-el="change-line" data-vc-state={s.state}>
       {(s.state === "applied" || s.state === "kept") && (
-        <button type="button" className={btn} data-el="change-undo" disabled={busy} onClick={() => void act(() => switchBack(change.plugin))}>
+        <button type="button" className={btn} data-el="change-undo" disabled={busy} onClick={() => void act(() => (away ? away.undo() : switchBack(change.plugin)))}>
           Undo
         </button>
       )}
+      {away && <span className="text-muted-foreground" data-el="change-vault">(in {change.vault})</span>}
       {s.state === "offered" && mine?.triable !== false && (
         <button type="button" className={btn} data-el="change-try" disabled={busy} onClick={() => void act(() => tryChange(change.plugin, change.version))}>
           Try

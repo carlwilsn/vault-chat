@@ -48,7 +48,7 @@ export type Item = {
   // notice
   level?: "info" | "warn" | "error";
   /** A change's line (src/changeFlow.ts): the change it is about, and what it offers (Undo, Try). */
-  change?: { plugin: string; version: string; offer?: "undo" | "try" };
+  change?: { plugin: string; version: string; offer?: "undo" | "try"; vault?: string };
   rollover?: boolean;
   // compaction: the context's size before it and right after it (the runtime's figures, when it reported them)
   tokensBefore?: number;
@@ -303,9 +303,9 @@ function onEntry(d: Draft, r: Extract<LogRecord, { type: "entry" }>): void {
 
 /** A notice's change (src/changeFlow.ts), when it names one. */
 function changeOfNote(c: unknown): { change?: NonNullable<Item["change"]> } {
-  const x = c as { plugin?: unknown; version?: unknown; offer?: unknown } | null;
+  const x = c as { plugin?: unknown; version?: unknown; offer?: unknown; vault?: unknown } | null;
   if (!x || typeof x.plugin !== "string" || typeof x.version !== "string") return {};
-  return { change: { plugin: x.plugin, version: x.version, ...(x.offer === "undo" || x.offer === "try" ? { offer: x.offer } : {}) } };
+  return { change: { plugin: x.plugin, version: x.version, ...(x.offer === "undo" || x.offer === "try" ? { offer: x.offer } : {}), ...(typeof x.vault === "string" && x.vault && x.vault.length <= 120 ? { vault: x.vault } : {}) } };
 }
 
 /** One of pi's live events, by pi's streaming rule. */

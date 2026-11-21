@@ -118,7 +118,7 @@ export type ChatMessage = {
   // The failed line of a box turn that ended on it, the last thing in the chat: offers Try again (src/convlog/view.ts).
   retry?: boolean;
   // A change's line (src/changeFlow.ts): Undo, or Try then Keep / Undo, inline (src/ChangeLine.tsx).
-  change?: { plugin: string; version: string; offer?: "undo" | "try" };
+  change?: { plugin: string; version: string; offer?: "undo" | "try"; vault?: string };
   // A system line for work under way (the box summarizing the earlier conversation): the working spinner and its time.
   working?: { since?: number };
   // Stable per-message id, minted at creation (release 1 of the message-identity
