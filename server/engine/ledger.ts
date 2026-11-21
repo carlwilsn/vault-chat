@@ -1,30 +1,24 @@
-// The work ledger: Carl's open asks, one small machine-owned file per vault
-// (<vault>/.vault-chat/local/ledger.json, machine-local like wakes.json). The
-// state of a piece of work lives here and in git, not in a long chat: a fresh
-// short session gets one entry and the event that woke it, does the next step,
-// updates the entry and ends (reports/19-stateless). Waiting is the box's: an
-// entry's `wait` names what it waits on (a ship result, a GitHub run), and the
-// engine's wake tick starts that fresh session when it lands.
-import { readFileSync, writeFileSync, mkdirSync, statSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { renameRetry } from "../atomic";
+// The work list: Carl's open asks, ONE list for the whole box, kept as history (reports/19-stateless, folding in
+// reports/20-design-review). Every change to an ask is a record appended to <state>/work/work.jsonl and never
+// rewritten; the current list is the fold of those records, so the past stays readable. The state of a piece of
+// work lives here and in git, not in a long chat: a fresh short session gets one entry and the event that woke it,
+// does the next step, writes the entry (and its handoff note) and ends. Waiting is the box's: an entry's `wait`
+// (server/engine/waiters.ts) names what it waits on, and the box starts the fresh session when that holds.
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 
-export type LedgerStatus = "open" | "waiting" | "blocked" | "done" | "dropped";
+export type LedgerStatus = "open" | "working" | "waiting" | "question" | "blocked" | "done" | "dropped";
+export const STATUSES: readonly LedgerStatus[] = ["open", "working", "waiting", "question", "blocked", "done", "dropped"];
+export const CLOSED: readonly LedgerStatus[] = ["done", "dropped"];
 
+/** What an ask waits on: a kind (waiters.ts) and its arguments, a deadline, and the brief for the next session. */
 export type LedgerWait = {
-  /** A ship request's name (ship-results/<name>.result), or any result whose `branch=` line is `branch`. */
-  ship?: string;
-  branch?: string;
-  /** A GitHub Actions run: id and owner/repo. */
-  githubRun?: string;
-  repo?: string;
-  /** Set when the wait was made; a result older than this is not the one waited for. */
+  kind: string;
+  args: Record<string, string>;
   since: number;
-  /** Past this the wait fires anyway, as a timeout. */
   until: number;
-  /** What the fresh session should do with the event (its brief). */
   brief: string;
-  /** GitHub: when it was last asked (the tick asks at most every GH_EVERY_MS). */
   checkedAt?: number;
 };
 
@@ -32,54 +26,88 @@ export type LedgerEntry = {
   id: string;
   /** Carl's words, as he asked. */
   words: string;
-  /** Who works on it (a worker, a session) and its branch. */
+  /** Where he asked: the vault (its path) and the chat. Final outcomes are told there. */
+  origin?: { vault: string; conv: string };
+  /** The project it is work in (a fresh session is a chat of that project). */
+  project?: string;
+  /** Who works on it now: a session (conversation id) or a worker. */
   owner?: string;
   branch?: string;
+  /** Its own checkout (a git project's work happens in a worktree that outlives sessions). */
+  worktree?: string;
+  /** The ship request it has in flight (ship-requests/<ship>.req): cancel takes it back while not taken. */
+  ship?: string;
   status: LedgerStatus;
-  /** The next step, in a line. */
   next?: string;
-  /** The last result, in a line. */
   last?: string;
+  /** At most ~20 lines from the session that ended: what it learned and checked. The next one starts from it. */
+  handoff?: string;
+  question?: { text: string; options?: string[] };
+  answer?: string;
   links?: string[];
-  /** The chat Carl asked in: final outcomes are told there. */
-  conv?: string;
   wait?: LedgerWait;
-  /** The fresh sessions that worked on it (conversation ids), newest last. */
+  /** The session holding it and until when (a lease the box reaps when it runs out). */
+  lease?: { conv: string; until: number };
+  /** How many times the box has had to restart a stalled ask. */
+  reaps?: number;
   sessions?: string[];
+  /** Events already taken up, by id: each is handled once. */
+  handled?: string[];
   createdAt: number;
   updatedAt: number;
 };
 
-const CLOSED: LedgerStatus[] = ["done", "dropped"];
-/** A closed entry is dropped from the file this long after its last change: the file stays small. */
-const KEEP_CLOSED_MS = 3 * 86_400_000;
-const clip = (s: unknown, n: number) => String(s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
+export type LedgerPatch = { [K in Exclude<keyof LedgerEntry, "id" | "createdAt" | "updatedAt">]?: LedgerEntry[K] | null };
+type Record_ = { at: number; id: string; set: LedgerPatch; by?: string };
 
-export function ledgerPath(vault: string): string {
-  return join(vault, ".vault-chat", "local", "ledger.json");
+/** The box's one work list (VC_WORK_FILE, else <state>/work/work.jsonl). */
+export function workFile(): string {
+  if (process.env.VC_WORK_FILE) return process.env.VC_WORK_FILE;
+  const state = process.env.VC_STATE_DIR ?? join(homedir(), ".local", "state", "vault-chat-server");
+  return join(state, "work", "work.jsonl");
 }
 
-export function readLedger(vault: string): LedgerEntry[] {
+let cache: { file: string; size: number; mtime: number; list: Map<string, LedgerEntry> } | null = null;
+
+/** Every ask, folded from its records (newest state of each). */
+export function readLedger(file = workFile()): LedgerEntry[] {
+  let st: { size: number; mtimeMs: number };
   try {
-    const v = JSON.parse(readFileSync(ledgerPath(vault), "utf8"));
-    const list = Array.isArray(v) ? v : Array.isArray(v?.asks) ? v.asks : [];
-    return list.filter((e: any) => e && typeof e.id === "string" && typeof e.words === "string");
+    st = statSync(file);
   } catch {
     return [];
   }
+  if (cache && cache.file === file && cache.size === st.size && cache.mtime === st.mtimeMs) return [...cache.list.values()].map((e) => ({ ...e }));
+  const list = new Map<string, LedgerEntry>();
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (!line) continue;
+    let r: Record_;
+    try {
+      r = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!r || typeof r.id !== "string" || !r.set) continue;
+    const e = list.get(r.id) ?? ({ id: r.id, words: "", status: "open", createdAt: r.at, updatedAt: r.at } as LedgerEntry);
+    for (const [k, v] of Object.entries(r.set)) {
+      if (v === null || v === undefined) delete (e as Record<string, unknown>)[k];
+      else (e as Record<string, unknown>)[k] = v;
+    }
+    e.updatedAt = r.at;
+    list.set(r.id, e);
+  }
+  cache = { file, size: st.size, mtime: st.mtimeMs, list };
+  return [...list.values()].map((e) => ({ ...e }));
 }
 
-export function writeLedger(vault: string, list: LedgerEntry[], now = Date.now()): void {
-  const keep = list.filter((e) => !CLOSED.includes(e.status) || now - e.updatedAt < KEEP_CLOSED_MS);
-  const p = ledgerPath(vault);
-  mkdirSync(join(vault, ".vault-chat", "local"), { recursive: true });
-  writeFileSync(p + ".tmp", JSON.stringify({ asks: keep }, null, 1));
-  renameRetry(p + ".tmp", p);
+export function getAsk(id: string, file = workFile()): LedgerEntry | null {
+  return readLedger(file).find((e) => e.id === id) ?? null;
 }
 
+const clip = (s: unknown, n: number) => String(s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
 
-/** A new id from the words: short and readable ("fix-the-updater"), unique in the file. */
+/** A new id from the words: short and readable ("fix-the-updater"), unique in the list. */
 export function newAskId(words: string, have: LedgerEntry[]): string {
   const base = slug(words.split(/\s+/).slice(0, 5).join(" ")) || "ask";
   let id = base;
@@ -87,63 +115,62 @@ export function newAskId(words: string, have: LedgerEntry[]): string {
   return id;
 }
 
-export type LedgerPatch = Partial<Pick<LedgerEntry, "words" | "owner" | "branch" | "status" | "next" | "last" | "links" | "conv" | "sessions">> & { wait?: LedgerWait | null };
-
-/** Create or change one entry (by id; a new one needs words). Returns it, or an error line. */
-export function upsertAsk(vault: string, id: string | undefined, patch: LedgerPatch, now = Date.now()): { entry: LedgerEntry; created: boolean } | { error: string } {
-  const all = readLedger(vault);
-  const i = id ? all.findIndex((e) => e.id === id) : -1;
-  if (i < 0 && !clip(patch.words, 1)) return { error: id ? `No ask "${id}" in the ledger; give words to make it.` : "Give words (Carl's ask) to make an entry, or the id of one." };
-  const prev = i >= 0 ? all[i]! : null;
-  const e: LedgerEntry = prev
-    ? { ...prev }
-    : { id: id && /^[\w.-]{1,60}$/.test(id) ? id : newAskId(String(patch.words), all), words: "", status: "open", createdAt: now, updatedAt: now };
-  if (patch.words !== undefined) e.words = clip(patch.words, 600);
-  for (const k of ["owner", "branch", "next", "last", "conv"] as const) if (patch[k] !== undefined) e[k] = clip(patch[k], k === "last" || k === "next" ? 600 : 160) || undefined;
-  if (patch.status !== undefined) {
-    if (!["open", "waiting", "blocked", "done", "dropped"].includes(patch.status)) return { error: `status is one of open, waiting, blocked, done, dropped (not "${patch.status}").` };
-    e.status = patch.status;
+/** Make or change one ask: one record appended. Returns the ask as it is now, or an error line. */
+export function upsertAsk(id: string | undefined, patch: LedgerPatch, o: { file?: string; now?: number; by?: string } = {}): { entry: LedgerEntry; created: boolean } | { error: string } {
+  const file = o.file ?? workFile();
+  const now = o.now ?? Date.now();
+  const all = readLedger(file);
+  const prev = id ? all.find((e) => e.id === id) ?? null : null;
+  if (!prev && !clip(patch.words, 1)) return { error: id ? `No ask "${id}" in the work list; give words to make it.` : "Give words (Carl's ask) to make an entry, or the id of one." };
+  if (patch.status != null && !STATUSES.includes(patch.status)) return { error: `status is one of ${STATUSES.join(", ")} (not "${patch.status}").` };
+  const set: LedgerPatch = {};
+  for (const [k, v] of Object.entries(patch) as [keyof LedgerPatch, unknown][]) {
+    if (v === undefined) continue;
+    if (v === null) (set as Record<string, unknown>)[k] = null;
+    else if (k === "words" || k === "next" || k === "last" || k === "answer") (set as Record<string, unknown>)[k] = clip(v, 800);
+    else if (k === "handoff") (set as Record<string, unknown>)[k] = String(v).split("\n").slice(0, 24).join("\n").slice(0, 3000);
+    else if (k === "owner" || k === "branch" || k === "ship" || k === "project") (set as Record<string, unknown>)[k] = clip(v, 200);
+    else if (k === "links") (set as Record<string, unknown>)[k] = (Array.isArray(v) ? v : [v]).map((x) => clip(x, 300)).filter(Boolean).slice(-12);
+    else if (k === "sessions" || k === "handled") (set as Record<string, unknown>)[k] = (v as string[]).slice(-20);
+    else (set as Record<string, unknown>)[k] = v;
   }
-  if (patch.links !== undefined) e.links = (Array.isArray(patch.links) ? patch.links : [patch.links]).map((x) => clip(x, 300)).filter(Boolean).slice(-12);
-  if (patch.sessions !== undefined) e.sessions = patch.sessions.slice(-10);
-  if (patch.wait === null) delete e.wait;
-  else if (patch.wait) (e.wait = patch.wait), (e.status = "waiting");
-  if (CLOSED.includes(e.status)) delete e.wait;
-  e.updatedAt = now;
-  if (i >= 0) all[i] = e;
-  else all.push(e);
-  writeLedger(vault, all, now);
-  return { entry: e, created: i < 0 };
-}
-
-export function getAsk(vault: string, id: string): LedgerEntry | null {
-  return readLedger(vault).find((e) => e.id === id) ?? null;
+  if (set.wait) set.status ??= "waiting";
+  const status = (set.status ?? prev?.status) as LedgerStatus | undefined;
+  if (status && CLOSED.includes(status)) (set.wait = null), (set.lease = null);
+  if (status && status !== "question" && prev?.question) set.question = null;
+  const newId = prev ? prev.id : id && /^[\w.-]{1,60}$/.test(id) && !all.some((e) => e.id === id) ? id : newAskId(String(patch.words), all);
+  if (!prev) set.status ??= "open";
+  mkdirSync(dirname(file), { recursive: true });
+  appendFileSync(file, JSON.stringify({ at: now, id: newId, set, ...(o.by ? { by: o.by } : {}) }) + "\n");
+  const entry = getAsk(newId, file)!;
+  return { entry, created: !prev };
 }
 
 /** One entry as the few lines a session reads. */
 export function askText(e: LedgerEntry): string {
   const w = e.wait;
-  const waits = w
-    ? [w.ship ? `ship result ${w.ship}` : "", w.branch ? `a ship result for branch ${w.branch}` : "", w.githubRun ? `GitHub run ${w.githubRun}${w.repo ? ` (${w.repo})` : ""}` : ""].filter(Boolean).join(" or ")
-    : "";
   return [
     `Ask ${e.id} [${e.status}]: ${e.words}`,
-    e.owner || e.branch ? `Owner: ${e.owner ?? "-"}; branch: ${e.branch ?? "-"}` : "",
+    e.project || e.owner || e.branch ? `Project: ${e.project ?? "-"}; owner: ${e.owner ?? "-"}; branch: ${e.branch ?? "-"}${e.worktree ? `; worktree: ${e.worktree}` : ""}` : "",
+    e.ship ? `Ship request in flight: ${e.ship}` : "",
     e.next ? `Next: ${e.next}` : "",
     e.last ? `Last result: ${e.last}` : "",
+    e.question ? `Question to Carl: ${e.question.text}${e.question.options?.length ? ` (options: ${e.question.options.join(" / ")})` : ""}` : "",
+    e.answer ? `Carl's answer: ${e.answer}` : "",
+    e.handoff ? `Handoff from the last session:\n${e.handoff}` : "",
     e.links?.length ? `Links: ${e.links.join(", ")}` : "",
-    w ? `Waiting on ${waits} until ${new Date(w.until).toISOString()}` : "",
+    w ? `Waiting on ${w.kind} ${Object.values(w.args).join(" ")} until ${new Date(w.until).toISOString()}` : "",
   ]
     .filter(Boolean)
     .join("\n");
 }
 
-/** The ledger's open entries, one block each (closed ones as a single line). */
+/** The open asks, one block each; closed ones as a line. */
 export function ledgerText(list: LedgerEntry[]): string {
-  if (!list.length) return "The ledger is empty.";
+  if (!list.length) return "The work list is empty.";
   const open = list.filter((e) => !CLOSED.includes(e.status));
-  const closed = list.filter((e) => CLOSED.includes(e.status));
-  return [...open.map(askText), closed.length ? `Closed lately: ${closed.map((e) => `${e.id} (${e.status})`).join(", ")}` : ""].filter(Boolean).join("\n\n");
+  const closed = list.filter((e) => CLOSED.includes(e.status) && Date.now() - e.updatedAt < 3 * 86_400_000);
+  return [...open.map(askText), closed.length ? `Closed lately: ${closed.map((e) => `${e.id} (${e.status})`).join(", ")}` : ""].filter(Boolean).join("\n\n") || "No open asks.";
 }
 
 /** The `branch=` line of a ship result. */
@@ -151,16 +178,7 @@ export function resultBranch(body: string): string | null {
   return /^branch=(\S+)/m.exec(body)?.[1] ?? null;
 }
 
-/** Does this ship result (file name without .result, its text, its time) end this entry's wait? */
-export function shipMatches(w: LedgerWait | undefined, name: string, body: string, at: number): boolean {
-  if (!w || at < w.since - 1000) return false;
-  const base = name.replace(/\.result$/, "");
-  if (w.ship && (w.ship === base || w.ship.replace(/\.req$/, "") === base)) return true;
-  const b = resultBranch(body);
-  return !!(w.branch && b && (b === w.branch || b === `agent/${w.branch}` || `agent/${b}` === w.branch));
-}
-
-/** A ship result waited on by name, already there (it landed before the tick saw it): its text and time. */
+/** A ship result by name: its text and time, or null. */
 export function readShipResult(dir: string, name: string): { body: string; at: number } | null {
   const f = join(dir, `${name.replace(/\.(req|result)$/, "")}.result`);
   if (!existsSync(f)) return null;
@@ -172,17 +190,19 @@ export function readShipResult(dir: string, name: string): { body: string; at: n
 }
 
 /** The brief a fresh work session starts from: the entry and the event, nothing else. */
-export function wakeBrief(e: LedgerEntry, event: string): string {
+export function wakeBrief(e: LedgerEntry, event: string, brief = e.wait?.brief): string {
   return [
-    "[A fresh work session, started by the box for one ask in Carl's work ledger. You have no earlier conversation: the entry and the event below are the whole state; git and the files are the rest.]",
+    "[A fresh work session, started by the box for one ask in Carl's work list. You have no earlier conversation: the entry and the event below are the whole state; git and the files are the rest.]",
     askText(e),
-    e.wait?.brief ? `What to do when this lands: ${e.wait.brief}` : "",
+    brief ? `What to do when this lands: ${brief}` : "",
     `Event:\n${event.slice(0, 4000)}`,
     [
-      "Do the next step now, small and direct. Then:",
-      `- Ledger {action: "set", id: "${e.id}", next, last, status} with what you did and what comes next (the ledger, not this chat, carries the work).`,
-      "- If there is something to wait for (a ship result, a CI run), use WaitFor with a brief for the next session and end your turn: never sleep, poll or Monitor.",
-      "- When the ask is finished, or needs Carl, set status done or blocked with `last` saying the outcome in one or two plain lines: the box tells Carl. Do not post into his chat.",
+      "Do the next step now, yourself, in this session: no background Agent workers, no Monitor, no sleep or poll loops, no AskUser.",
+      `- Keep the entry current: Ledger {action: "set", id: "${e.id}", next, last, handoff} (handoff: at most ~20 lines of what you learned and checked, for the next session). Commit work in progress before you end.`,
+      "- To wait (a ship result, the core build, Carl's laptop, a CI run): WaitFor with a brief for the next session, then end your turn.",
+      "- Accepted is not done: after a ship is accepted, WaitFor {laptop: <commit>} and set done only when it is on Carl's laptop (if the wait times out with the laptop away, set done with last \"accepted; lands when your laptop is back\").",
+      "- A decision only Carl can make: set status question with question {text, options}; his answer starts a new session. Something you cannot get past: status blocked with last saying why.",
+      "- Finished: status done with last saying the outcome in one or two plain lines; the box tells Carl. Do not post into his chat.",
       "- Then end your turn with one line.",
     ].join("\n"),
   ]
