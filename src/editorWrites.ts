@@ -66,6 +66,11 @@ export class EditorWrites {
     return jobs.filter(j => this.jobs.get(j.path) === j || j.saved === j.text && this.jobs.has(j.path));
   }
 
+  /** The files with typing the disk does not have yet: not saved (waiting for the autosave, or stopped on a conflict). */
+  pending(): { vault: string; path: string; chars: number }[] {
+    return [...this.jobs.values()].filter((j) => !j.cancelled && j.saved !== j.text).map((j) => ({ vault: j.vault, path: j.path, chars: j.text.length }));
+  }
+
   acknowledge(writes: EditorWrite[]): void {
     for (const write of writes) if (this.jobs.get(write.path) === write) this.jobs.delete(write.path);
   }

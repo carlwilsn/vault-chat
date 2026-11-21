@@ -1,3 +1,4 @@
+import { setCaret } from "./editorState";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Annotation, EditorSelection, EditorState } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
@@ -265,6 +266,9 @@ export function LiveEditor({
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  // The file the caret is in (src/editorState.ts: app/viewer's `editing`).
+  const currentFileRef = useRef(file);
+  currentFileRef.current = file;
   const onScrollRatioRef = useRef(onScrollRatio);
   onScrollRatioRef.current = onScrollRatio;
 
@@ -309,6 +313,11 @@ export function LiveEditor({
       liveTheme,
       EditorView.lineWrapping,
       EditorView.updateListener.of((u) => {
+        if (u.selectionSet || u.docChanged) {
+          const m = u.state.selection.main;
+          const l = u.state.doc.lineAt(m.head);
+          setCaret(currentFileRef.current, l.number, m.head - l.from + 1, Math.abs(m.to - m.from));
+        }
         if (!u.docChanged) return;
         // Echoes from the [value]-effect dispatch are flagged with
         // ExternalSet — skip those so they don't masquerade as user

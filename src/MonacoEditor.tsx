@@ -1,3 +1,4 @@
+import { setCaret } from "./editorState";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import type * as monaco from "monaco-editor";
@@ -68,6 +69,8 @@ export function MonacoEditor({
   // span that differs, before the wrapper would replace the whole model, so
   // the cursor and scroll position stay where they were.
   const valuePathRef = useRef(path);
+  const caretPathRef = useRef(path);
+  caretPathRef.current = path;
   useLayoutEffect(() => {
     const samePath = valuePathRef.current === path;
     valuePathRef.current = path;
@@ -95,6 +98,12 @@ export function MonacoEditor({
     monacoNs: typeof monaco,
   ) => {
     editorRef.current = editor;
+    // Where Carl's caret is (src/editorState.ts: app/viewer's `editing`).
+    editor.onDidChangeCursorSelection((e) => {
+      const s = e.selection;
+      const model = editor.getModel();
+      setCaret(caretPathRef.current, s.positionLineNumber, s.positionColumn, model ? model.getValueLengthInRange(s) : 0);
+    });
     const openInline = () => {
       const model = editor.getModel();
       if (!model) return;

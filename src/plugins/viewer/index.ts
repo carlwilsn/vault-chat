@@ -33,6 +33,8 @@ import { setZoomOf, zoomOf } from "./zoom";
 import { paneOf } from "./panes";
 import { useLiveFiles } from "../../liveReload";
 import "./builtins"; // the app's own viewers register with the registry
+import { caretOf, onSaved } from "../../editorState";
+import { editorWrites } from "../../saveBeforeSend";
 export { pane } from "./mountPane";
 
 followScroll();
@@ -152,10 +154,29 @@ const PANE_ARGS = { type: "object", properties: { path: { type: "string" }, pane
 // The pane actions' events, to the mounted offers.
 let paneEvent: (name: string, data: unknown) => void = () => {};
 
+/** What the editors hold that the disk does not show yet: per open file its caret and whether it has unsaved typing;
+ *  and any other file whose typing is not saved yet (src/editorState.ts, src/editorWrites.ts). */
+export function describeEditing() {
+  const pending = new Map(editorWrites.pending().map((p) => [slashed(p.path), p]));
+  const open = openNow().map((o) => {
+    const p = pending.get(slashed(o.file));
+    pending.delete(slashed(o.file));
+    const c = caretOf(o.file);
+    return { pane: o.pane, path: rel(o.file), unsaved: !!p, conflict: changedOnDisk(o.file), ...(c ? { caret: { line: c.line, col: c.col, selected: c.selected, at: c.at } } : {}) };
+  });
+  return { open, otherUnsaved: [...pending.values()].map((p) => rel(p.path)) };
+}
+const slashed = (p: string) => p.replace(/\\/g, "/");
+
 /** The plugin's offers (exported for tests). */
 export function viewerOffers(): Offers {
   return {
     state: {
+      editing: {
+        description:
+          "What Carl's editors hold that the disk does not show yet: for each open file its caret (line, col, characters selected, when it moved) and whether it has typing not saved yet (the 300 ms autosave) or a save stopped on a conflict; otherUnsaved: files not open with typing not saved. Before you edit a file he has open, read this: if it is unsaved or his caret moved just now, wait for the save (PluginRead {plugin: \"app/viewer\", wait}) rather than writing over him.",
+        read: () => describeEditing(),
+      },
       open: {
         description:
           "The files open in the viewer: per pane (main, or left / right in a split) its path, type, the viewer drawing it (a viewer's id, \"editor\" = the source editor via Ctrl+E, \"fallback\" = plain text), mode (view | edit, null when the type has no edit mode), whether it is the active pane, where it is scrolled (ratio 0..1, page / totalPages for a PDF, line; lineApprox when read off the scroll position), its zoom when its viewer zooms (1 = fit) and the targets scrollTo takes for it.",
@@ -356,6 +377,7 @@ export function viewerOffers(): Offers {
       reloaded: { description: "reloadFromDisk showed a file as it is on disk: path, pane." },
       keptMine: { description: "keepMine saved the version on screen over the one on disk: path, pane." },
       paneClosed: { description: "closePane closed a pane of the split: path, pane." },
+      saved: { description: "Carl's typing in an open file reached the disk (its autosave): path. Wait for it before editing a file he is typing in." },
       changed: { description: "The viewers changed (a plugin's registered or removed, one turned on or off or chosen, an option set): the active viewer of each type after it." },
     },
   };
@@ -371,6 +393,7 @@ export function mount(_el: HTMLElement, api: PluginApi): () => void {
   offs.push(() => {
     if (paneEvent === toEvents) paneEvent = () => {};
   });
+  offs.push(onSaved((path) => offers.emit("saved", { path: rel(path) })));
 
   // Opened / modeChanged: what is open, per pane, compared on each store change (reference checks first).
   const sig = (o: Open) => `${o.pane}\n${o.file}`;

@@ -5,6 +5,7 @@
 // src/MarkdownView.tsx unchanged; src/MarkdownView.tsx mounts it through the plugin host (its props: the pane's id), and
 // draws this same component in the app's tree while the records are unknown or the plugin is off. Each pane registers
 // its Reload / Keep mine with ./panes.ts for the offers.
+import { noteSaved } from "../../editorState";
 import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ComponentPropsWithoutRef, MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -327,6 +328,7 @@ export function Pane({ paneId }: Props) {
       const live = useStore.getState();
       const livePath = paneId ? live.panes.find(p => p.id === paneId)?.file : live.currentFile;
       if (livePath === file) lastSaved.current = value;
+      noteSaved(file);
       if (!isBoxPath(file)) noteEditedFile(file);
     }, () => setDiskChanged(file, true));
   };
