@@ -44,8 +44,11 @@ export type OffersDescription = {
   actions: { name: string; description: string; args: JsonSchema }[];
   events: { name: string; description: string }[];
 };
-/** `seq`: this app's event counter (every plugin's events share it), for watch's `after`. */
+/** `seq` (a watch's answer only): this app's event counter (every plugin's events share it), for watch's `after`. */
 export type OfferEventRecord = { event: string; at: number; seq?: number; payload?: unknown };
+/** Each kept event's number, beside the record (a read's events stay as they were). */
+const SEQS = new WeakMap<OfferEventRecord, number>();
+const seqOf = (r: OfferEventRecord) => SEQS.get(r) ?? 0;
 
 type Entry = { id: string; name: string; offers: Offers; events: OfferEventRecord[]; alive: () => boolean };
 /** What a subscriber is handed: which plugin emitted, the event, when, its payload. */
@@ -124,7 +127,8 @@ export function declareOffers(id: string, name: string, offers: Offers, alive: (
     emit(event, payload) {
       if (!alive() || !(reg.get(id) ?? []).includes(entry)) return;
       if (!offers.events || !Object.prototype.hasOwnProperty.call(offers.events, event)) return;
-      const rec: OfferEventRecord = { event: String(event), at: Date.now(), seq: nextSeq(), ...(payload === undefined ? {} : { payload: plain(payload) }) };
+      const rec: OfferEventRecord = { event: String(event), at: Date.now(), ...(payload === undefined ? {} : { payload: plain(payload) }) };
+      SEQS.set(rec, nextSeq());
       entry.events.push(rec);
       if (entry.events.length > MAX_EVENTS) entry.events.splice(0, entry.events.length - MAX_EVENTS);
       deliver(entry, rec);
@@ -345,7 +349,7 @@ export async function watchOffers(word: string, after: number | undefined, waitM
   const e = find(word);
   if (!e) return { ok: false, error: notMounted(word) };
   const from = typeof after === "number" && Number.isFinite(after) ? after : ((globalThis as Record<string, unknown>)[SEQ_KEY] as number | undefined) ?? 0;
-  const newer = () => e.events.filter((r) => (r.seq ?? 0) > from);
+  const newer = () => e.events.filter((r) => seqOf(r) > from).map((r) => ({ ...r, seq: seqOf(r) }));
   let timedOut = false;
   if (!newer().length) {
     timedOut = await new Promise<boolean>((resolve) => {
