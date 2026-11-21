@@ -1,6 +1,7 @@
 // The ElevenLabs voice plugin (src/appPlugins.ts ELEVENLABS_VOICE_PLUGIN_ID, app/elevenlabs-voice). vault-chat's core
 // voice is local and free (Kokoro TTS, voice af_heart; Whisper STT): nothing to pick, no voice setting in Settings.
-// ElevenLabs is this plugin: while it is on and Keys holds an ElevenLabs key, calls speak and hear with ElevenLabs
+// ElevenLabs is this plugin: while it is on and Keys holds the key ELEVENLABS_API_KEY (an ordinary key, asked for by
+// name), calls speak and hear with ElevenLabs
 // (the box decides per call: server/voiceProvider.ts, from this plugin's supervisor record); turned off (Plugins tool,
 // "Turn off"), calls are local again and this panel and its menu entry go.
 //
@@ -13,14 +14,15 @@
 // setVoice as actions; opened / closed / changed as events.
 import { createRoot } from "react-dom/client";
 import type { PluginApi } from "../../mountHost";
-import { useStore } from "../../store";
+import { keyNamed } from "../../store";
+import { ELEVENLABS_VOICE_KEY } from "../../appPlugins";
 import { saveSetting, setting } from "../../settings";
 import { ElevenLabsVoicePanel } from "./Panel";
 import { createPanelView, type PanelView } from "./view";
 
 /** The plugin's offers over its panel's view (exported for tests). */
 export function elevenLabsVoiceOffers(view: PanelView, emit: (event: string, data?: unknown) => void = () => {}) {
-  const voice = () => ({ voiceId: setting("voice"), hasKey: !!useStore.getState().serviceKeys?.elevenlabs });
+  const voice = () => ({ voiceId: setting("voice"), hasKey: !!keyNamed(ELEVENLABS_VOICE_KEY) });
   return {
     state: {
       panel: {
@@ -28,7 +30,7 @@ export function elevenLabsVoiceOffers(view: PanelView, emit: (event: string, dat
         read: () => ({ open: view.get() }),
       },
       voice: {
-        description: "The voice ElevenLabs speaks with on every call (voiceId, the `voice` setting) and whether Keys holds an ElevenLabs key (hasKey; without one calls use the local voice).",
+        description: "The voice ElevenLabs speaks with on every call (voiceId, the `voice` setting) and whether Keys holds the key ELEVENLABS_API_KEY (hasKey; without one calls use the local voice).",
         read: voice,
       },
     },

@@ -3,15 +3,16 @@
 // whose plaintext is a JSON {name: value} map; the passphrase is the content
 // of the adjacent `fallback.key` (lib.rs:6002, 6025, 6101). Written only by
 // saveKeys (POST /api/v1/keys: the connected laptop pushes its whole keychain
-// — Claude Code's sign-in, ElevenLabs, Tavily, named service keys). Values are never
-// logged.
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from "node:fs";
+// — every key, each a name and a secret stored alike as user.<name>, plus Claude
+// Code's sign-in). Anything that needs a key asks for it by name (keyValue).
+// Values are never logged.
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, copyFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { Decrypter, Encrypter } from "age-encryption";
 import { writeAtomic } from "./atomic";
 import type { CommandFn } from "./commands/registry";
-import { keyEnv } from "../src/keyEnv";
+import { keyEnv, keyValueIn } from "../src/keyEnv";
 
 /** The keychain name Claude Code's sign-in is stored under. */
 export const CLAUDE_CODE_KEY = "service.claude-code";
@@ -75,6 +76,16 @@ export async function saveKeys(dir: string, keys: Record<string, string>): Promi
   }
   const next = new Map(Object.entries(keys).sort(([a], [b]) => a.localeCompare(b)));
   if (next.size === secrets.size && [...next].every(([k, v]) => secrets.get(k) === v)) return false;
+  // The store as it was, kept beside it (still encrypted) before it is replaced:
+  // a push that drops or renames a key can always be undone by hand.
+  if (existsSync(ageFile)) {
+    copyFileSync(ageFile, join(dir, "secrets.age.prev"));
+    try {
+      chmodSync(join(dir, "secrets.age.prev"), 0o600);
+    } catch {
+      /* windows */
+    }
+  }
   const e = new Encrypter();
   e.setPassphrase(readFileSync(passFile, "utf8").trim());
   const ct = await e.encrypt(JSON.stringify(Object.fromEntries(next)));
@@ -106,8 +117,15 @@ export function agentKeyEnvNames(): string[] {
   return Object.keys(agentKeyEnv()).sort();
 }
 
+/** A stored entry is there (by its store name: the sign-in, service.claude-code). */
 export function hasKey(name: string): boolean {
   return !!secrets.get(name);
+}
+
+/** Key `name`'s value, by name (ELEVENLABS_API_KEY, lambda_api_key: any spelling
+ *  that sets the same variable), or null. How everything on the box asks for a key. */
+export function keyValue(name: string): string | null {
+  return keyValueIn(secrets, name);
 }
 
 /** Claude Code's sign-in token (`claude setup-token`), or null. */

@@ -57,7 +57,7 @@ describe("boot + phone routes", () => {
     expect(h.ok).toBe(true);
     expect(h.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(h.git).toBe("ok");
-    expect(h.keys).toEqual({ elevenlabs: false, claudeCode: true });
+    expect(h.keys).toEqual({ claudeCode: true });
     expect(typeof h.busy.runs).toBe("number");
     // The engine is up and no background worker is at work (the updater waits while this is not 0).
     expect(h.busy.workers).toBe(0);

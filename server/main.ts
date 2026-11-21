@@ -8,13 +8,13 @@ import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { activeVoiceSessions, voiceLiveIn } from "./voiceBrain";
 import { localVoiceReady, pipelineState, stopPipeline, wantPipeline } from "./voicePipeline";
-import { ELEVENLABS_VOICE_PLUGIN, voiceProvider } from "./voiceProvider";
+import { ELEVENLABS_VOICE_PLUGIN, ELEVENLABS_VOICE_KEY, voiceProvider } from "./voiceProvider";
 
 import { configureChangeDelivery, currentDeliveryHealth } from "./changeDelivery";
 import { observeReleaseVoiceHealth, type BoxReleaseHealth } from "./releaseHealth";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { registerCommands } from "./commands";
-import { loadKeyStore, hasKey, saveKeys, keyNames, CLAUDE_CODE_KEY } from "./keys";
+import { loadKeyStore, hasKey, keyValue, saveKeys, keyNames, CLAUDE_CODE_KEY } from "./keys";
 import { hostname, userInfo } from "node:os";
 import { setLegacySource, signal, signalLog, convLog, setSharedClock, setFeedVaults, prereadConvLog } from "./convlog/log";
 import { endOwnProcesses, promote, takeOwnership } from "./owner";
@@ -87,9 +87,9 @@ async function main(): Promise<void> {
   const store = await import("../src/store");
   const { useStore } = store;
   useStore.getState().setVault(cfg.vault);
-  await store.hydrateKeychain();
+  await store.hydrateKeychain({ migrate: false });
   const loaded = convLog(cfg.vault).rows().length;
-  console.log(`[vault-chat-server] ${loaded} conversation(s) in the log; keys: ${Object.keys(useStore.getState().apiKeys).join(", ") || "none"}`);
+  console.log(`[vault-chat-server] ${loaded} conversation(s) in the log; keys: ${keyNames().length}`);
 
   // CONTEXT needs only the vault and the key store (the engine adds the rest when it is up).
   (await import("./context/config")).configureContext({ vault: cfg.vault, conversationRoot: cfg.vault });
@@ -340,7 +340,7 @@ async function main(): Promise<void> {
       vault: cfg.vaultName,
       git: gitState,
       ...(gitState === "needs-command-line-tools" ? { gitHelp: "git needs macOS's Command Line Tools: run xcode-select --install (or brew install git)" } : {}),
-      keys: { elevenlabs: hasKey("service.elevenlabs"), claudeCode: hasKey(CLAUDE_CODE_KEY) },
+      keys: { claudeCode: hasKey(CLAUDE_CODE_KEY) },
       // A live voice session counts as a run: the updater waits for busy.runs == 0
       // (server/deploy/vault-chat-update.sh), so it never restarts under someone talking.
       // It also waits for busy.inputs == 0: no surface Carl used in the last 10 minutes
@@ -389,12 +389,12 @@ async function main(): Promise<void> {
     setKeys: async (keys) => {
       const changed = await saveKeys(cfg.secretsDir, keys);
       if (changed) {
-        await store.hydrateKeychain();
+        await store.hydrateKeychain({ migrate: false });
         console.log(`[vault-chat-server] keys from the laptop: ${Object.keys(keys).sort().join(", ") || "none"}`);
         // A sign-in among them: the engine forgets whatever the API said about
         // the last token and spends one tiny call on this one. The value itself
         // is never read here — only whether the push carried that key at all.
-        if ("claudeCode" in keys) engine.tokenChanged?.();
+        if (CLAUDE_CODE_KEY in keys) engine.tokenChanged?.();
       }
       return changed;
     },
@@ -447,7 +447,7 @@ async function main(): Promise<void> {
     brain: (v) => ({
       vault: v.path,
       engine: async () => engineOf(v),
-      elKey: () => useStore.getState().serviceKeys.elevenlabs || null,
+      elKey: () => keyValue(ELEVENLABS_VOICE_KEY),
       voiceId: () => String(readSetting("voice") ?? "nPczCjzI2devNBz1zQrb"),
       elevenlabsPluginOn: () => !pluginStopped(cfg.vault, ELEVENLABS_VOICE_PLUGIN),
       localVoiceReady,
@@ -537,7 +537,7 @@ async function main(): Promise<void> {
   // The New voice's pipeline runs as this server's child (server/voicePipeline.ts).
   if (process.env.VC_VOICE_PIPELINE !== "off")
     void wantPipeline({ stateDir: cfg.stateDir, serverPort: cfg.publicPort, port: cfg.voicePort, log: (s) => console.log(s),
-      wantsLocal: () => voiceProvider({ elevenlabsPluginOn: !pluginStopped(cfg.vault, ELEVENLABS_VOICE_PLUGIN), elKey: useStore.getState().serviceKeys.elevenlabs || null }) === "local" }, true).catch(() => {}); // failure is retained in health/UI
+      wantsLocal: () => voiceProvider({ elevenlabsPluginOn: !pluginStopped(cfg.vault, ELEVENLABS_VOICE_PLUGIN), elKey: keyValue(ELEVENLABS_VOICE_KEY) }) === "local" }, true).catch(() => {}); // failure is retained in health/UI
   process.on("exit", () => stopPipeline());
   process.on("SIGINT", () => shutdown("SIGINT"));
 }

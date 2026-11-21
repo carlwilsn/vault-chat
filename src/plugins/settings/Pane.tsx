@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Check, X, Plus } from "lucide-react";
+import { ArrowLeft, X, Plus } from "lucide-react";
 import { useStore } from "../../store";
 import { Button, Input, MenuSelect } from "../../ui";
-import { listUserKeys, setUserKey, deleteUserKey } from "../../keychain";
+import { cleanKeyName } from "../../keychain";
 import {
   readBoxConfig,
   subscribeBoxSync,
@@ -39,8 +39,6 @@ import { Picker, type PickOption } from "../../SearchPicker";
 // to be a tiny underlined link inside Models that opened a panel with three
 // ways in at once; Carl, on that release: "when I click the sign in button its
 // not a clean obvious and nice thing."
-
-const mask = (k?: string) => (k ? `${k.slice(0, 6)}…${k.slice(-4)}` : "not set");
 
 function SectionHead({ title, hint, right }: { title: string; hint?: ReactNode; right?: ReactNode }) {
   return (
@@ -115,85 +113,21 @@ export function Pane() {
 
 // ---- Keys --------------------------------------------------------------------
 
-function KeyRow({
-  label,
-  value,
-  placeholder,
-  onSave,
-  onClear,
-}: {
-  label: string;
-  value?: string;
-  placeholder: string;
-  onSave: (v: string) => void;
-  onClear: () => void;
-}) {
-  const [draft, setDraft] = useState(value ?? "");
-  const [saved, setSaved] = useState(false);
-  // Keys hydrate from the keychain after mount; keep the dots in step.
-  useEffect(() => setDraft(value ?? ""), [value]);
-  const save = () => {
-    const v = draft.trim();
-    if (!v) return;
-    onSave(v);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1500);
-  };
-  return (
-    <div className="flex items-start gap-3">
-      <div className="w-24 shrink-0 pt-1">
-        <div className="text-[12px] text-foreground/90">{label}</div>
-        {saved ? (
-          <div className="text-[10.5px] text-emerald-500 flex items-center gap-1">
-            <Check className="h-3 w-3" /> saved
-          </div>
-        ) : (
-          <div className="text-[10.5px] text-muted-foreground/70 font-mono truncate">{mask(value)}</div>
-        )}
-      </div>
-      <div className="flex-1 flex gap-2">
-        <Input
-          type="password"
-          placeholder={placeholder}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") save();
-          }}
-        />
-        <Button size="sm" onClick={save} disabled={!draft.trim()}>
-          Save
-        </Button>
-        {value && (
-          <Button size="sm" variant="ghost" onClick={onClear} title="Remove this key from the OS keychain">
-            <X className="h-3 w-3" />
-          </Button>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function KeysSection() {
-  // `apiKeys` is only watched, not edited here: a provider key still travels to
-  // the box (src/boxKeys.ts), but nothing in this UI asks Carl for one.
-  const apiKeys = useStore((s) => s.apiKeys);
+  // A key is a name and a secret: every key is listed, added, replaced and
+  // removed the same way, whatever it is for. Nothing here knows a provider.
+  const keys = useStore((s) => s.keys);
+  const setKey = useStore((s) => s.setKey);
+  const removeKey = useStore((s) => s.removeKey);
   const serviceKeys = useStore((s) => s.serviceKeys);
-  const setServiceKey = useStore((s) => s.setServiceKey);
-  const clearServiceKey = useStore((s) => s.clearServiceKey);
-
-  // Service keys: Tavily's fixed slot plus the named keys vault tools ask for.
-  const [names, setNames] = useState<string[]>(() => listUserKeys());
-  const [add, setAdd] = useState<{ name: string; value: string } | null>(null);
-  const saveAdd = async () => {
-    if (!add) return;
-    const n = add.name.trim().replace(/[^\w-]/g, "_");
-    const v = add.value.trim();
+  const [edit, setEdit] = useState<{ name: string; value: string; replacing: boolean } | null>(null);
+  const save = async () => {
+    if (!edit) return;
+    const n = cleanKeyName(edit.name);
+    const v = edit.value.trim();
     if (!n || !v) return;
-    if (n.toLowerCase() === "tavily") setServiceKey("tavily", v);
-    else await setUserKey(n, v);
-    setNames(listUserKeys());
-    setAdd(null);
+    await setKey(n, v);
+    setEdit(null);
   };
   // Any add / change / removal here goes to the connected box too (the whole
   // set; see boxKeys.ts). Not on first render: connecting already pushed.
@@ -205,91 +139,77 @@ function KeysSection() {
     }
     const t = window.setTimeout(() => void keysChanged(), 400);
     return () => window.clearTimeout(t);
-  }, [apiKeys, serviceKeys, names]);
+  }, [keys, serviceKeys]);
 
-  const service: Array<{ name: string; note?: string; remove: () => void }> = [
-    ...(serviceKeys.tavily ? [{ name: "tavily", note: "web search", remove: () => clearServiceKey("tavily") }] : []),
-    ...names.map((n) => ({
-      name: n,
-      remove: async () => {
-        await deleteUserKey(n);
-        setNames(listUserKeys());
-      },
-    })),
-  ];
-
+  const names = Object.keys(keys).sort((a, b) => a.localeCompare(b));
   return (
-    <section className="space-y-2.5">
-      {/* No model-provider key row: the agent is Claude Code, and its sign-in is
-          the line at the top of Settings, not a key to paste. What is left here
-          is the services the vault's own tools need. */}
-      <SectionHead title="Keys" hint="Kept in this machine's keychain, and given to whatever runs your vault." />
-      <KeyRow
-        label="ElevenLabs"
-        value={serviceKeys.elevenlabs}
-        placeholder="sk_…"
-        onSave={(v) => setServiceKey("elevenlabs", v)}
-        onClear={() => clearServiceKey("elevenlabs")}
-      />
-      <div className="space-y-1.5 pt-1">
-        <div className="flex items-center justify-between">
-          <h4 className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/70">Service keys</h4>
-          {!add && (
-            <Button size="sm" variant="ghost" onClick={() => setAdd({ name: "", value: "" })} title="Add a key">
+    <section className="space-y-2.5" data-settings="keys">
+      {/* No row per provider: the agent is Claude Code, and its sign-in is the
+          line at the top of Settings, not a key. Every key is a name and a secret. */}
+      <SectionHead
+        title="Keys"
+        hint="Kept in this machine's keychain, and given to whatever runs your vault."
+        right={
+          !edit && (
+            <Button size="sm" variant="ghost" onClick={() => setEdit({ name: "", value: "", replacing: false })} title="Add a key" data-el="key-add">
               <Plus className="h-3 w-3" />
             </Button>
-          )}
+          )
+        }
+      />
+      {edit && (
+        <div className="flex gap-2">
+          <Input
+            placeholder="name (e.g. LAMBDA_API_KEY)"
+            value={edit.name}
+            onChange={(e) => setEdit({ ...edit, name: e.target.value })}
+            className="flex-[2] font-mono"
+            disabled={edit.replacing}
+            autoFocus={!edit.replacing}
+          />
+          <Input
+            type="password"
+            placeholder={edit.replacing ? "new value" : "value"}
+            value={edit.value}
+            onChange={(e) => setEdit({ ...edit, value: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void save();
+              if (e.key === "Escape") setEdit(null);
+            }}
+            className="flex-[3]"
+            autoFocus={edit.replacing}
+          />
+          <Button size="sm" onClick={() => void save()} disabled={!edit.name.trim() || !edit.value.trim()}>
+            Save
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setEdit(null)} title="Cancel">
+            <X className="h-3 w-3" />
+          </Button>
         </div>
-        {add && (
-          <div className="flex gap-2">
-            <Input
-              placeholder="name (e.g. lambda_api_key)"
-              value={add.name}
-              onChange={(e) => setAdd({ ...add, name: e.target.value })}
-              className="flex-[2] font-mono"
-              autoFocus
-            />
-            <Input
-              type="password"
-              placeholder="value"
-              value={add.value}
-              onChange={(e) => setAdd({ ...add, value: e.target.value })}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void saveAdd();
-                if (e.key === "Escape") setAdd(null);
-              }}
-              className="flex-[3]"
-            />
-            <Button size="sm" onClick={() => void saveAdd()} disabled={!add.name.trim() || !add.value.trim()}>
-              Save
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => setAdd(null)} title="Cancel">
-              <X className="h-3 w-3" />
-            </Button>
-          </div>
-        )}
-        {service.length > 0 ? (
-          <ul className="divide-y divide-border/40 rounded-md border border-border/60">
-            {service.map((k) => (
-              <li key={k.name} className="flex items-center justify-between px-3 py-1 text-[12px]">
-                <span className="font-mono text-foreground/90">
-                  {k.name}
-                  {k.note && <span className="ml-2 font-sans text-[10.5px] text-muted-foreground">{k.note}</span>}
-                </span>
-                <Button size="sm" variant="ghost" onClick={k.remove} title="Remove">
+      )}
+      {names.length > 0 ? (
+        <ul className="divide-y divide-border/40 rounded-md border border-border/60">
+          {names.map((n) => (
+            <li key={n} className="flex items-center justify-between px-3 py-1 text-[12px]" data-key={n}>
+              <span className="font-mono text-foreground/90">{n}</span>
+              <span className="flex gap-1">
+                <Button size="sm" variant="ghost" onClick={() => setEdit({ name: n, value: "", replacing: true })} title="Replace">
+                  Replace
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => void removeKey(n)} title="Remove">
                   <X className="h-3 w-3" />
                 </Button>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          !add && <p className="text-[11px] text-muted-foreground/60 italic">No service keys yet.</p>
-        )}
-        <p className="text-[11px] text-muted-foreground/80">
-          Vault tools get these as environment variables (
-          <code className="font-mono bg-muted px-1 rounded text-[10.5px]">requires_keys</code> in TOOL.md).
-        </p>
-      </div>
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        !edit && <p className="text-[11px] text-muted-foreground/60 italic">No keys yet.</p>
+      )}
+      <p className="text-[11px] text-muted-foreground/80">
+        The agent's commands get each key as an environment variable of the same name (upper-cased); plugins and vault tools
+        (<code className="font-mono bg-muted px-1 rounded text-[10.5px]">requires_keys</code> in TOOL.md) ask for one by name.
+      </p>
     </section>
   );
 }

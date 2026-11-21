@@ -10,7 +10,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { killTree } from "./commands/proc";
-import { agentKeyEnv, keychainCommands } from "./keys";
+import { agentKeyEnv, keyValue } from "./keys";
 import type { ToolSpec } from "./engine/backend";
 
 const READ_CAP = 24_000;
@@ -113,8 +113,8 @@ export async function runVaultTool(vault: string, shell: string[] | null | undef
   // Every key (as the agent's commands get them), plus each declared one under its own name.
   const keys: Record<string, string> = { ...agentKeyEnv() };
   for (const k of hit.spec.requires_keys ?? []) {
-    const v = keychainCommands.keychain_get({ key: `user.${k}` });
-    if (typeof v === "string" && v) keys[k] = v;
+    const v = keyValue(k);
+    if (v) keys[k] = v;
   }
   const r = await runSandboxed(shell, argv, { cwd: hit.toolDir, stdin: JSON.stringify(args ?? {}), timeoutMs: Math.min(hit.spec.timeout_ms ?? 60_000, 10 * 60_000), extraEnv: keys });
   if ("refused" in r) return `Error: ${name} is ${r.refused}`;

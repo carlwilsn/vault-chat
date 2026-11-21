@@ -45,17 +45,17 @@ describe("Claude Code's sign-in", () => {
     const { useStore } = await import("../../src/store");
     const { laptopKeys } = await import("../../src/boxKeys");
     useStore.setState({
-      apiKeys: { anthropic: "sk-ant-api-real" },
-      serviceKeys: { elevenlabs: "sk_eleven", claudeCode: TOKEN },
+      keys: { ANTHROPIC_API_KEY: "sk-ant-api-real", ELEVENLABS_API_KEY: "sk_eleven" },
+      serviceKeys: { claudeCode: TOKEN },
     } as never);
     const pushed = await laptopKeys();
     expect(pushed[KEY.claudeCode]).toBe(TOKEN);
-    expect(pushed[KEY.anthropic]).toBe("sk-ant-api-real");
-    expect(pushed[KEY.elevenlabs]).toBe("sk_eleven");
+    expect(pushed["user.ANTHROPIC_API_KEY"]).toBe("sk-ant-api-real");
+    expect(pushed["user.ELEVENLABS_API_KEY"]).toBe("sk_eleven");
 
     // And with no sign-in there is simply no entry, rather than an empty one that
     // would overwrite a token the box already has.
-    useStore.setState({ serviceKeys: { elevenlabs: "sk_eleven" } } as never);
+    useStore.setState({ serviceKeys: {} } as never);
     expect(KEY.claudeCode in (await laptopKeys())).toBe(false);
   });
 });

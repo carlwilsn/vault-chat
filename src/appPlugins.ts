@@ -16,6 +16,9 @@ export type AppPluginInfo = {
   description: string;
   /** Words that name it (lower case), for the agent's Plugins tool ("disable notes"). */
   words: readonly string[];
+  /** The keys it uses, by name (Settings → Keys; src/keychain.ts). Each is asked for by name and the plugin
+   *  reacts to it being there or not: no key gets anything a key by another name does not. */
+  keys?: readonly string[];
 };
 
 export const NOTES_PLUGIN_ID = "app/notes";
@@ -168,16 +171,19 @@ export const ASK_PLUGIN: AppPluginInfo = {
 };
 
 export const ELEVENLABS_VOICE_PLUGIN_ID = "app/elevenlabs-voice";
+/** The key the ElevenLabs voice plugin asks for, by name (an ordinary key in Settings → Keys). */
+export const ELEVENLABS_VOICE_KEY = "ELEVENLABS_API_KEY";
 
-/** ElevenLabs voice (src/plugins/elevenlabs-voice): the core voice is local (Kokoro, af_heart); on, with an ElevenLabs key
- *  in Keys, calls speak and hear with ElevenLabs (server/voiceProvider.ts), and its panel picks the voice. */
+/** ElevenLabs voice (src/plugins/elevenlabs-voice): the core voice is local (Kokoro, af_heart); on, with the key
+ *  ELEVENLABS_API_KEY in Keys, calls speak and hear with ElevenLabs (server/voiceProvider.ts), and its panel picks the voice. */
 export const ELEVENLABS_VOICE_PLUGIN: AppPluginInfo = {
   id: ELEVENLABS_VOICE_PLUGIN_ID,
   name: "ElevenLabs voice",
   mount: "panel",
   description:
-    "ElevenLabs voice: on, with an ElevenLabs key in Keys, calls speak and hear with ElevenLabs instead of the free local voice (Kokoro, af_heart); its panel (the chat's ⋯ menu, ElevenLabs voice) picks the voice from the account or the ElevenLabs voice library, plays a test line and shows the box's voice health. Off: calls use the local voice.",
+    "ElevenLabs voice: on, with the key ELEVENLABS_API_KEY in Keys, calls speak and hear with ElevenLabs instead of the free local voice (Kokoro, af_heart); its panel (the chat's ⋯ menu, ElevenLabs voice) picks the voice from the account or the ElevenLabs voice library, plays a test line and shows the box's voice health. Off: calls use the local voice.",
   words: ["elevenlabs", "elevenlabs voice", "elevenlabs-voice", "eleven labs", "eleven labs voice", "voice picker", "voice library", "elevenlabs voices"],
+  keys: [ELEVENLABS_VOICE_KEY],
 };
 
 export const APP_PLUGINS: readonly AppPluginInfo[] = [NOTES_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CHAT_ROWS_PLUGIN, VAULTS_PLUGIN, FILETREE_PLUGIN, TITLEBAR_PLUGIN, VIEWER_PLUGIN, CHAT_PLUGIN, SETTINGS_PLUGIN, VOICE_PLUGIN, CONTEXT_PLUGIN, ASK_PLUGIN, ELEVENLABS_VOICE_PLUGIN];

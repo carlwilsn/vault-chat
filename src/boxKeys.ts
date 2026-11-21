@@ -4,26 +4,17 @@
 // Settings → Keys pushes the set again (a key gone here is removed there).
 // The box keeps them in its own key store, never in the vault or git.
 import { useStore } from "./store";
-import { KEY, listUserKeys, getUserKey, userKeyName } from "./keychain";
+import { KEY, keyEntry } from "./keychain";
 import { boxLinkFor, boxPost, onKeysPushable } from "./boxChat";
 
-/** Every key this laptop has, by keychain name (api.*, service.*, user.*). */
+/** Every key this laptop has (user.<name>, each alike) and the Claude sign-in. */
 export async function laptopKeys(): Promise<Record<string, string>> {
   const s = useStore.getState();
   const out: Record<string, string> = {};
-  for (const [p, v] of Object.entries(s.apiKeys)) {
-    const name = (KEY as Record<string, string>)[p];
-    if (name && v) out[name] = v;
-  }
-  if (s.serviceKeys.tavily) out[KEY.tavily] = s.serviceKeys.tavily;
-  if (s.serviceKeys.elevenlabs) out[KEY.elevenlabs] = s.serviceKeys.elevenlabs;
+  for (const [n, v] of Object.entries(s.keys ?? {})) if (v) out[keyEntry(n)] = v;
   // The box makes its store exactly what is pushed, so a key left out here is a
   // key removed from the box — Claude Code's sign-in included.
   if (s.serviceKeys.claudeCode) out[KEY.claudeCode] = s.serviceKeys.claudeCode;
-  for (const n of listUserKeys()) {
-    const v = await getUserKey(n).catch(() => null);
-    if (v) out[userKeyName(n)] = v;
-  }
   return out;
 }
 

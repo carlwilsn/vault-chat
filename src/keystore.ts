@@ -1,12 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-  keychainGet,
-  keychainSet,
-  KEY,
-  listUserKeys,
-  userKeyName,
-  mergeUserKeyNames,
-} from "./keychain";
+import { keychainGet, keychainSet, KEY, listKeyNames, keyEntry, mergeKeyNames, migrateLegacyKeys } from "./keychain";
 
 // Cross-machine key sync via an encrypted keystore.
 //
@@ -19,8 +12,7 @@ import {
 // machine's keychain. The passphrase lives only in each machine's own
 // keychain (never in git), so the committed blob is useless without it.
 //
-// What travels: machine-global keys (provider/API keys, service keys,
-// user-registered custom keys).
+// What travels: every key (all stored alike, src/keychain.ts) and the Claude sign-in.
 
 const PASSPHRASE_KEY = "keystore.passphrase"; // machine-local, in keychain
 // keys.enc is intentionally NOT gitignored — it must sync via git for the
@@ -36,15 +28,7 @@ function encPath(vault: string): string {
 
 // The machine-global key names eligible to sync.
 function globalKeyNames(): string[] {
-  return [
-    KEY.anthropic,
-    KEY.openai,
-    KEY.google,
-    KEY.tavily,
-    KEY.elevenlabs,
-    KEY.claudeCode,
-    ...listUserKeys().map(userKeyName),
-  ];
+  return [KEY.claudeCode, ...listKeyNames().map(keyEntry)];
 }
 
 export async function getPassphrase(): Promise<string | null> {
@@ -80,7 +64,7 @@ export async function exportKeys(vault: string): Promise<KeystoreResult> {
   }
   const payload = JSON.stringify({
     keys,
-    userKeys: listUserKeys(),
+    userKeys: listKeyNames(),
   });
   let blob: string;
   try {
@@ -133,8 +117,10 @@ export async function importKeys(vault: string): Promise<KeystoreResult> {
   }
   // Restore custom-key names so Settings enumerates them on this machine.
   if (parsed.userKeys && parsed.userKeys.length) {
-    mergeUserKeyNames(parsed.userKeys);
+    mergeKeyNames(parsed.userKeys);
   }
+  // A blob from an older build may carry keys under their old entries: into the one form.
+  await migrateLegacyKeys();
   return { ok: true, message: `imported ${entries.length} keys` };
 }
 

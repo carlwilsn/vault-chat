@@ -237,7 +237,7 @@ describe("missing key", () => {
       expect(srv.logs()).not.toContain("openrouter");
       const h = await (await fetch(`${srv.base}/api/v1/health`)).json();
       expect(h.hasKey).toBe(false);
-      expect(h.keys).toEqual({ elevenlabs: false, claudeCode: false });
+      expect(h.keys).toEqual({ claudeCode: false });
       expect(h.keyNames).toEqual(["api.anthropic"]);
       // Nothing running: not busy (a live call counts: server/voiceBrain.ts activeVoiceSessions, tested there).
       // No background worker either (busy.workers: the updater waits for 0 before it restarts the box).

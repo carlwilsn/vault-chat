@@ -62,12 +62,15 @@ test("ElevenLabs voice is a registered app plugin, in the daily preset's overlay
   // The Settings pane has no voice UI left.
   const pane = fs.readFileSync("src/plugins/settings/Pane.tsx", "utf8");
   assert.doesNotMatch(pane, /voiceLibraryBrowse|VoiceSection|data-settings="voice"/);
+  // Keys has no row for any provider: every key is listed, added, replaced and removed alike.
+  assert.doesNotMatch(pane, /serviceKeys\.(?!claudeCode)|KeyRow|label="ElevenLabs"|"tavily"|setServiceKey\("(?!claudeCode)/);
+  assert.deepEqual(ELEVENLABS_VOICE_PLUGIN.keys, ["ELEVENLABS_API_KEY"], "it asks for its key by name");
 });
 
 test("mounted: a chat menu entry opens its panel (the voice picker); offers panel and voice; off, everything goes", async () => {
   _resetOffers();
   useStore.setState({ vaultPath: vault, voiceMode: false } as any);
-  useStore.setState((s: any) => ({ serviceKeys: { ...(s.serviceKeys ?? {}), elevenlabs: "" } }));
+  useStore.setState({ keys: {} } as any);
   const host = document.createElement("div") as unknown as HTMLElement;
   const h = mountPlugin(host, { name: "ElevenLabs voice", module: plugin }, { path: ELEVENLABS_VOICE_PLUGIN_ID, theme: () => THEME, host: appHostBackend });
   await h.ready;
@@ -85,11 +88,17 @@ test("mounted: a chat menu entry opens its panel (the voice picker); offers pane
   assert.deepEqual(r.state.panel, { open: false });
   assert.equal(r.state.voice.hasKey, false);
   assert.equal(typeof r.state.voice.voiceId, "string");
+  // The key is an ordinary key, asked for by name: added the generic way it is there, removed it is gone (calls local).
+  useStore.setState({ keys: { elevenlabs_api_key: "fake-not-a-key" } } as any);
+  assert.equal((await readOffers(ELEVENLABS_VOICE_PLUGIN_ID)).state.voice.hasKey, true);
+  useStore.setState({ keys: { OTHER_API_KEY: "fake-not-a-key" } } as any);
+  assert.equal((await readOffers(ELEVENLABS_VOICE_PLUGIN_ID)).state.voice.hasKey, false);
+  useStore.setState({ keys: {} } as any);
 
   item!.onClick();
   await waitFor("the panel", () => html(host).includes('data-el="elevenlabs-voice-panel"'));
   assert.match(html(host), /data-el="elevenlabs-voice-section"/);
-  assert.match(html(host), /Needs an ElevenLabs key/, "no key: it says so, and calls stay local");
+  assert.match(html(host), /Needs the key ELEVENLABS_API_KEY/, "no key: it says so, and calls stay local");
   r = await readOffers(ELEVENLABS_VOICE_PLUGIN_ID);
   assert.deepEqual(r.state.panel, { open: true });
   r = await actOffers(ELEVENLABS_VOICE_PLUGIN_ID, "close", {});

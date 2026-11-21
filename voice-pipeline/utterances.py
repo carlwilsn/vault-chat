@@ -49,7 +49,9 @@ def el_key(store: str) -> str:
     with open(os.path.join(store, "secrets.age"), encoding="utf8") as f:
         blob = base64.b64decode(f.read().strip())
     keys = json.loads(passphrase.decrypt(blob, pw))
-    k = keys.get("api.elevenlabs") or keys.get("service.elevenlabs")
+    # A key is a name and a secret (user.<name>); asked for by name. An older store's
+    # service.elevenlabs is the same key (src/keyEnv.ts canonicalKeyName).
+    k = next((v for n, v in keys.items() if n.split(".", 1)[-1].upper() == "ELEVENLABS_API_KEY"), None) or keys.get("service.elevenlabs")
     if not k:
         raise SystemExit(f"no ElevenLabs key in the store (names: {sorted(keys)})")
     return k

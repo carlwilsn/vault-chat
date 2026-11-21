@@ -4,10 +4,11 @@
 //
 // Carl's pick is unchanged: the `voice` setting record (src/settingsRecords.ts; the Settings tool's "voice" key), which
 // the box's calls speak with (server/main.ts voiceId), and the laptop's first-paint copy in localStorage
-// (VOICE_STORAGE). The keys are Keys' (the store's serviceKeys.elevenlabs).
+// (VOICE_STORAGE). The key is an ordinary key, asked for by name (ELEVENLABS_API_KEY in Settings → Keys).
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Play, Square, X } from "lucide-react";
-import { useStore } from "../../store";
+import { useStore, useKey } from "../../store";
+import { ELEVENLABS_VOICE_KEY } from "../../appPlugins";
 import { saveSetting, useSetting } from "../../settings";
 import { Button } from "../../ui";
 import { Picker, type PickOption } from "../../SearchPicker";
@@ -70,7 +71,7 @@ async function voiceToBox(voiceId: string): Promise<void> {
 }
 
 export function VoiceSection() {
-  const key = useStore((s) => s.serviceKeys.elevenlabs);
+  const key = useKey(ELEVENLABS_VOICE_KEY);
   const shared = useSetting("voice");
   const [voiceId, setVoiceId] = useState(
     localStorage.getItem(VOICE_STORAGE) ?? DEFAULT_VOICE,
@@ -182,7 +183,7 @@ export function VoiceSection() {
   return (
     <section className="space-y-2" data-el="elevenlabs-voice-section">
       <p className="text-[11.5px] text-muted-foreground/80" data-el="elevenlabs-voice-hint">
-        {key ? "The voice ElevenLabs speaks with on every call." : "Needs an ElevenLabs key (Settings → Keys). Without one, calls use the free local voice."}
+        {key ? "The voice ElevenLabs speaks with on every call." : "Needs the key ELEVENLABS_API_KEY (Settings → Keys). Without one, calls use the free local voice."}
       </p>
       <VoiceHealthRow />
       {key && (

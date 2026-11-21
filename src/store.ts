@@ -27,7 +27,8 @@ function withMid(m: ChatMessage): ChatMessage {
 import { formatNote } from "./notes-format";
 import { lastReportedContext } from "./chatContext";
 
-import { keychainGet, keychainSet, keychainDelete, KEY, type ProviderId } from "./keychain";
+import { keychainGet, keychainSet, keychainDelete, KEY, listKeyNames, getKey, setKey as keychainSetKey, deleteKey as keychainDeleteKey, migrateLegacyKeys, cleanKeyName } from "./keychain";
+import { keyValueIn, KEY_PREFIX, canonicalKeyName } from "./keyEnv";
 
 export type FileEntry = {
   path: string;
@@ -237,8 +238,10 @@ const newPaneId = () =>
     ? crypto.randomUUID()
     : `p_${Math.random().toString(36).slice(2)}`);
 
-type ApiKeys = Partial<Record<ProviderId, string>>;
-export type ServiceKeys = { tavily?: string; elevenlabs?: string; claudeCode?: string };
+/** Every key by name ({name: secret}): src/keychain.ts. */
+export type Keys = Record<string, string>;
+/** Claude Code's sign-in: not a key (src/keyEnv.ts NOT_FOR_COMMANDS). */
+export type ServiceKeys = { claudeCode?: string };
 
 const THEME_STORAGE = "vault_chat_theme";
 const CHAT_SIDEBAR_STORAGE = "vc_chat_sidebar";
@@ -289,68 +292,61 @@ function loadTheme(): Theme {
   return raw === "light" ? "light" : "graphite";
 }
 
-/** Fetch every known credential from the OS keychain into memory.
+/** Read every key (and the Claude sign-in) from the OS keychain into memory.
  *  Called once on app boot (see `hydrateKeychain` below). */
-async function fetchAllFromKeychain(): Promise<{
-  apiKeys: ApiKeys;
-  serviceKeys: ServiceKeys;
-}> {
-  const [anthropic, openai, google, tavily, elevenlabs, claudeCode] = await Promise.all([
-    keychainGet(KEY.anthropic),
-    keychainGet(KEY.openai),
-    keychainGet(KEY.google),
-    keychainGet(KEY.tavily),
-    keychainGet(KEY.elevenlabs),
-    keychainGet(KEY.claudeCode),
-  ]);
-  const apiKeys: ApiKeys = {};
-  if (anthropic) apiKeys.anthropic = anthropic;
-  if (openai) apiKeys.openai = openai;
-  if (google) apiKeys.google = google;
+async function fetchAllFromKeychain(): Promise<{ keys: Keys; serviceKeys: ServiceKeys }> {
+  const names = listKeyNames();
+  const [claudeCode, ...values] = await Promise.all([keychainGet(KEY.claudeCode), ...names.map((n) => getKey(n))]);
+  const keys: Keys = {};
+  names.forEach((n, i) => {
+    if (values[i]) keys[n] = values[i]!;
+  });
   const serviceKeys: ServiceKeys = {};
-  if (tavily) serviceKeys.tavily = tavily;
-  if (elevenlabs) serviceKeys.elevenlabs = elevenlabs;
   if (claudeCode) serviceKeys.claudeCode = claudeCode;
-  return { apiKeys, serviceKeys };
+  return { keys, serviceKeys };
 }
 
-/** One-time migration: if the previous version stored keys in
- *  localStorage, copy them to the keychain and clear the localStorage
- *  entries. Silent — users don't re-enter anything. */
+/** One-time migration: a build before the keychain kept keys in localStorage.
+ *  Each becomes a key under its name (src/keyEnv.ts canonicalKeyName). Silent:
+ *  nothing is re-entered. */
 async function migrateLocalStorageKeys(): Promise<void> {
-  const OLD_API = "vault_chat_api_keys";
-  const OLD_SERVICE = "vault_chat_service_keys";
-  try {
-    const rawApi = localStorage.getItem(OLD_API);
-    if (rawApi) {
-      const parsed = JSON.parse(rawApi) as ApiKeys;
-      if (parsed.anthropic) await keychainSet(KEY.anthropic, parsed.anthropic);
-      if (parsed.openai) await keychainSet(KEY.openai, parsed.openai);
-      if (parsed.google) await keychainSet(KEY.google, parsed.google);
-      localStorage.removeItem(OLD_API);
+  const OLD: Array<[string, string]> = [["vault_chat_api_keys", "api"], ["vault_chat_service_keys", "service"]];
+  for (const [storage, kind] of OLD) {
+    try {
+      const raw = localStorage.getItem(storage);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      for (const [k, v] of Object.entries(parsed)) {
+        const name = canonicalKeyName(`${kind}.${k}`);
+        if (name && typeof v === "string" && v) await keychainSetKey(name, v);
+      }
+      localStorage.removeItem(storage);
+    } catch (e) {
+      console.warn("[keys] localStorage migration failed:", e);
     }
-  } catch (e) {
-    console.warn("[keys] api migration failed:", e);
-  }
-  try {
-    const rawService = localStorage.getItem(OLD_SERVICE);
-    if (rawService) {
-      const parsed = JSON.parse(rawService) as ServiceKeys;
-      if (parsed.tavily) await keychainSet(KEY.tavily, parsed.tavily);
-      localStorage.removeItem(OLD_SERVICE);
-    }
-  } catch (e) {
-    console.warn("[keys] service migration failed:", e);
   }
 }
 
-/** Migrate legacy localStorage state into the keychain (once), then
- *  load every credential into the store. Call from main.tsx after
- *  createRoot but before the first user turn. */
-export async function hydrateKeychain(): Promise<void> {
-  await migrateLocalStorageKeys();
-  const { apiKeys, serviceKeys } = await fetchAllFromKeychain();
-  useStore.setState({ apiKeys, serviceKeys, keysLoaded: true });
+/** Migrate older key storage into the one form (once; the laptop only: the box's
+ *  keychain is read-only and reads older names as they are), then load every key
+ *  into the store. Call from main.tsx after createRoot but before the first user turn. */
+export async function hydrateKeychain(o: { migrate?: boolean } = {}): Promise<void> {
+  if (o.migrate !== false) {
+    await migrateLocalStorageKeys();
+    await migrateLegacyKeys();
+  }
+  const { keys, serviceKeys } = await fetchAllFromKeychain();
+  useStore.setState({ keys, serviceKeys, keysLoaded: true });
+}
+
+/** Key `name`'s value now (by name: any spelling that sets the same variable), or null. */
+export function keyNamed(name: string): string | null {
+  return keyValueIn(Object.entries(useStore.getState().keys).map(([n, v]) => [KEY_PREFIX + n, v] as [string, string]), name);
+}
+
+/** Key `name`'s value, following adds and removals (a plugin asks for its key this way). */
+export function useKey(name: string): string | null {
+  return useStore((s) => keyValueIn(Object.entries(s.keys).map(([n, v]) => [KEY_PREFIX + n, v] as [string, string]), name));
 }
 
 export type Viewport = {
@@ -373,10 +369,12 @@ type State = {
   splitDirection: SplitDirection;
   activePaneId: string | null;
   messages: ChatMessage[];
-  apiKeys: ApiKeys;
+  /** Every key, by name (src/keychain.ts): one mechanism for all of them. */
+  keys: Keys;
+  /** Claude Code's sign-in only (not a key). */
   serviceKeys: ServiceKeys;
   theme: Theme;
-  /** The keychain has been read into apiKeys/serviceKeys (hydrateKeychain). Until then they are empty, and
+  /** The keychain has been read into keys/serviceKeys (hydrateKeychain). Until then they are empty, and
    *  a key push would remove every key from the box: src/boxKeys.ts waits for this. */
   keysLoaded: boolean;
   // The box's X-Vault-Token (same contract as the phone). Empty = none.
@@ -553,8 +551,10 @@ type State = {
   rearrangePanes: (draggedId: string, targetId: string, side: DropSide) => void;
   placeFileAtEdge: (path: string, content: string, side: DropSide) => void;
   appendMessage: (m: ChatMessage) => void;
-  setApiKey: (p: ProviderId, k: string) => void;
-  clearApiKey: (p: ProviderId) => void;
+  /** Add or replace key `name` (stored as every key is). */
+  setKey: (name: string, value: string) => Promise<void>;
+  /** Remove key `name`. */
+  removeKey: (name: string) => Promise<void>;
   setServiceKey: (name: keyof ServiceKeys, k: string) => void;
   clearServiceKey: (name: keyof ServiceKeys) => void;
   /** Carl's pick: shown now, and the theme setting's record on the box (src/settings.ts) every app follows. */
@@ -678,7 +678,7 @@ export const useStore = create<State>((set) => ({
   splitDirection: null,
   activePaneId: null,
   messages: [],
-  apiKeys: {}, // populated async via hydrateKeychain
+  keys: {}, // populated async via hydrateKeychain
   serviceKeys: {}, // populated async via hydrateKeychain
   keysLoaded: false,
   theme: loadTheme(),
@@ -1088,30 +1088,24 @@ export const useStore = create<State>((set) => ({
       };
     }),
   appendMessage: (m) => set((s) => ({ messages: [...s.messages, withMid(m)] })),
-  setApiKey: (p, k) => {
-    set((s) => ({ apiKeys: { ...s.apiKeys, [p]: k } }));
-    keychainSet(KEY[p], k).catch((e) =>
-      console.error(`[keys] keychain set ${p} failed:`, e),
-    );
+  setKey: async (name, value) => {
+    const n = cleanKeyName(name);
+    const v = value.trim();
+    if (!n || !v) return;
+    await keychainSetKey(n, v);
+    set((s) => ({ keys: { ...s.keys, [n]: v } }));
   },
-  clearApiKey: (p) => {
+  removeKey: async (name) => {
+    await keychainDeleteKey(name);
     set((s) => {
-      const next = { ...s.apiKeys };
-      delete next[p];
-      return { apiKeys: next };
+      const next = { ...s.keys };
+      delete next[name];
+      return { keys: next };
     });
-    keychainDelete(KEY[p]).catch((e) =>
-      console.error(`[keys] keychain delete ${p} failed:`, e),
-    );
   },
   setServiceKey: (name, k) => {
     set((s) => ({ serviceKeys: { ...s.serviceKeys, [name]: k } }));
-    const keyName = name === "tavily" ? KEY.tavily : name === "elevenlabs" ? KEY.elevenlabs : name === "claudeCode" ? KEY.claudeCode : null;
-    if (keyName) {
-      keychainSet(keyName, k).catch((e) =>
-        console.error(`[keys] keychain set ${name} failed:`, e),
-      );
-    }
+    keychainSet(KEY[name], k).catch((e) => console.error(`[keys] keychain set ${name} failed:`, e));
   },
   clearServiceKey: (name) => {
     set((s) => {
@@ -1119,12 +1113,7 @@ export const useStore = create<State>((set) => ({
       delete next[name];
       return { serviceKeys: next };
     });
-    const keyName = name === "tavily" ? KEY.tavily : name === "elevenlabs" ? KEY.elevenlabs : name === "claudeCode" ? KEY.claudeCode : null;
-    if (keyName) {
-      keychainDelete(keyName).catch((e) =>
-        console.error(`[keys] keychain delete ${name} failed:`, e),
-      );
-    }
+    keychainDelete(KEY[name]).catch((e) => console.error(`[keys] keychain delete ${name} failed:`, e));
   },
   setTheme: (t) => {
     useStore.getState().applyTheme(t);

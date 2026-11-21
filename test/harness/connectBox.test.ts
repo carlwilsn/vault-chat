@@ -39,7 +39,7 @@ const connected = { installed: true, connected: true, state: "Running", canOpen:
 // ---- what connecting needs -------------------------------------------------
 
 test("connecting a box works with no key at all: the empty set is pushed, not refused", async () => {
-  useStore.setState({ vaultPath: vault, apiKeys: {} as never, serviceKeys: {} as never, boxToken: null, keysLoaded: true } as never);
+  useStore.setState({ vaultPath: vault, keys: {} as never, serviceKeys: {} as never, boxToken: null, keysLoaded: true } as never);
   posted.length = 0;
   const err = await pushKeysToBox("http://box.example:8848");
   assert.equal(err, null, "a signed-out laptop must still be able to connect a box");
