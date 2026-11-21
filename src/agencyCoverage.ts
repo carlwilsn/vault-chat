@@ -88,6 +88,10 @@ export const COVERAGE: Record<string, Coverage> = {
   "src/VoiceSlot.tsx": { state: ["app/voice"] },
   "src/WindowControls.tsx": { state: ["app/titlebar"] },
 
+  // ---------------------------------------------------------------- the box: things Carl sees that no UI file owns
+  "box/alerts": { screenOnly: "the in-app alerts list (Notify writes it; nothing reads it back as state yet)" },
+  "box/release-health": { screenOnly: "release health after a ship (LaptopBuild reads builds, not this)" },
+
   // ---------------------------------------------------------------- phone
   "phone/src/App.tsx": { state: ["app/phone", "box:notes"], gap: "the drawer, the open file and its scroll" },
   "phone/src/main.tsx": { none: "the entry point" },
@@ -107,3 +111,64 @@ export function coveragePercent(rows: Record<string, Coverage> = COVERAGE, prefi
   }
   return n ? Math.round((got / n) * 100) : 100;
 }
+
+/**
+ * Controls on screen (buttons, inputs, clickable elements) that do not yet say which offer reaches them, per file, as
+ * counted when this ratchet started (server/test/agencyControls.ts). A count may only go down: a new control must
+ * carry data-offer="<part>.<action>" (an action its part declares) or data-offer-exempt="<why>". Lower a number when
+ * you annotate or remove controls; never raise one.
+ */
+export const UNMAPPED_CONTROLS: Record<string, number> = {
+ "src/ChangeLine.tsx": 6,
+ "src/ChatFooter.tsx": 2,
+ "src/ChatHeader.tsx": 2,
+ "src/ChatModelPicker.tsx": 4,
+ "src/ChatPane.tsx": 1,
+ "src/ChatsPanel.tsx": 4,
+ "src/ClaudeCodeSignIn.tsx": 9,
+ "src/ComposerPanel.tsx": 3,
+ "src/FileTree.tsx": 2,
+ "src/FullscreenChat.tsx": 1,
+ "src/InlineEditPrompt.tsx": 2,
+ "src/InlineHtmlFrame.tsx": 4,
+ "src/InlineWebPage.tsx": 11,
+ "src/MarkdownView.tsx": 1,
+ "src/MasterSection.tsx": 1,
+ "src/NewProjectForm.tsx": 1,
+ "src/NotePopup.tsx": 7,
+ "src/PdfView.tsx": 5,
+ "src/PluginOff.tsx": 1,
+ "src/ProjectChip.tsx": 7,
+ "src/SearchPicker.tsx": 4,
+ "src/SettingsPane.tsx": 3,
+ "src/TexView.tsx": 1,
+ "src/Titlebar.tsx": 4,
+ "src/UnsupportedView.tsx": 2,
+ "src/UpdateBanner.tsx": 4,
+ "src/UsagePopover.tsx": 1,
+ "src/VaultPicker.tsx": 3,
+ "src/VideoPlayer.tsx": 4,
+ "src/VideoView.tsx": 3,
+ "src/WindowControls.tsx": 3,
+ "src/chatExtras.tsx": 7,
+ "src/plugins/ask/Prompt.tsx": 8,
+ "src/plugins/chat-rows/rows.tsx": 5,
+ "src/plugins/chat-rows/tail.tsx": 1,
+ "src/plugins/chat/Frame.tsx": 1,
+ "src/plugins/chat/Header.tsx": 3,
+ "src/plugins/chat/Transcript.tsx": 3,
+ "src/plugins/chats/ChatsList.tsx": 20,
+ "src/plugins/composer/Composer.tsx": 8,
+ "src/plugins/elevenlabs-voice/Panel.tsx": 10,
+ "src/plugins/filetree/Tree.tsx": 24,
+ "src/plugins/notes/NotesPanel.tsx": 19,
+ "src/plugins/settings/Pane.tsx": 22,
+ "src/plugins/titlebar/Bar.tsx": 15,
+ "src/plugins/vaults/Picker.tsx": 13,
+ "src/plugins/viewer/Pane.tsx": 11,
+ "src/plugins/viewer/builtins.tsx": 2,
+ "src/plugins/voice/Controls.tsx": 4,
+ "src/plugins/voice/TextPanel.tsx": 5,
+ "src/ui.tsx": 6,
+ "src/voiceParts.tsx": 2,
+};
