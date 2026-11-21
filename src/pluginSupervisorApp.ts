@@ -12,7 +12,7 @@ import { boxGet, boxLinkFor, boxPost } from "./boxChat";
 import { useStore } from "./store";
 import { PLUGIN_STOPPED_EVENT } from "./liveBridge";
 import { pluginIdOf, Reconciler, Supervisor, type Desired, type SupervisorRecord } from "./pluginSupervisor";
-import type { ChangeRecord, StagedRecord } from "./pluginDrafts";
+import type { ChangeRecord } from "./pluginDrafts";
 import { DAILY_IN_EFFECT, type PresetInEffect } from "./appPreset";
 
 let vault: string | null = null;
@@ -215,16 +215,16 @@ export function supervisorChangesNow(plugin: string): readonly ChangeRecord[] {
   return sup.changes(plugin);
 }
 
-/** The plugin's staged records (src/pluginDrafts.ts: the gate passed a draft Carl can see). */
-export function supervisorStagedNow(plugin: string): readonly StagedRecord[] {
+/** Every plugin with change records now. */
+export function supervisorChangedNow(): string[] {
   forVault(useStore.getState().vaultPath);
-  return sup.staged(plugin);
+  return sup.changedPlugins();
 }
 
-/** Carl's word on a draft ({plugin, change, version, reason?, by?}): the box moves the files and writes the record. */
+/** A word on a draft ({plugin, change, version, reason?, by?}): the box moves the files and writes the record. */
 export async function postPluginChange(body: { plugin: string; change: "keep" | "discard" | "switch"; version?: string; reason?: string; by?: string } & Record<string, unknown>): Promise<{ ok: boolean; text: string }> {
   const link = await boxLinkFor(useStore.getState().vaultPath).catch(() => null);
-  if (!link) return { ok: false, text: "no box: Keep and Discard are written on the box" };
+  if (!link) return { ok: false, text: "no box: a change is written on the box" };
   try {
     const r = await boxPost(link, "/api/v2/supervisor", body);
     await loadSupervisor(true);

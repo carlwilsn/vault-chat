@@ -1,5 +1,5 @@
-// Migration drafts (src/migrations.ts, server/migrations.ts): a plugin's state reshaped by asking. The draft waits as
-// Change ready; Try runs migrate on a copy of the real state (nothing written); Keep backs up first, then writes the
+// Migration drafts (src/migrations.ts, server/migrations.ts): a plugin's state reshaped by asking. The draft waits for
+// the gate; its dry run runs migrate on a copy of the real state (nothing written); Keep backs up first, then writes the
 // migrated state as new records (an epoch switch), never rewriting or deleting the old ones; Switch back reads the old
 // records again. The box boots on a log holding migrated and unmigrated plugins (never migrating anything itself), an
 // older reader still reads the old shape, and a migrate that throws, loops or answers nonsense writes nothing. Real HTTP.
@@ -98,14 +98,12 @@ describe("migration drafts", () => {
   const signals = () => signalLog(A.path).signals(0);
   const write = (name: string, code: string) => (writeFileSync(join(A.path, DIR, `${name}.draft.js`), code), versionOf(code));
 
-  it("Try runs migrate on a copy of the real state: the before / after summary, nothing written", async () => {
+  it("the dry run runs migrate on a copy of the real state: the before / after summary, nothing written", async () => {
     await set(P, "placement", "pinned");
     await set(P, "legacy", 1);
     await set(P, "off:x", true);
     await set(OTHER, "filter", "open");
     const v = write("plan-shape", RESHAPE);
-    const listed = (await get("/api/v2/changes?surface=phone")).json.changes;
-    expect(listed).toContainEqual({ plugin: "migrate/plan-shape", name: `Data: ${P}`, what: "the plan placement becomes {where}", version: v, added: false, tryOn: ["laptop"], migration: { target: P } });
     const n = signals().length;
     const t = await get(`/api/v2/migrations/try?plugin=migrate/plan-shape&version=${v}`);
     expect(t.status).toBe(200);
@@ -152,7 +150,6 @@ describe("migration drafts", () => {
     expect(now.epoch).toMatch(new RegExp(`^plan-shape@${v}\\.`));
     expect(signals().filter((r) => (r as { signal?: { type?: string; plugin?: string } }).signal?.type === PLUGIN_STATE && (r as { signal?: { plugin?: string } }).signal?.plugin === P)).toEqual(plain);
     expect(existsSync(join(A.path, DIR, `plan-shape.kept-${v}.js`))).toBe(true);
-    expect((await get("/api/v2/changes")).json.changes.some((c: { plugin: string }) => c.plugin === "migrate/plan-shape")).toBe(false);
     // A set now lands in the migrated epoch: a plugin.epoch.state record, never a plain one.
     await set(P, "placement", { where: "inline" });
     expect((signals().at(-1) as { signal?: unknown }).signal).toMatchObject({ type: "plugin.epoch.state", plugin: P, epoch: now.epoch, key: "placement" });

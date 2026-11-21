@@ -94,7 +94,7 @@ describe("Ctrl+L can change the app", () => {
     expect(readFileSync(join(plugins(), "snail-cursor.js"), "utf8")).toContain("// snail");
   });
 
-  it("writes nothing outside the plugin folders; drafts wait as Change ready", async () => {
+  it("writes nothing outside the plugin folders; drafts wait for the gate", async () => {
     expect("error" in pluginWriteTarget("Hi.md")).toBe(true);
     expect("error" in pluginWriteTarget(".vault-chat/plugins/../conversations/x.js")).toBe(true);
     expect("error" in pluginWriteTarget(".vault-chat/box-plugins/x.js")).toBe(true);

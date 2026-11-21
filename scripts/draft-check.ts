@@ -16,7 +16,7 @@
 // [{click|press|type|wait|waitFor}] (RecordUI's shapes), run on both sides before typing.
 //
 // The verdict (Kayenta's success / marginal / failure):
-//   fail        the draft did not run, threw or logged errors the live side does not, or typing is over the Try limit
+//   fail        the draft did not run, threw or logged errors the live side does not, or typing is over the typing limit
 //   borderline  the visible text differs (listed: is it what Carl asked for, and only that?) or typing is slower
 //   pass        no new errors, the same visible text, typing as fast
 // Exit code: 0 pass, 3 borderline, 1 fail, 2 could not run.
@@ -93,7 +93,7 @@ export function judge(plugin: string, version: string, live: Side, draft: Side, 
   const dm = slowMedian(draft.typingMs) ?? (draft.typingMs.length ? stats(draft.typingMs).medianMs : null);
   if (dm !== null && dm > TRY_SLOW_MS) {
     fail = true;
-    reasons.push(`typing with the draft: median ${dm.toFixed(1)} ms a key, over the Try limit of ${TRY_SLOW_MS} ms`);
+    reasons.push(`typing with the draft: median ${dm.toFixed(1)} ms a key, over the typing limit of ${TRY_SLOW_MS} ms`);
   } else if (dm !== null && lm !== null && dm > lm * 1.5 + 5) {
     border = true;
     reasons.push(`typing is slower with the draft: median ${dm.toFixed(1)} ms against ${lm.toFixed(1)} ms`);
@@ -193,7 +193,7 @@ async function runSide(cdp: any, url: string, plugin: string, steps: Step[], key
       }
       await sleep(300);
     }
-    // The page's text without the Change ready notice (only the draft's side has one).
+    // The page's text without a change notice, if one shows (older cores showed one on the draft's side only).
     const text: string[] = await evalIn(cdp, sid, `(() => { const n = document.querySelector('[data-el="change-ready"]'); if (n) n.style.display = 'none'; const t = document.body.innerText.split('\\n'); if (n) n.style.display = ''; return t; })()`);
     const ran: boolean = await evalIn(cdp, sid, `!!document.querySelector('[data-vc-plugin=${JSON.stringify(JSON.stringify(plugin)).slice(1, -1)}]')`);
     const copy: string | null = await evalIn(cdp, sid, `(document.querySelector('[data-vc-plugin=${JSON.stringify(JSON.stringify(plugin)).slice(1, -1)}][data-vc-copy]')||{getAttribute:()=>null}).getAttribute('data-vc-copy')`);
@@ -277,15 +277,15 @@ export async function captureRealData(vault: string, scratch: string, src = real
 // ---------------------------------------------------------------- landing by the verdict
 
 /** What the gate writes for a verdict: the one rule for every part (src/gateResult.ts gateDecision), for a plugin. */
-export function gateDecision(v: Pick<Verdict, "verdict" | "reasons">, asked: boolean): { change: "keep" | "discard" | "stage"; reason: string } {
+export function gateDecision(v: Pick<Verdict, "verdict" | "reasons">, asked: boolean): { change: "keep" | "discard"; reason: string } {
   return sharedDecision("ui-plugin", v, asked);
 }
 
 /** Land a verdict: the record through the box, by "gate" (a keep names what it is and the chat that asked). */
-export async function landVerdict(vault: string, v: Verdict, asked: boolean, box?: string, o: { what?: string; conv?: string } = {}): Promise<{ text: string; decision: "keep" | "discard" | "stage" }> {
+export async function landVerdict(vault: string, v: Verdict, asked: boolean, box?: string, o: { what?: string; conv?: string } = {}): Promise<{ text: string; decision: "keep" | "discard" }> {
   const d = gateDecision(v, asked);
   const r = await postBoxChange(vault, { plugin: v.plugin, change: d.change, version: v.version, reason: d.reason, by: "gate", ...(o.what ? { what: o.what } : {}), ...(o.conv ? { conv: o.conv } : {}) }, box);
-  return { text: `${d.change === "keep" ? "applied" : d.change === "stage" ? "staged for Carl's Try" : "dropped"}: ${r.text} (record ${r.seq})`, decision: d.change };
+  return { text: `${d.change === "keep" ? "applied" : "dropped"}: ${r.text} (record ${r.seq})`, decision: d.change };
 }
 
 /** The machine-readable last line the box reads (src/gateResult.ts gateLineOf). */
@@ -375,7 +375,7 @@ async function main(argv: string[]): Promise<number> {
     console.error("usage: draft-check.ts <plugin> --vault <vault> [--synthetic | --data <dir>] [--scenario conv-a] [--steps steps.json] [--keys 24] [--runs 2] [--out result.json] [--unasked | --asked] [--box <url>]\n       draft-check.ts <plugin> --vault <vault> --keep | --discard | --back [--reason <line>]");
     return 2;
   }
-  // The record by hand: the same one Carl's Change ready writes (the box moves the files).
+  // The record by hand: the same one the gate writes (the box moves the files).
   const by = (["keep", "discard", "back"] as const).find((k) => argv.includes(`--${k}`));
   if (by) {
     const slot = slotFor(plugin);

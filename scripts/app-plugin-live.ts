@@ -8,10 +8,9 @@
 //   node --import tsx scripts/app-plugin-live.ts <name> --vault <vault> --back      live and the copy the last keep replaced swap
 //   node --import tsx scripts/app-plugin-live.ts <name> --vault <vault> --remove    the live copy is dropped (built-in runs)
 //
-// A draft runs nowhere by itself: the laptop shows "Change ready: <what>" and Carl tries it, then keeps or discards it
-// (src/changeReady.ts; his Keep / Discard are records on the box, which moves the files: server/pluginDrafts.ts). Check
-// it first in a hidden copy: scripts/draft-check.ts (--unasked: a fix Carl did not ask for lands or drops by its verdict).
-// --keep / --discard / --back here write the same plugin.change record Carl's buttons do, through the box
+// A draft runs nowhere by itself: the gate (Plugins submit, scripts/gate.ts) keeps or discards it (records on the box,
+// which moves the files: server/pluginDrafts.ts). Check it first in a hidden copy: scripts/draft-check.ts.
+// --keep / --discard / --back here write the same plugin.change record the gate does, through the box
 // (scripts/boxChange.ts; [--reason <line>] [--box <url>]): the box moves the files, never this script.
 //   node --import tsx scripts/app-plugin-live.ts --shared                           every shared name, by plugin (JSON)
 //
@@ -140,7 +139,7 @@ async function main(argv: string[]): Promise<void> {
     rmSync(f, { force: true });
     rmSync(join(dir, liveErrorFile(basename(f))), { force: true });
   };
-  // Keep / Discard / Switch back: the record Carl's Change ready writes, through the box (it moves the files).
+  // Keep / Discard / Switch back: the record the gate writes, through the box (it moves the files).
   const land = async (change: "keep" | "discard" | "switch") => {
     const version = change !== "switch" && existsSync(draft) ? versionOf(readFileSync(draft, "utf8")) : "";
     if (change !== "switch" && !version) throw new Error(`no draft: ${relative(vault, draft)}`);
@@ -160,7 +159,7 @@ async function main(argv: string[]): Promise<void> {
   mkdirSync(dir, { recursive: true });
   drop(to);
   writeFileSync(to, code);
-  console.log(`wrote ${relative(vault, to)} (${Math.round(code.length / 1024)} KB; takes ${shared.length} modules from the app; version ${versionOf(code)})${flag("--draft") ? "\nCarl sees it as Change ready on the laptop; check it first: node --import tsx scripts/draft-check.ts " + folder + " --vault " + vault : ""}`);
+  console.log(`wrote ${relative(vault, to)} (${Math.round(code.length / 1024)} KB; takes ${shared.length} modules from the app; version ${versionOf(code)})${flag("--draft") ? "\nPlugins submit lands it through the gate; check it first: node --import tsx scripts/draft-check.ts " + folder + " --vault " + vault : ""}`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

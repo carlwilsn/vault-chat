@@ -4,12 +4,12 @@
 // Main". PluginWrite is the one scoped write it gets: the plugin folders of the conversation's vault, nothing else.
 //
 //   .vault-chat/plugins/<name>.js|.mjs        Carl asked for it: it lands live through the slot's own draft + keep
-//                                             (src/pluginDrafts.ts), so Change ready's Switch back undoes it, and the
+//                                             (src/pluginDrafts.ts), so a switch back undoes it, and the
 //                                             plugin is turned on if a record had it off.
-//   .vault-chat/plugins/<name>.draft.js       a draft: waits for Carl as Change ready (Try first).
-//   .vault-chat/app-plugins/<part>.draft.js   an app plugin's draft (Change ready).
-//   .vault-chat/box-plugins/<name>.draft.js   a box plugin's draft (Change ready; a live box plugin is never written here).
-//   .vault-chat/migrations/<name>.draft.js    a migration draft (Change ready; Keep is Carl's).
+//   .vault-chat/plugins/<name>.draft.js       a draft: waits for the gate (Plugins submit), which lands it.
+//   .vault-chat/app-plugins/<part>.draft.js   an app plugin's draft (the gate).
+//   .vault-chat/box-plugins/<name>.draft.js   a box plugin's draft (the gate; a live box plugin is never written here).
+//   .vault-chat/migrations/<name>.draft.js    a migration draft (the gate: its dry run, then the keep).
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { isVaultPluginFile, VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES } from "../src/vaultPlugins";
@@ -28,7 +28,7 @@ export const pluginWriteSpec = {
     "Write or edit one of Carl's app plugin files (an app change he asked for: \"make my cursor say X\", \"add a button that …\"). Only these paths, vault-relative: " +
     ".vault-chat/plugins/<name>.js (a vault plugin: an ES module exporting mount(el, api), optional `export const meta = { name, description }`; api.effect(cleanup) undoes what mount did; it runs in the laptop app's own window, light DOM, the app's styles). " +
     "Writing a vault plugin's .js lands it LIVE at once and turns it on (the copy it replaced stays: Plugins back, or Carl's Undo, undoes it). " +
-    "A draft instead (<name>.draft.js in .vault-chat/plugins, .vault-chat/app-plugins/<part>.draft.js, .vault-chat/box-plugins/<name>.draft.js, .vault-chat/migrations/<name>.draft.js) reaches Carl only after Plugins submit has run it through the gate (a vault or app plugin's draft; asked: true when he asked for it: then it applies with \"Done\" + Undo in this chat); a box plugin's or migration's draft gets a \"Try it?\" line in Main. " +
+    "A draft instead (<name>.draft.js in .vault-chat/plugins, .vault-chat/app-plugins/<part>.draft.js, .vault-chat/box-plugins/<name>.draft.js, .vault-chat/migrations/<name>.draft.js) reaches Carl only after Plugins submit has run it through the gate (asked: true when he asked for it); passed, it applies live with \"Done\" + Undo in this chat. " +
     "content: the whole file; or oldText + newText: one exact replacement in the existing file. To turn another plugin off or on, use Plugins.",
   inputSchema: {
     type: "object",
@@ -71,7 +71,7 @@ export function pluginWriteTarget(path: unknown): Target | { error: string } {
   if (dir === BOX_PLUGIN_DIR) {
     const m = /^(.+)\.draft\.js$/.exec(file);
     if (m && boxPluginName(m[1]!)) return { kind: "draft", rel: p, what: `the draft of box/${m[1]}` };
-    return { error: `${file}: a box plugin is written as its draft, <name>.draft.js (lowercase letters, digits, -); Carl lands it from its \"Try it?\" line in Main` };
+    return { error: `${file}: a box plugin is written as its draft, <name>.draft.js (lowercase letters, digits, -); Plugins submit lands it through the gate` };
   }
   if (dir === MIGRATION_DIR) {
     const m = /^([a-z0-9][a-z0-9-]*)\.draft\.js$/i.exec(file);
@@ -122,7 +122,7 @@ export function pluginWrite(vault: string, a: Record<string, unknown>, wrote?: (
       if (Buffer.byteLength(code) > VAULT_PLUGIN_MAX_BYTES) return { ok: false, text: "too large (1 MB at most)" };
       writeFileSync(abs, code);
       wrote?.([abs]);
-      return { ok: true, text: `Wrote ${t.rel} (${t.what}, version ${versionOf(code)}). Nothing reaches Carl yet: Plugins submit runs it through the gate (asked: true when he asked for it). A box plugin's or migration's draft gets a \"Try it?\" line in Main instead.` };
+      return { ok: true, text: `Wrote ${t.rel} (${t.what}, version ${versionOf(code)}). Nothing reaches Carl yet: Plugins submit runs it through the gate (asked: true when he asked for it). Passed, it applies live.` };
     }
     // A vault plugin Carl asked for: live now, through its slot's draft and a keep record, so Switch back undoes it.
     const slot = vaultSlot(t.base, t.ext);

@@ -11,9 +11,8 @@
 // (the theme, the fullscreen chat's sidebar), the laptop sends its value (POST {migrate}: set only where no record is).
 //
 // The agent's settings drafts and Carl's word on them (setting.draft / setting.change) are followed here the same way
-// (settingsDraftsNow). Trying one (src/changeReady.ts) lays its window settings over the records on this app's windows
-// only (setSettingsTry): nothing is written, the first-paint copy keeps the records' values, and Back, Discard or Keep
-// takes the overlay away (after a Keep the records say the same).
+// (settingsDraftsNow). A gate run in the hidden Drive copy (src/changeReady.ts, src/driveGuard.ts) lays a draft's window
+// settings over the records in that copy only (setSettingsTry): nothing is written.
 import { useEffect, useState } from "react";
 import { useStore } from "./store";
 import { boxGet, boxLinkFor, boxPost, type Link } from "./boxChat";
@@ -148,8 +147,6 @@ export async function refreshBoxSettings(): Promise<void> {
 export async function saveSetting(key: SettingKey, value: SettingValue): Promise<string | null> {
   const bad = settingProblem(key, value);
   if (bad) return bad;
-  // Carl picks a setting a draft he tries lays over: his pick wins, the trying stops (src/changeReady.ts).
-  if (key in overlay) pickedWhileTrying?.();
   apply(key, value === null ? SETTINGS[key].default : value);
   const link = await boxLinkFor(useStore.getState().vaultPath).catch(() => null);
   if (!link) return "no box is connected";
@@ -207,7 +204,7 @@ function loadDrafts(r: { drafts?: unknown; changes?: unknown }): void {
   draftsChanged();
 }
 
-/** Lay a tried draft's window settings over the records on this app's windows (null: take it away). Nothing is
+/** Lay a gate run's draft window settings over the records in this window (null: take it away). Nothing is
  *  written anywhere: the records, the box and the first-paint copy stay as they are. */
 export function setSettingsTry(v: SettingValues | null): void {
   const next: SettingValues = {};
@@ -219,13 +216,7 @@ export function setSettingsTry(v: SettingValues | null): void {
   for (const k of keys) show(k, before[k]);
 }
 
-let pickedWhileTrying: (() => void) | null = null;
-/** What to do when Carl picks a setting a tried draft lays over (src/changeReady.ts: stop trying it). */
-export function onPickWhileTrying(fn: (() => void) | null): void {
-  pickedWhileTrying = fn;
-}
-
-/** What Try lays over the records now (tests, the offers). */
+/** What a gate run's tried draft lays over the records now (tests). */
 export const settingsTriedNow = (): SettingValues => overlay;
 
 /** Tests: forget what was applied. */

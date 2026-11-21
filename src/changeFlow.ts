@@ -1,15 +1,13 @@
-// How a change reaches Carl (the Try redesign, 2026-11-19): no card, no glow. Everything is a line in a chat.
+// How a change reaches Carl: no card, no glow, no Try step. Everything is a line in a chat.
 //
-// - Asked for (Plugins submit asked: true): nothing reaches the laptop until the draft gate (scripts/draft-check.ts) has
-//   passed. Then it applies (a keep by "gate") and the chat that asked gets "Done: <what>" with Undo. A fail, or a gate
-//   that could not run, is one plain line there: it did not apply, and why.
-// - Not asked for (the agent's fixes, the app's core): after the gate, a change nothing on screen shows applies silently
-//   (a log line); one Carl can see is staged (a plugin.staged record) and Main gets "<what> — Try it?" with Try, then
-//   Keep / Undo.
+// - Every gated change (Plugins submit, asked for or not; a settings draft; a migration; the app's core): nothing reaches
+//   the laptop until the one gate (src/gateResult.ts) has passed it. Then it applies at once (a keep by "gate") and the
+//   chat that submitted it gets "Done: <what> (what was checked)" with Undo. A fail, or a gate that could not run, is one
+//   plain line there when Carl asked for it.
 // - Safety outside the part changed: Undo of the last applied change in the native shell (Ctrl+Alt+Z, the tray menu),
-//   and a dead-man's switch: while a change is tried, or for DEADMAN_MS after one applied, the app must keep reporting
-//   healthy (the chat pane renders and answers a ping); when it does not, the change reverts by itself and the chat
-//   says so (src/changeSafety.ts, src-tauri/src/safety.rs). A restart never keeps an untried change.
+//   and a dead-man's switch: for DEADMAN_MS after a change applied, the app must keep reporting healthy (the chat pane
+//   renders and answers a ping); when it does not, the change reverts by itself and the chat says so
+//   (src/changeSafety.ts, src-tauri/src/safety.rs). A kept copy that throws or slows typing switches back by itself too.
 //
 // The words Carl reads are plain: no hashes, no version numbers, no internal notes.
 //
@@ -17,7 +15,8 @@
 
 import { landing, type ChangeRecord } from "./pluginDrafts";
 
-/** What a chat line offers for a change: Undo of an applied one, Try of a staged one, or nothing (a plain line). */
+/** What a chat line offers for a change: Undo of an applied one, or nothing (a plain line). Lines written before the
+ *  Try step was removed may still say "try": they draw nothing. */
 export type ChangeOffer = "undo" | "try";
 /** The change a chat line is about (a notice's `change`). */
 /** `vault`: the vault (its name) whose records the change is in, for a part that is one per vault (an app or vault plugin). */
@@ -35,7 +34,7 @@ export const NATIVE_SILENCE_MS = 30_000;
 export const UNDO_CHORD = "Ctrl+Alt+Z";
 
 /** A chat line's id for a change (one line per change and kind, so writing it twice writes it once). */
-export const changeLineId = (kind: "done" | "failed" | "offer" | "auto", plugin: string, version: string) => `change-${kind}:${plugin}@${version}`;
+export const changeLineId = (kind: "done" | "failed" | "auto", plugin: string, version: string) => `change-${kind}:${plugin}@${version}`;
 
 /** Carl's words for what a change does: no hashes, no "(main …)" notes, no tags; the plugin's name when there are none. */
 export function plainWhat(what: string | null | undefined, name?: string | null): string {
@@ -68,46 +67,49 @@ export function plainWhy(reasons: readonly string[] | string | null | undefined)
   return plainWhat(first.split(/[:(]/)[0], null).toLowerCase() || "the check failed";
 }
 
-export const doneText = (what: string) => `Done: ${what}`;
+/** What the gate checked, in Carl's words, by its runner (src/gateResult.ts GateResult.runner), or null. */
+export function checkedText(runner: string | null | undefined): string | null {
+  const r = String(runner ?? "");
+  if (r === "ui-drive" || r === "settings+ui-drive") return "checked in a hidden copy of the app on your real data";
+  if (r.includes("ui-harness")) return "checked side by side with the current version on a copy of your data";
+  if (r === "box-copy") return "checked beside the running copy on a copy of your vault";
+  if (r === "settings") return "checked that the box takes every value";
+  if (r === "migration-dry-run") return "checked by a dry run on a copy of its data";
+  if (r === "core-bundle") return "checked its files and that it starts";
+  return null;
+}
+
+export const doneText = (what: string, checked?: string | null) => `Done: ${what}${checked ? ` (${checked})` : ""}`;
 export const failedText = (what: string, why: string) => `Didn't apply ${what}: ${why}.`;
 export const notYetText = (what: string, why: string) => `Didn't apply ${what} yet: ${why}. It's kept as a draft; ask again to retry.`;
-export const offerText = (what: string) => `${what} — Try it?`;
 export const autoUndoText = (what: string, why: string) => `Undid ${what} by itself: ${why}.`;
 
-/** Where a chat line's change stands now, from the records (and what this window tries). */
+/** Where a chat line's change stands now, from the records. */
 export type LineState =
   | { state: "applied" } // an applied change: Undo
-  | { state: "offered" } // staged, not tried: Try
-  | { state: "trying" } // tried on this laptop: Keep / Undo
-  | { state: "kept" } // Carl kept it: Undo
   | { state: "undone"; auto: boolean; why: string | null }
   | { state: "dropped" }
   | { state: "gone" }; // replaced by a later change, or the draft is gone
 
-/**
- * A chat line's state. `waiting`: the draft still waits for Carl (staged and undecided); `tried`: the version this
- * laptop tries, or null.
- */
-export function lineState(ref: ChangeRef, changes: readonly ChangeRecord[], waiting: boolean, tried: string | null): LineState {
+/** A chat line's state. */
+export function lineState(ref: ChangeRef, changes: readonly ChangeRecord[]): LineState {
   const v = ref.version;
   const land = landing(changes);
   const kept = [...changes].reverse().find((c) => c.change === "keep" && c.version === v) ?? null;
   if (kept) {
-    if (land && land.version === v && land.seq >= kept.seq) return { state: ref.offer === "try" ? "kept" : "applied" };
+    if (land && land.version === v && land.seq >= kept.seq) return { state: "applied" };
     // The switch that took this version away (its `from`), when it is still the newest word: undone.
     const back = changes.find((c) => c.change === "switch" && c.seq > kept.seq);
     if (back && land && land.seq === back.seq && (back.from === v || back.from === null)) return { state: "undone", auto: back.by === "auto", why: back.reason };
     return { state: "gone" };
   }
   const dropped = [...changes].reverse().find((c) => c.change === "discard" && c.version === v) ?? null;
-  if (dropped) return dropped.by === "auto" ? { state: "undone", auto: true, why: dropped.reason } : ref.offer === "try" && dropped.by === "carl" ? { state: "undone", auto: false, why: null } : { state: "dropped" };
-  if (ref.offer === "try" && waiting) return tried === v ? { state: "trying" } : { state: "offered" };
+  if (dropped) return dropped.by === "auto" ? { state: "undone", auto: true, why: dropped.reason } : { state: "dropped" };
   return { state: "gone" };
 }
 
 /** The words a line shows after its text for a state (null: none, its buttons say it). */
 export function stateWords(s: LineState): string | null {
-  if (s.state === "kept") return "Kept.";
   // By itself: the chat's own line right after says why (server/changeNotices.ts autoUndone).
   if (s.state === "undone") return s.auto ? "Undone by itself." : "Undone.";
   if (s.state === "dropped") return "Not applied.";

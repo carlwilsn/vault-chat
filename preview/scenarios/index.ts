@@ -17,7 +17,6 @@ import { liveEditScenarios } from "./liveEdit";
 import { backgroundScenarios } from "./background";
 import { projectFolderScenarios } from "./projectFolders";
 import { masterScenarios } from "./master";
-import { tryFlowScenarios } from "./tryFlow";
 import type { Script } from "../runtime/llm";
 
 const MIN = 60_000;
@@ -344,85 +343,7 @@ function voiceLibraryScenario(): Scenario {
 
 const syncTimers = { 15000: 1500, 30000: 1500 };
 
-/** The hot core (src/coreBundle.ts): the box built a new core from main; the laptop's Change ready card offers it. */
-const CORE_NEW = "c0de2b17";
-const CORE_LOOK = `/* the new core: the composer gets a blue ring, the chat's own rows a bit more air */
-[data-perf-target="composer"] { box-shadow: 0 0 0 2px hsl(212 92% 62% / 0.75) !important; border-radius: 12px !important; }
-[data-el="chat-scroll"] { line-height: 1.62 !important; }`;
-
 export const scenarios: Scenario[] = [
-  // ===== Hot core =====
-  {
-    id: "core-swap",
-    title: "Hot core — a new core is Change ready: Try, Keep, Switch back",
-    group: "Hot core",
-    notes:
-      "The box built the app's frontend from main (" + CORE_NEW + ": the composer gets a blue ring). Carl has a split open, a chat scrolled up and half a question typed. " +
-      "Change ready → Try: the fake loader (preview/runtime/backend/core.ts) swaps the bundle and the frame loads it, as the native loader does; the old screen's picture stays up until the split, the chat, its scroll and the draft are back. " +
-      "Keep: the record (no reload, it runs already). Switch back: the installed app's own core again, the screen kept the same way.",
-    build: (c) => world(c, { extraConvs: (now) => [{ ...W.longChat(now, 60_000, "c-core", 12), kind: "separate", lastActivityAt: now - 2 * MIN }] }),
-    activeConversation: "c-core",
-    host: {
-      core: {
-        bakedCommitTime: 100,
-        bundles: [
-          {
-            version: CORE_NEW,
-            commit: "4f1e0c2ab9d3" + "0".repeat(28),
-            commitTime: 1_800_000_000,
-            what: "the composer gets a blue ring (main 4f1e0c2ab9d3)",
-            css: CORE_LOOK,
-            commits: [
-              { commit: "4f1e0c2ab9d3" + "0".repeat(28), time: 1_800_000_000, title: "The composer gets a blue ring: easier to find where to type", frontend: true, visible: true, look: [{ selector: '[data-perf-target="composer"]', text: "the composer has a blue ring" }] },
-              { commit: "3e1e0c2ab9d3" + "0".repeat(28), time: 1_799_999_000, title: "Chat sync retries sooner after a dropped link: no visible change", frontend: true, visible: false },
-              { commit: "b".repeat(40), time: 100, title: "v0.9.40 base" },
-            ],
-          },
-        ],
-      },
-    },
-    open: [
-      ...deskOpen(NOTE, "c-core"),
-      {
-        run: async (api) => {
-          const { placeInPane } = await import("../../src/paneLayout");
-          placeInPane("right", `${api.vault}/notes/spectral-clustering.md`, "# Spectral clustering — why eigenvectors\n\nBuild a similarity graph $W$, its Laplacian $L = D - W$, and take the $k$ smallest eigenvectors.\n");
-        },
-      },
-      { type: "and for problem 4, should I use the normalized Laplacian or", into: COMPOSER },
-      { sleep: 300 },
-      { run: (api) => { const el = api.q('[data-el="chat-scroll"]'); if (el) el.scrollTop = Math.round(el.scrollHeight * 0.35); } },
-    ],
-  },
-
-  {
-    id: "core-quiet",
-    title: "Hot core — only behind-the-scenes fixes: no Try, Keep applies it",
-    group: "Hot core",
-    notes: "The box built a core whose changes show nothing on screen (sync, speed). The card says so plainly and lists them; there is no Try, only Keep (applied the next time Carl steps away) or Discard.",
-    build: (c) => world(c),
-    activeConversation: "c-spectral",
-    host: {
-      core: {
-        bakedCommitTime: 100,
-        bundles: [
-          {
-            version: "c0de3c28",
-            commit: "5a1e0c2ab9d3" + "0".repeat(28),
-            commitTime: 1_800_000_000,
-            what: "the app's frontend from main 5a1e0c2ab9d3",
-            commits: [
-              { commit: "5a1e0c2ab9d3" + "0".repeat(28), time: 1_800_000_000, title: "Chat sync retries sooner after a dropped link: no visible change", frontend: true, visible: false },
-              { commit: "6a1e0c2ab9d3" + "0".repeat(28), time: 1_799_999_000, title: "Box voice provider picks local Whisper: server only", frontend: false, visible: false },
-              { commit: "b".repeat(40), time: 100, title: "v0.9.40 base" },
-            ],
-          },
-        ],
-      },
-    },
-    open: deskOpen(NOTE, "c-spectral"),
-  },
-
   // ===== Basics =====
   {
     id: "home",
@@ -730,23 +651,6 @@ export const scenarios: Scenario[] = [
     phone: { clicks: ["#convBtn", "text:Why eigenvectors in spectral clustering?"] },
   },
   {
-    id: "phone-change-ready",
-    title: "Phone — Change ready",
-    group: "Phone",
-    notes: "Two drafts wait for Carl (phone/src/changes.ts): a vault plugin that runs on the phone (Try mounts the draft here only), then an app plugin's (Keep / Discard; tried on the laptop).",
-    build: (c) => world(c),
-    surfaces: ["phone"],
-    phone: {
-      db: (db: any) => {
-        db.phonePlugins = [{ id: ".vault-chat/plugins/rows.js", name: "Rows", code: 'export const meta = { name: "Rows", devices: "laptop, phone" };\nexport function mount(){}' }];
-        db.changes = [
-          { plugin: ".vault-chat/plugins/rows.js", name: "Rows", what: "a rounder chat row", version: "5f3a91c2", added: false, tryOn: ["laptop", "phone"], code: '// @vc-change a rounder chat row\nexport const meta = { name: "Rows", devices: "laptop, phone" };\nexport function mount(){}' },
-          { plugin: "app/notes", name: "Notes", what: "bigger note text", version: "0b7e44d1", added: false, tryOn: ["laptop"] },
-        ];
-      },
-    },
-  },
-  {
     id: "phone-mission",
     title: "Phone — the mission sheet",
     group: "Phone",
@@ -967,5 +871,4 @@ export const scenarios: Scenario[] = [
   ...backgroundScenarios,
   ...projectFolderScenarios,
   ...masterScenarios,
-  ...tryFlowScenarios,
 ];

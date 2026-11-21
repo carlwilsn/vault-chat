@@ -26,8 +26,7 @@ export const APP_PLUGIN_LIVE_MAX_BYTES = 4 * 1024 * 1024;
 /** The app plugins that can run a live copy (their code is under src/plugins/<name>/, with an index module). */
 export const LIVE_APP_PLUGINS: readonly string[] = ["app/notes", "app/chats", "app/composer", "app/chat-rows", "app/vaults", "app/filetree", "app/titlebar", "app/viewer", "app/chat", "app/settings", "app/voice", "app/context", "app/ask", "app/elevenlabs-voice"];
 
-/** live: the copy that runs; draft: a change waiting for Carl (Change ready: it runs only while he tries it, or once
- *  kept); prev: the copy the last Keep replaced (Switch back swaps it with live; src/pluginDrafts.ts). */
+/** live: the copy that runs; draft: a change waiting for the gate (it runs only in a gate run, or once kept); prev: the copy the last Keep replaced (Switch back swaps it with live; src/pluginDrafts.ts). */
 export type LiveCopyKind = "draft" | "live" | "prev";
 
 /** The plugin's folder under src/plugins (its id without "app/"), or null when it has no live copy. */
@@ -59,7 +58,7 @@ export const liveErrorFile = (file: string): string => `${file}.error.txt`;
 
 /** The first line of a live copy: what it is and what it takes from the app. */
 export const LIVE_HEADER = "// @vc-app-plugin ";
-/** `what`: one line saying what the draft changes (shown in Change ready). */
+/** `what`: one line saying what the draft changes (the Done line says it). */
 export type LiveHeader = { plugin: string; shared: string[]; built?: string; what?: string };
 
 export function liveHeaderLine(h: LiveHeader): string {

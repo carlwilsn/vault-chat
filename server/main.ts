@@ -115,9 +115,11 @@ async function main(): Promise<void> {
   (await import("./boxPlugins")).startBoxPlugins(() => vaultRefs().map((v) => v.path));
   // The laptop app's core is a bundle this box builds from accepted main and serves (server/coreBundles.ts): its records
   // are app/core plugin.change records in the main vault's log; a new main is built as a StartJob job outside this
-  // server while Carl's setting corePublish is on (the default), and waits for him as Change ready (never lands itself).
+  // server while Carl's setting corePublish is on (the default); a built bundle that passes the one gate is kept by
+  // "gate" (server/gate.ts landCore) and the laptop's loader takes it.
   {
     const core = await import("./coreBundles");
+    const { landCore } = await import("./gate");
     core.configureCore({ stateDir: cfg.stateDir, vault: cfg.vault });
     const { readSetting } = await import("./settings");
     core.startCorePublisher({
@@ -125,6 +127,7 @@ async function main(): Promise<void> {
       // Carl's setting corePublish off: the tick does nothing at all.
       on: () => readSetting("corePublish") === true,
       changes: () => supervisorOf(cfg.vault).changes(CORE_PART),
+      land: () => landCore(),
     });
   }
   // The box server's own handovers (server/deploy/vault-chat-update.sh notes each one): box.server.switch records.

@@ -3077,7 +3077,7 @@ export class Engine {
       if (name === HANDOFF_TOOL && side) return text(await this.handoff(side.convId, a, p.signal));
       // Carl's settings (server/settingsTool.ts): a setting record every open app and the phone follow.
       if (name === SETTINGS_TOOL) {
-        const r = settingsTool(a);
+        const r = settingsTool(a, { vault, conv: convId });
         return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
       }
       switch (name) {

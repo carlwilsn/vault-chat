@@ -301,7 +301,7 @@ describe("the supervisor", () => {
     const signals = async () => JSON.parse((await get("/api/v2/supervisor")).text).records.map((r: { signal: Record<string, unknown> }) => r.signal);
     expect(sup.presetInEffect(A.path)).toMatchObject({ builtIn: true, version: "built-in", preset: DAILY_PRESET });
 
-    // Not a preset: refused, nothing written, the draft stays (Change ready discards it when tried).
+    // Not a preset: refused, nothing written, the draft stays (the gate fails it).
     const bad = JSON.stringify({ name: "bad", mounts: [{ place: "nowhere", plugin: "app/notes" }] });
     writeFileSync(file, bad);
     const before = (await signals()).length;
@@ -334,7 +334,7 @@ describe("the supervisor", () => {
     expect(sup.presetInEffect(A.path)).toMatchObject({ builtIn: false, preset: { name: "lean" } });
   });
 
-  it("the agent's word on a draft is the same record (Plugins keep / discard / back), an auto-revert switches once, and submit hands it to the gate as a job", async () => {
+  it("the gate's and the agent's word on a draft is the same record (the gate's keep, Plugins discard / back; no Plugins keep), an auto-revert switches once, and submit hands it to the gate as a job", async () => {
     const { existsSync, readFileSync, readdirSync, symlinkSync } = await import("node:fs");
     const { versionOf } = await import("../../src/pluginDrafts");
     const dir = join(A.path, ".vault-chat", "app-plugins");
@@ -346,9 +346,9 @@ describe("the supervisor", () => {
     const dv = versionOf(head("fix"));
     const rec = async () => JSON.parse((await get("/api/v2/supervisor")).text).records.at(-1).signal;
 
-    const kept = tools.pluginTool(A.path, { action: "keep", plugin: "chats" });
-    expect(kept.ok).toBe(true);
-    expect(await rec()).toMatchObject({ type: "plugin.change", plugin: "app/chats", change: "keep", version: dv, from: lv, by: "agent" });
+    expect(tools.pluginTool(A.path, { action: "keep", plugin: "chats" })).toMatchObject({ ok: false, text: expect.stringMatching(/there is no keep: submit/) });
+    expect((await post("/api/v2/supervisor", { plugin: "app/chats", change: "keep", version: dv, by: "gate" })).status).toBe(200);
+    expect(await rec()).toMatchObject({ type: "plugin.change", plugin: "app/chats", change: "keep", version: dv, from: lv, by: "gate" });
     expect(readFileSync(join(dir, "chats.js"), "utf8")).toBe(head("fix"));
 
     // Two windows see the kept copy break: each asks to switch away from it; the box switches once, never back again.
@@ -367,8 +367,8 @@ describe("the supervisor", () => {
     expect(tools.pluginTool(A.path, { action: "discard", plugin: "app/chats", reason: "not needed" }).ok).toBe(true);
     expect(await rec()).toMatchObject({ change: "discard", version: versionOf(head("other")), by: "agent", reason: "not needed" });
     expect(existsSync(join(dir, "chats.draft.js"))).toBe(false);
-    expect(tools.pluginTool(A.path, { action: "keep", plugin: "chats" }).text).toContain("has no draft");
-    expect(tools.pluginTool(A.path, { action: "keep", plugin: "pages/other.html" }).ok).toBe(false);
+    expect(tools.pluginTool(A.path, { action: "discard", plugin: "chats" }).text).toContain("has no draft");
+    expect(tools.pluginTool(A.path, { action: "discard", plugin: "pages/other.html" }).ok).toBe(false);
 
     // submit: the one gate (scripts/gate.ts --unasked, landing through this box) as a background job of the conversation.
     writeFileSync(join(dir, "chats.draft.js"), head("speed"));

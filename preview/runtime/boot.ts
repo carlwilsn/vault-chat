@@ -150,14 +150,12 @@ export function boot(base: Base): void {
   // device's storage stays (src/coreSwap.ts finds the screen it kept) and the scenario's steps do not run again.
   const coreSwap = !isPopout && coreBoot(`${q.get("ns") ?? side}:${sc.id}`);
   if (!isPopout && !coreSwap) seedLocalStorage(vault, sc);
-  // ?try=<plugin>@<version>: a plugin's draft is being tried in this frame (src/changeReady.ts), as Carl's Try does;
-  // the draft check (scripts/draft-check.ts) opens the draft's side with it.
+  // ?try=<plugin>@<version>: a plugin's draft runs in this frame in place of the copy in effect (src/changeReady.ts
+  // HARNESS_TRIES); the gate's draft check (scripts/draft-check.ts) opens the draft's side with it.
   const tried = q.get("try");
   if (tried && !isPopout && tried.includes("@")) {
     const at = tried.lastIndexOf("@");
-    localStorage.setItem(`vc.tryDraft:${vault}`, JSON.stringify({ [tried.slice(0, at)]: tried.slice(at + 1) }));
-    // Tried in this run (src/changeReady.ts dropTriesFromBefore drops a try older than the app's start).
-    localStorage.setItem(`vc.tryBoot:${vault}`, String(Date.now()));
+    (globalThis as Record<string, unknown>).__vcHarnessTries = { [tried.slice(0, at)]: tried.slice(at + 1) };
   }
   seedVault(vault, base, sc, now());
   setLlmConfig(sc.llm ?? {});

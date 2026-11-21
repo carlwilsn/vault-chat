@@ -1,8 +1,8 @@
 // Box plugins (reports/07 corrected model, point 4: change by asking, for the box's own behaviour). A box plugin is a
 // server-side module in the vault, .vault-chat/box-plugins/<name>.js (id box/<name>), that the running box loads live:
-// no build, no release, no restart. It goes through Change ready like any plugin (src/pluginDrafts.ts): the agent writes
-// <name>.draft.js, Carl Tries it, then Keeps or Discards it (one plugin.change record; server/pluginDrafts.ts moves the
-// files), and Switch back is the undo.
+// no build, no release, no restart. It goes through the one gate like any plugin (src/pluginDrafts.ts): the agent writes
+// <name>.draft.js and submits it; the gate keeps or discards it (one plugin.change record; server/pluginDrafts.ts moves
+// the files), and Switch back is the undo.
 //
 // Why plugins and not a draft server (a second box build on a spare slot): the box has one log writer (server/owner.ts),
 // so a draft server could only serve a copy of the data and Carl's real work would not land in it, and starting builds
@@ -30,10 +30,10 @@
 //                                     its calls) while the plugin runs; never Plugins, the way back.
 // Everything it registers is undone in reverse order when it unloads (a Keep, Discard, Switch back, turned off).
 //
-// Which copy runs: the one the records say (chooseCopy), loaded once per version. A draft waiting for Carl runs only for
-// the requests that try it (header x-vc-try: <version>, or ?vc-try=<version>; the laptop's windows send it while Carl
-// tries it, src/liveBridge.ts), never for anyone else, and it cannot write: its state.set refuses ("Try never changes
-// box data until Keep"). A tried draft that fails to load, throws, or answers slower than BOX_SLOW_MS discards itself (a
+// Which copy runs: the one the records say (chooseCopy), loaded once per version. A draft waiting for the gate runs only
+// for the requests that try it (header x-vc-try: <version>, or ?vc-try=<version>: the agent's own checks over loopback),
+// never for anyone else, and it cannot write: its state.set refuses ("Try never changes box data until Keep"). A tried
+// draft that fails to load, throws, or answers slower than BOX_SLOW_MS discards itself (a
 // discard record by "auto"); a kept copy that does so within KEEP_WATCH_MS switches back by itself (a switch by "auto").
 //
 // Apart from the box: each loaded copy runs in its own worker_thread (server/boxPluginWorker.ts), never on the box's
@@ -675,8 +675,7 @@ export function boxPluginLine(vault: string, name: string): string {
   const pending = draftPending(code, supervisorOf(vault).changes(`box/${name}`));
   const live = p?.live;
   const runs = live ? `${live.kind} ${live.version}${live.stopped ? ` not running (${live.error ?? "unloaded"})` : `, routes ${[...live.routes.keys()].join(", ") || "none"}${live.tools.size ? `, tools ${[...live.tools.keys()].join(", ")}` : ""}${live.prompt ? ", a prompt" : ""}${live.hidden.size ? `, hides ${[...live.hidden].join(", ")}` : ""}`}${!live.stopped && live.error ? `; last error: ${live.error}` : ""}` : "no copy loaded";
-  const staged = pending ? supervisorOf(vault).staged(`box/${name}`).some((x) => x.version === pending) : false;
-  return `box/${name}: ${runs}${pending ? (staged ? `; draft ${pending} waits for Carl (\"Try it?\" in Main)` : `; draft ${pending} waits for the gate (Plugins submit)`) : ""}`;
+  return `box/${name}: ${runs}${pending ? `; draft ${pending} waits for the gate (Plugins submit)` : ""}`;
 }
 
 /** The box plugins in a vault's folder. */

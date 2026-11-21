@@ -12,14 +12,14 @@
 //   settings       app/settings-values (setting.draft)         every value one the box takes, it still waits, it changes
 //                                                              something (server/settings.ts settingsDraftGate)
 //   migration      migrate/<name>                              its dry run on a copy of the plugin's real state, in the
-//                                                              box (server/gate.ts inBoxGate); Keep stays Carl's
+//                                                              box (server/gate.ts inBoxGate)
 //   frontend-core  app/core (a core bundle the box built)      its stored bytes: every file as the manifest says,
 //                                                              index.html loads only its own files, no newer box API
 //                                                              (server/coreBundles.ts judgeCore), once per bundle
 //
 // The verdict (Kayenta's success / marginal / failure): pass (nothing Carl can see changes, nothing new breaks),
-// borderline (something he can see changes: is it what was asked for?), fail (it breaks: dropped). null: the gate could
-// not run (the draft waits).
+// borderline (something he can see changes), fail (it breaks: dropped). Anything but a fail lands live (there is no
+// Try step). null: the gate could not run (the draft waits).
 //
 // The record: {type: "gate.result", part, kind, version, verdict, decision, reasons, runner, data?, what?, asked, conv?,
 // at}, a vault-level signal the box writes when a gate ends (server/gate.ts recordGate); GET /api/v2/gate reads them.
@@ -31,7 +31,7 @@ export const GATE_RESULT = "gate.result";
 export const PART_KINDS = ["ui-plugin", "preset", "box-plugin", "settings", "migration", "frontend-core"] as const;
 export type PartKind = (typeof PART_KINDS)[number];
 export type GateVerdict = "pass" | "borderline" | "fail";
-export type GateDecision = "keep" | "discard" | "stage";
+export type GateDecision = "keep" | "discard";
 
 /** The ids of the parts that are not plugins' slots. */
 export const PRESET_PART = "app/preset";
@@ -45,7 +45,7 @@ export type GateResult = {
   version: string;
   /** null: the gate could not run (the candidate waits). */
   verdict: GateVerdict | null;
-  /** What it wrote: keep (applied), discard (dropped), stage (waits for Carl's Try), null: nothing (not landed). */
+  /** What it wrote: keep (applied), discard (dropped), null: nothing (not landed). */
   decision: GateDecision | null;
   reasons: string[];
   /** Which runner judged it (ui-harness, preset, box-copy, settings). */
@@ -72,25 +72,20 @@ export function partKind(part: string): PartKind | null {
 }
 
 /**
- * What the gate writes for a verdict (src/changeFlow.ts): a fail is dropped; what Carl asked for applies otherwise; a
- * change he did not ask for applies on a clear pass (nothing on screen changes) and is staged for his Try when something
- * on screen changes (borderline). A settings draft (the agent's own idea) and a migration (it reshapes Carl's data) are
- * never landed without Carl: staged (their "Try it?" line) unless they fail. Pure.
+ * What the gate writes for a verdict (src/changeFlow.ts): a fail is dropped; anything else lands live at once (a keep by
+ * "gate"), asked for or not, whatever its kind. Undo is a switch back (the Plugins tool's back, the line's Undo). Pure.
  */
-export function gateDecision(kind: PartKind, v: { verdict: GateVerdict; reasons: string[] }, asked: boolean): { change: GateDecision; reason: string } {
+export function gateDecision(_kind: PartKind, v: { verdict: GateVerdict; reasons: string[] }, asked: boolean): { change: GateDecision; reason: string } {
   const why = v.reasons.join("; ").slice(0, 280);
   if (v.verdict === "fail") return { change: "discard", reason: `the gate failed: ${why}` };
-  if (kind === "settings" || kind === "migration") return { change: "stage", reason: `the gate passed it; it waits for Carl: ${why}` };
-  if (asked) return { change: "keep", reason: `asked for; the gate passed it: ${why}` };
-  if (v.verdict === "pass") return { change: "keep", reason: `not asked for; the gate passed it: ${why}` };
-  return { change: "stage", reason: `not asked for; something on screen changes: ${why}` };
+  return { change: "keep", reason: `${asked ? "asked for" : "not asked for"}; the gate passed it: ${why}` };
 }
 
 /** The machine-readable last line a gate run prints (scripts/gate.ts): `VC-GATE {GateResult}`. */
 export const GATE_LINE = "VC-GATE ";
 
 const VERDICTS = new Set(["pass", "borderline", "fail"]);
-const DECISIONS = new Set(["keep", "discard", "stage"]);
+const DECISIONS = new Set(["keep", "discard"]);
 
 /** A gate result from loose JSON (a VC-GATE line, a record), or null when it is not one. */
 export function cleanGateResult(j: unknown, at = Date.now()): GateResult | null {
@@ -140,6 +135,6 @@ export function gateRecordOf(rec: { seq: number; at?: number; type?: unknown; si
 /** One line about a gate result, in plain words (the Plugins tool's status, the agent). */
 export function gateLine(r: GateResult): string {
   const when = new Date(r.at).toISOString().slice(0, 16).replace("T", " ");
-  const did = r.decision === "keep" ? "applied" : r.decision === "discard" ? "dropped" : r.decision === "stage" ? "waits for Carl's Try" : "not landed";
+  const did = r.decision === "keep" ? "applied" : r.decision === "discard" ? "dropped" : "not landed";
   return `gate ${when} UTC: ${r.verdict ?? "could not run"} (${r.runner}${r.data ? ` on ${r.data}` : ""}), ${did}${r.reasons.length ? `: ${r.reasons.join("; ").slice(0, 300)}` : ""}`;
 }

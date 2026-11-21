@@ -1,7 +1,7 @@
 // The app's core as a part the box builds and serves (src/coreBundle.ts, server/coreBundles.ts, scripts/core-publish.ts):
 // a bundle stored by its manifest's hash, served over the box's own routes byte for byte, landed and switched with the
 // existing plugin.change record for app/core, refused when it needs a newer box; the publisher building a new main as
-// a job outside the server, its result waiting for Carl as a Change ready card (never landing by itself). Real HTTP against the box's own server; no vault is written
+// a job outside the server, its result landed by the one gate (a keep by "gate"). Real HTTP against the box's own server; no vault is written
 // outside the test's temp folder.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
@@ -101,7 +101,7 @@ describe("core bundles on the box", () => {
     expect(keep.status).toBe(409);
     expect(keep.json.error).toContain("corePublish");
     expect(await getJson("/api/v2/core")).toMatchObject({ publish: false, offer: null });
-    expect((await getJson("/api/v2/changes?surface=laptop")).changes.some((c: { plugin: string }) => c.plugin === CORE_PART)).toBe(false);
+    expect((await import("../gate")).landCore()).toBeNull();
     expect(setSetting("corePublish", true, "carl").ok).toBe(true);
     expect((await getJson("/api/v2/core")).publish).toBe(true);
   });
@@ -122,12 +122,12 @@ describe("core bundles on the box", () => {
     expect(calls.length).toBe(1);
     expect(core.coreCommits("/repo", "not-a-commit", 40, exec)).toEqual([]);
     const y = build("why-words", { "index.html": "<p>words</p>" }, NEEDS, 100, "2099-01-01T00:00:00Z");
-    const p = core.pendingCore(state, sup.supervisorOf(A.path).changes(CORE_PART), true, () => commits);
+    const p = core.newestUndecidedCore(state, sup.supervisorOf(A.path).changes(CORE_PART), true, () => commits);
     expect(p?.version).toBe(y.version);
     // The box's own voice change is not the frontend's: the card names only what the bundle brings.
     expect(p?.what).toBe("new frontend: Inline pages play their video and audio");
-    expect(p?.core?.commits).toEqual(commits);
-    expect(core.pendingCore(state, sup.supervisorOf(A.path).changes(CORE_PART), true)?.core?.commits).toBeUndefined();
+    expect(p?.commits).toEqual(commits);
+    expect(core.newestUndecidedCore(state, sup.supervisorOf(A.path).changes(CORE_PART), true)?.commits).toBeUndefined();
     rmSync(join(root, y.version), { recursive: true, force: true });
   });
 
@@ -196,7 +196,7 @@ describe("core bundles on the box", () => {
     expect(r.json.error).toContain(`box API ${CORE_BOX_API + 1}`);
   });
 
-  it("the publisher builds a new main once, as a job outside the server; its result waits as Change ready; Keep, Switch back and Discard are the plugin.change records", async () => {
+  it("the publisher builds a new main once, as a job outside the server; the gate lands its result (a keep by gate); Switch back and Discard are the plugin.change records", async () => {
     const main = "c".repeat(40);
     const calls: string[][] = [];
     const exec = (cmd: string, args: string[]) => {
@@ -205,7 +205,7 @@ describe("core bundles on the box", () => {
       return { status: 0, stdout: "", stderr: "" };
     };
     const changes = () => sup.supervisorOf(A.path).changes(CORE_PART);
-    const cards = async () => ((await getJson("/api/v2/changes?surface=laptop")).changes as { plugin: string; version: string; name: string; what: string; tryOn: string[]; core?: { sha256: string } }[]).filter((c) => c.plugin === CORE_PART);
+    const { landCore } = await import("../gate");
     // The build goes through the existing StartJob path (startJobWith), never a systemd-run call of its own.
     const jobs: { cmd: string; logDir: string; memoryMax?: string }[] = [];
     let running = true;
@@ -226,43 +226,37 @@ describe("core bundles on the box", () => {
     // While it builds, nothing else starts.
     expect(core.publishTick(deps)).toContain("building");
     expect(jobs).toHaveLength(1);
-    // Its result is stored, and waits for Carl: no record, the offer does not move, a Change ready card lists it.
+    // Its result is stored; the publisher's tick alone writes no record.
     const before = changes().length;
     const offerBefore = (await getJson("/api/v2/core")).offer;
     const built = build("built-newest", { "index.html": "<p>main c</p>" }, NEEDS, 300, "2026-11-18T00:00:01Z");
     mkdirSync(join(root, "work", main.slice(0, 12)), { recursive: true }); // the job's shell makes it
     writeFileSync(join(root, "work", main.slice(0, 12), "result.json"), JSON.stringify({ ok: true, version: built.version, sha256: built.sha256, commit: main }));
     running = false;
-    expect(core.publishTick(deps)).toBe(`built core ${built.version} (main cccccccccccc): offered on the laptop (applied quietly when nothing on screen changes, else "Try it?" in Main)`);
+    expect(core.publishTick(deps)).toBe(`built core ${built.version} (main cccccccccccc): the gate lands it on the laptop`);
     expect(changes().length).toBe(before);
     expect((await getJson("/api/v2/core")).offer).toEqual(offerBefore);
     expect(core.publishTick(deps)).toBe("up to date");
-    expect(changes().length).toBe(before);
-    const [card] = await cards();
-    expect(card).toMatchObject({ plugin: CORE_PART, name: "App core", version: built.version, tryOn: ["laptop"], core: { sha256: built.sha256, commit: COMMIT, commitTime: 300, needs: NEEDS, boxApi: CORE_BOX_API } });
-    expect(card!.what).toContain(`main ${COMMIT.slice(0, 12)}`);
-    // The phone lists it too (Keep / Discard there; Try only on the laptop).
-    expect((await getJson("/api/v2/changes?surface=phone")).changes.some((c: { plugin: string }) => c.plugin === CORE_PART)).toBe(true);
-    // Keep (Carl's word): the core every laptop runs; the card goes.
+    // The gate lands it: the core every laptop runs (no Try step).
     const from = core.coreOffer(state, changes())?.version ?? "built-in";
-    expect((await post("/api/v2/supervisor", { plugin: CORE_PART, change: "keep", version: built.version })).status).toBe(200);
-    expect(changes().at(-1)).toMatchObject({ change: "keep", version: built.version, from, by: "carl" });
+    expect(landCore()).toMatch(new RegExp(`core ${built.version}: passed the gate and is current now`));
+    expect(changes().at(-1)).toMatchObject({ change: "keep", version: built.version, from, by: "gate" });
+    expect(changes().at(-1)!.what).toContain(`main ${COMMIT.slice(0, 12)}`);
     expect((await getJson("/api/v2/core")).offer.version).toBe(built.version);
-    expect(await cards()).toEqual([]);
-    // Switch back: what the Keep replaced; the bundle switched away from is never offered again.
+    expect(landCore()).toBeNull();
+    // Switch back: what the keep replaced; the bundle switched away from never lands again.
     expect((await post("/api/v2/supervisor", { plugin: CORE_PART, change: "switch" })).status).toBe(200);
     expect(changes().at(-1)).toMatchObject({ change: "switch", version: from, from: built.version });
     expect(core.coreOffer(state, changes())?.version ?? "built-in").toBe(from);
-    expect(await cards()).toEqual([]);
-    // A newer build: a card again; Discard drops it (nothing lands).
+    expect(landCore()).toBeNull();
+    // A newer build: discarded before the gate runs, it never lands.
     const next = build("built-newest-2", { "index.html": "<p>main d</p>" }, NEEDS, 400, "2026-11-18T00:00:02Z");
-    expect((await cards()).map((c) => c.version)).toEqual([next.version]);
     expect((await post("/api/v2/supervisor", { plugin: CORE_PART, change: "discard", version: next.version })).status).toBe(200);
-    expect(await cards()).toEqual([]);
+    expect(landCore()).toBeNull();
     expect(core.coreOffer(state, changes())?.version ?? "built-in").toBe(from);
-    // One needing a newer box API is never a card.
+    // One needing a newer box API never lands.
     build("built-newest-3", { "index.html": "<p>future</p>" }, { ...NEEDS, boxApi: CORE_BOX_API + 1 }, 500, "2026-11-18T00:00:03Z");
-    expect(await cards()).toEqual([]);
+    expect(landCore()).toBeNull();
   });
 
   it("a failed build is given up after two tries", () => {
@@ -280,32 +274,34 @@ describe("core bundles on the box", () => {
     expect(core.readPublisher(state).attempts.filter((a) => a.commit === main).every((a) => a.state === "failed")).toBe(true);
   });
 
-  it("the one gate judges each built bundle once before any laptop sees it: a missing chunk or a torn file is discarded by the gate", async () => {
-    const cards = async () => ((await getJson("/api/v2/changes?surface=laptop")).changes as { plugin: string; version: string }[]).filter((c) => c.plugin === CORE_PART).map((c) => c.version);
+  it("the one gate judges each built bundle once before any laptop sees it: a missing chunk or a torn file is discarded by the gate, a good one is kept", async () => {
+    const { landCore } = await import("../gate");
+    const land = () => landCore() ?? "";
     const results = async (v: string) => (await getJson(`/api/v2/gate?part=app/core&version=${v}`)).results as { verdict: string; decision: string | null; runner: string; reasons: string[] }[];
     const good = build("gate-good", { "index.html": '<script type="module" src="/assets/app-g.js"></script>', "assets/app-g.js": "1" }, NEEDS, 600, "2026-11-19T00:00:01Z");
-    expect(await cards()).toEqual([good.version]);
+    expect(land()).toContain(`core ${good.version}: passed the gate and is current now`);
     expect(await results(good.version)).toMatchObject([{ verdict: "pass", decision: null, runner: "core-bundle" }]);
-    await cards();
+    expect(sup.supervisorOf(A.path).changes(CORE_PART).at(-1)).toMatchObject({ change: "keep", version: good.version, by: "gate" });
+    land();
     expect(await results(good.version)).toHaveLength(1); // judged once
     // index.html loads a chunk the bundle does not have: the window would stay blank.
     const blank = build("gate-blank", { "index.html": '<script type="module" src="./assets/app-missing.js"></script>' }, NEEDS, 700, "2026-11-19T00:00:02Z");
-    expect(await cards()).toEqual([]);
+    expect(land()).toContain(`core ${blank.version}: the gate failed it`);
     expect((await results(blank.version))[0]).toMatchObject({ verdict: "fail", decision: "discard", reasons: [expect.stringMatching(/index\.html loads assets\/app-missing\.js/)] });
     expect(sup.supervisorOf(A.path).changes(CORE_PART).at(-1)).toMatchObject({ change: "discard", version: blank.version, by: "gate" });
     // A file torn on disk after the build.
     const torn = build("gate-torn", { "index.html": '<script src="assets/app-t.js"></script>', "assets/app-t.js": "console.log(1)" }, NEEDS, 800, "2026-11-19T00:00:03Z");
     writeFileSync(join(root, torn.version, "files", "assets", "app-t.js"), "console.log(2)");
-    expect(await cards()).toEqual([]);
+    expect(land()).toContain(`core ${torn.version}: the gate failed it`);
     expect((await results(torn.version))[0]?.reasons.join(" ")).toMatch(/assets\/app-t\.js is not the file its manifest names/);
     // Its boot (scripts/core-publish.ts bootCheck writes boot.json beside the manifest): one that does not boot is dropped.
     const dead = build("gate-dead", { "index.html": '<script type="module" src="/assets/app-d.js"></script>', "assets/app-d.js": "throw 1" }, NEEDS, 900, "2026-11-19T00:00:04Z");
     writeFileSync(join(root, dead.version, "boot.json"), JSON.stringify({ verdict: "fail", reasons: ["errors only with the draft: Uncaught Error: the bundle is broken"] }));
-    expect(await cards()).toEqual([]);
+    expect(land()).toContain(`core ${dead.version}: the gate failed it`);
     expect((await results(dead.version))[0]?.reasons.join(" ")).toMatch(/it does not boot as its source does: errors only with the draft: Uncaught Error: the bundle is broken/);
     const booted = build("gate-booted", { "index.html": '<script type="module" src="/assets/app-b.js"></script>', "assets/app-b.js": "1" }, NEEDS, 1000, "2026-11-19T00:00:05Z");
     writeFileSync(join(root, booted.version, "boot.json"), JSON.stringify({ verdict: "pass", reasons: ["no new errors"] }));
-    expect(await cards()).toEqual([booted.version]);
+    expect(land()).toContain(`core ${booted.version}: passed the gate and is current now`);
     expect((await results(booted.version))[0]?.reasons).toContain("it boots as its source does");
     // Submit runs it again on its word.
     expect((await post("/api/v2/gate", { part: "app/core", version: good.version })).json.result).toMatchObject({ verdict: "pass", reasons: [expect.any(String), "no boot check (built before it)"] });

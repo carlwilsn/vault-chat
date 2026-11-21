@@ -1,14 +1,14 @@
 // Change by asking, for data (reports/07 corrected model, point 4: "data formats, either way: expand -> migrate ->
 // contract"). When a change needs a plugin's state in a new shape, the agent proposes the reshape as a migration draft,
-// and it waits for Carl on the Change ready card like any draft:
+// and it goes through the one gate like any draft (Plugins submit):
 //
 //   .vault-chat/migrations/<name>.draft.js     the draft (an ES module):
 //       // @vc-change chat-rows: the plan placement becomes {where, folded}
 //       export const plugin = "app/chat-rows";             // whose state: app/<name>, box/<name>, a page's vault path
 //       export function migrate(old) { return { ...old }; } // its whole state now -> its whole state after (may be async)
 //
-//   Try     the box runs migrate on a copy of the plugin's real state (read from the log, nothing written) in a thread
-//           of its own (time and memory capped) and the card shows the before / after summary.
+//   gate    the box runs migrate on a copy of the plugin's real state (read from the log, nothing written) in a thread
+//           of its own (time and memory capped): the dry run. One that throws is dropped; one that passes is kept.
 //   Keep    the box backs up the plugin's records and state (outside the vault), runs migrate on the state in effect,
 //           and writes one plugin.epoch record (src/pluginRecords.ts) switching the plugin to a new epoch holding the
 //           result, then the plugin.change record. Nothing in the log is rewritten or deleted: the old records stay

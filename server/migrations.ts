@@ -1,20 +1,20 @@
-// The box's side of migration drafts (src/migrations.ts): Try runs a draft's migrate on a copy of a plugin's real state
-// and answers the before / after summary; Keep backs up, runs it on the state in effect and writes the epoch switch and
-// the plugin.change record; Discard removes the draft; Switch back writes the epoch switch back. Never a forced
-// migration: nothing runs at boot, only Carl's (or the agent's, on his word) Keep does, and the old records are never
-// rewritten or deleted.
+// The box's side of migration drafts (src/migrations.ts): the dry run (the gate's runner) runs a draft's migrate on a copy
+// of a plugin's real state and answers the before / after summary; Keep (the gate's, once the dry run passed) backs up,
+// runs it on the state in effect and writes the epoch switch and the plugin.change record; Discard removes the draft;
+// Switch back writes the epoch switch back. Never a forced migration: nothing runs at boot, only a keep does, and the old
+// records are never rewritten or deleted.
 //
 // migrate runs in a worker_thread of its own (like a box plugin, server/boxPluginWorker.ts): an endless loop is
 // terminated after MIGRATION_LIMITS.ms, its heap is capped, a process.exit ends only its thread; each is an error and
 // nothing is written.
 import { Worker } from "node:worker_threads";
-import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { signalLog, type ConvLog } from "./convlog/log";
 import { otherEpochState, readPluginState, writeEpoch } from "./pluginState";
 import { supervisorOf } from "./supervisor";
-import { BUILT_IN, changeSignal, draftPending, draftWhat, landing, versionOf, type ChangeRecord } from "../src/pluginDrafts";
+import { BUILT_IN, changeSignal, draftWhat, landing, versionOf, type ChangeRecord } from "../src/pluginDrafts";
 import { PLUGIN_EPOCH, isStateSignalType } from "../src/pluginRecords";
 import {
   MIGRATION_DIR,
@@ -30,7 +30,6 @@ import {
   summaryLine,
   type MigrationSummary,
 } from "../src/migrations";
-import type { BoxPendingChange } from "../src/changeCards";
 
 // ---------------------------------------------------------------- running migrate apart from the box
 
@@ -113,37 +112,9 @@ export function migrationDraft(vault: string, id: string): MigrationDraft | null
   return { id: migrationId(name), name, code, version: versionOf(code), target: migrationTarget(code), what: draftWhat(code) };
 }
 
-/** Every migration draft nobody decided on yet, as Change ready lists them (server/changesPending.ts). */
-export function pendingMigrations(vault: string): BoxPendingChange[] {
-  let names: string[] = [];
-  try {
-    names = readdirSync(join(vault, MIGRATION_DIR)).sort();
-  } catch {
-    return [];
-  }
-  const sup = supervisorOf(vault);
-  const out: BoxPendingChange[] = [];
-  for (const n of names) {
-    const m = /^([a-z][a-z0-9-]{0,40})\.draft\.js$/.exec(n);
-    if (!m) continue;
-    const d = migrationDraft(vault, m[1]!);
-    if (!d || !draftPending({ draft: d.code }, sup.changes(d.id))) continue;
-    out.push({
-      plugin: d.id,
-      name: `Data: ${d.target ?? d.name}`,
-      what: d.what || `reshape the state of ${d.target ?? "(no plugin named)"}`,
-      version: d.version,
-      added: false,
-      tryOn: ["laptop"],
-      migration: { target: d.target },
-    });
-  }
-  return out;
-}
+// ---------------------------------------------------------------- the dry run: on a copy
 
-// ---------------------------------------------------------------- Try: on a copy
-
-/** Try: migrate on a copy of the plugin's real state; nothing is written. */
+/** The dry run (the gate's runner): migrate on a copy of the plugin's real state; nothing is written. */
 export async function tryMigration(vault: string, id: string, version: string | null, log: ConvLog = signalLog(vault)): Promise<{ status: number; body: unknown }> {
   const d = migrationDraft(vault, id);
   if (!d) return { status: 404, body: { error: `${id} has no migration draft (${MIGRATION_DIR}/<name>.draft.js)` } };
@@ -188,7 +159,7 @@ function keptEpoch(log: ConvLog, id: string, version: string): { plugin: string;
 export type MigrationLanded = { status: 200; seq: number; text: string; backup?: string; summary?: MigrationSummary } | { status: number; error: string };
 
 /**
- * Carl's word on a migration draft ({plugin: migrate/<name>, change, version, reason?}), as `by`. Keep: the backup
+ * The word on a migration draft ({plugin: migrate/<name>, change, version, reason?}), as `by` (the gate, the agent). Keep: the backup
  * first (no backup, no keep), then migrate on the state in effect, then the epoch switch and the change record.
  */
 export async function migrationChange(vault: string, b: Record<string, unknown> | null, by: string, log: ConvLog = signalLog(vault), now = Date.now()): Promise<MigrationLanded> {

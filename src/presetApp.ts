@@ -1,9 +1,9 @@
 // The app's side of the preset (src/appPreset.ts): which preset is in effect in this window (the records', or the
-// draft Carl tries), the built-in modules the places can mount, and app/preset's offers (the agent reads the preset;
-// it changes it by writing a draft, which Change ready puts in front of Carl: src/changeReady.ts).
+// draft a gate run tries), the built-in modules the places can mount, and app/preset's offers (the agent reads the
+// preset; it changes it by writing a draft and Plugins submit preset: the gate lands it).
 import { DAILY_PRESET, PRESET_DRAFT_FILE, PRESET_PLACES, PRESET_PLUGIN_ID, parseDraft, type Preset, type PresetInEffect, type PresetMount } from "./appPreset";
 import { recordPresetNow, useSupervisorVersion } from "./pluginSupervisorApp";
-import { autoDiscard, triedVersion, useTried, PRESET_NAME } from "./changeReady";
+import { PRESET_NAME, triedVersion, useTried } from "./changeReady";
 import { liveCopiesNow, useAllLiveCopies } from "./appPluginLiveHost";
 import { versionOf } from "./pluginDrafts";
 import { APP_PLUGIN_LIVE_DIR } from "./appPluginLive";
@@ -39,20 +39,15 @@ export function skippedWhy(m: PresetMount, preset: Preset): string | null {
 export type PresetHere = PresetInEffect & { tried: boolean };
 
 let last: { base: PresetInEffect; draft: string | undefined; tried: string | null; out: PresetHere } | null = null;
-const discarding = new Set<string>();
 
-/** The records' preset, or the draft Carl tries on top of it. One object per input (a stable answer for React). */
+/** The records' preset, or the draft a gate run tries on top of it. One object per input (a stable answer for React). */
 function presetFrom(base: PresetInEffect, draft: string | undefined, tried: string | null): PresetHere {
   if (last && last.base === base && last.draft === draft && last.tried === tried) return last.out;
   let out: PresetHere = { ...base, tried: false };
   if (draft !== undefined && tried && tried === versionOf(draft)) {
     const d = parseDraft(draft);
+    // A draft that is not a preset is not shown (the gate fails it).
     if ("preset" in d) out = { preset: d.preset, version: tried, builtIn: false, by: "draft", seq: base.seq, tried: true };
-    else if (!discarding.has(tried)) {
-      // A draft that is not a preset discards itself when tried, as a plugin's draft that throws does.
-      discarding.add(tried);
-      queueMicrotask(() => autoDiscard(PRESET_PLUGIN_ID, tried, `not a preset: ${d.problems.join("; ")}`));
-    }
   }
   last = { base, draft, tried, out };
   return out;
@@ -63,7 +58,7 @@ export function presetNow(): PresetHere {
   return presetFrom(recordPresetNow(), liveCopiesNow()[PRESET_DRAFT_FILE], triedVersion(PRESET_PLUGIN_ID));
 }
 
-/** The preset in effect in this window, followed (the records, the draft file, what Carl tries). */
+/** The preset in effect in this window, followed (the records, the draft file, what a gate run tries). */
 export function usePreset(): PresetHere {
   useSupervisorVersion();
   const tried = useTried(PRESET_PLUGIN_ID);
@@ -84,19 +79,19 @@ export function presetOffers(): Offers {
   return {
     state: {
       preset: {
-        description: `The app's preset in effect in Carl's laptop window: which plugins (and parts) mount in which place, in order, plus their settings; builtIn: the built-in daily preset (src/presets/daily.json); tried: a draft he is trying; skipped: mounts naming a part this app has none of. To change it, write a whole preset ({name, what?, mounts, settings?}) to ${DRAFT_PATH}: Carl gets Change ready (Try, then Keep / Discard; app/changes).`,
+        description: `The app's preset in effect in Carl's laptop window: which plugins (and parts) mount in which place, in order, plus their settings; builtIn: the built-in daily preset (src/presets/daily.json); skipped: mounts naming a part this app has none of. To change it, write a whole preset ({name, what?, mounts, settings?}) to ${DRAFT_PATH}, then Plugins submit preset: the gate checks it and, passed, it applies live (Plugins back undoes it).`,
         read: shown,
       },
       places: { description: "The places a plugin can mount in, and what each is (a place left empty shows its built-in fallback, or nothing).", read: () => PRESET_PLACES },
       daily: { description: "The built-in daily preset (today's app; what no record falls back to).", read: () => DAILY_PRESET },
       draft: {
-        description: `The preset's draft (${DRAFT_PATH}) as the app reads it: version, what, whether Carl tries it, and why it is not a preset if it is not; null when there is none.`,
+        description: `The preset's draft (${DRAFT_PATH}) as the app reads it: version, what, and why it is not a preset if it is not; null when there is none.`,
         read: () => {
           const text = liveCopiesNow()[PRESET_DRAFT_FILE];
           if (text === undefined) return null;
           const d = parseDraft(text);
           const version = versionOf(text);
-          return { version, trying: triedVersion(PRESET_PLUGIN_ID) === version, ...("preset" in d ? { name: d.preset.name, what: d.what || null } : { problems: d.problems }) };
+          return { version, ...("preset" in d ? { name: d.preset.name, what: d.what || null } : { problems: d.problems }) };
         },
       },
     },

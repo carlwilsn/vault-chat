@@ -6,14 +6,13 @@
 //   build    the box, after main moves, while Carl's setting corePublish is on (the default; server/coreBundles.ts
 //            starts scripts/core-publish.ts through the StartJob path, outside the server's memory): `vite build` of that
 //            commit into <state>/core-bundles/<version>/, with manifest.json.
-//   offer    a new bundle is a Change ready card (the part app/core, GET /api/v2/changes), like a plugin's draft: Try runs
-//            it in Carl's windows (src/coreFollow.ts tryCore: the loader serves it, the old frame stays up until
-//            the new one is back, and the open chat, its scroll, the composer draft and the panes come back:
-//            src/coreSwap.ts), Keep makes it the core every launch runs, Discard drops it, Switch back returns to the
-//            core the Keep replaced.
+//   land     a new bundle goes through the one gate (server/gate.ts landCore): passed, it is kept by "gate" and becomes
+//            the core every launch runs; the laptop's loader takes it at a quiet moment (src/coreFollow.ts: the old
+//            frame stays up until the new one is back, and the open chat, its scroll, the composer draft and the panes
+//            come back: src/coreSwap.ts). Switch back returns to the core the keep replaced.
 //   version  the first 8 hex digits of the manifest's sha256 (the same shape as a plugin copy's version); the full
 //            sha256 travels with it and the loader checks it, and every file's own sha256, before it keeps a copy.
-//   record   the existing plugin.change record for the part `app/core` (src/pluginDrafts.ts): Carl's keep lands a new
+//   record   the existing plugin.change record for the part `app/core` (src/pluginDrafts.ts): the gate's keep lands a new
 //            bundle, a switch by "auto" is the laptop's loader falling back. The loader's cache only mirrors it.
 //   needs    the manifest says what the bundle needs: the native commands it invokes and the shell plugins it imports
 //            (scanned from its source at build time), and the box API (CORE_BOX_API of its commit). The loader refuses a
@@ -26,7 +25,7 @@
 // app/* live copies and the bundle: an app plugin's kept live copy (.vault-chat/app-plugins/<name>.js) is a copy of
 // that plugin built against some core. The bundle carries every plugin's built-in module, so a later core fix to the
 // same plugin lands in the bundle while the live copy keeps running over it: today a kept live copy HIDES later core
-// fixes to its plugin until it is switched back to built-in (Plugins tool back, or Change ready's Switch back). So:
+// fixes to its plugin until it is switched back to built-in (Plugins tool back, or the line's Undo). So:
 // fix app/* plugins in the core (src/plugins/<name>, shipped as a bundle) and use live copies only for quick tries and
 // vault plugins; after a core fix to a plugin that has a kept live copy, switch that copy back (or rebuild it from the
 // new built-in). Not built yet: a live copy naming the core it was made from, so a newer core wins over it by itself.
@@ -34,7 +33,7 @@
 // Shared by the app, the box and the build script: no imports.
 
 export const CORE_PART = "app/core";
-/** What Carl calls it on the Change ready card. */
+/** What Carl calls it. */
 export const CORE_NAME = "App core";
 /** The box API this source needs (bundle) or serves (box). Raise it when the frontend starts to depend on a box route
  *  or record shape older boxes lack: a box below the bundle's number is never offered that bundle. */
@@ -85,15 +84,11 @@ export function parseLooks(raw: string): CoreLook[] {
     });
 }
 
-/** The changes Carl can see (a Try shows them), and the ones he can't (behind-the-scenes: Keep only). */
+/** The changes Carl can see, and the ones he can't (behind-the-scenes). */
 export function splitVisible(changes: readonly CoreCommit[]): { visible: CoreCommit[]; hidden: CoreCommit[] } {
   const own = changes.filter((c) => c.frontend !== false);
   return { visible: own.filter((c) => c.visible !== false || !!c.look?.length), hidden: own.filter((c) => c.visible === false && !c.look?.length) };
 }
-/** A bundle waiting for Carl (the Change ready card's `core`): how to fetch and check it, and whether this laptop can run it.
- *  `commits`: main's newest first-parent commits up to the bundle's (the box's git log), so the laptop can say what
- *  changes from the core it runs now. */
-export type CoreCandidate = { sha256: string; commit: string; commitTime: number; needs: CoreNeeds; boxApi: number; commits?: CoreCommit[] };
 /** What the box offers: the bundle in effect and how to check it. */
 export type CoreOffer = { version: string; sha256: string; commit: string; commitTime: number; needs: CoreNeeds; seq: number };
 
@@ -224,9 +219,8 @@ export function coreWhat(changes: readonly CoreCommit[], commit: string, listed 
   return `new frontend, ${titles.length} changes: ${titles.slice(0, 3).join("; ")}${titles.length > 3 ? `; and ${titles.length - 3} more` : ""}`;
 }
 
-/** What the Change ready card says about a core bundle, from the commits it brings over the core running (`changes`,
- *  coreChangesSince; null: unknown, an older box). Something Carl can see: Try, and after it the app points at it.
- *  Only behind-the-scenes fixes: no Try (nothing to look at), Keep applies it. */
+/** What a core bundle changes in words (the keep's `what`), from the commits it brings over the core running (`changes`,
+ *  coreChangesSince; null: unknown, an older box). `triable`: something Carl can see changes. */
 export type CoreCard = { what: string; changes: string[]; looks: CoreLook[]; triable: boolean };
 export function coreCard(changes: readonly CoreCommit[] | null, commit: string): CoreCard {
   if (!changes) return { what: coreWhat([], commit), changes: [], looks: [], triable: true };

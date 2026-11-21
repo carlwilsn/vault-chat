@@ -1,33 +1,20 @@
 // The dead-man's switch and the Undo that do not depend on the part being changed (src/changeFlow.ts).
 //
-// - While a change is tried here, or for DEADMAN_MS after one applied, the app checks itself every HEALTH_EVERY_MS: the
-//   chat pane is on screen with its transcript (not the plain stand-in a broken one leaves) and the page answers a ping
-//   (a frame comes). HEALTH_MISSES failed checks in a row and the change goes back by itself: a tried one is discarded,
-//   an applied one switches back (records by "auto"; the box writes the line in the chat that says so).
+// - For DEADMAN_MS after a change applied, the app checks itself every HEALTH_EVERY_MS: the chat pane is on screen with
+//   its transcript (not the plain stand-in a broken one leaves) and the page answers a ping (a frame comes).
+//   HEALTH_MISSES failed checks in a row and the change switches back by itself (a record by "auto"; the box writes the
+//   line in the chat that says so).
 // - Every check is also told to the native shell (`safety_beat`, src-tauri/src/safety.rs): when the page itself is dead
 //   (a broken core, a frozen script) the beats stop, and the shell undoes the change through the box and reloads.
 // - Undo of the last applied change is Ctrl/Cmd+Alt+Z, caught by the shell (a global shortcut) and its tray menu, so
 //   it works whatever a change did to the page; here the same keys are a fallback where there is no shell (a browser).
 import { useStore } from "./store";
 import { DEADMAN_MS, HEALTH_EVERY_MS, HEALTH_MISSES } from "./changeFlow";
-import { autoDiscard, autoRevert, changeablePlugins, changesOf, setTried, triedVersion } from "./changeReady";
+import { autoRevert, changeablePlugins, changesOf } from "./changeReady";
 import { landing } from "./pluginDrafts";
 import { boxLinkFor, boxPost } from "./boxChat";
 import { loadSupervisor } from "./pluginSupervisorApp";
 import { hit } from "./shortcuts";
-
-const TRY_KEY = "vc.tryDraft:";
-
-/** What this vault's windows try now (src/changeReady.ts keeps it), as a list. */
-function triedList(): { plugin: string; version: string }[] {
-  const v = useStore.getState().vaultPath;
-  try {
-    const o = JSON.parse((v && globalThis.localStorage?.getItem(TRY_KEY + v)) || "{}") as Record<string, unknown>;
-    return Object.entries(o).flatMap(([plugin, version]) => (typeof version === "string" && triedVersion(plugin) === version ? [{ plugin, version }] : []));
-  } catch {
-    return [];
-  }
-}
 
 /** Plugins whose applied change may be watched (tests replace it). */
 let watchedPlugins: () => string[] = () => changeablePlugins();
@@ -85,7 +72,8 @@ export function _setHealthCheck(fn: typeof check, plugins?: () => string[]): voi
   if (plugins) watchedPlugins = plugins;
 }
 
-/** The native shell's side (src-tauri/src/safety.rs); tests replace it. Never throws. */
+/** The native shell's side (src-tauri/src/safety.rs); tests replace it. Never throws. `tried` is always empty now
+ *  (there is no Try step); the installed shell still takes it. */
 let beat = async (b: { url: string | null; token: string | null; vault: string | null; watchUntil: number; healthy: boolean; tried: { plugin: string; version: string }[] }): Promise<void> => {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -103,12 +91,11 @@ let reverting = false;
 
 /** One look: while something is watched, judge health; revert after HEALTH_MISSES bad looks. What it did. */
 export async function healthTick(now = Date.now()): Promise<"idle" | "healthy" | "miss" | "reverted"> {
-  const tried = triedList();
   const applied = appliedUnderWatch(now);
-  const watching = tried.length > 0 || applied.length > 0;
+  const watching = applied.length > 0;
   const h = watching ? await check() : { healthy: true, why: null };
   const link = await boxLinkFor(useStore.getState().vaultPath).catch(() => null);
-  void beat({ url: link?.url ?? null, token: link?.token ?? null, vault: link?.vault ?? null, watchUntil: tried.length ? now + DEADMAN_MS : applied.length ? Math.max(...applied.map((a) => a.until)) : 0, healthy: h.healthy, tried });
+  void beat({ url: link?.url ?? null, token: link?.token ?? null, vault: link?.vault ?? null, watchUntil: applied.length ? Math.max(...applied.map((a) => a.until)) : 0, healthy: h.healthy, tried: [] });
   if (!watching) {
     misses = 0;
     return "idle";
@@ -123,8 +110,7 @@ export async function healthTick(now = Date.now()): Promise<"idle" | "healthy" |
   reverting = true;
   try {
     const why = h.why ?? "the chat stopped responding";
-    console.warn(`[changes] ${why}: undoing ${[...tried.map((t) => t.plugin), ...applied.map((a) => a.plugin)].join(", ")}`);
-    for (const t of tried) autoDiscard(t.plugin, t.version, why);
+    console.warn(`[changes] ${why}: undoing ${applied.map((a) => a.plugin).join(", ")}`);
     for (const a of applied) autoRevert(a.plugin, a.version, why);
   } finally {
     reverting = false;
@@ -134,11 +120,9 @@ export async function healthTick(now = Date.now()): Promise<"idle" | "healthy" |
 
 /** Undo the last change through the box (the shell's way, here where there is no shell). */
 export async function undoLastChange(by: "carl" | "auto" = "carl"): Promise<{ ok: boolean; text: string }> {
-  const tried = triedList();
   const link = await boxLinkFor(useStore.getState().vaultPath).catch(() => null);
   if (!link) return { ok: false, text: "no box to undo it on" };
-  const r = await boxPost(link, "/api/v2/changes/undo-last", { by, tried });
-  for (const t of tried) setTried(t.plugin, null);
+  const r = await boxPost(link, "/api/v2/changes/undo-last", { by });
   await loadSupervisor(true).catch(() => {});
   const d = (r.data ?? {}) as { text?: string };
   return { ok: !!r.ok, text: String(d.text ?? r.error ?? "") };

@@ -629,23 +629,6 @@ body.kbup .sheet-foot{padding-bottom:8px}
 .note{font-size:12px;color:var(--dim)}
 #toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom) + 80px);background:var(--fill-2);color:var(--text);border-radius:9px;padding:8px 14px;font-size:13px;opacity:0;transition:opacity .25s;pointer-events:none;z-index:70;max-width:86vw;text-align:center}
 #toast.show{opacity:1}
-/* Change ready (phone/src/changes.ts): a draft waiting for Carl. Only in the page while one is. */
-#vc-change{position:fixed;left:10px;right:10px;top:calc(env(safe-area-inset-top) + 58px);z-index:45;background:#0d0d0d;border:1px solid var(--line);border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.6);overflow:hidden;color:var(--text)}
-#vc-change .chg-top{display:flex;align-items:flex-start;gap:8px;padding:12px 12px 0}
-#vc-change .chg-t{flex:1;min-width:0;font-size:14px;font-weight:600;line-height:1.35;color:var(--text-hi)}
-#vc-change .chg-sub{padding:2px 12px 0;font:11.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#vc-change .chg-note{padding:8px 12px 0;font-size:12.5px;line-height:1.45;color:var(--text-secondary)}
-#vc-change .chg-row{display:flex;gap:8px;padding:10px 12px 12px}
-#vc-change .chg-b{flex:0 0 auto;min-height:36px;padding:0 14px;border-radius:9px;background:var(--raised);color:var(--text);font-size:14px;border:0}
-#vc-change .chg-b.pri{flex:1;background:var(--primary);color:var(--primary-fg);font-weight:600}
-#vc-change .chg-b[disabled]{opacity:.5}
-#vc-change .chg-x{flex:0 0 auto;width:26px;height:26px;margin:-4px -4px 0 0;border:0;background:none;color:var(--muted);font-size:20px;line-height:1}
-#vc-change .chg-out{display:flex;align-items:flex-start;gap:8px;padding:9px 12px;font-size:12.5px;line-height:1.4;color:var(--text-secondary)}
-#vc-change .chg-out.sep{border-top:1px solid var(--line)}
-#vc-change .chg-out.bad{color:var(--err-text)}
-#vc-change .chg-out span{flex:1;min-width:0;word-break:break-word}
-#vc-change .chg-out .chg-x{margin:-5px -4px -5px 0}
-#vc-change .chg-l{flex:0 0 auto;border:0;background:none;color:var(--text);text-decoration:underline;font-size:12.5px;padding:0}
 .gate{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:30px;text-align:center;color:var(--dim)}
 
 /* voice */

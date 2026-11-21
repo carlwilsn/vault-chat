@@ -4,8 +4,8 @@
 // voice a call speaks with and the automatic-push switch read it here; the laptop, the phone and the agent's Settings
 // tool write it here. Every record is also a signal on every feed, so an open app and the phone follow at once.
 //
-// The agent's own idea for a setting is a draft (setting.draft) that waits for Carl as Change ready; his Keep, Discard
-// and Switch back are setting.change records, a keep and a switch also the setting records they set (draftSettings,
+// The agent's own idea for a setting is a draft (setting.draft) that waits for the gate; its Keep (the gate's), Discard
+// and Switch back (the undo) are setting.change records, a keep and a switch also the setting records they set (draftSettings,
 // settingsChange; POST /api/v2/settings {change, version} and the supervisor's route for app/settings-values).
 //
 // Before this, those four lived in the box's localStorage file. migrateSettings moves them, once: what it moves is
@@ -158,7 +158,7 @@ const effective = (k: SettingKey, v: SettingValue | undefined): SettingValue => 
 export type DraftResult = { ok: true; version: string; values: SettingValues; what: string; carried: SettingValues } | { ok: false; status: number; error: string };
 
 /**
- * The agent's own idea for some settings: a setting.draft record that waits for Carl as Change ready (nothing is set).
+ * The agent's own idea for some settings: a setting.draft record that waits for the gate (nothing is set until it passes).
  * A draft still waiting carries over (its settings not named again). Values already in effect are left out; when
  * nothing is left, nothing is written. `what`: one line for the notice (default: the settings, said).
  */
@@ -199,7 +199,7 @@ export function draftSettings(values: Record<string, unknown>, what: unknown, by
 export type ChangeResult = { ok: true; seq: number; text: string } | { ok: false; status: number; error: string };
 
 /**
- * Carl's word on the settings draft (the Change ready buttons, app/changes, the Plugins tool, an auto-discard):
+ * The word on the settings draft (the gate's keep or discard, the Plugins tool, Undo, an auto-discard):
  *   keep     the draft `version` (still waiting) is set, a setting record per key, then the keep record naming what it replaced
  *   discard  the draft is dropped: only the record
  *   switch   the settings the last keep (or switch) replaced are set again, for each it set that nobody changed since;
@@ -215,7 +215,7 @@ export function settingsChange(change: unknown, version: unknown, by: string, re
   try {
     if (change === "keep" || change === "discard") {
       const d = st.drafts.find((x) => x.version === version);
-      if (!d) return { ok: false, status: 409, error: `no settings draft ${String(version ?? "").slice(0, 20)} (look again: app/changes, or Settings)` };
+      if (!d) return { ok: false, status: 409, error: `no settings draft ${String(version ?? "").slice(0, 20)} (look again: Settings)` };
       const decided = st.changes.find((c) => c.version === d.version && c.change !== "switch");
       if (decided) return decided.change === change ? { ok: true, seq: decided.seq, text: `already ${change === "keep" ? "kept" : "discarded"}` } : { ok: false, status: 409, error: `that draft was already ${decided.change === "keep" ? "kept" : "discarded"}` };
       if (change === "discard") return { ok: true, seq: emit({ change, version: d.version }), text: `discarded the settings draft (${describeValues(d.values)})` };
@@ -258,7 +258,7 @@ export function settingsChange(change: unknown, version: unknown, by: string, re
 }
 
 /**
- * The settings gate (src/gateResult.ts, kind settings): the waiting draft (or the one named) judged before Carl sees it.
+ * The settings gate (src/gateResult.ts, kind settings): the waiting draft (or the one named) judged before it is set.
  * fail: a value the box does not take now (the same checks a set makes: a model this engine runs …), a draft already
  * decided or replaced, or one that changes nothing any more; borderline: it changes something Carl sees (a window
  * setting); pass: only the box's settings. Pure reading: nothing is written.

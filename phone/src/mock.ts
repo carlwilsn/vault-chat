@@ -313,13 +313,6 @@ export function installMock() {
     if (u === "/file") return new Response("(mock file)", { status: 200 });
     // The vault plugins that name the phone (server/pluginCatalog.ts devicePlugins): a scenario's own, else none.
     if (u === "/api/v2/plugin/device") return reply({ device: q.get("device"), plugins: (DB as any).phonePlugins || [] });
-    // Change ready (server/changesPending.ts): a scenario's drafts, else none; Carl's word drops the one decided.
-    if (u === "/api/v2/changes") return reply({ surface: q.get("surface"), changes: (DB as any).changes || [] });
-    if (u === "/api/v2/supervisor" && opts && opts.method === "POST" && body.change) {
-      (window as any).__vcChangeWords = [...((window as any).__vcChangeWords || []), body];
-      if (body.version) (DB as any).changes = ((DB as any).changes || []).filter((c: any) => !(c.plugin === body.plugin && c.version === body.version));
-      return reply({ ok: true, seq: 1, text: body.change + " " + body.plugin });
-    }
     return reply({});
   };
 }

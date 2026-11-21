@@ -26,7 +26,6 @@ import { CORE_PART } from "../src/coreBundle";
 import { boxPluginRequest, boxPluginsStatus } from "./boxPlugins";
 import { BOX_TRY_HEADER } from "../src/pluginDrafts";
 import { surfaceOff, surfaceOffPage } from "./surfaces";
-import { changesRoute, offerRoute, undoLastRoute } from "./changesPending";
 import { appPluginStateRoute } from "./pluginState";
 import { tryMigration } from "./migrations";
 import { APP_STYLES_HREF, HTML_CSP, inlineHtmlDocument, isHtmlSrc } from "../src/inlineHtml";
@@ -684,12 +683,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     const out = settingsRoute(method, method === "POST" ? await jsonBody(req) : null, "carl");
     return json(res, out.status, out.body);
   }
-  // Change ready on the phone (server/changesPending.ts): the drafts waiting for Carl, read from the box.
-  if (path === "/api/v2/changes" && method === "GET") {
-    const out = changesRoute(vault, url.searchParams);
-    return json(res, out.status, out.body);
-  }
-  // The Try redesign (src/changeFlow.ts): a waiting change's "Try it?" line in Main; the native shell's Undo.
   // The one gate (server/gate.ts): every part's gate results (GET ?part=&version=), and the settings draft's gate (POST).
   if (path === "/api/v2/gate/drive" && method === "POST") {
     const { gateDriveRoute } = await import("./gate");
@@ -701,15 +694,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     const out = await gateRoute(vault, method, url.searchParams, method === "POST" ? await jsonBody(req) : null);
     return json(res, out.status, out.body);
   }
-  if (path === "/api/v2/changes/offer" && method === "POST") {
-    const out = await offerRoute(vault, await jsonBody(req));
-    return json(res, out.status, out.body);
-  }
+  // The native shell's Undo and its dead-man's switch (server/changeNotices.ts): the newest applied change switches back.
   if (path === "/api/v2/changes/undo-last" && method === "POST") {
+    const { undoLastRoute } = await import("./changeNotices");
     const out = await undoLastRoute(vault, await jsonBody(req));
     return json(res, out.status, out.body);
   }
-  // A migration draft's Try (server/migrations.ts): migrate on a copy of the plugin's real state; nothing is written.
+  // A migration draft's dry run (server/migrations.ts, the gate's runner): migrate on a copy of the plugin's real state;
+  // nothing is written.
   if (path === "/api/v2/migrations/try" && method === "GET") {
     const out = await tryMigration(vault, q("plugin") ?? "", q("version") || null);
     return json(res, out.status, out.body);

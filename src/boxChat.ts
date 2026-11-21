@@ -597,7 +597,7 @@ class BoxChatSession {
         return;
       case "setting.draft":
       case "setting.change":
-        // The agent's settings draft, or Carl's word on it (src/changeReady.ts shows it as Change ready).
+        // The agent's settings draft, or Carl's word on it (the gate lands it).
         if (typeof seq === "number") void import("./settings").then((m) => m.settingDraftSignal(e, seq)).catch(() => {});
         return;
       case "file_changed":

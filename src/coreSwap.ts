@@ -1,4 +1,4 @@
-// Carl's screen across a core swap (src/coreBundle.ts; src/coreFollow.ts tryCore / followCoreOnce): the loader serves
+// Carl's screen across a core swap (src/coreBundle.ts; src/coreFollow.ts followCoreOnce): the loader serves
 // the new bundle and the window loads it, so what only lived in this page would go. Before the swap the main window
 // keeps, in its sessionStorage (it survives the load, per window), the open chat, the chat's scroll (at the bottom, or
 // where he was), the composer's draft (text, mentions, pictures, files), the panes (files, split, which is active, view

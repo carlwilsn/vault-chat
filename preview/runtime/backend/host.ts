@@ -10,8 +10,8 @@ import { answerComplete } from "../llm";
 import { parseLiveNeeds } from "../../../src/liveBridge";
 import { foldPluginState, logSignal, stateQuery, stateSignal, type PluginState } from "../../../src/pluginRecords";
 import { budgetSignal, desiredSignal, Supervisor } from "../../../src/pluginSupervisor";
-import { BUILT_IN, changeSignal, landing, stagedSignal } from "../../../src/pluginDrafts";
-import { autoUndoText, changeLineId, offerText, plainWhat, plainWhy } from "../../../src/changeFlow";
+import { BUILT_IN, changeSignal, landing } from "../../../src/pluginDrafts";
+import { autoUndoText, changeLineId, plainWhat, plainWhy } from "../../../src/changeFlow";
 import { coreBoxGet, coreChange, coreCommands, coreSignals, setCoreConfig, type CoreConfig } from "./core";
 import { converseAfter, converseIntent } from "../../../src/pluginConverse";
 import { catalogAppPlugins, catalogPlugin, catalogReads, catalogServices } from "../../../src/pluginCatalog";
@@ -149,7 +149,7 @@ export type HostConfig = {
   updater?: { version: string; notes?: string } | null;
   appVersion?: string;
   dialogOpen?: string | string[] | null;
-  /** The hot core (./core.ts): bundles the box built, as Change ready; the fake loader runs them. */
+  /** The hot core (./core.ts): bundles the box built; the fake loader runs the one the records keep. */
   core?: CoreConfig;
 };
 
@@ -625,13 +625,6 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
         const rec = box.emit(null, { type: "signal", signal: cc.sig } as any);
         return { status: 200, body: JSON.stringify({ ok: true, seq: rec.seq, text: `the core is ${cc.sig.version} now (was ${cc.sig.from})` }) };
       }
-      // The gate staged a draft (src/pluginDrafts.ts plugin.staged): a record, as the box writes it.
-      if (b?.change === "stage") {
-        const st = stagedSignal(b, typeof b.by === "string" ? b.by : "gate", Date.now());
-        if ("error" in st) return { status: st.status, body: JSON.stringify({ error: st.error }) };
-        const rec = box.emit(null, { type: "signal", signal: st } as any);
-        return { status: 200, body: JSON.stringify({ ok: true, seq: rec.seq }) };
-      }
       // Carl's word on a plugin (server/supervisor.ts): a record in the fake box's log, on /poll like the box's.
       // Carl's word on a draft (change by asking): only the record here; the app runs a kept draft from the record.
       const sig = b && "change" in b ? changeSignal(b, typeof b.by === "string" ? b.by : "carl", Date.now()) : b && "callsPerMinute" in b ? budgetSignal(b, "carl", Date.now()) : desiredSignal(b, "carl", Date.now());
@@ -658,14 +651,6 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
         if (box.picture(conv)) box.note(conv, changeLineId("auto", sig.plugin, v), { kind: "notice", text: autoUndoText(what, plainWhy(sig.reason ?? "")), level: "error", change: { plugin: sig.plugin, version: v } });
       }
       return { status: 200, body: JSON.stringify({ ok: true, seq: rec.seq }) };
-    }
-    if (path === "/api/v2/changes/offer") {
-      // A change waiting for Carl gets its "Try it?" line in Main (server/changesPending.ts offerRoute).
-      const plugin = String(b?.plugin ?? "");
-      const version = String(b?.version ?? "");
-      const id = changeLineId("offer", plugin, version);
-      if (box.picture("main") && !box.picture("main")!.items.some((x) => x.id === id)) box.note("main", id, { kind: "notice", text: offerText(plainWhat(String(b?.what ?? ""), plugin.split("/").pop())), change: { plugin, version, offer: "try" } });
-      return { status: 200, body: JSON.stringify({ ok: true }) };
     }
     if (path === "/api/v2/changes/undo-last") {
       // The shell's Undo (server/changeNotices.ts undoLast): the newest applied change switches back.

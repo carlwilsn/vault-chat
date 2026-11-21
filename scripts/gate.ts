@@ -19,16 +19,15 @@
 //   core (app/core): the newest core bundle the box built; runner core-bundle, in the box: every file as its manifest
 //       says, index.html loads only its own files, no newer box API (server/coreBundles.ts judgeCore)
 //   migrate/<name>: .vault-chat/migrations/<name>.draft.js; runner migration-dry-run, in the box: migrate on a copy of
-//       the plugin's real state (a throw, a timeout or a non-object fails it); a pass waits for Carl's Keep
+//       the plugin's real state (a throw, a timeout or a non-object fails it); a pass lands it
 // The data: a fresh secret-filtered copy of the box's real data (the ship gate's capture helper, as draft-check), never
 // the vault itself; --synthetic: the harness's synthetic vault (box plugins: an empty scratch vault); --data <dir>: a
 // copy you name (copied again into scratch for a box plugin).
 //
 // Without --asked / --unasked it only judges (exit 0 pass, 3 borderline, 1 fail, 2 could not run). With one, it lands the
-// verdict through the box by "gate" (src/gateResult.ts gateDecision): a fail is dropped; asked for: it applies (the
-// asking chat gets "Done: <what>" + Undo); not asked for: a clear pass applies silently, borderline is staged for Carl's
-// Try ("<what> — Try it?" in Main; a settings draft is always staged). The last line is `VC-GATE {GateResult}`: the box
-// writes the gate.result record and the chat lines from it.
+// verdict through the box by "gate" (src/gateResult.ts gateDecision): a fail is dropped, anything else applies live (the
+// chat gets "Done: <what>" + Undo). The last line is `VC-GATE {GateResult}`: the box writes the gate.result record and
+// the chat lines from it.
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -219,7 +218,7 @@ async function main(argv: string[]): Promise<number> {
       const d = gateDecision(p.kind, { verdict: j.verdict, reasons: j.reasons }, asked);
       const r = await postBoxChange(vault, { plugin: p.part, change: d.change, version: j.version, reason: d.reason, by: "gate", ...(j.what ? { what: j.what } : {}), ...(conv ? { conv } : {}) }, value("--box"));
       result.decision = d.change;
-      console.log(`${d.change === "keep" ? "applied" : d.change === "stage" ? "staged for Carl's Try" : "dropped"}: ${r.text} (record ${r.seq})`);
+      console.log(`${d.change === "keep" ? "applied" : "dropped"}: ${r.text} (record ${r.seq})`);
     }
   }
   const out = value("--out");

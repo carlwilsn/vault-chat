@@ -11,10 +11,10 @@
 //             VC_CORE_PUBLISH=0 turns it off for good). A new main starts one build through the existing StartJob path
 //             (server/engine/jobs.ts startJobWith: its memory ceiling, low CPU/IO share, outside this server's memory: a
 //             vite build takes ~3.6 GB). Two failed builds of one commit: given up.
-//   offer     a built bundle never lands by itself: the newest one nobody decided on is a Change ready card for the part
-//             app/core (pendingCore, listed by GET /api/v2/changes like a plugin's draft). Try runs it in Carl's windows
-//             only (the laptop's loader serves it; src/coreFollow.ts tryCore), Keep is a plugin.change keep (it becomes
-//             the core every window and launch runs), Discard drops it, Switch back returns to what the Keep replaced.
+//   land      the newest built bundle nobody decided on (newestUndecidedCore) goes through the one gate (server/gate.ts
+//             landCore, coreGate): a pass is a plugin.change keep by "gate" (it becomes the core every window and launch
+//             runs: the laptop's loader takes it at a quiet moment, src/coreFollow.ts, and falls back by itself when it
+//             does not boot, which switches the record back), a fail a discard. Switch back returns to what it replaced.
 //   routes    GET /api/v2/core: the offer (the version in effect, its sha256, needs), this box's API, recent builds.
 //             GET /api/v2/core/<version>/manifest.json, GET /api/v2/core/<version>/files/<path>: the bundle's bytes.
 //             A switch (the laptop's loader fell back, or the agent's word) is a plugin.change through /api/v2/supervisor.
@@ -24,8 +24,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, s
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { BUILT_IN, decision, landing, type ChangeKind, type ChangeRecord } from "../src/pluginDrafts";
-import { CORE_BOX_API, CORE_NAME, CORE_PART, CORE_VERSION_RE, bundlePath, coreCard, coreChangesSince, parseLooks, manifestProblem, safeCorePath, type CoreCommit, type CoreManifest, type CoreOffer } from "../src/coreBundle";
-import type { BoxPendingChange } from "../src/changeCards";
+import { CORE_BOX_API, CORE_PART, CORE_VERSION_RE, bundlePath, coreCard, coreChangesSince, parseLooks, manifestProblem, safeCorePath, type CoreCommit, type CoreManifest, type CoreOffer } from "../src/coreBundle";
 import { probeJob, readJobs, reapJobs, startJobWith, type JobEnv } from "./engine/jobs";
 
 export const coreRoot = (stateDir: string) => join(stateDir, "core-bundles");
@@ -118,11 +117,6 @@ export function coreLanding(stateDir: string, changes: readonly ChangeRecord[], 
   return { ok: true, version, from: now, text: `${version} will not land` };
 }
 
-/**
- * The core bundle waiting for Carl (Change ready), or null: the newest stored bundle, unless it is the one in effect, was
- * kept or discarded, was switched away from (it failed somewhere, or Carl went back from it), or needs a newer box API.
- * Older undecided bundles are never offered: the newest carries every fix before it.
- */
 /** The box's vault-chat repo (the publisher builds its main). */
 export const coreRepo = (): string => process.env.VC_CORE_REPO ?? join(homedir(), "vc", "projects", "vault-chat");
 
@@ -211,7 +205,12 @@ export function judgeCore(stateDir: string, version: string): { verdict: "pass" 
   return reasons.length ? { verdict: "fail", reasons: reasons.slice(0, 10), commit: m.commit } : { verdict: "pass", reasons: [`${m.files.length} files as the manifest says; index.html loads only its own files; box API ${m.needs.boxApi}`, boot], commit: m.commit };
 }
 
-export function pendingCore(stateDir: string, changes: readonly ChangeRecord[], on = true, commitsOf: (commit: string) => CoreCommit[] = () => []): BoxPendingChange | null {
+/**
+ * The core bundle to land (server/gate.ts landCore), or null: the newest stored bundle, unless it is the one in effect,
+ * was kept or discarded, was switched away from (it failed somewhere, or Carl went back from it), or needs a newer box
+ * API. Older undecided bundles never land: the newest carries every fix before it. `what`: its changes in words.
+ */
+export function newestUndecidedCore(stateDir: string, changes: readonly ChangeRecord[], on = true, commitsOf: (commit: string) => CoreCommit[] = () => []): { version: string; what: string; commits?: CoreCommit[] } | null {
   if (!on) return null;
   const newest = storedCores(stateDir)[0];
   if (!newest) return null;
@@ -226,13 +225,9 @@ export function pendingCore(stateDir: string, changes: readonly ChangeRecord[], 
   // The titles the line does not already say.
   const rest = card.changes.filter((t) => !card.what.includes(t));
   return {
-    plugin: CORE_PART,
-    name: CORE_NAME,
-    what: commits.length ? card.what + (rest.length ? `: ${rest.slice(0, 3).join("; ")}${rest.length > 3 ? `; and ${rest.length - 3} more` : ""}` : "") : `the app's frontend from main ${m.commit.slice(0, 12)} (${new Date(m.commitTime * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC)`,
     version: v,
-    added: false,
-    tryOn: ["laptop"],
-    core: { sha256: newest.sha256, commit: m.commit, commitTime: m.commitTime, needs: m.needs, boxApi: CORE_BOX_API, ...(commits.length ? { commits } : {}) },
+    what: commits.length ? card.what + (rest.length ? `: ${rest.slice(0, 3).join("; ")}${rest.length > 3 ? `; and ${rest.length - 3} more` : ""}` : "") : `the app's frontend from main ${m.commit.slice(0, 12)} (${new Date(m.commitTime * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC)`,
+    ...(commits.length ? { commits } : {}),
   };
 }
 
@@ -279,6 +274,8 @@ export type PublisherDeps = {
   startJob?: typeof startJobWith;
   /** A started job's state (default: probeJob). */
   probe?: typeof probeJob;
+  /** After each look: land the newest built bundle through the gate (server/gate.ts landCore); a line when it did. */
+  land?: () => string | null;
 };
 
 const MAX_TRIES = 2;
@@ -299,8 +296,8 @@ export function buildShell(repo: string, commit: string, root: string): string {
   ].join("\n");
 }
 
-/** One look: start a build for a new main, or take a finished build's result (stored: it waits for Carl as Change
- *  ready, it never lands by itself). Returns what it did (for the log). */
+/** One look: start a build for a new main, or take a finished build's result (stored; the gate lands it: landCore).
+ *  Returns what it did (for the log). */
 export function publishTick(d: PublisherDeps): string {
   if (!d.on()) return "off";
   const exec = d.exec ?? realExec;
@@ -343,7 +340,7 @@ export function publishTick(d: PublisherDeps): string {
     running.version = r.version;
     writePublisher(d.stateDir, st);
     pruneCores(d.stateDir, d.changes());
-    return `built core ${r.version} (main ${running.commit.slice(0, 12)}): offered on the laptop (applied quietly when nothing on screen changes, else "Try it?" in Main)`;
+    return `built core ${r.version} (main ${running.commit.slice(0, 12)}): the gate lands it on the laptop`;
   }
   // A new main: one build at a time, MAX_TRIES per commit.
   const tried = st.attempts.filter((a) => a.commit === main);
@@ -391,6 +388,10 @@ export function startCorePublisher(d: Omit<PublisherDeps, "repo"> & { repo?: str
       const line = publishTick({ ...d, repo });
       if (line !== lastLine && line !== "up to date" && !line.startsWith("building ")) console.log(`[core] ${line}`);
       lastLine = line;
+      if (d.on()) {
+        const landed = d.land?.();
+        if (landed) console.log(`[core] ${landed}`);
+      }
     } catch (e) {
       console.error(`[core] ${(e as Error).message}`);
     }

@@ -105,15 +105,10 @@ describe("box plugins", () => {
     expect(st.json.plugins[0]).toMatchObject({ plugin: "box/hello", state: "running", live: { kind: "live", running: true, version: versionOf(plugin("one")) }, draft: null });
   });
 
-  it("a draft waits for Carl and runs only for the requests that try it, without writing; Keep lands it, Switch back undoes it", async () => {
+  it("a draft waits for the gate and runs only for the requests that try it, without writing; Keep lands it, Switch back undoes it", async () => {
     writeFileSync(file("hello.draft.js"), plugin("two"));
     const v = versionOf(plugin("two"));
-    // Nobody sees it before the gate staged it (server/gate.ts); then Change ready lists it on every surface (Try on the laptop only).
-    expect((await get("/api/v2/changes?surface=phone")).json.changes.some((c: { plugin: string }) => c.plugin === "box/hello")).toBe(false);
-    expect((await post("/api/v2/supervisor", { plugin: "box/hello", change: "stage", version: v, by: "gate" })).status).toBe(200);
-    const ch = await get("/api/v2/changes?surface=phone");
-    expect(ch.json.changes).toContainEqual(expect.objectContaining({ plugin: "box/hello", name: "Box: hello", what: "two", version: v, added: false, tryOn: ["laptop"] }));
-    // Everyone else still gets the live copy; the trying window gets the draft.
+    // Everyone else still gets the live copy; a request that tries it (the agent's own check) gets the draft.
     expect((await get("/api/v2/box/hello/hi")).json.answer).toBe("one");
     expect((await get("/api/v2/box/hello/hi", { "x-vc-try": v })).json).toMatchObject({ answer: "two", tried: true });
     expect((await get(`/api/v2/box/hello/hi?vc-try=${v}`)).json.answer).toBe("two");
@@ -122,7 +117,7 @@ describe("box plugins", () => {
     // Try never writes the box's data.
     expect(await post("/api/v2/box/hello/count", { n: 9 }, { "x-vc-try": v })).toMatchObject({ status: 200, json: 3 });
 
-    // Keep: the record, the files moved, the live copy is the draft now; the old one unloaded (its cleanup ran).
+    // Keep (the gate's): the record, the files moved, the live copy is the draft now; the old one unloaded (its cleanup ran).
     const keep = await post("/api/v2/supervisor", { plugin: "box/hello", change: "keep", version: v });
     expect(keep.status).toBe(200);
     expect(existsSync(file("hello.draft.js"))).toBe(false);

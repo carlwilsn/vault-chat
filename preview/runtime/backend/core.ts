@@ -1,17 +1,16 @@
 // The hot core in the preview (src/coreBundle.ts, src/coreFollow.ts, src/coreSwap.ts): a fake native loader and the
-// box's core routes, so the real Change ready card, Try, Keep and Switch back run as on the laptop.
+// box's core routes, so the real follow (a kept bundle swapped in) and Switch back run as on the laptop.
 //
 //   loader   core_status / core_install / core_use / core_ready / core_events_sent. core_use is the real swap: the frame
 //            loads again (location.reload), as the native loader reloads the window, and the boot keeps this device's
 //            storage for that load (a swap, not a new scenario: src/coreSwap.ts finds what it kept).
-//   box      GET /api/v2/changes (the newest bundle nobody decided on is the app/core card, server/coreBundles.ts
-//            pendingCore), GET /api/v2/core (the offer: what was kept), POST /api/v2/supervisor for app/core (keep /
+//   box      GET /api/v2/core (the offer: what was kept), POST /api/v2/supervisor for app/core (keep /
 //            switch / discard resolved as server/coreBundles.ts coreLanding does). The records outlive the frame's
 //            load (sessionStorage), as the box's log does.
 //   look     a bundle may carry `css`: what that build changes on screen, applied while the loader runs it.
 // Nothing here runs unless a scenario gives `host.core`.
-import { BUILT_IN, decision, landing, type ChangeRecord } from "../../../src/pluginDrafts";
-import { CORE_BOX_API, CORE_NAME, CORE_PART, type CoreCommit } from "../../../src/coreBundle";
+import { BUILT_IN, landing, type ChangeRecord } from "../../../src/pluginDrafts";
+import { CORE_BOX_API, CORE_PART, type CoreCommit } from "../../../src/coreBundle";
 
 export type CoreBundle = { version: string; sha256?: string; commit?: string; commitTime: number; what: string; css?: string; /** main's commits up to it, newest first (the box's git log) */ commits?: CoreCommit[] };
 export type CoreConfig = { bundles: CoreBundle[]; bakedCommitTime?: number };
@@ -116,18 +115,6 @@ export const coreCommands: Record<string, (a: Record<string, any>) => unknown> =
 export function coreBoxGet(u: URL): { status: number; body: string } | null {
   if (!cfg) return null;
   const ok = (v: unknown) => ({ status: 200, body: JSON.stringify(v) });
-  if (u.pathname.endsWith("/api/v2/changes")) {
-    const ch = changes();
-    const newest = [...cfg.bundles].sort((a, b) => b.commitTime - a.commitTime)[0];
-    const v = newest?.version;
-    const pending = !!newest && landing(ch)?.version !== v && decision(ch, v!) === null && !ch.some((c) => c.change === "switch" && c.from === v);
-    return ok({
-      surface: u.searchParams.get("surface") ?? "laptop",
-      changes: pending
-        ? [{ plugin: CORE_PART, name: CORE_NAME, what: newest!.what, version: v, added: false, tryOn: ["laptop"], core: { sha256: sha(newest!), commit: commit(newest!), commitTime: newest!.commitTime, needs: { commands: ["app_ready", "core_ready"], plugins: ["dialog"], boxApi: CORE_BOX_API }, boxApi: CORE_BOX_API, ...(newest!.commits ? { commits: newest!.commits } : {}) } }]
-        : [],
-    });
-  }
   if (u.pathname.endsWith("/api/v2/core")) {
     const l = landing(changes());
     const b = l && l.version !== BUILT_IN ? byVersion(l.version) : null;

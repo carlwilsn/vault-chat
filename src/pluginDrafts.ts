@@ -1,13 +1,12 @@
-// Change by asking (reports/07 corrected model, point 4): a plugin edit is a draft first. While Carl has not decided,
-// a draft runs nowhere on its own; the laptop shows "Change ready" (src/ChangeReadyNotice.tsx) and he can Try it (on his
-// windows only), then Keep or Discard it. What he decides is one record in the log, so the copy in effect is a fold
-// of records, and undo is the switch back.
+// Change by asking (reports/07 corrected model, point 4): a plugin edit is a draft first. A draft runs nowhere on its
+// own until the one gate (src/gateResult.ts) lands it: a pass is a keep (live at once), a fail a discard. Each word is
+// one record in the log, so the copy in effect is a fold of records, and undo is the switch back.
 //
 // A plugin with drafts has a slot of three files in one folder:
 //   app plugins (src/appPluginLive.ts)   .vault-chat/app-plugins/<name>.js, <name>.draft.js, <name>.prev.js
 //   vault plugins (src/vaultPlugins.ts)  .vault-chat/plugins/<name>.js, <name>.draft.js, <name>.prev.js
 //   box plugins (server/boxPlugins.ts)   .vault-chat/box-plugins/<name>.js, <name>.draft.js, <name>.prev.js
-// The live file runs; the draft waits for Carl; prev is what the last Keep replaced (absent: the built-in one, or for a
+// The live file runs; the draft waits for the gate; prev is what the last Keep replaced (absent: the built-in one, or for a
 // vault plugin nothing), so Switch back swaps live and prev.
 //
 // Records (vault-level signals, folded by the supervisor with plugin.desired: src/pluginSupervisor.ts):
@@ -27,51 +26,9 @@ export type ChangeSignal = { type: typeof PLUGIN_CHANGE; plugin: string; change:
 /** A change record as a host folds it. `what`: the change in Carl's words (a keep names it); `conv`: the chat that asked. */
 export type ChangeRecord = { seq: number; plugin: string; change: ChangeKind; version: string; from: string | null; at: number; by: string | null; reason: string | null; what?: string; conv?: string };
 
-// ---------------------------------------------------------------- staged: the gate passed, Carl has not tried it
-
-/**
- * {type: "plugin.staged", plugin, version, at, by?, what?, conv?}: the draft gate (scripts/draft-check.ts) passed a
- * draft nobody asked for that changes something Carl can see. Only a staged version of an app or vault plugin's draft
- * reaches Carl (one "Try it?" line in Main); a draft the gate has not passed reaches nobody.
- */
-export const PLUGIN_STAGED = "plugin.staged";
-export type StagedSignal = { type: typeof PLUGIN_STAGED; plugin: string; version: string; at: number; by?: string; what?: string; conv?: string };
-export type StagedRecord = { seq: number; plugin: string; version: string; at: number; by: string | null; what: string | null; conv: string | null };
-
 const CONV_RE = /^[A-Za-z0-9_.:-]{1,120}$/;
 const cleanWhat = (w: unknown): string | undefined => (typeof w === "string" && w.trim() ? w.replace(/\s+/g, " ").trim().slice(0, 160) : undefined);
 const cleanConv = (c: unknown): string | undefined => (typeof c === "string" && CONV_RE.test(c) ? c : undefined);
-
-/** A staged record from a request body ({plugin, version, what?, conv?}), or why not. */
-export function stagedSignal(b: Record<string, unknown> | null, by: string, now: number): StagedSignal | { status: number; error: string } {
-  const plugin = typeof b?.plugin === "string" ? b.plugin.replace(/\\/g, "/").replace(/^(?:\.\/)+/, "").replace(/^\/+/, "") : "";
-  if (!plugin || plugin.length > 400 || plugin.split("/").includes("..")) return { status: 400, error: "name the plugin: app/<name> or its vault path" };
-  const version = typeof b?.version === "string" ? b.version : "";
-  if (!/^[0-9a-f]{8}$/.test(version)) return { status: 400, error: "version: the draft's version (8 hex digits)" };
-  const what = cleanWhat(b?.what);
-  const conv = cleanConv(b?.conv);
-  return { type: PLUGIN_STAGED, plugin, version, at: now, ...(WHO_RE.test(by) ? { by } : {}), ...(what ? { what } : {}), ...(conv ? { conv } : {}) };
-}
-
-/** A log record's staged word, or null when it is not one. */
-export function stagedOf(rec: { seq: number; at?: number; type?: unknown; signal?: unknown }): StagedRecord | null {
-  const s = rec.type === "signal" ? (rec.signal as Record<string, unknown> | undefined) : undefined;
-  if (!s || s.type !== PLUGIN_STAGED || typeof s.plugin !== "string" || typeof s.version !== "string") return null;
-  return { seq: rec.seq, plugin: s.plugin, version: s.version, at: Number(s.at ?? rec.at) || 0, by: typeof s.by === "string" ? s.by : null, what: typeof s.what === "string" ? s.what : null, conv: typeof s.conv === "string" ? s.conv : null };
-}
-
-/** The plugins whose drafts go through the gate (src/gateResult.ts, scripts/gate.ts) before Carl sees them: app plugins
- *  with live copies, vault plugins, box plugins and the app's preset. The settings draft is gated when it is offered
- *  (server/changesPending.ts offerRoute); migrations and the core are not gated yet. */
-export const gated = (plugin: string): boolean => (plugin.startsWith("app/") && plugin !== "app/core" && plugin !== "app/settings-values") || plugin.startsWith(".vault-chat/plugins/") || plugin.startsWith("box/");
-
-/** Whether the slot's draft reaches Carl: it waits (draftPending) and, for a gated plugin, the gate staged this version. */
-export function draftStaged(plugin: string, slot: SlotCode, changes: readonly ChangeRecord[], staged: readonly StagedRecord[]): string | null {
-  const v = draftPending(slot, changes);
-  if (!v) return null;
-  if (!gated(plugin)) return v;
-  return staged.some((s) => s.version === v) ? v : null;
-}
 
 /** A copy's version: FNV-1a over its code, 8 hex digits (the same on the box and every host). */
 export function versionOf(code: string): string {
@@ -172,14 +129,14 @@ export function landing(changes: readonly ChangeRecord[]): ChangeRecord | null {
   return out;
 }
 
-/** Carl's word on one version of a draft: kept, discarded, or none yet. */
+/** The word on one version of a draft: kept, discarded, or none yet. */
 export function decision(changes: readonly ChangeRecord[], version: string): ChangeKind | null {
   let out: ChangeRecord | null = null;
   for (const c of changes) if (c.version === version && c.change !== "switch" && (!out || c.seq > out.seq)) out = c;
   return out?.change ?? null;
 }
 
-/** Whether the slot's draft waits for Carl (it exists and nobody decided on this version). */
+/** Whether the slot's draft waits (it exists and nobody decided on this version). */
 export function draftPending(slot: SlotCode, changes: readonly ChangeRecord[]): string | null {
   if (slot.draft === undefined) return null;
   const v = versionOf(slot.draft);
@@ -189,7 +146,8 @@ export function draftPending(slot: SlotCode, changes: readonly ChangeRecord[]): 
 }
 
 /**
- * Which copy of a slot runs. The draft only when tried (`tried`: the version Carl tries in this window) or kept by a
+ * Which copy of a slot runs. The draft only when tried (`tried`: the version a gate run hands this window, src/driveGuard.ts
+ * or the preview harness) or kept by a
  * record whose files have not moved yet; the version the newest keep/switch names when its file is here; else the live
  * copy (a live copy written since the switch, outside the records, runs too); else none.
  */
@@ -228,9 +186,10 @@ export function draftWhat(code: string): string {
   return meta ? meta[2]!.replace(/\\(.)/g, "$1").trim().slice(0, 160) : "";
 }
 
-// ---------------------------------------------------------------- auto-discard while tried
+// ---------------------------------------------------------------- the typing limit
 
-/** A draft being tried that makes composer typing slower than this (median keystroke-to-paint, ms) discards itself. */
+/** A draft that makes composer typing slower than this (median keystroke-to-paint, ms) fails the gate; a kept one
+ *  switches back by itself. */
 export const TRY_SLOW_MS = 50;
 /** Keystrokes measured before the median counts. */
 export const TRY_SLOW_KEYS = 8;

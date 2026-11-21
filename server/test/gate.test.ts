@@ -1,6 +1,6 @@
 // One gate for every swappable part (src/gateResult.ts, server/gate.ts, scripts/gate.ts): each kind has a runner, a bad
-// candidate of each kind is refused, a draft of a gated part reaches nobody before the gate staged it, and every end is
-// one gate.result record read in one place (GET /api/v2/gate).
+// candidate of each kind is refused, anything else lands live at once (there is no Try step), and every end is one
+// gate.result record read in one place (GET /api/v2/gate).
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -70,14 +70,13 @@ describe("the one gate", () => {
   };
   const get = async (path: string) => (await fetch(base + path)).json() as Promise<any>;
 
-  it("every part has a kind; one decision rule: a fail is dropped, asked applies, unasked stages what Carl sees, a settings draft always waits for him", () => {
+  it("every part has a kind; one decision rule: a fail is dropped, anything else applies, asked for or not", () => {
     expect([".vault-chat/plugins/pen.js", "app/composer", "app/preset", "app/settings-values", "box/hello", "migrate/x", "app/core", "nope"].map(partKind)).toEqual(["ui-plugin", "ui-plugin", "preset", "settings", "box-plugin", "migration", "frontend-core", null]);
     const d = (kind: PartKind, verdict: "pass" | "borderline" | "fail", asked: boolean) => gateDecision(kind, { verdict, reasons: ["x"] }, asked).change;
-    for (const kind of ["ui-plugin", "preset", "box-plugin"] as const) {
+    for (const kind of ["ui-plugin", "preset", "box-plugin", "settings", "migration", "frontend-core"] as const) {
       expect([d(kind, "pass", true), d(kind, "borderline", true), d(kind, "fail", true)]).toEqual(["keep", "keep", "discard"]);
-      expect([d(kind, "pass", false), d(kind, "borderline", false), d(kind, "fail", false)]).toEqual(["keep", "stage", "discard"]);
+      expect([d(kind, "pass", false), d(kind, "borderline", false), d(kind, "fail", false)]).toEqual(["keep", "keep", "discard"]);
     }
-    for (const kind of ["settings", "migration"] as const) expect([d(kind, "pass", false), d(kind, "borderline", true), d(kind, "fail", false)]).toEqual(["stage", "stage", "discard"]);
     expect(gateLineOf('noise\nVC-GATE {"plugin":"app/notes","version":"0000000a","decision":"keep","verdict":"pass","reasons":["ok"]}')).toMatchObject({ part: "app/notes", kind: "ui-plugin", decision: "keep", verdict: "pass" });
     expect(gateLineOf("no line")).toBeNull();
   });
@@ -121,85 +120,64 @@ describe("the one gate", () => {
     expect(noComposer.seen.join(" ")).toMatch(/left empty .*chat\.composer/);
   });
 
-  it("a box plugin's or the preset's draft reaches nobody before the gate staged it", async () => {
-    mkdirSync(join(A.path, ".vault-chat", "box-plugins"), { recursive: true });
-    mkdirSync(join(A.path, ".vault-chat", "app-plugins"), { recursive: true });
-    const boxDraft = `// @vc-change a hello route\nexport function activate(box) { box.route("GET", "/hi", () => 1); }`;
-    writeFileSync(join(A.path, ".vault-chat", "box-plugins", "hello.draft.js"), boxDraft);
-    const preset = JSON.stringify({ ...DAILY_PRESET, name: "lean", what: "no voice", mounts: DAILY_PRESET.mounts.filter((m) => m.place !== "voice") });
-    writeFileSync(join(A.path, ".vault-chat", "app-plugins", "preset.draft.json"), preset);
-    const listed = async () => ((await get("/api/v2/changes?surface=phone")).changes as { plugin: string }[]).map((c) => c.plugin);
-    expect(await listed()).toEqual([]);
-    expect((await post("/api/v2/changes/offer", { plugin: "box/hello", version: versionOf(boxDraft) })).status).toBe(404);
-    for (const [plugin, code] of [["box/hello", boxDraft], ["app/preset", preset]]) expect((await post("/api/v2/supervisor", { plugin, change: "stage", version: versionOf(code), by: "gate" })).status).toBe(200);
-    expect(await listed()).toEqual(["app/preset", "box/hello"]);
-    rmSync(join(A.path, ".vault-chat", "box-plugins"), { recursive: true, force: true });
-    rmSync(join(A.path, ".vault-chat", "app-plugins"), { recursive: true, force: true });
-  });
-
-  it("the settings draft: gated before it is offered; a value the box does not take is dropped by the gate, a good one gets its Try line; one record, read in one place", async () => {
+  it("the settings draft: a value the box does not take is dropped by the gate, a good one is set with its Done line; one record, read in one place", async () => {
+    const gate = (body: Record<string, unknown> = {}) => post("/api/v2/gate", { part: "app/settings-values", land: true, conv: "c-set", ...body });
     // A draft written past the Settings tool's own checks (another device, an older box): a model this engine does not run.
     const at = Date.now();
     const bad = { model: "gpt-x" };
     signalLog(A.path).emit(null, { type: "signal", signal: { type: SETTING_DRAFT, values: bad, version: draftVersion(bad, at), what: "a new model", by: "agent", at } });
     const bv = draftVersion(bad, at);
     expect(readSettings().drafts.at(-1)?.version).toBe(bv);
-    const offered = await post("/api/v2/changes/offer", { plugin: "app/settings-values", version: bv });
-    expect(offered.status).toBe(409);
-    expect(offered.json.error).toMatch(/the gate dropped it: "gpt-x" is not a model this engine runs/);
+    const dropped = await gate();
+    expect(dropped.status).toBe(200);
+    expect(dropped.json.result).toMatchObject({ verdict: "fail", decision: "discard" });
+    expect(dropped.json.result.reasons.join(" ")).toMatch(/"gpt-x" is not a model this engine runs/);
     expect(readSettings().changes.at(-1)).toMatchObject({ change: "discard", version: bv, by: "gate" });
-    expect(lines.some((l) => l.kind === "offer" && l.plugin === "app/settings-values")).toBe(false);
     const results = (await get("/api/v2/gate?part=app/settings-values")).results;
     expect(results[0]).toMatchObject({ part: "app/settings-values", kind: "settings", version: bv, verdict: "fail", decision: "discard", runner: "settings" });
 
     const { draftSettings } = await import("../settings");
+    const { _setSettingsRender } = await import("../gate");
+    _setSettingsRender(async () => ({ skip: "no laptop here" }));
     const good = draftSettings({ theme: "light" }, "a lighter look", "agent");
     expect(good.ok).toBe(true);
     const gv = (good as { version: string }).version;
-    expect((await post("/api/v2/changes/offer", { plugin: "app/settings-values", version: gv })).status).toBe(200);
-    expect(lines.filter((l) => l.kind === "offer" && l.plugin === "app/settings-values")).toHaveLength(1);
-    expect((await get(`/api/v2/gate?part=app/settings-values&version=${gv}`)).results).toMatchObject([{ verdict: "borderline", decision: "stage" }]);
-    // Offered again (another window): judged once.
-    expect((await post("/api/v2/changes/offer", { plugin: "app/settings-values", version: gv })).status).toBe(200);
-    expect((await get(`/api/v2/gate?part=app/settings-values&version=${gv}`)).results).toHaveLength(1);
+    expect((await gate()).json.result).toMatchObject({ version: gv, verdict: "borderline", decision: "keep" });
+    expect(readSettings().values.theme).toBe("light");
+    expect(readSettings().set.theme?.by).toBe("gate");
+    expect(lines.filter((l) => l.kind === "done" && l.plugin === "app/settings-values").at(-1)).toMatchObject({ conv: "c-set", text: expect.stringMatching(/^Done: a lighter look/) });
+    expect(lines.some((l) => /Try it/.test(l.text))).toBe(false);
     // A window setting is rendered in the real app's Drive copy first (when the laptop can): errors there drop it.
-    const { _setSettingsRender } = await import("../gate");
     _setSettingsRender(async () => ({ fail: "errors only with the draft shown in the real app: TypeError: theme" }));
     const dark = draftSettings({ chatSidebar: false }, "no sidebar", "agent");
     const dv = (dark as { version: string }).version;
-    const refused = await post("/api/v2/changes/offer", { plugin: "app/settings-values", version: dv });
-    expect(refused.status).toBe(409);
-    expect(refused.json.error).toMatch(/TypeError: theme/);
-    expect((await get(`/api/v2/gate?part=app/settings-values&version=${dv}`)).results[0]).toMatchObject({ verdict: "fail", decision: "discard", runner: "settings+ui-drive" });
+    expect((await gate()).json.result).toMatchObject({ version: dv, verdict: "fail", decision: "discard", runner: "settings+ui-drive" });
     _setSettingsRender(async () => ({ ok: "rendered in the real app with no new errors" }));
-    const side = draftSettings({ chatSidebar: false }, "no sidebar", "agent");
-    const sv = (side as { version: string }).version;
-    expect((await post("/api/v2/changes/offer", { plugin: "app/settings-values", version: sv })).status).toBe(200);
-    expect((await get(`/api/v2/gate?part=app/settings-values&version=${sv}`)).results[0]).toMatchObject({ verdict: "borderline", decision: "stage", runner: "settings+ui-drive", reasons: expect.arrayContaining(["rendered in the real app with no new errors"]) });
-    _setSettingsRender(null);
+    draftSettings({ chatSidebar: false }, "no sidebar", "agent");
     // The Plugins tool's submit runs the same gate at once.
     const { pluginToolAsync } = await import("../supervisorTools");
-    expect(await pluginToolAsync(A.path, { action: "submit", plugin: "settings-values" })).toMatchObject({ ok: true, text: expect.stringMatching(/passed the gate and waits for Carl/) });
+    expect(await pluginToolAsync(A.path, { action: "submit", plugin: "settings-values" })).toMatchObject({ ok: true, text: expect.stringMatching(/passed the gate and is set.*rendered in the real app with no new errors/) });
+    expect(readSettings().values.chatSidebar).toBe(false);
+    _setSettingsRender(null);
   });
 
-  it("a migration: its dry run on a copy of the real state is its gate; a draft that throws is dropped before Carl sees it, a good one waits for his Keep", async () => {
+  it("a migration: its dry run on a copy of the real state is its gate; a draft that throws is dropped, a good one is kept", async () => {
     const dir = join(A.path, ".vault-chat", "migrations");
     mkdirSync(dir, { recursive: true });
+    vi.stubEnv("VC_MIGRATION_BACKUP_DIR", join(home, "backups"));
     const bad = `// @vc-change rows as a list\nexport const plugin = "app/chat-rows";\nexport function migrate(old) { throw new Error("no rows key"); }\n`;
     writeFileSync(join(dir, "rows.draft.js"), bad);
-    const offered = await post("/api/v2/changes/offer", { plugin: "migrate/rows", version: versionOf(bad) });
-    expect(offered.status).toBe(409);
-    expect(offered.json.error).toMatch(/the gate dropped it: the dry run failed: .*no rows key/);
+    const { pluginToolAsync } = await import("../supervisorTools");
+    const r1 = await pluginToolAsync(A.path, { action: "submit", plugin: "migrate/rows" });
+    expect(r1).toMatchObject({ ok: false, text: expect.stringMatching(/The gate dropped the migration: the dry run failed: .*no rows key/) });
     expect(readdirSync(dir)).not.toContain("rows.draft.js");
     expect((await get("/api/v2/gate?part=migrate/rows")).results[0]).toMatchObject({ kind: "migration", verdict: "fail", decision: "discard", runner: "migration-dry-run" });
     const good = `// @vc-change rows as a list\nexport const plugin = "app/chat-rows";\nexport function migrate(old) { return { ...old, rows: [] }; }\n`;
     writeFileSync(join(dir, "rows.draft.js"), good);
-    expect((await post("/api/v2/changes/offer", { plugin: "migrate/rows", version: versionOf(good) })).status).toBe(200);
-    expect((await get(`/api/v2/gate?part=migrate/rows&version=${versionOf(good)}`)).results[0]).toMatchObject({ verdict: "borderline", decision: "stage" });
-    expect(lines.some((l) => l.kind === "offer" && l.plugin === "migrate/rows")).toBe(true);
-    expect(readdirSync(dir)).toContain("rows.draft.js");
-    const { pluginToolAsync } = await import("../supervisorTools");
-    expect(await pluginToolAsync(A.path, { action: "submit", plugin: "migrate/rows" })).toMatchObject({ ok: true, text: expect.stringMatching(/waits for Carl to keep it/) });
+    const r2 = await pluginToolAsync(A.path, { action: "submit", plugin: "migrate/rows" });
+    expect(r2).toMatchObject({ ok: true, text: expect.stringMatching(/passed the gate .*and is kept/) });
+    expect((await get(`/api/v2/gate?part=migrate/rows&version=${versionOf(good)}`)).results[0]).toMatchObject({ verdict: "borderline", decision: "keep" });
+    expect(readdirSync(dir)).not.toContain("rows.draft.js");
     rmSync(dir, { recursive: true, force: true });
   });
 

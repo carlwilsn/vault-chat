@@ -2,7 +2,7 @@
 // plugins mount where, plus their settings, is data. The built-in daily preset is today's app; an app.preset record in
 // the log overrides it; each place of the app (PlaceMount) mounts what the preset in effect puts there and skips, with a
 // visible line, a plugin this app has no part for. A change is a draft (.vault-chat/app-plugins/preset.draft.json) that
-// goes through Change ready (Try / Keep / Discard / Switch back, auto-discard), Keep written by the box's real route;
+// goes through the one gate (Keep / Discard / Switch back), Keep written by the box's real route;
 // the agent reads the preset through app/preset's offers.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
@@ -148,7 +148,7 @@ test("the fold: no record is the daily preset; the newest valid app.preset recor
   assert.deepEqual(parseDraft('{"name":"x","what":"no notes","mounts":[{"place":"voice","plugin":"app/voice","extra":1}]}'), { preset: { name: "x", mounts: [{ place: "voice", plugin: "app/voice" }] }, what: "no notes" });
 });
 
-test("live: places mount the preset; a draft goes through Change ready (Try, Keep by the box, Switch back); an unknown plugin is skipped with a visible reason; the agent reads it through app/preset", async () => {
+test("live: places mount the preset; a draft goes through the gate (Keep by the box, Switch back); an unknown plugin is skipped with a visible reason; the agent reads it through app/preset", async () => {
   placeModule({ id: "app/t-a" }, () => ({ mount(el: HTMLElement, api: any) { el.textContent = `A${api.settings ? JSON.stringify(api.settings.get()) : ""}`; } }));
   placeModule({ id: "app/t-b" }, () => ({ mount(el: HTMLElement) { el.textContent = "B"; } }));
   await loadSupervisor(true);
@@ -178,35 +178,20 @@ test("live: places mount the preset; a draft goes through Change ready (Try, Kee
   fs.writeFileSync(path.join(DIR, "preset.draft.json"), body);
   const v = versionOf(body);
   await act(async () => void (await refreshLiveCopies()));
-  assert.deepEqual(CR.pendingChanges(), [], "nobody sees it before the gate staged it (scripts/gate.ts)");
-  const stage = async (version: string) => {
-    assert.equal((await supervisorRoute(vault, "POST", new URLSearchParams(), { plugin: "app/preset", change: "stage", version, by: "gate" })).status, 200);
-    await act(async () => void (await loadSupervisor(true)));
-  };
-  await stage(v);
-  assert.deepEqual(CR.pendingChanges().map((p) => [p.plugin, p.what, p.version]), [["app/preset", "B and A over the app", v]], "Change ready lists it");
   assert.doesNotMatch(text(box), /A|B/, "a draft runs nowhere by itself");
-  assert.match(JSON.stringify(await reach.read("app/preset", "draft")), new RegExp(`"version":"${v}","trying":false,"name":"test"`));
+  assert.match(JSON.stringify(await reach.read("app/preset", "draft")), new RegExp(`"version":"${v}","name":"test"`));
 
-  // Try: Carl's window only; the box's preset is unchanged.
-  await act(async () => CR.tryChange("app/preset", v));
-  await waitFor("the draft tried", () => /^BA\{"size":2\}app\/nope is not a part this app has: skipped in overlay \(preset "test"\)fallback:preset$/.test(text(box)));
-  assert.ok(box.querySelector("[data-preset-skipped]"), "the skipped mount is a visible line");
-  assert.equal(document.documentElement.getAttribute("data-vc-preset"), `${v}:tried`, "the page says which preset it tries (the gate's Drive run waits for it)");
-  assert.equal(presetInEffect(vault).builtIn, true, "Try changes nothing on the box");
-  assert.match(JSON.stringify(await reach.read("app/preset", "preset")), /"tried":true.*"skipped":\["app\/nope is not a part/);
-
-  // Keep: the box writes the app.preset record (and the plugin.change record), the draft file goes.
-  const kept = await CR.keepChange("app/preset", v);
-  assert.equal(kept.ok, true, kept.text);
+  // The gate passes it: the box writes the app.preset record (and the plugin.change record), the draft file goes.
+  const kept = await supervisorRoute(vault, "POST", new URLSearchParams(), { plugin: "app/preset", change: "keep", version: v, by: "gate" });
+  assert.equal(kept.status, 200, JSON.stringify(kept.body));
   assert.equal(presetInEffect(vault).preset.name, "test");
   assert.equal(presetInEffect(vault).version, v);
   assert.equal(fs.existsSync(path.join(DIR, "preset.draft.json")), false);
   await act(async () => void (await refreshLiveCopies()));
   await act(async () => void (await loadSupervisor(true)));
-  await waitFor("kept from the records", () => /^BA\{"size":2\}app\/nope/.test(text(box)));
-  assert.deepEqual(CR.pendingChanges(), []);
-  assert.match(JSON.stringify(await reach.read("app/preset", "preset")), /"name":"test".*"builtIn":false,"by":"carl","tried":false/);
+  await waitFor("kept from the records", () => /^BA\{"size":2\}app\/nope is not a part this app has: skipped in overlay \(preset "test"\)fallback:preset$/.test(text(box)));
+  assert.ok(box.querySelector("[data-preset-skipped]"), "the skipped mount is a visible line");
+  assert.match(JSON.stringify(await reach.read("app/preset", "preset")), /"name":"test".*"builtIn":false,"by":"gate","tried":false/);
 
   // Switch back: the daily preset again (a record); again: "test".
   assert.equal(CR.canSwitchBack("app/preset"), true);
@@ -219,20 +204,12 @@ test("live: places mount the preset; a draft goes through Change ready (Try, Kee
   await act(async () => void (await loadSupervisor(true)));
   await waitFor("test again", () => /^BA/.test(text(box)));
 
-  // A draft that is not a preset discards itself when tried, saying why; Keep of it is refused by the box.
+  // A draft that is not a preset: its keep is refused by the box (the gate fails it first: src/gateChecks.ts).
   const badBody = '{"name":"bad","mounts":[{"place":"moon","plugin":"app/t-a"}]}';
   fs.writeFileSync(path.join(DIR, "preset.draft.json"), badBody);
-  await act(async () => void (await refreshLiveCopies()));
-  const bv = versionOf(badBody);
-  await stage(bv); // the gate refuses it (src/gateChecks.ts); Try's own check is the second line of defence
-  assert.equal(CR.pendingChanges()[0]?.version, bv);
-  await act(async () => CR.tryChange("app/preset", bv));
-  await waitFor("auto-discarded", () => CR.lastOutcome()?.text.startsWith("Discarded by itself: not a preset: mounts[0].place") === true);
-  await waitFor("the draft file removed", () => !fs.existsSync(path.join(DIR, "preset.draft.json")));
+  const refused = await supervisorRoute(vault, "POST", new URLSearchParams(), { plugin: "app/preset", change: "keep", version: versionOf(badBody), by: "gate" });
+  assert.notEqual(refused.status, 200);
+  assert.match(JSON.stringify(refused.body), /not a preset/);
   assert.match(text(box), /^BA/, "the kept preset still runs");
-  fs.writeFileSync(path.join(DIR, "preset.draft.json"), badBody.replace("bad", "bad2"));
-  const refused = await CR.keepChange("app/preset", versionOf(badBody.replace("bad", "bad2")));
-  assert.equal(refused.ok, false);
-  assert.match(refused.text, /not a preset/);
   await act(async () => r.unmount());
 });

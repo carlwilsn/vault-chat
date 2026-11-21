@@ -6,19 +6,18 @@
 //   {type: "setting", key, value, by}   one setting set (value null: back to its default)
 //
 // A change the agent makes on its own initiative (not Carl's direct "set X") is a draft first (reports/07 corrected
-// model point 4, "settings/config count as behavior"), through the same Change ready notice as a plugin's draft
-// (src/changeReady.ts):
+// model point 4, "settings/config count as behavior"), through the same gate as a plugin's draft (server/gate.ts):
 //
 //   {type: "setting.draft", values: {key: value …}, version, what, by, at}
-//       settings the agent proposes; the newest one waits for Carl (a draft written while another waits carries both).
+//       settings the agent proposes; the newest one waits for the gate (a draft written while another waits carries both).
 //   {type: "setting.change", change: "keep" | "discard" | "switch", version, from?, values?, was?, by, reason?, at}
-//       Carl's word on it, shaped like a plugin.change record (src/pluginDrafts.ts). A keep also writes a `setting`
+//       the word on it (the gate's keep or discard, a switch back), shaped like a plugin.change record (src/pluginDrafts.ts). A keep also writes a `setting`
 //       record per key (the settings themselves never live anywhere else) and names what it replaced (`was`, null:
 //       the default), so Switch back writes those back; another switch writes the kept ones again.
 //
-// Try is the laptop's alone: the draft's window settings (SettingDef.applies "window": the theme, the sidebar) shown
-// on Carl's windows only, nothing written; a setting the box applies (the model, the voice …) can't be tried, only
-// kept. Both kinds ride every feed with the settings.
+// The gate draws a draft's window settings (SettingDef.applies "window": the theme, the sidebar) in the laptop app's
+// hidden Drive copy before it lands; a setting the box applies (the model, the voice …) is checked by its values. Both
+// kinds ride every feed with the settings.
 //
 // Secrets (API keys, tokens) are never settings: they stay in the key store. Machine-local things (the laptop's
 // folder, the box it connects to) are not settings either. Shared by the box (server/settings.ts), the laptop
@@ -88,7 +87,7 @@ export const SETTINGS = {
     applies: "box",
     kind: "boolean",
     default: true,
-    description: "Whether the box builds the laptop app's core (its frontend) from each accepted main and offers it to the laptop as Change ready, with no installer (server/coreBundles.ts): Try swaps it into his windows, Keep makes it current, Switch back returns. Off: nothing is built, landed or offered; the installed app's own core runs.",
+    description: "Whether the box builds the laptop app's core (its frontend) from each accepted main and, once it passes the gate, makes it the laptop's current core, with no installer (server/coreBundles.ts): the laptop takes it at a quiet moment and falls back by itself if it does not start; a switch back returns. Off: nothing is built or landed; the installed app's own core runs.",
   },
   chatSidebar: {
     applies: "window",
@@ -115,7 +114,7 @@ export type SettingsState = {
 
 export const SETTING_DRAFT = "setting.draft";
 export const SETTING_CHANGE = "setting.change";
-/** The settings' id where drafts are named (Change ready, app/changes, the Plugins tool, POST /api/v2/supervisor).
+/** The settings' id where drafts are named (the gate, the Plugins tool, POST /api/v2/supervisor).
  *  Not app/settings: that is the Settings pane, a plugin with drafts of its own code. */
 export const SETTINGS_DRAFT_ID = "app/settings-values";
 /** What Carl calls them in the notice. */
@@ -209,9 +208,9 @@ export function describeValues(v: SettingValues): string {
   return SETTING_KEYS.filter((k) => k in v).map((k) => show(k, v[k])).join(", ");
 }
 
-/** Whether `v` has a setting Carl's windows apply (Try shows those there; the box's only Keep sets). */
+/** Whether `v` has a setting Carl's windows apply (the gate draws those in the app's hidden copy). */
 export const triable = (v: SettingValues): boolean => SETTING_KEYS.some((k) => k in v && SETTINGS[k].applies === "window");
-/** The settings of `v` Carl's windows apply (what Try shows). */
+/** The settings of `v` Carl's windows apply (what the gate's hidden copy shows). */
 export function windowValues(v: SettingValues): SettingValues {
   const out: SettingValues = {};
   for (const k of SETTING_KEYS) if (k in v && SETTINGS[k].applies === "window") out[k] = v[k];

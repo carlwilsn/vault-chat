@@ -151,7 +151,7 @@ function copiesOf(all: LiveCopies, folder: string): { draft?: string; live?: str
   return out;
 }
 
-/** Every app plugin's copies now (Change ready lists the drafts), and a way to follow them. */
+/** Every app plugin's copies now (the gate's drafts among them), and a way to follow them. */
 export function useAllLiveCopies(): LiveCopies {
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }

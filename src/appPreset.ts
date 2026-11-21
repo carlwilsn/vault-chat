@@ -8,11 +8,11 @@
 //       The newest valid record wins; preset null is the built-in one again. A record that is not a valid preset is
 //       passed over (the one before it, or the built-in, stays).
 //
-// A change to the preset goes through Change ready (src/pluginDrafts.ts, src/changeReady.ts), as a plugin's draft does:
-// the agent writes .vault-chat/app-plugins/preset.draft.json (a preset, plus an optional one-line `what`); Carl sees
-// "Change ready", Try runs it on his windows only, Keep has the box write the app.preset record (and a plugin.change
-// record for app/preset), Discard removes the draft, Switch back writes the preset the last Keep replaced. A draft that
-// is not a valid preset discards itself when tried.
+// A change to the preset goes through the one gate (src/pluginDrafts.ts, src/gateResult.ts), as a plugin's draft does:
+// the agent writes .vault-chat/app-plugins/preset.draft.json (a preset, plus an optional one-line `what`) and submits
+// it; passed, the gate's Keep has the box write the app.preset record (and a plugin.change record for app/preset),
+// Discard removes the draft, Switch back writes the preset the last Keep replaced. A draft that is not a valid preset
+// fails the gate.
 //
 // Each place of the app (src/PluginMount.tsx PlaceMount) mounts what the preset puts there; a place the preset leaves
 // empty shows its built-in fallback where it has one, or nothing. A plugin this app has no part for is skipped there
@@ -22,7 +22,7 @@
 import daily from "./presets/daily.json";
 
 export const APP_PRESET = "app.preset";
-/** The preset's id where plugins are named (Change ready, the offers, plugin.change records). */
+/** The preset's id where plugins are named (the gate, the offers, plugin.change records). */
 export const PRESET_PLUGIN_ID = "app/preset";
 /** The draft's file in the app plugins' folder (src/appPluginLive.ts APP_PLUGIN_LIVE_DIR). */
 export const PRESET_DRAFT_FILE = "preset.draft.json";

@@ -105,34 +105,9 @@ test("the box's core publishing turned off: back to the installed app's own core
   assert.deepEqual(t.calls.at(-1), { cmd: "core_use", args: { version: null } });
 });
 
-// ---------------------------------------------------------------- Change ready: Try, Back, a tried bundle that fails
+// ---------------------------------------------------------------- a switch back, and what is said after a swap
 
-test("while Carl tries a bundle (Change ready), following leaves it running: no swap to the kept core under him", async () => {
-  const t = deps({ status: status({ active: "77778888" }), offer: null });
-  t.d.tried = () => "77778888";
-  const r = await followCoreOnce(t.d, { swap: true, now: true });
-  assert.equal(r.did, "nothing");
-  assert.match((r.step as { why: string }).why, /trying 77778888/);
-  assert.ok(!t.cmds().includes("core_use"));
-});
-
-test("a tried bundle the loader fell back from is discarded by itself (with why), and the core in effect runs", async () => {
-  const ev = { from: "77778888", to: "built-in", reason: "did not say ready within 30 s", at_ms: 1 };
-  const t = deps({ status: status({ active: "built-in", events: [ev], bad: ["77778888"] }), offer: null });
-  let tried: string | null = "77778888";
-  const failed: [string, string][] = [];
-  t.d.tried = () => tried;
-  t.d.triedFailed = (v, why) => {
-    failed.push([v, why]);
-    tried = null;
-  };
-  const r = await followCoreOnce(t.d, { swap: true });
-  assert.deepEqual(failed, [["77778888", "the loader fell back from it: did not say ready within 30 s"]]);
-  assert.deepEqual(t.posts, [], "not a switch of the kept core: the tried one was never kept");
-  assert.equal(r.did, "nothing");
-});
-
-test("Back / Discard / Switch back (now): the core in effect is taken at once, busy or not, after the screen is kept", async () => {
+test("a switch back (now): the core in effect is taken at once, busy or not, after the screen is kept", async () => {
   const t = deps({ status: status({ active: "77778888" }), offer: null, quiet: false });
   const order: string[] = [];
   t.d.beforeSwap = async () => void order.push("kept the screen");
@@ -147,63 +122,29 @@ test("Back / Discard / Switch back (now): the core in effect is taken at once, b
   assert.equal((await followCoreOnce(later.d, { swap: true })).did, "waiting");
 });
 
-test("Try: the loader fetches and checks the bundle, the screen is kept, then it loads; one this laptop can't run is refused with why", async () => {
-  const { tryCore, candidateProblem } = await import("../../src/coreFollow.ts");
-  const c = { sha256: OFFER.sha256, commit: OFFER.commit, commitTime: 300, needs: OFFER.needs, boxApi: CORE_BOX_API };
-  const t = deps();
-  const order: string[] = [];
-  t.d.beforeSwap = async () => void order.push("kept the screen");
-  const native = t.d.native;
-  t.d.native = async (cmd, args) => (order.push(cmd), native(cmd, args));
-  await tryCore("abcd1234", c, t.d);
-  assert.deepEqual(order, ["core_status", "core_install", "kept the screen", "core_use"]);
-  assert.deepEqual(t.calls.find((x) => x.cmd === "core_install")!.args, { baseUrl: "https://box.example.ts.net", token: "t", version: "abcd1234", sha256: OFFER.sha256 });
-  assert.deepEqual(t.calls.at(-1), { cmd: "core_use", args: { version: "abcd1234" } });
-  const s = status();
-  assert.equal(candidateProblem("abcd1234", c, s), null);
-  assert.match(String(candidateProblem("abcd1234", { ...c, needs: { ...c.needs, commands: ["brand_new"] } }, s)), /newer installed app/);
-  assert.match(String(candidateProblem("abcd1234", { ...c, commitTime: 50 }, s)), /installed app's own core/);
-  assert.match(String(candidateProblem("abcd1234", c, { ...s, bad: ["abcd1234"] })), /failed here before/);
-  await assert.rejects(tryCore("abcd1234", c, deps({ status: null }).d), /no core loader/);
-  await assert.rejects(tryCore("abcd1234", { ...c, commitTime: 50 }, deps().d), /installed app's own core/);
-});
-
-test("after a Try's load the new page says plainly what runs: the new frontend, or why it couldn't switch (never silent)", async () => {
-  const { tryCore, swapOutcome, checkSwapOutcome, takeSwapExpect, expectSwap, EXPECT_KEY } = await import("../../src/coreFollow.ts");
+test("after a swap's load the new page says plainly what runs, or why it couldn't switch (never silent)", async () => {
+  const { swapOutcome, checkSwapOutcome, takeSwapExpect, expectSwap, EXPECT_KEY } = await import("../../src/coreFollow.ts");
   // The window's session storage (it survives the load): a plain one here.
   if (!(globalThis as { sessionStorage?: Storage }).sessionStorage) {
     const m = new Map<string, string>();
     (globalThis as { sessionStorage?: unknown }).sessionStorage = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, String(v)), removeItem: (k: string) => void m.delete(k) };
   }
-  const c = { sha256: OFFER.sha256, commit: OFFER.commit, commitTime: 300, needs: OFFER.needs, boxApi: CORE_BOX_API };
-  const t = deps();
-  const seen: unknown[] = [];
-  t.d.expect = (e) => void seen.push(e);
-  await tryCore("abcd1234", c, t.d, "Inline pages play their video and audio");
-  assert.deepEqual(seen, [{ to: "abcd1234", kind: "try", what: "Inline pages play their video and audio" }]);
-  const e = { to: "abcd1234", kind: "try" as const, what: "Inline pages play their video and audio", at: Date.now() };
-  assert.deepEqual(swapOutcome(e, status({ active: "abcd1234" })), { ok: true, text: "Now running the new frontend: Inline pages play their video and audio. Keep makes it stay; Back returns to your current version." });
+  const e = { to: "abcd1234", kind: "follow" as const, at: Date.now() };
+  assert.deepEqual(swapOutcome(e, status({ active: "abcd1234" })), { ok: true, text: "Now running frontend abcd1234." });
   const fell = swapOutcome(e, status({ bad: ["abcd1234"], events: [{ from: "abcd1234", to: "built-in", reason: "threw before it was ready: x is not a function", at_ms: 1 }] }));
-  assert.deepEqual(fell, { ok: false, text: "Couldn't switch: threw before it was ready: x is not a function. Still on your current version." });
+  assert.deepEqual(fell, { ok: false, text: "Couldn't switch: threw before it was ready: x is not a function. Still on the installed app's own frontend." });
   assert.equal(swapOutcome({ ...e, kind: "back", to: "built-in" }, status()).text, "Back on the installed app's own frontend.");
   // Kept in the window's session across the load, taken once; the check waits for this load to say ready.
-  expectSwap({ to: "abcd1234", kind: "try", what: "x" });
+  expectSwap({ to: "abcd1234", kind: "follow" });
   assert.ok(sessionStorage.getItem(EXPECT_KEY));
   let n = 0;
   const native = async <T,>(cmd: string) => (assert.equal(cmd, "core_status"), status({ active: "abcd1234", ready: ++n >= 3 }) as T);
-  assert.deepEqual(await checkSwapOutcome(native, { stepMs: 1 }), { ok: true, text: "Now running the new frontend: x. Keep makes it stay; Back returns to your current version." });
+  assert.deepEqual(await checkSwapOutcome(native, { stepMs: 1 }), { ok: true, text: "Now running frontend abcd1234." });
   assert.equal(n, 3);
   assert.equal(takeSwapExpect(), null, "said once");
   assert.equal(await checkSwapOutcome(native), null, "no swap: nothing said");
-  expectSwap({ to: "abcd1234", kind: "try" }, Date.now() - 10 * 60_000);
+  expectSwap({ to: "abcd1234", kind: "follow" }, Date.now() - 10 * 60_000);
   assert.equal(takeSwapExpect(), null, "an old one is not about this load");
-  // core_use refused: nothing is left expected.
-  const bad = deps();
-  bad.d.expect = (x) => expectSwap(x);
-  const nat = bad.d.native;
-  bad.d.native = async (cmd, args) => (cmd === "core_use" ? Promise.reject(new Error("abcd1234 is incomplete")) : nat(cmd, args));
-  await assert.rejects(tryCore("abcd1234", c, bad.d), /incomplete/);
-  assert.equal(sessionStorage.getItem(EXPECT_KEY), null);
 });
 
 test("the card's words: the titles of main's commits since the core this laptop runs", async () => {
@@ -223,7 +164,7 @@ test("the card's words: the titles of main's commits since the core this laptop 
   assert.equal(coreWhat([], "6".repeat(40)), "the app's frontend from main 666666666666");
 });
 
-test("Try only for what Carl can see: behind-the-scenes fixes get Keep only; a change's Look says where it shows", async () => {
+test("a core's words: what Carl can see and behind-the-scenes fixes; a change's Look says where it shows", async () => {
   const { bundlePath, parseLooks, coreCard } = await import("../../src/coreBundle.ts");
   assert.deepEqual(bundlePath("src/InlineHtmlFrame.tsx"), { frontend: true, visible: true });
   assert.deepEqual(bundlePath("src/coreFollow.ts"), { frontend: true, visible: false });
@@ -240,15 +181,5 @@ test("Try only for what Carl can see: behind-the-scenes fixes get Keep only; a c
   const quiet = coreCard([c("Faster chat sync: y", { frontend: true, visible: false }), c("Box voice: z", { frontend: false, visible: false })], "1".repeat(40));
   assert.deepEqual(quiet, { what: "behind-the-scenes fixes, nothing to look at", changes: ["Faster chat sync"], looks: [], triable: false });
   assert.equal(coreCard([c("Box voice: z", { frontend: false, visible: false })], "1".repeat(40)).triable, false);
-  assert.equal(coreCard(null, "1".repeat(40)).triable, true, "unknown (an older box): Try as before");
-  const { swapOutcome } = await import("../../src/coreFollow.ts");
-  const r = swapOutcome({ to: "abcd1234", kind: "try", what: "Model menu lists Fable", looks: [look], at: Date.now() }, status({ active: "abcd1234" }));
-  assert.equal(r.text, "Now running the new frontend: Model menu lists Fable. Look: the model menu lists Fable. Keep makes it stay; Back returns to your current version.");
-  assert.deepEqual(r.looks, [look]);
-});
-
-test("no trial mode glow: trying a change draws no aura or frame (the Try redesign: a line in the chat says it)", async () => {
-  const m = (await import("../../src/corePointer.ts")) as Record<string, unknown>;
-  assert.equal(m.trialAura, undefined);
-  assert.equal(m.clearTrialAura, undefined);
+  assert.equal(coreCard(null, "1".repeat(40)).triable, true, "unknown (an older box)");
 });

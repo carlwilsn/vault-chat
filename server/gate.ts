@@ -5,8 +5,9 @@
 //                  background job of the conversation (it copies the real data, runs the part's runner and lands the
 //                  verdict through this box); the settings draft is judged here, at once (settingsGate).
 //   settingsGate   the settings draft's runner and landing (server/settings.ts settingsDraftGate): a fail is a discard by
-//                  "gate", otherwise it waits for Carl (its "Try it?" line in Main). Also run before a settings draft is
-//                  offered (server/changesPending.ts offerRoute), so a bad one never reaches him.
+//                  "gate", otherwise a keep by "gate" (the settings are set). Run when the Settings tool drafts one.
+//   landCore       the newest core bundle the box built: judged once (coreGate) and, passed, kept by "gate" (the
+//                  laptop's loader follows the record at a quiet moment; a bundle that does not boot falls back).
 //   recordGate     the one result record: {type: "gate.result", ...GateResult}.
 //   gateResults    the one place results are read (GET /api/v2/gate, the Plugins tool's status).
 import { existsSync } from "node:fs";
@@ -20,9 +21,10 @@ import { startServiceJob, type JobEnv } from "./engine/jobs";
 import { masterDir } from "./master";
 import { killTree } from "./commands/proc";
 import { settingsDraftGate } from "./settings";
-import { setPluginChange } from "./supervisor";
+import { setPluginChange, supervisorOf } from "./supervisor";
+import { readSetting } from "./settings";
 import { migrationChange, migrationDraft, tryMigration } from "./migrations";
-import { coreStateDir, coreVault, judgeCore, storedCores } from "./coreBundles";
+import { coreCommits, coreRepo, coreStateDir, coreVault, judgeCore, newestUndecidedCore, storedCores } from "./coreBundles";
 import { askLaptop } from "./driveTool";
 import { controlDown } from "./deviceLink";
 import { checkSteps } from "../src/driveSteps";
@@ -76,7 +78,7 @@ type Render = (vault: string, version: string) => Promise<{ ok: string } | { fai
  * A settings draft rendered in the real laptop app's hidden, read-only Drive copy (src/driveOnLaptop.ts) before Carl
  * sees it: the copy as it is, then a fresh copy showing the draft (tries {app/settings-values: version}; the page says
  * so: html[data-vc-settings-try]). Errors only with the draft fail it; a laptop that is away, busy, or whose app does not
- * show the draft yet is a skip (its values were checked; Carl's Try still shows it on his windows only).
+ * show the draft yet is a skip (its values were checked).
  */
 const driveRender: Render = async (vault, version) => {
   const live = (await gateDriveRoute(vault, { steps: [{ wait: 2000 }], timeoutMs: 60_000 })).body as { unavailable?: string; steps?: { errors: string[] } | null; error?: string | null };
@@ -118,15 +120,15 @@ async function judgeInBox(vault: string, part: string, version: string | null): 
     const b = r.body as { error?: string; line?: string };
     const base = { version: d.version, what: d.what, runner: "migration-dry-run", data: `a copy of ${d.target ?? "its plugin"}'s real state` };
     if (r.status !== 200) return { ...base, verdict: "fail", reasons: [`the dry run failed: ${b.error ?? r.status}`] };
-    return { ...base, verdict: "borderline", reasons: [`the dry run passed: ${b.line ?? "the state reshaped"}; Carl keeps it himself`] };
+    return { ...base, verdict: "borderline", reasons: [`the dry run passed: ${b.line ?? "the state reshaped"}`] };
   }
   return { error: `${part}: not a gate the box runs itself` };
 }
 
 /**
  * A gate the box runs at once (settings, migrations): the draft (or `version`) judged; with `land`, a fail is discarded
- * by "gate" and a pass waits for Carl (its "Try it?" line in Main; neither is ever kept without him). A version the gate
- * already landed is not judged again (`again`: it is).
+ * by "gate" and a pass is kept by "gate" (the settings set, the migration run). A version the gate already landed is not
+ * judged again (`again`: it is).
  */
 export async function inBoxGate(vault: string, part: string, o: { asked?: boolean; land?: boolean; conv?: string | null; version?: string | null; again?: boolean } = {}): Promise<{ result: GateResult; fresh: boolean } | { error: string }> {
   const kind = partKind(part);
@@ -141,14 +143,17 @@ export async function inBoxGate(vault: string, part: string, o: { asked?: boolea
   const result: GateResult = { part, kind, version: j.version, verdict: j.verdict, decision: null, reasons: j.reasons, runner: j.runner, data: j.data, what: j.what, asked, ...(o.conv ? { conv: o.conv } : {}), at: Date.now() };
   if (o.land) {
     const d = gateDecision(kind, { verdict: j.verdict, reasons: j.reasons }, asked);
-    if (d.change === "discard") {
-      const body = { plugin: part, change: "discard", version: j.version, by: "gate", reason: d.reason };
-      const w = kind === "migration" ? await migrationChange(vault, body, "gate") : setPluginChange(vault, body, "gate");
-      if ("error" in w) result.reasons = [...result.reasons, `(the discard was refused: ${w.error})`];
+    const body = { plugin: part, change: d.change, version: j.version, by: "gate", reason: d.reason, ...(j.what ? { what: j.what } : {}), ...(o.conv ? { conv: o.conv } : {}) };
+    const w = kind === "migration" ? await migrationChange(vault, body, "gate") : setPluginChange(vault, body, "gate");
+    let decision: "keep" | "discard" | null = d.change;
+    if ("error" in w) {
+      result.reasons = [...result.reasons, `(the ${d.change} was refused: ${w.error})`];
+      // A keep that could not be written did not land: said as a gate that could not finish.
+      if (d.change === "keep") decision = null;
     }
-    result.decision = d.change;
+    result.decision = decision;
     recordGate(vault, result);
-    await gateOutcome(vault, { plugin: part, version: j.version, what: j.what, asked, conv: o.conv ?? null, decision: d.change, reasons: j.reasons }).catch(() => {});
+    await gateOutcome(vault, { plugin: part, version: j.version, what: j.what, asked, conv: o.conv ?? null, decision, reasons: result.reasons, runner: j.runner }).catch(() => {});
   }
   return { result, fresh: true };
 }
@@ -160,9 +165,8 @@ export const settingsGate = (vault: string, o: Parameters<typeof inBoxGate>[2] =
 
 /**
  * The core bundle's gate (server/coreBundles.ts judgeCore), on the box's stored bytes, once per version: run when a
- * built bundle would first be listed for the laptops (server/changesPending.ts) and on submit (`again`). A fail is a
- * discard by "gate" (the bundle never lands, Try or quietly); a pass lets it go on as before (applied quietly when
- * nothing on Carl's screen changes, else "Try it?"). The records are the core's vault's (one core for the box).
+ * built bundle is first seen (landCore) and on submit (`again`). A fail is a discard by "gate" (the bundle never lands);
+ * a pass is kept by "gate" (landCore). The records are the core's vault's (one core for the box).
  */
 export function coreGate(vault: string, stateDir: string, version: string, o: { again?: boolean; conv?: string | null } = {}): GateResult {
   if (!o.again) {
@@ -186,6 +190,23 @@ export function coreSubmit(version: string | null, conv: string | null = null): 
   const v = version ?? storedCores(dir)[0]?.version;
   if (!v) return { error: "no core bundle is stored" };
   return { result: coreGate(coreVault() ?? "", dir, v, { again: true, conv }) };
+}
+
+/**
+ * The newest core bundle the box built that nobody decided on (server/coreBundles.ts newestUndecidedCore): judged once
+ * and, passed, kept by "gate", so it becomes the laptop's current core (its loader takes it at a quiet moment and falls
+ * back by itself when it does not boot). Returns a line for the box's log, or null when nothing was to land.
+ */
+export function landCore(): string | null {
+  const dir = coreStateDir();
+  const vault = coreVault();
+  if (!dir || !vault) return null;
+  const c = newestUndecidedCore(dir, supervisorOf(vault).changes(CORE_PART_ID), readSetting("corePublish") === true, (commit) => coreCommits(coreRepo(), commit));
+  if (!c) return null;
+  const g = coreGate(vault, dir, c.version);
+  if (g.verdict === "fail") return `core ${c.version}: the gate failed it (${g.reasons.join("; ").slice(0, 300)})`;
+  const w = setPluginChange(vault, { plugin: CORE_PART_ID, change: "keep", version: c.version, by: "gate", reason: `the gate passed it: ${g.reasons.join("; ").slice(0, 260)}`, ...(c.what ? { what: c.what.slice(0, 160) } : {}) }, "gate");
+  return "error" in w ? `core ${c.version}: passed the gate but the keep was refused (${w.error})` : `core ${c.version}: passed the gate and is current now (${c.what.slice(0, 200)})`;
 }
 
 /** GET /api/v2/gate?part=&version= (the results, newest first); POST {part, asked?, land?, conv?}: a gate the box runs
@@ -268,7 +289,7 @@ export function submitGate(vault: string, c: { part: string; version: string; wh
   const args = [c.part, "--vault", vault, c.asked ? "--asked" : "--unasked", "--box", box, "--conv", ctx.convId];
   const end = (r: GateResult) => {
     recordGate(vault, r);
-    void gateOutcome(vault, { plugin: c.part, version: r.version || c.version, what: r.what || c.what, asked: c.asked, conv: ctx.convId, decision: r.decision, reasons: r.reasons }).catch(() => {});
+    void gateOutcome(vault, { plugin: c.part, version: r.version || c.version, what: r.what || c.what, asked: c.asked, conv: ctx.convId, decision: r.decision, reasons: r.reasons, runner: r.runner }).catch(() => {});
   };
   const couldNot = (why: string): GateResult => ({ part: c.part, kind, version: c.version, verdict: null, decision: null, reasons: [why], runner: RUNNER[kind], what: c.what, asked: c.asked, conv: ctx.convId, at: Date.now() });
   const r = startServiceJob(ctx.jobs, { name: "gate", command: `Gate of ${c.part} ${c.version} (${c.asked ? "asked for" : "not asked for"})`, conv: ctx.convId, byCarl: ctx.byCarl, timeout: "30m" }, (signal, log) =>
@@ -287,6 +308,6 @@ export function submitGate(vault: string, c: { part: string; version: string; wh
   if (!r.job) return { ok: false, text: r.text };
   return {
     ok: true,
-    text: `Gating ${c.part} draft ${c.version} on a copy of real data (job ${r.job.id}; JobStatus follows it). Nothing reaches Carl until it passes. ${c.asked ? "Passed: it applies and this chat gets \"Done: …\" with Undo; failed: one plain line here says it didn't apply and why." : "A clear pass applies it silently, a clear fail drops it; if something Carl sees changes, Main gets \"… — Try it?\"."}${elsewhereNote(vault, c.part) ? ` Not on his screen yet: it is a change of this chat's vault${elsewhereNote(vault, c.part)}. Say so to Carl (or, if he wants it on screen now, Show a file of this vault on the laptop).` : ""}`,
+    text: `Gating ${c.part} draft ${c.version} on a copy of real data (job ${r.job.id}; JobStatus follows it). Nothing reaches Carl until it passes. Passed: it applies live at once and this chat gets \"Done: …\" (what was checked) with Undo; failed: it is dropped${c.asked ? " and one plain line here says why" : ""}.${elsewhereNote(vault, c.part) ? ` Not on his screen yet: it is a change of this chat's vault${elsewhereNote(vault, c.part)}. Say so to Carl (or, if he wants it on screen now, Show a file of this vault on the laptop).` : ""}`,
   };
 }
