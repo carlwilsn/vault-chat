@@ -292,7 +292,8 @@ test("an unmounted plugin is a clear error through the tools; bad input is refus
   assert.equal(sent.length, n);
   resetPresence();
   r = await Read({});
-  assert.equal(r.ok, false);
+  // The devices' part says the laptop is offline; the box's own state (server/boxOffers.ts) is listed all the same.
   assert.match(r.text, /laptop isn't online/);
+  assert.match(r.text, /box:notes/);
   assert.equal(sent.length, n);
 });
