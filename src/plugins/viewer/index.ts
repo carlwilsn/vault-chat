@@ -172,11 +172,6 @@ const slashed = (p: string) => p.replace(/\\/g, "/");
 export function viewerOffers(): Offers {
   return {
     state: {
-      editing: {
-        description:
-          "What Carl's editors hold that the disk does not show yet: for each open file its caret (line, col, characters selected, when it moved) and whether it has typing not saved yet (the 300 ms autosave) or a save stopped on a conflict; otherUnsaved: files not open with typing not saved. Before you edit a file he has open, read this: if it is unsaved or his caret moved just now, wait for the save (PluginRead {plugin: \"app/viewer\", wait}) rather than writing over him.",
-        read: () => describeEditing(),
-      },
       open: {
         description:
           "The files open in the viewer: per pane (main, or left / right in a split) its path, type, the viewer drawing it (a viewer's id, \"editor\" = the source editor via Ctrl+E, \"fallback\" = plain text), mode (view | edit, null when the type has no edit mode), whether it is the active pane, where it is scrolled (ratio 0..1, page / totalPages for a PDF, line; lineApprox when read off the scroll position), its zoom when its viewer zooms (1 = fit) and the targets scrollTo takes for it.",
@@ -194,6 +189,11 @@ export function viewerOffers(): Offers {
       kept: {
         description: "The choices kept on the box (the same in every window, after a restart): disabled = viewer ids turned off, chosen = {type or .ext: viewer id}, options = {type: {edit}}.",
         read: () => viewerPrefs(),
+      },
+      editing: {
+        description:
+          "What Carl's editors hold that the disk does not show yet: for each open file its caret (line, col, characters selected, when it moved) and whether it has typing not saved yet (the 300 ms autosave) or a save stopped on a conflict; otherUnsaved: files not open with typing not saved. Before you edit a file he has open, read this: if it is unsaved or his caret moved just now, wait for the save (PluginRead {plugin: \"app/viewer\", wait}) rather than writing over him.",
+        read: () => describeEditing(),
       },
     },
     actions: {
