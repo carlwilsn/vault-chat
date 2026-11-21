@@ -23,7 +23,9 @@ afterAll(() => {
 describe("PluginRead / PluginAct", () => {
   it("are in the agent's tools; PluginRead is read-only, PluginAct is not; the old tools are all still there", () => {
     const names = agentToolSpecs().map((t) => t.name);
-    for (const n of ["PluginRead", "PluginAct", "Catalog", "Plugins", "Layout", "ListNotes", "CreateNote"]) expect(names).toContain(n);
+    for (const n of ["PluginRead", "PluginAct", "Catalog", "Plugins", "Layout"]) expect(names).toContain(n);
+    // Notes are box:notes now (server/boxOffers.ts): the six note tools are no longer listed.
+    for (const n of ["ListNotes", "CreateNote"]) expect(names).not.toContain(n);
     expect(agentToolSpecs().find((t) => t.name === "PluginRead")!.readOnly).toBe(true);
     expect(sideToolSpecs().some((t) => t.name === "PluginRead")).toBe(true);
     expect(sideToolSpecs().some((t) => t.name === "PluginAct")).toBe(false);

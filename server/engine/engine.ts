@@ -70,7 +70,7 @@ import { recordUITool, RECORD_DESCRIPTION, RECORD_SCHEMA } from "../recordUI";
 import { externalRecordUI } from "../mcp/recordUI";
 import { loadConfig } from "../config";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
-import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
+import { isNoteTool, noteTool } from "../notesTools";
 import { proposeEditSpec } from "./proposeEdit";
 import { PLUGIN_WRITE_TOOL, pluginWrite, pluginWriteSpec } from "../pluginWriteTool";
 import { PLUGIN_TOOL, pluginToolAsync, pluginToolSpecs } from "../supervisorTools";
@@ -666,7 +666,9 @@ export const ENGINE_TOOL_SPECS = [
 
 /** Every vault-chat tool the agent has (Carl's own vault tools are added per thread). */
 export function agentToolSpecs(): ToolSpec[] {
-  return [...ENGINE_TOOL_SPECS, pdfPagesSpec, ...noteToolSpecs, ...contextToolSpecs, ...pluginToolSpecs, ...pluginOfferToolSpecs, ...settingsToolSpecs] as ToolSpec[];
+  // The notes tools are no longer listed: box:notes (PluginRead / PluginAct, server/boxOffers.ts) is the one way. Their
+  // names still answer (below) for a session that listed them before, one release, then they go.
+  return [...ENGINE_TOOL_SPECS, pdfPagesSpec, ...contextToolSpecs, ...pluginToolSpecs, ...pluginOfferToolSpecs, ...settingsToolSpecs] as ToolSpec[];
 }
 /** The model Ctrl+K / Ctrl+L runs on unless Carl picks another: small interactions want speed. */
 export const INLINE_DEFAULT_MODEL = "claude-haiku-5-5";

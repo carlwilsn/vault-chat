@@ -93,16 +93,16 @@ describe("Claude Code as an outside MCP client of vault-chat", () => {
     expect(listed.out).toMatch(/vault_chat[\s\S]*Connected/);
 
     // One turn, as a model drives it: Claude Code defers MCP tools behind its
-    // ToolSearch, so the model loads CreateNote first, then calls it over MCP.
+    // ToolSearch, so the model loads PluginAct first, then adds the note to box:notes over MCP.
     const turn = await run(["-p", [
       "Leave Carl a note.",
-      'CALL ToolSearch {"query":"select:mcp__vault_chat__CreateNote","max_results":1}',
-      'CALL mcp__vault_chat__CreateNote {"text":"from an outside Claude Code"}',
-    ].join("\n"), "--allowedTools", "mcp__vault_chat__CreateNote", "--output-format", "json"], env, join(client, "work"));
+      'CALL ToolSearch {"query":"select:mcp__vault_chat__PluginAct","max_results":1}',
+      'CALL mcp__vault_chat__PluginAct {"plugin":"box:notes","action":"add","args":{"text":"from an outside Claude Code"}}',
+    ].join("\n"), "--allowedTools", "mcp__vault_chat__PluginAct", "--output-format", "json"], env, join(client, "work"));
     expect(turn.code, turn.out).toBe(0);
     // What the CLI told the model it can reach (as deferred tool names or tool definitions).
     const offered = JSON.stringify(model.calls[0] ?? {});
-    for (const name of ["Show", "Layout", "Screen", "Act", "PluginRead", "PluginAct", "CreateNote", "ListNotes", "Settings", "RecentActivity", "ListConversations"])
+    for (const name of ["Show", "Layout", "Screen", "Act", "PluginRead", "PluginAct", "Settings", "RecentActivity", "ListConversations"])
       expect(offered, name).toContain(`mcp__vault_chat__${name}`);
     // A tool that needs an owning vault-chat turn is not offered to an outside client.
     for (const name of ["AskUser", "StartJob", "ScheduleWake", "TodoWrite"]) expect(offered, name).not.toMatch(new RegExp(`mcp__vault_chat__${name}\\b`));

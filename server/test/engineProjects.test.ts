@@ -142,14 +142,23 @@ describe("notes: one thing, editable in place, on pi and on voice", () => {
   const file = () => join(rig.vault, ".vault-chat", "notes.jsonl");
   const notes = async () => (await import("../../src/notes")).readNotes(rig.vault);
 
-  it("pi has the notes tools and is told where notes live", async () => {
+  it("pi reaches notes as the box's state (box:notes), not six note tools, and is told where notes live", async () => {
     const s = await rig.start("add a note: buy chalk");
     const names = toolNames(rig.backend.threads.length - 1);
-    for (const t of ["ListNotes", "CreateNote", "UpdateNote", "ResolveNote", "ReopenNote", "DeleteNote"]) expect(names).toContain(t);
+    for (const t of ["PluginRead", "PluginAct"]) expect(names).toContain(t);
+    for (const t of ["ListNotes", "CreateNote", "UpdateNote", "ResolveNote", "ReopenNote", "DeleteNote"]) expect(names).not.toContain(t);
     expect(String(rig.backend.threads.at(-1).instructions)).toContain(".vault-chat/notes.jsonl");
+    expect(String(rig.backend.threads.at(-1).instructions)).toContain('PluginAct {plugin: "box:notes"');
+    const added = await rig.backend.call(s.tid, "PluginAct", { plugin: "box:notes", action: "add", args: { text: "buy chalk" } });
+    expect(added.ok).toBe(true);
+    const read = out(await rig.backend.call(s.tid, "PluginRead", { plugin: "box:notes" }));
+    expect(read).toContain("buy chalk");
+    const id = /"id": "([^"]+)"/.exec(read)![1]!;
+    expect((await rig.backend.call(s.tid, "PluginAct", { plugin: "box:notes", action: "delete", args: { id } })).ok).toBe(true);
     await settle(s);
   });
 
+  // The old note tool names still answer for one release (a session that listed them before), then they go.
   it("pi: create, list, update in place (no second note), resolve, reopen, delete — each read back from the file", async () => {
     const s = await rig.start("Make me a list note of what to bring.");
     let r = await rig.backend.call(s.tid, "CreateNote", { text: "Bring: chalk" });

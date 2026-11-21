@@ -331,10 +331,11 @@ describe("what each mode sends", () => {
       const o = backend.sides[backend.sides.length - 1];
       expect(o.fork).toMatch(/\.jsonl$/);
       expect(o.tools).toEqual(["read", "grep", "find", "ls"]);
-      // …and the agent's vault-chat tools: the read-only ones (PdfRead for a PDF), the notes tools for bigger asks, and
+      // …and the agent's vault-chat tools: the read-only ones (PdfRead for a PDF), PluginAct (box:notes) for bigger asks, and
       // ProposeEdit, which writes nothing (Carl accepts it); on Haiku 5.5 unless he picked another model.
       const names = o.hostTools.map((t: any) => t.name);
-      expect(names).toEqual(expect.arrayContaining(["PdfRead", "WebFetch", "ListNotes", "CreateNote", "ProposeEdit"]));
+      expect(names).toEqual(expect.arrayContaining(["PdfRead", "WebFetch", "PluginRead", "PluginAct", "ProposeEdit"]));
+      expect(names).not.toContain("CreateNote");
       expect(names).not.toContain("AskUser");
       expect(o.model).toBe("claude-haiku-5-5");
       return o.text as string;
