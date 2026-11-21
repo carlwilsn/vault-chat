@@ -65,15 +65,5 @@ describe("every new control on screen names the offer that reaches it", () => {
     const files = new Set(uiControlFiles(ROOT));
     expect(Object.keys(UNMAPPED_CONTROLS).filter((f) => !files.has(f))).toEqual([]);
   });
-
-  it("a control's data-offer names an action its part declares", () => {
-    const bad: string[] = [];
-    for (const c of all.filter((x) => x.offer)) {
-      const m = /^app\/([\w-]+)\.(\w+)$/.exec(c.offer!);
-      const dir = m ? join(ROOT, "src", "plugins", m[1]!) : "";
-      const src = m && existsSync(dir) ? (readdirSync(dir, { recursive: true } as never) as unknown[]).map(String).filter((f) => /\.tsx?$/.test(f)).map((f) => readFileSync(join(dir, f), "utf8")).join("\n") : "";
-      if (!m || !APP_PLUGINS.some((p) => p.id === `app/${m[1]}`) || !/\boffer\(/.test(src) || !new RegExp(`(^|[\\s{,])["']?${m[2]}["']?\\s*:\\s*\\{`, "m").test(src)) bad.push(`${c.file}: data-offer="${c.offer}"`);
-    }
-    expect(bad).toEqual([]);
-  });
+  // A control's data-offer is checked against the offers the parts really build: test/harness/offerParity.test.ts.
 });
