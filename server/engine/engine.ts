@@ -44,6 +44,7 @@ import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } f
 import { askText, CLOSED, getAsk, ledgerText, readLedger, readShipResult, upsertAsk, wakeBrief, workFile, type LedgerEntry, type LedgerPatch } from "./ledger";
 import { gitContains, waitKind, type WaitContext } from "./waiters";
 import { shipAuto, type ShipAutoDeps } from "./shipAuto";
+import { readPluginRecords } from "../pluginState";
 import { lastHostBuild } from "../hostBuild";
 import { storedCores, coreStateDir } from "../coreBundles";
 import { pdfPagesAnswer, pdfPagesSpec, pdfRead, webFetch, webFetchSpec } from "./extraTools";
@@ -355,7 +356,7 @@ export const ENGINE_TOOL_SPECS = [
     type: "function",
     name: "WaitFor",
     description:
-      "Let the box wait instead of you: never sleep, poll, loop or Monitor. Name ONE thing to wait for: ship (a ship request's name: ship-results/<name>.result), branch (any ship result for it), githubRun + repo (a GitHub Actions run), core (a commit: the box has built a core bundle containing it), laptop (a commit: Carl's laptop runs a core containing it), box (a commit: the box server runs it). Give the work-list ask (ask: its id, or Carl's words to make one) and a brief: what the next session does with the event. Then END YOUR TURN. When it holds (or after timeout, default 6h), the box starts a fresh short session with only the entry, the brief and the event.",
+      "Let the box wait instead of you: never sleep, poll, loop or Monitor. Name ONE thing to wait for: ship (a ship request's name: ship-results/<name>.result), branch (any ship result for it), githubRun + repo (a GitHub Actions run), core (a commit: the box has built a core bundle containing it), laptop (a commit: Carl's laptop runs a core containing it), box (a commit: the box server runs it), watch (a vault page: its next change of state or log; the durable form of PluginRead wait). Give the work-list ask (ask: its id, or Carl's words to make one) and a brief: what the next session does with the event. Then END YOUR TURN. When it holds (or after timeout, default 6h), the box starts a fresh short session with only the entry, the brief and the event.",
     inputSchema: {
       type: "object",
       properties: {
@@ -368,6 +369,7 @@ export const ENGINE_TOOL_SPECS = [
         core: { type: "string" },
         laptop: { type: "string" },
         box: { type: "string" },
+        watch: { type: "string", description: "A vault page (its vault path, as PluginRead names it): the next change of its state or log." },
         brief: { type: "string", description: "What the next session does with the event (it has no other context)." },
         timeout: { type: "string", description: "e.g. \"90m\", \"6h\" (default 6h, at most 48h)." },
       },
@@ -2522,7 +2524,11 @@ export class Engine {
     // the last one is gone, so a running session drops what no longer applies.
     const boxText = await boxAgentPrompt(this.d.vault, triesOf(conv)).catch(() => "");
     const box = { key: "box-plugins", text: boxText || (sent.get("box-plugins") ? "<box-plugins>(none now: what the box plugins said before no longer applies)</box-plugins>" : "") };
-    for (const x of [...turnSections(conv as any, { folder: this.folderOf(conv) }), files, ...(box.text ? [box] : [])]) {
+    // The asks Carl made in this chat, as the work list has them now: what finished, what needs him, what runs. Sent
+    // when it changes, so "did X land?" has an answer here without a turn being spent on telling it.
+    const asks = this.workOf(conv.id) ? [] : readLedger(this.workFile()).filter((e) => e.origin?.conv === conv.id && this.mine(e) && Date.now() - e.updatedAt < 2 * 86_400_000);
+    const work = { key: "work", text: asks.length ? `<work>Your asks from this chat in Carl's work list (the box runs them in fresh sessions; Ledger reads and changes them):\n${asks.map((e) => `- ${e.id} [${e.status}] ${e.words.slice(0, 120)}${e.last ? ` — ${e.last.slice(0, 200)}` : ""}${e.question ? ` — question: ${e.question.text.slice(0, 200)}` : ""}`).join("\n")}</work>` : sent.get("work") ? "<work>(no asks from this chat in the work list now)</work>" : "" };
+    for (const x of [...turnSections(conv as any, { folder: this.folderOf(conv) }), files, ...(box.text ? [box] : []), ...(work.text ? [work] : [])]) {
       if (ownMemory && x.key === "memory") continue;
       if (sent.get(x.key) === x.text) continue;
       sent.set(x.key, x.text);
@@ -3197,12 +3203,13 @@ export class Engine {
         }
         case "WaitFor": {
           const brief = String(a.brief ?? "").trim();
-          const given = (["ship", "branch", "githubRun", "core", "laptop", "box"] as const).filter((k) => String(a[k] ?? "").trim());
-          if (given.length !== 1) return text("Name exactly one thing to wait for: ship, branch, githubRun (with repo), core, laptop or box.");
-          const kind = given[0]!;
-          const v = String(a[kind]).trim();
+          const given = (["ship", "branch", "githubRun", "core", "laptop", "box", "watch"] as const).filter((k) => String(a[k] ?? "").trim());
+          if (given.length !== 1) return text("Name exactly one thing to wait for: ship, branch, githubRun (with repo), core, laptop, box or watch (a vault page).");
+          const given0 = given[0]!;
+          const kind = given0 === "watch" ? "page" : given0;
+          const v = String(a[given0]).trim();
           const args: Record<string, string> =
-            kind === "ship" ? { name: v.replace(/\.(req|result)$/, "") } : kind === "branch" ? { branch: v } : kind === "githubRun" ? { run: v, repo: String(a.repo ?? "").trim() } : { commit: v };
+            kind === "ship" ? { name: v.replace(/\.(req|result)$/, "") } : kind === "branch" ? { branch: v } : kind === "githubRun" ? { run: v, repo: String(a.repo ?? "").trim() } : kind === "page" ? { plugin: v, after: String(readPluginRecords(vault, v).seq) } : { commit: v };
           if (kind === "githubRun" && !/^[\w.-]+\/[\w.-]+$/.test(args.repo!)) return text("githubRun needs repo (owner/name).");
           if ((kind === "core" || kind === "laptop" || kind === "box") && !/^[0-9a-f]{7,40}$/i.test(v)) return text(`${kind} takes a commit (7-40 hex).`);
           if (!brief) return text("Give a brief: what the next session should do with the event (it starts with nothing else).");
@@ -3716,6 +3723,14 @@ export class Engine {
         return b ? { commit: b.core?.commit ?? (/^[0-9a-f]{7,40}$/.test(b.revision) ? b.revision : null), at: Date.parse(b.at) || 0 } : null;
       },
       boxRevision: () => BOX_SERVER_REV || null,
+      page: (plugin) => {
+        try {
+          const r = readPluginRecords(this.d.vault, plugin);
+          return { seq: r.seq, at: r.at, state: r.state, logs: r.logs.map((l) => l.record) };
+        } catch {
+          return null;
+        }
+      },
     };
     return { ...base, ...(this.d.waitContext ?? {}) };
   }

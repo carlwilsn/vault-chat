@@ -236,4 +236,32 @@ describe("the work list", () => {
     expect(readFileSync(join(results, "..", "ship-requests", "fl-1-a1.req"), "utf8")).toBe("agent/fl\nFlaky ship\n");
     expect(ask("flaky")).toMatchObject({ status: "waiting", ship: "fl-1-a1", autoShips: 1, wait: { kind: "ship", args: { name: "fl-1-a1" } } });
   });
+
+  it("a durable watch on a vault page: its next change wakes a fresh session, long after the turn", async () => {
+    const { setPluginState } = await import("../pluginState");
+    setPluginState(rig.vault, "quiz.html", JSON.stringify({ key: "q1", value: "a" }));
+    const s = await rig.start("Tell me when I answer the quiz.");
+    expect(out(await rig.backend.call(s.tid, "WaitFor", { ask: "Quiz answers", watch: "quiz.html", brief: "Read his answers and grade them." }))).toContain("The box waits");
+    await settle(s);
+    expect(ask("quiz-answers").wait).toMatchObject({ kind: "page", args: { plugin: "quiz.html" } });
+    const n = rig.backend.turns.length;
+    await rig.engine.tickLedger(Date.now() + 60_000);
+    expect(rig.backend.turns.length).toBe(n);
+    setPluginState(rig.vault, "quiz.html", JSON.stringify({ key: "q2", value: "c" }));
+    await rig.engine.tickLedger(Date.now() + 120_000);
+    const t = await nextTurn(n);
+    expect(textOf(t)).toContain("quiz.html changed");
+    expect(textOf(t)).toContain('"q2":"c"');
+  });
+
+  it("the chat that asked is told where its asks stand with its next turn (no turn spent on it)", async () => {
+    const s = await rig.start("Ship the thing.");
+    await rig.backend.call(s.tid, "Ledger", { action: "set", words: "Ship the thing", status: "open" });
+    await settle(s);
+    upsertAsk("ship-the-thing", { status: "done", last: "On your laptop." }, { file });
+    const n = rig.backend.turns.length;
+    await rig.start("Did the thing land?", { convId: s.convId });
+    const t = rig.backend.turns[n];
+    expect(String(t.context ?? "")).toContain("- ship-the-thing [done] Ship the thing — On your laptop.");
+  });
 });

@@ -21,6 +21,8 @@ export type WaitContext = {
   laptopCommit: () => { commit: string | null; at: number } | null;
   /** The revision the box server runs. */
   boxRevision: () => string | null;
+  /** A vault page's (or any plugin's) records as the box keeps them: its last change (seq), state and newest log lines. */
+  page: (plugin: string) => { seq: number; at: number; state: unknown; logs: unknown[] } | null;
 };
 
 export type WaitEvent = { id: string; text: string };
@@ -112,6 +114,20 @@ registerWaitKind("box", {
   check: (w, c) => {
     const rev = c.boxRevision();
     return rev && c.contains(w.args.commit!, rev) ? { id: `box:${rev}`, text: `The box server now runs ${short(rev)}, which contains ${short(w.args.commit!)}.` } : null;
+  },
+});
+
+// A durable watch (reports/21-design: "watch = the waiter"): a vault page's records changed after `after` (its seq
+// when the watch was made). PluginRead {wait} still answers quick in-turn checks; this one outlives the turn.
+registerWaitKind("page", {
+  args: [["plugin", true], ["after", true]],
+  every: 15_000,
+  check: (w, c) => {
+    const p = c.page(w.args.plugin!);
+    if (!p || p.seq <= Number(w.args.after)) return null;
+    const state = JSON.stringify(p.state ?? {}).slice(0, 1500);
+    const logs = p.logs.slice(-5).map((l) => JSON.stringify(l).slice(0, 300)).join("\n");
+    return { id: `page:${w.args.plugin}:${p.seq}`, text: `${w.args.plugin} changed (seq ${p.seq}, at ${new Date(p.at).toISOString()}).\nState: ${state}${logs ? `\nNewest log lines:\n${logs}` : ""}` };
   },
 });
 
