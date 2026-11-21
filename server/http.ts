@@ -699,6 +699,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     const out = await tryMigration(vault, q("plugin") ?? "", q("version") || null);
     return json(res, out.status, out.body);
   }
+  // Offer events from the app (src/offerHistory.ts) into the event log (server/offerLog.ts).
+  if (path === "/api/v2/offer-events" && method === "POST") {
+    const out = (await import("./offerLog")).offerEventsRoute(vault, await jsonBody(req));
+    return json(res, out.status, out.body);
+  }
   // The supervisor (server/supervisor.ts): the plugins' desired-state records, and Carl's word on one.
   if (path === "/api/v2/supervisor" && (method === "GET" || method === "POST")) {
     const out = await supervisorRoute(vault, method, url.searchParams, method === "POST" ? await jsonBody(req) : null);

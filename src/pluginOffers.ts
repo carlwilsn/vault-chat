@@ -64,6 +64,16 @@ function nextSeq(): number {
   return n;
 }
 
+const SINK_KEY = "__vcPluginOfferSink";
+type OfferSink = (plugin: { id: string; name: string }, rec: OfferEventRecord) => void;
+/** Where every offer event also goes (the box's event log, src/offerHistory.ts); null: nowhere. Returns the previous. */
+export function setOfferEventSink(fn: OfferSink | null): OfferSink | null {
+  const g = globalThis as Record<string, unknown>;
+  const prev = (g[SINK_KEY] as OfferSink | undefined) ?? null;
+  g[SINK_KEY] = fn;
+  return prev;
+}
+
 /** One registry per app (globalThis, so a module loaded twice shares it). */
 const REG_KEY = "__vcPluginOffers";
 const SUB_KEY = "__vcPluginOfferSubs";
@@ -132,6 +142,11 @@ export function declareOffers(id: string, name: string, offers: Offers, alive: (
       entry.events.push(rec);
       if (entry.events.length > MAX_EVENTS) entry.events.splice(0, entry.events.length - MAX_EVENTS);
       deliver(entry, rec);
+      try {
+        ((globalThis as Record<string, unknown>)[SINK_KEY] as OfferSink | undefined)?.({ id, name }, rec);
+      } catch {
+        /* the history is best effort; the plugin's emit never fails for it */
+      }
     },
   };
   return { undo, handle };

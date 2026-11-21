@@ -23,6 +23,8 @@ export type BoxOfferDeps = {
   stateDir?: string;
   /** The jobs and workers of the asking conversation, as JobList says them. */
   jobs?: () => string;
+  /** Every registered vault's path (box:history searches all their logs). */
+  vaults?: () => string[];
 };
 
 export const BOX_PREFIX = "box:";
@@ -115,6 +117,27 @@ export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
       actions: {},
     },
   ];
+  const logs = () => (d.vaults?.() ?? [d.vault]).concat(d.vault);
+  out.push({
+    id: "box:history",
+    name: "History",
+    state: {
+      recent: {
+        description: "the newest 30 things Carl did in the app's parts (offer events: opened a file, switched chat, …), kept in the event log",
+        read: async () => (await import("./offerLog")).searchOfferEvents(logs(), { limit: 30 }).map(line),
+      },
+    },
+    actions: {
+      search: {
+        description: "search that history, as far back as it goes: every word of query in the part, event or its details; plugin narrows to one part; days limits how far back",
+        args: obj({ query: str("words that must all appear"), plugin: str("a part, e.g. app/viewer"), days: { type: "number" }, limit: { type: "number" } }),
+        run: async (a) => {
+          const hits = (await import("./offerLog")).searchOfferEvents(logs(), { query: a.query as string, plugin: a.plugin as string, days: Number(a.days) || undefined, limit: Number(a.limit) || undefined });
+          return { ok: true, text: hits.length ? hits.map(line).join("\n") : "nothing matches" };
+        },
+      },
+    },
+  });
   if (d.jobs) out.push({ id: "box:jobs", name: "Jobs", state: { list: { description: "this conversation's background workers and shell jobs (JobStop / JobSteer act on them)", read: () => d.jobs!() } }, actions: {} });
   if (d.stateDir) {
     const dir = join(d.stateDir, "logs");
@@ -129,6 +152,11 @@ export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
 }
 
 const noArgs = obj({});
+
+/** One history record as a line Carl could read. */
+function line(r: { at: number; device: string; plugin: string; event: string; payload?: string }): string {
+  return `${new Date(r.at).toISOString().slice(0, 16).replace("T", " ")} ${r.device} ${r.plugin} ${r.event}${r.payload ? ` ${r.payload}` : ""}`;
+}
 
 export function describeBoxOffer(o: BoxOffer): OffersDescription {
   return {

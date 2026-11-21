@@ -42,6 +42,7 @@ import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, type Picture, t
 import { RETRY_TEXT, makeChatView, type ChatView } from "./convlog/view";
 import { subscribeTranslators } from "./convlog/translators";
 import { MAIN_ID, threadKindOf } from "./threads";
+import { startOfferHistory } from "./offerHistory";
 import { isDriveWindow } from "./windowKind";
 import { probeLaptopReleaseHealth } from "./laptopReleaseHealth";
 
@@ -332,6 +333,8 @@ class BoxChatSession {
   /** Says to the box whether Carl is looking at the laptop (server/pushGate.ts: the phone stays quiet while he is). */
   private beat: AttentionBeat | null = null;
   private unsubTranslators: (() => void) | null = null;
+  /** Offer events to the box's log (src/offerHistory.ts); never from the Drive window (its runs are not Carl's). */
+  private unsubHistory: (() => void) | null = null;
 
   constructor(
     public vault: string,
@@ -349,6 +352,7 @@ class BoxChatSession {
 
   start(): void {
     this.applyCache();
+    if (!isDriveWindow && !headless()) this.unsubHistory = startOfferHistory((events) => httpPost(this.link, "/api/v2/offer-events", { events, client: "laptop" }, []));
     let lastActive = useStore.getState().activeConversationId;
     this.unsub = useStore.subscribe((s) => {
       if (s.activeConversationId !== lastActive) {
@@ -379,6 +383,8 @@ class BoxChatSession {
     this.beat = null;
     this.unsub?.();
     this.unsubTranslators?.();
+    this.unsubHistory?.();
+    this.unsubHistory = null;
     if (this.cacheTimer) clearTimeout(this.cacheTimer);
     this.wake?.();
   }

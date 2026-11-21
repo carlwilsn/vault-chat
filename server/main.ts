@@ -110,6 +110,14 @@ async function main(): Promise<void> {
   (await import("./context/config")).configureContext({ vault: cfg.vault, conversationRoot: cfg.vault, vaults: () => vaultRefs().map(v => v.path) });
   // The clients' feed: every vault's conversations, whatever vault is open; Main is the main vault's.
   setFeedVaults(cfg.vault, () => vaultRefs().map((v) => v.path));
+  // A daily copy of every vault's event log and the engine's transcripts (server/dailyBackup.ts).
+  {
+    const { startDailyBackup } = await import("./dailyBackup");
+    startDailyBackup(cfg.stateDir, () => [
+      ...vaultRefs().map((v) => ({ label: `vault-${v.name}`, dir: join(v.path, ".vault-chat", "events") })),
+      { label: "claude-projects", dir: join(process.env.VC_CLAUDE_CONFIG_DIR || join(cfg.stateDir, "claude", "config"), "projects") },
+    ]);
+  }
   for (const v of vaultRefs()) convLog(v.path);
   // Box plugins (server/boxPlugins.ts): the vault's own server-side modules, loaded live by this server, the owner now.
   (await import("./boxPlugins")).startBoxPlugins(() => vaultRefs().map((v) => v.path));
