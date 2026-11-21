@@ -93,12 +93,12 @@ export const COVERAGE: Record<string, Coverage> = {
   "box/release-health": { screenOnly: "release health after a ship (LaptopBuild reads builds, not this)" },
 
   // ---------------------------------------------------------------- phone
-  "phone/src/App.tsx": { state: ["app/phone", "box:notes"], gap: "the drawer, the open file and its scroll" },
+  "phone/src/App.tsx": { state: ["box:notes"], gap: "the phone is notifications + notes only (phonelite): its notes are box:notes; its notifications list is not state yet" },
   "phone/src/main.tsx": { none: "the entry point" },
 };
 
-/** State ids that are not app plugins: the change lines, the preset, the phone app, vault pages' records, the box's own offers. */
-export const OTHER_STATE = ["app/changes", "app/preset", "app/phone", "page", "box:settings", "box:notes", "box:jobs", "box:links", "box:logs"];
+/** State ids that are not app plugins: the change lines, the preset, vault pages' records, the box's own offers. */
+export const OTHER_STATE = ["app/changes", "app/preset", "page", "box:settings", "box:notes", "box:jobs", "box:links", "box:logs"];
 
 /** The share of rows whose thing on screen is state (a row with a gap counts half), of the rows that draw something. */
 export function coveragePercent(rows: Record<string, Coverage> = COVERAGE, prefix = ""): number {
@@ -119,7 +119,7 @@ export function coveragePercent(rows: Record<string, Coverage> = COVERAGE, prefi
  * you annotate or remove controls; never raise one.
  */
 export const UNMAPPED_CONTROLS: Record<string, number> = {
- "src/ChangeLine.tsx": 6,
+ "src/ChangeLine.tsx": 1,
  "src/ChatFooter.tsx": 2,
  "src/ChatHeader.tsx": 2,
  "src/ChatModelPicker.tsx": 4,
@@ -144,7 +144,7 @@ export const UNMAPPED_CONTROLS: Record<string, number> = {
  "src/TexView.tsx": 1,
  "src/Titlebar.tsx": 4,
  "src/UnsupportedView.tsx": 2,
- "src/UpdateBanner.tsx": 4,
+ "src/UpdateBanner.tsx": 3,
  "src/UsagePopover.tsx": 1,
  "src/VaultPicker.tsx": 3,
  "src/VideoPlayer.tsx": 4,
@@ -162,7 +162,7 @@ export const UNMAPPED_CONTROLS: Record<string, number> = {
  "src/plugins/elevenlabs-voice/Panel.tsx": 10,
  "src/plugins/filetree/Tree.tsx": 24,
  "src/plugins/notes/NotesPanel.tsx": 19,
- "src/plugins/settings/Pane.tsx": 22,
+ "src/plugins/settings/Pane.tsx": 20,
  "src/plugins/titlebar/Bar.tsx": 15,
  "src/plugins/vaults/Picker.tsx": 13,
  "src/plugins/viewer/Pane.tsx": 11,
