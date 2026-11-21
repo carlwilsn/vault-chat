@@ -3607,7 +3607,12 @@ export class Engine {
       return;
     }
     if (w.cut) {
-      await this.run(w.conv, cutText(w.cut), "resume", { byCarl: !!w.byCarl, shown: w.reason, ownTurn: true }).catch((e) => this.log(`taking up cut work failed: ${e}`));
+      // The old way (VC_CUT_RESUME=chat): the long chat resumes each worker itself, re-reading its whole context.
+      if (process.env.VC_CUT_RESUME === "chat") {
+        await this.run(w.conv, cutText(w.cut), "resume", { byCarl: !!w.byCarl, shown: w.reason, ownTurn: true }).catch((e) => this.log(`taking up cut work failed: ${e}`));
+        return;
+      }
+      await this.takeUpCut(w.conv, w.cut).catch((e) => this.log(`taking up cut work failed: ${e}`));
       return;
     }
     if (w.retry) {
@@ -3755,6 +3760,50 @@ export class Engine {
     } finally {
       this.ledgerBusy = false;
     }
+  }
+
+  /**
+   * Background work a restart cut (reports/21-design): the chat is NOT woken to resume its workers (a cold
+   * re-read of a long context, then each worker's). Each cut worker that had not finished becomes an ask in the work list
+   * (or its open one) and gets a fresh short session with what it was asked and what its transcript shows; the
+   * chat gets one line, no model turn.
+   */
+  async takeUpCut(convId: string, cut: CutWork): Promise<string[]> {
+    const vault = this.d.vault;
+    const conv = await readConv(vault, convId);
+    const rows = conv?.threadId ? this.d.backend.workerReport?.(conv.threadId, { all: true }) ?? [] : [];
+    const started: string[] = [];
+    const done: string[] = [];
+    for (const wk of cut.workers) {
+      const row = rows.find((r) => r.id === wk.id);
+      if (row?.facts.endedClean) {
+        done.push(wk.title);
+        continue;
+      }
+      const have = readLedger(this.workFile()).find((e) => !CLOSED.includes(e.status) && (e.owner ?? "").includes(wk.id));
+      const r = have ? { entry: have } : upsertAsk(undefined, { words: wk.title, owner: `worker ${wk.id}`, origin: this.originOf(convId), ...(this.projectSlugOf({ id: convId, project: conv?.project }) ? { project: this.projectSlugOf({ id: convId, project: conv?.project })! } : {}) }, { file: this.workFile(), by: "box" });
+      if ("error" in r) continue;
+      const f = row?.facts;
+      const event = [
+        `The box restarted (an update) and cut the background worker "${wk.title}" (${wk.id}) that was doing this ask. Its process is gone; you take the work up fresh.`,
+        f?.task ? `What it was asked:\n${f.task}` : "",
+        f?.lastTool ? `Its last tool call: ${f.lastTool.name} ${f.lastTool.brief}` : "",
+        f?.files.length ? `Files it wrote: ${f.files.slice(-8).join(", ")}` : "",
+        f?.lastSaid ? `Its last words: ${f.lastSaid}` : "",
+        "Re-check reality first (its worktree's git status and log, the branch, ship-results, running processes); then finish what is left, never redo what is done.",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      started.push(await this.startWorkSession(r.entry, event, `cut:${wk.id}`));
+    }
+    const parts = [
+      started.length ? `${started.length} background worker${started.length > 1 ? "s" : ""} taken up by fresh work sessions (${titles(cut.workers.filter((x) => !done.includes(x.title)))})` : "",
+      done.length ? `${done.length} had already finished` : "",
+      cut.commands.length ? `${cut.commands.length} background command${cut.commands.length > 1 ? "s" : ""} ended (${titles(cut.commands)})` : "",
+    ].filter(Boolean);
+    if (parts.length) await this.notice(convId, `The box restarted (an update) while background work ran: ${parts.join("; ")}.`.slice(0, 500));
+    this.log(`cut work of ${convId}: ${started.length} fresh session(s) ${started.join(", ")}`);
+    return started;
   }
 
   /** A fresh conversation for one ask (work-<ask>-<n>, a chat of its project): the entry and the event are its whole input. */

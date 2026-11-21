@@ -239,6 +239,8 @@ export function externalPath(root: string, path: unknown, write: boolean, walls:
  * not a thing.
  */
 export function ruleOnToolUse(tool: string, input: Record<string, unknown>, walls: Walls): string | null {
+  const wait = waitLoopReason(tool, input);
+  if (wait) return wait;
   for (const t of touchesOf(tool, input)) {
     const why = guardToolCall(t.write ? "write" : "ls", { path: t.path }, {
       cwd: walls.cwd,
@@ -248,5 +250,23 @@ export function ruleOnToolUse(tool: string, input: Record<string, unknown>, wall
     });
     if (why) return why;
   }
+  return null;
+}
+
+/**
+ * Waiting is the box's (reports/19-stateless): a session that sleeps, loops or Monitors on a ship result or a
+ * CI run keeps a long context alive (and re-read) for nothing. Such a call is refused with the way to do it:
+ * WaitFor, then end the turn. Reading a result once (cat, ls, gh run view) still runs.
+ */
+const WAITED_ON = /ship-results|\bgh\s+(run|pr)\s+(watch|checks|view)\b|actions\/runs/;
+const LOOPS = /\b(sleep|until|while|watch|inotifywait)\b|\bgh\s+run\s+watch\b|--watch\b/;
+export const WAIT_LOOP_REASON =
+  "vault-chat: the box waits on ship results and CI runs, not your session. Call WaitFor {ask, ship | branch | githubRun + repo, brief} " +
+  "(the mcp__vault_chat__WaitFor tool; load it with ToolSearch if needed), then end your turn: a fresh session gets the ledger entry and the result when it lands. " +
+  "Reading a result once (cat, ls) is fine.";
+export function waitLoopReason(tool: string, input: Record<string, unknown>): string | null {
+  const text = tool === "Bash" || tool === "Monitor" ? [input.command, input.script].filter((x) => typeof x === "string").join("\n") : "";
+  if (!text || !WAITED_ON.test(text)) return null;
+  if (tool === "Monitor" || LOOPS.test(text)) return WAIT_LOOP_REASON;
   return null;
 }

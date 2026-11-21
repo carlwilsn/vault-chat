@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { cleanup, seedProject } from "./helpers";
 import { makeRig, until, type Rig } from "./longRig";
 import { getAsk, readLedger, upsertAsk } from "../engine/ledger";
+import { waitLoopReason } from "../engine/claude/filePolicy";
 
 let rig: Rig;
 let results: string;
@@ -203,5 +204,26 @@ describe("the work list", () => {
     expect(first).toBe("work-stall-1");
     expect(ask("stall")).toMatchObject({ status: "blocked", reaps: 2 });
     expect(rig.pings.some((p: any) => String(p.title).startsWith("Needs you: Stalls — stalled"))).toBe(true);
+  });
+
+  it("a restart: each cut worker gets a fresh session from the work list; the chat gets one line and no turn", async () => {
+    const s = await rig.start("Start the cut worker.");
+    await settle(s);
+    const before = rig.backend.turns.filter((x: any) => x.threadId === s.tid).length;
+    const n = rig.backend.turns.length;
+    const started = await rig.engine.takeUpCut(s.convId, { workers: [{ id: "w-9", title: "Fix the cut thing" }], commands: [{ id: "c1", title: "npm run dev" }] });
+    expect(started).toEqual(["work-fix-the-cut-thing-1"]);
+    expect(textOf(await nextTurn(n))).toContain('cut the background worker "Fix the cut thing" (w-9)');
+    expect(ask("fix-the-cut-thing")).toMatchObject({ owner: "work-fix-the-cut-thing-1", origin: { conv: s.convId }, handled: ["cut:w-9"] });
+    await until(async () => JSON.stringify(await rig.readConv(s.convId)).includes("1 background worker taken up by fresh work sessions"));
+    expect(rig.backend.turns.filter((x: any) => x.threadId === s.tid).length).toBe(before);
+  });
+
+  it("refuses waiting loops on ship results and CI, not a single read", () => {
+    expect(waitLoopReason("Bash", { command: "until [ -f ~/agent-work/vault-chat/ship-results/x.result ]; do sleep 30; done" })).toContain("WaitFor");
+    expect(waitLoopReason("Bash", { command: "gh run watch 123" })).toContain("WaitFor");
+    expect(waitLoopReason("Monitor", { command: "tail -f ship-results/x.log" })).toContain("WaitFor");
+    expect(waitLoopReason("Bash", { command: "cat ~/agent-work/vault-chat/ship-results/x.result" })).toBeNull();
+    expect(waitLoopReason("Bash", { command: "sleep 5 && npm test" })).toBeNull();
   });
 });

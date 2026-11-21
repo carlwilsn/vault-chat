@@ -27,6 +27,8 @@ export type TranscriptFacts = {
   lastSaid: string;
   /** Its last message is a finished reply: the model stopped (end_turn) with no tool call open. */
   endedClean: boolean;
+  /** What it was asked: its first message, clipped (a restart's fresh session starts from it). */
+  task: string;
 };
 
 /** What this process saw of the task: its notices, in order; null for a task it never saw start. */
@@ -42,7 +44,7 @@ function brief(name: string, input: any): string {
 
 /** Facts from a transcript's text. Never throws: a torn last line (the file is being written) is skipped. */
 export function transcriptFacts(raw: string, mtimeMs: number): TranscriptFacts {
-  const f: TranscriptFacts = { startedAt: 0, lastAt: 0, toolCalls: 0, lastTool: null, pending: null, files: [], lastSaid: "", endedClean: false };
+  const f: TranscriptFacts = { startedAt: 0, lastAt: 0, toolCalls: 0, lastTool: null, pending: null, files: [], lastSaid: "", endedClean: false, task: "" };
   const open = new Map<string, { name: string; at: number; brief: string }>();
   let last: "model" | "tool" | "other" = "other";
   for (const line of raw.split("\n")) {
@@ -74,6 +76,11 @@ export function transcriptFacts(raw: string, mtimeMs: number): TranscriptFacts {
       }
       last = !called && e.message?.stop_reason === "end_turn" ? "model" : "other";
     } else if (e?.type === "user") {
+      if (!f.task) {
+        const c = e?.message?.content;
+        const t = typeof c === "string" ? c : content.map((b: any) => (b?.type === "text" ? String(b.text ?? "") : "")).join("\n");
+        if (t.trim()) f.task = t.trim().slice(0, 2500);
+      }
       let answered = false;
       for (const b of content) if (b?.type === "tool_result") (answered = true), open.delete(String(b.tool_use_id ?? ""));
       last = answered ? "tool" : "other";
