@@ -30,7 +30,7 @@ export const COVERAGE: Record<string, Coverage> = {
   "src/plugins/settings": { state: ["app/settings", "box:settings"] },
   "src/plugins/titlebar": { state: ["app/titlebar"], gap: "the sync chip is read-only (no action on a conflict)" },
   "src/plugins/vaults": { state: ["app/vaults", "box:links"] },
-  "src/plugins/viewer": { state: ["app/viewer"], gap: "an editor's unsaved text and its caret" },
+  "src/plugins/viewer": { state: ["app/viewer"] },
   "src/plugins/voice": { state: ["app/voice"] },
 
   // ---------------------------------------------------------------- laptop: components (src/*.tsx)
@@ -45,7 +45,7 @@ export const COVERAGE: Record<string, Coverage> = {
   "src/ChatsPanel.tsx": { state: ["app/chats"] },
   "src/ChatWindow.tsx": { state: ["app/chat"] },
   "src/ClaudeCodeSignIn.tsx": { screenOnly: "the sign-in flow (it handles a credential, so it stays out of the state on purpose)" },
-  "src/CodeView.tsx": { state: ["app/viewer"], gap: "unsaved text, caret" },
+  "src/CodeView.tsx": { state: ["app/viewer"] },
   "src/ComposerPanel.tsx": { state: ["app/composer"] },
   "src/FileTree.tsx": { state: ["app/filetree"] },
   "src/FullscreenChat.tsx": { state: ["app/chat"] },
@@ -55,13 +55,13 @@ export const COVERAGE: Record<string, Coverage> = {
   "src/InlineHtmlFrame.tsx": { state: ["page"], gap: "drawn as a labelled box by Screen" },
   "src/InlineWebPage.tsx": { screenOnly: "a web page shown inline in the chat: no state, no picture" },
   "src/laptopReleaseHealth.tsx": { screenOnly: "the release health line (LaptopBuild reads the build, not this line)" },
-  "src/LiveEditor.tsx": { state: ["app/viewer"], gap: "unsaved text, caret" },
+  "src/LiveEditor.tsx": { state: ["app/viewer"] },
   "src/main.tsx": { none: "the entry point" },
-  "src/MarkdownArea.tsx": { state: ["app/viewer"], gap: "unsaved text, caret" },
+  "src/MarkdownArea.tsx": { state: ["app/viewer"] },
   "src/Markdown.tsx": { none: "renders markdown for the viewer and the chat rows" },
   "src/MarkdownView.tsx": { state: ["app/viewer"] },
   "src/MasterSection.tsx": { state: ["app/settings"] },
-  "src/MonacoEditor.tsx": { state: ["app/viewer"], gap: "unsaved text, caret" },
+  "src/MonacoEditor.tsx": { state: ["app/viewer"] },
   "src/NewProjectForm.tsx": { state: ["app/vaults"] },
   "src/NotebookView.tsx": { state: ["app/viewer"] },
   "src/NotePopup.tsx": { state: ["app/notes"] },
@@ -78,7 +78,7 @@ export const COVERAGE: Record<string, Coverage> = {
   "src/Titlebar.tsx": { state: ["app/titlebar"] },
   "src/ui.tsx": { none: "UI primitives" },
   "src/UnsupportedView.tsx": { state: ["app/viewer"] },
-  "src/UpdateBanner.tsx": { screenOnly: "the update banner and its Install & restart (LaptopBuild reads versions only)" },
+  "src/UpdateBanner.tsx": { state: ["app/titlebar"] },
   "src/UsagePopover.tsx": { screenOnly: "the plan usage popover (Cost reads spend, not this)" },
   "src/VaultPicker.tsx": { state: ["app/vaults"] },
   "src/VaultPluginHost.tsx": { state: ["page"] },
@@ -91,6 +91,9 @@ export const COVERAGE: Record<string, Coverage> = {
   // ---------------------------------------------------------------- the box: things Carl sees that no UI file owns
   "box/alerts": { screenOnly: "the in-app alerts list (Notify writes it; nothing reads it back as state yet)" },
   "box/release-health": { screenOnly: "release health after a ship (LaptopBuild reads builds, not this)" },
+  "box/queue": { state: ["box:queue"] },
+  "box/history": { state: ["box:history"] },
+  "box/notes-to-agent": { state: ["box:notes"] },
 
   // ---------------------------------------------------------------- phone
   "phone/src/App.tsx": { state: ["box:notes"], gap: "the phone is notifications + notes only (phonelite): its notes are box:notes; its notifications list is not state yet" },
@@ -98,7 +101,7 @@ export const COVERAGE: Record<string, Coverage> = {
 };
 
 /** State ids that are not app plugins: the change lines, the preset, vault pages' records, the box's own offers. */
-export const OTHER_STATE = ["app/changes", "app/preset", "page", "box:settings", "box:notes", "box:jobs", "box:links", "box:logs"];
+export const OTHER_STATE = ["app/changes", "app/preset", "page", "box:settings", "box:notes", "box:jobs", "box:links", "box:logs", "box:history", "box:queue"];
 
 /** The share of rows whose thing on screen is state (a row with a gap counts half), of the rows that draw something. */
 export function coveragePercent(rows: Record<string, Coverage> = COVERAGE, prefix = ""): number {
@@ -144,7 +147,6 @@ export const UNMAPPED_CONTROLS: Record<string, number> = {
  "src/TexView.tsx": 1,
  "src/Titlebar.tsx": 4,
  "src/UnsupportedView.tsx": 2,
- "src/UpdateBanner.tsx": 3,
  "src/UsagePopover.tsx": 1,
  "src/VaultPicker.tsx": 3,
  "src/VideoPlayer.tsx": 4,

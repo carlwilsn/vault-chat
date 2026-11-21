@@ -163,6 +163,7 @@ export function UpdateBanner() {
           )}
         </div>
         <button
+          data-offer="app/titlebar.dismissUpdate"
           onClick={dismiss}
           className="text-muted-foreground hover:text-foreground"
           title="Dismiss"
@@ -180,6 +181,7 @@ export function UpdateBanner() {
           )}
           <div className="flex gap-2">
             <Button
+              data-offer="app/titlebar.installUpdate"
               size="sm"
               onClick={install}
               className="bg-primary text-primary-foreground hover:bg-primary/90 flex-1"
@@ -187,7 +189,7 @@ export function UpdateBanner() {
               <RefreshCcw className="h-3 w-3 mr-1.5" />
               Install &amp; restart
             </Button>
-            <Button size="sm" variant="ghost" onClick={dismiss}>
+            <Button data-offer="app/titlebar.dismissUpdate" size="sm" variant="ghost" onClick={dismiss}>
               Later
             </Button>
           </div>
