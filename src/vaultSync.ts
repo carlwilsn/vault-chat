@@ -5,6 +5,7 @@ import { refreshOpenFiles } from "./liveReload";
 import { afterVaultReady, bootMark } from "./bootTiming";
 import { boxPullCycle, boxSyncCycle } from "./boxSync/cycle";
 import { shellHasGitBridge, tauriGit } from "./boxSync/git";
+import { vlog } from "./debugLog";
 
 // After a pull pulls in commits from another machine, the file tree
 // should reflect new/renamed/deleted files without a manual refresh. We
@@ -745,16 +746,30 @@ export async function pushEditorWrites(vault: string): Promise<void> {
  *  cycle of this launch to the shell's own, and says so in the app log; `localStorage["vc-box-sync"] = "native"`
  *  keeps the shell's own for good. */
 let tsCycleOff: string | null = null;
+// Which cycle runs is said once per launch in the box's app log ("app.boxSync", shipped by src/appShip.ts), and again when the bundle's hands
+// over: the evidence that decides when the shell's own (box_sync.rs) can go.
+let cycleSaid: string | null = null;
+function sayCycle(cycle: "bundle" | "shell", why: string, error?: string): void {
+  const key = `${cycle}:${why}`;
+  if (cycleSaid === key) return;
+  cycleSaid = key;
+  vlog("app.boxSync", { cycle, why, ...(error ? { error: error.slice(0, 300) } : {}) });
+}
 async function runBoxCycle(vault: string, pull: boolean): Promise<BoxSyncReport> {
   const native = () => invoke<BoxSyncReport>("vault_box_sync", { vault, pull });
   let forced = false;
   try { forced = localStorage.getItem("vc-box-sync") === "native"; } catch { /* no storage */ }
-  if (forced || tsCycleOff || !(await shellHasGitBridge())) return native();
+  if (forced) { sayCycle("shell", "forced"); return native(); }
+  if (tsCycleOff) return native();
+  if (!(await shellHasGitBridge())) { sayCycle("shell", "no git bridge"); return native(); }
   try {
-    return await (pull ? boxPullCycle(tauriGit, vault) : boxSyncCycle(tauriGit, vault));
+    const r = await (pull ? boxPullCycle(tauriGit, vault) : boxSyncCycle(tauriGit, vault));
+    sayCycle("bundle", "ran");
+    return r;
   } catch (e) {
     tsCycleOff = e instanceof Error ? e.message : String(e);
     console.error(`[box sync] the bundle's cycle failed (${tsCycleOff}); the shell's own runs from now on`);
+    sayCycle("shell", "bundle cycle threw", tsCycleOff);
     return native();
   }
 }
