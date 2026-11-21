@@ -3293,7 +3293,7 @@ export class Engine {
         }
         case "PluginRead":
         case "PluginAct": {
-          const r = await pluginOfferTool({ vault, emit: (ev) => this.d.broadcast?.(ev), vaults: this.d.vaultList }, name, a);
+          const r = await pluginOfferTool({ vault, emit: (ev) => this.d.broadcast?.(ev), vaults: this.d.vaultList, stateDir: loadConfig().stateDir, jobs: () => jobList(this.d.jobEnv, convId, true) }, name, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "Screen": {

@@ -35,8 +35,9 @@ describe("PluginRead / PluginAct", () => {
   it("with no laptop on the feed, both answer that the laptop is offline, and nothing is assumed", async () => {
     const { tid } = await rig.start("What do my plugins offer?");
     const list = await rig.backend.h.toolCall(tid, "PluginRead", {});
-    expect(list.ok).toBe(false);
+    // The devices' part says the laptop is offline; the box's own state is listed anyway (server/boxOffers.ts).
     expect(list.text).toMatch(/laptop isn't online/);
+    expect(list.text).toMatch(/box:settings[\s\S]*box:notes[\s\S]*box:links/);
     const act = await rig.backend.h.toolCall(tid, "PluginAct", { plugin: "notes", action: "add", args: { text: "x" } });
     expect(act.ok).toBe(false);
     expect(act.text).toMatch(/laptop isn't online/);
@@ -65,6 +66,52 @@ describe("PluginRead / PluginAct", () => {
       expect(sent).toEqual([]);
     } finally {
       rmSync(vault, { recursive: true, force: true });
+    }
+  });
+});
+
+// The box's own state as offers (server/boxOffers.ts): read, changed and watched with no device online, through the
+// same PluginRead / PluginAct as every app part. Before, settings, notes, jobs, links and logs were one-off tools or
+// Bash only, and nothing of them was "state" the agent could watch.
+describe("the box's own state, with no device online", () => {
+  it("box:notes: add through PluginAct, read back, watch sees the change; box:links says the laptop is down", async () => {
+    const { tid } = await rig.start("Note it");
+    const add = await rig.backend.h.toolCall(tid, "PluginAct", { plugin: "box:notes", action: "add", args: { text: "buy chalk" } });
+    expect(add.ok).toBe(true);
+    expect(add.text).toMatch(/state read back:[\s\S]*buy chalk/);
+    const read = await rig.backend.h.toolCall(tid, "PluginRead", { plugin: "box:notes" });
+    expect(read.text).toMatch(/box:notes, read on the box now:[\s\S]*buy chalk/);
+    const id = /"id": "([^"]+)"/.exec(read.text)![1]!;
+    const watching = rig.backend.h.toolCall(tid, "PluginRead", { plugin: "box:notes", wait: 5 });
+    await new Promise((r) => setTimeout(r, 300));
+    await rig.backend.h.toolCall(tid, "PluginAct", { plugin: "box:notes", action: "resolve", args: { id } });
+    const w = await watching;
+    expect(w.text).toMatch(/watched on the box: it changed within 5 s/);
+    expect(w.text).not.toMatch(/buy chalk/);
+    const links = await rig.backend.h.toolCall(tid, "PluginRead", { plugin: "box:links" });
+    expect(links.text).toMatch(/"laptop": \{[\s\S]*"control": "down"/);
+    const bad = await rig.backend.h.toolCall(tid, "PluginAct", { plugin: "box:notes", action: "add", args: {} });
+    expect(bad.ok).toBe(false);
+    expect(bad.text).toMatch(/needs text\. Nothing was run/);
+    const none = await rig.backend.h.toolCall(tid, "PluginRead", { plugin: "box:nope" });
+    expect(none.text).toMatch(/no box state "box:nope" \(the box offers: box:settings, box:notes, box:links/);
+  });
+
+  it("box:logs: the newest lines, with credentials cut out", async () => {
+    const { redact } = await import("../boxOffers");
+    expect(redact('{"err":"401 for sk-ant-abcdefghijklmnop","h":"Bearer abc.def.ghijkl","token":"zzzzzzzzzz"}')).toBe('{"err":"401 for [secret]","h":"Bearer [secret]","token":"[secret]"}');
+    const { readBoxOffer } = await import("../boxOffers");
+    const dir = mkdtempSync(join(tmpdir(), "vc-boxlogs-"));
+    try {
+      mkdirSync(join(dir, "logs"));
+      writeFileSync(join(dir, "logs", "app.jsonl"), Array.from({ length: 30 }, (_, i) => JSON.stringify({ i, key: i === 29 ? "api_key=supersecretvalue" : "" })).join("\n") + "\n");
+      const r = await readBoxOffer({ vault: rig.vault, stateDir: dir }, "box:logs", "app");
+      const lines = (r.state as any).app as string[];
+      expect(lines).toHaveLength(15);
+      expect(lines[14]).toContain("[secret]");
+      expect(lines.join("\n")).not.toContain("supersecretvalue");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

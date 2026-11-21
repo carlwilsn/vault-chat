@@ -23,6 +23,7 @@ import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { waitAck } from "./show";
 import { controlDown, controlLive, noteAnswer } from "./deviceLink";
+import { actBoxOffer, boxOffers, describeBoxOffer, isBoxWord, readBoxOffer, watchBoxOffer, type BoxOfferDeps } from "./boxOffers";
 import { awaitPluginRecords, pagesWithRecords, readPluginRecords, type PluginActivity } from "./pluginState";
 import { vaultFor, type NamedVault } from "./vaultRefs";
 import { parseLiveNeeds } from "../src/liveBridge";
@@ -40,7 +41,7 @@ export const pluginOfferToolSpecs = [
     readOnly: true,
     description:
       "Reach any plugin running in Carl's app (the Notes panel, his vault plugins, in-process pages): each declares what it offers: state you can read, actions you can run (with their args), events it emits. " +
-      "No plugin: lists every live plugin with its offers (use it first to learn a plugin's actions and args), and the vault pages whose state the box keeps. plugin (its id, e.g. app/notes, or its name): reads its state (all of it, or the one `state` named) and its recent events, from the screen now. " +
+      "No plugin: lists every live plugin with its offers (use it first to learn a plugin's actions and args), the vault pages whose state the box keeps, and the box's own state (box:settings, box:notes, box:jobs, box:links: each device's link and open vault, box:logs), which the box answers with no device online. plugin (its id, e.g. app/notes, or its name): reads its state (all of it, or the one `state` named) and its recent events, from the screen now. " +
       "A vault .html page that uses vc.state / vc.log (plugin: its vault path, file name or title; vault: another registered vault's name, or an absolute path) is read from the box even when it is closed: its saved state, last change and recent log records; after (the seq it showed) + wait (seconds, at most 25) waits for its next change, to follow what Carl does in it. " +
       "Any other plugin too: wait (seconds, at most 25) holds the answer until it emits its next event (after: the seq a watch showed; left out: from now), then gives its state and the new events, so you follow what Carl does instead of reading again and again. " +
       "app/context holds what Carl has selected, hovers and is focused in now. Use it to see a plugin's state or before PluginAct. Plugins run in the laptop app (the phone app hosts none). Only plugins mounted there now are reachable; a plugin that is off or not open says so. What no plugin offers, Act does in his real laptop window.",
@@ -88,6 +89,9 @@ export type PluginOfferDeps = {
   ackMs?: number;
   /** The registered vaults (name, path): a page in another vault. */
   vaults?: () => NamedVault[];
+  /** The box's own state as offers (server/boxOffers.ts): its state dir, and the asking chat's jobs. */
+  stateDir?: string;
+  jobs?: () => string;
 };
 
 const argLine = (schema: Record<string, unknown>): string => {
@@ -212,10 +216,36 @@ function pageRecordsText(vault: string, vaultName: string | null, id: string, r:
 
 export async function pluginOfferTool(d: PluginOfferDeps, name: string, a: Record<string, unknown>): Promise<{ ok: boolean; text: string }> {
   const plugin = typeof a.plugin === "string" ? a.plugin.trim() : "";
+  const boxDeps: BoxOfferDeps = { vault: d.vault, stateDir: d.stateDir, jobs: d.jobs };
+  // The box's own state (box:settings, box:notes, box:jobs, box:links, box:logs): answered here, with or without a device.
+  if (plugin && isBoxWord(plugin)) {
+    const only = typeof a.state === "string" && a.state.trim() ? a.state.trim() : undefined;
+    if (name === PLUGIN_READ) {
+      const wait = Number(a.wait);
+      const w = Number.isFinite(wait) && wait > 0 ? Math.min(wait, 25) : 0;
+      const r = w ? await watchBoxOffer(boxDeps, plugin, w * 1000, only) : await readBoxOffer(boxDeps, plugin, only);
+      if (!r.ok) return { ok: false, text: `Error: ${r.error}.` };
+      const how = w ? ((r as { changed?: boolean }).changed ? `watched on the box: it changed within ${w} s` : `watched on the box: nothing changed within ${w} s`) : "read on the box now";
+      return { ok: true, text: [`${r.id}, ${how}:`, `state: ${json(r.state)}`].join("\n") };
+    }
+    if (name === PLUGIN_ACT) {
+      const action = typeof a.action === "string" ? a.action.trim() : "";
+      if (!action) return { ok: false, text: "PluginAct needs plugin and action (PluginRead lists what each plugin offers)." };
+      const args = a.args && typeof a.args === "object" && !Array.isArray(a.args) ? (a.args as Record<string, unknown>) : {};
+      const r = await actBoxOffer(boxDeps, plugin, action, args);
+      return { ok: r.ok, text: [`${plugin} ${action}: ${r.ok ? "done" : "Error"}: ${r.text}`, ...(r.state ? [`state read back: ${json(r.state)}`] : [])].join("\n") };
+    }
+  }
   if (name === PLUGIN_READ) {
     const to = hostsFor(d, a.device, !plugin);
     if ("error" in to) return { ok: false, text: to.error };
-    if (!plugin) return listAll(d, to.hosts, a.vault);
+    if (!plugin && a.device !== undefined && a.device !== null && a.device !== "") return listAll(d, to.hosts, a.vault);
+    if (!plugin) {
+      const box = boxOffers(boxDeps).map(describeBoxOffer);
+      const boxBlock = [`${box.length} part(s) of the box's own state, answered by the box with or without a device (PluginRead {plugin: "box:…", wait?} reads or watches; PluginAct runs an action):`, ...box.map(offersText)].join("\n");
+      const devices = await listAll(d, to.hosts, a.vault);
+      return { ok: true, text: `${devices.text}\n\n${boxBlock}` };
+    }
     // A vault page (its state kept on the box): in this vault, another named one, or the one an absolute path is inside.
     const tv = isAppWord(plugin) ? null : vaultFor(d.vault, d.vaults?.(), a.vault, plugin);
     if (tv && "error" in tv) return { ok: false, text: `Error: ${tv.error}. Nothing was read.` };
