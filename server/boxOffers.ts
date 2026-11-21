@@ -138,6 +138,20 @@ export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
       },
     },
   });
+  if (d.stateDir) {
+    const sd = d.stateDir;
+    out.push({
+      id: "box:queue",
+      name: "Queue",
+      state: {
+        pending: { description: "device actions kept while the device is away (PluginAct whenBack), run when its app is back", read: async () => (await import("./deviceQueue")).queueState(sd).pending },
+        done: { description: "the last ones run, expired or cancelled, with what happened", read: async () => (await import("./deviceQueue")).queueState(sd).done.slice(-10) },
+      },
+      actions: {
+        cancel: { description: "drop a kept action before it runs", args: obj({ id: str("its id (q-…)") }, ["id"]), run: async (a) => (await import("./deviceQueue")).cancelQueued(sd, String(a.id)) },
+      },
+    });
+  }
   if (d.jobs) out.push({ id: "box:jobs", name: "Jobs", state: { list: { description: "this conversation's background workers and shell jobs (JobStop / JobSteer act on them)", read: () => d.jobs!() } }, actions: {} });
   if (d.stateDir) {
     const dir = join(d.stateDir, "logs");

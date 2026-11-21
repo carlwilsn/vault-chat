@@ -110,6 +110,19 @@ async function main(): Promise<void> {
   (await import("./context/config")).configureContext({ vault: cfg.vault, conversationRoot: cfg.vault, vaults: () => vaultRefs().map(v => v.path) });
   // The clients' feed: every vault's conversations, whatever vault is open; Main is the main vault's.
   setFeedVaults(cfg.vault, () => vaultRefs().map((v) => v.path));
+  // Device actions kept while the device was away run when it is back (server/deviceQueue.ts).
+  {
+    const { startDeviceQueue } = await import("./deviceQueue");
+    const { pluginOfferTool } = await import("./pluginOffersTool");
+    const { signal } = await import("./convlog/log");
+    startDeviceQueue({
+      stateDir: cfg.stateDir,
+      run: (q) => pluginOfferTool({ vault: q.vault, emit: (ev) => void signal(q.vault, ev), stateDir: cfg.stateDir }, "PluginAct", { plugin: q.plugin, action: q.action, args: q.args, device: q.device }),
+      say: async (q, line) => {
+        if (q.conv) await (await import("./engine/convs")).writeNotes(q.vault, q.conv, [{ kind: "notice", text: line, level: "info" }]);
+      },
+    });
+  }
   // A daily copy of every vault's event log and the engine's transcripts (server/dailyBackup.ts).
   {
     const { startDailyBackup } = await import("./dailyBackup");

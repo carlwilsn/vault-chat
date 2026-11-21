@@ -37,6 +37,12 @@ type Link = {
 };
 
 const links = new Map<LinkClient, Link>();
+const upFns = new Set<(c: LinkClient) => void>();
+/** Hear a device's link come up (its first poll after being down, server/deviceQueue.ts runs what waited). */
+export function onLinkUp(fn: (c: LinkClient) => void): () => void {
+  upFns.add(fn);
+  return () => void upFns.delete(fn);
+}
 let bootAt = Date.now();
 
 const asClient = (c: string | null | undefined): LinkClient | null => (CLIENTS.includes(c as LinkClient) ? (c as LinkClient) : null);
@@ -55,7 +61,16 @@ export function linkOpened(vault: string, client: string | null | undefined, now
   const c = asClient(client);
   if (!c) return () => {};
   const l = linkOf(c);
-  if (!isUp(l, now)) l.upSince = now;
+  if (!isUp(l, now)) {
+    l.upSince = now;
+    for (const f of [...upFns]) queueMicrotask(() => {
+      try {
+        f(c);
+      } catch {
+        /* a listener's own error */
+      }
+    });
+  }
   l.open++;
   l.last = now;
   l.vault = vault;

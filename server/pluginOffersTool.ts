@@ -71,6 +71,7 @@ export const pluginOfferToolSpecs = [
         action: { type: "string", description: "One of the actions it offers." },
         args: { type: "object", description: "The action's args, as its schema says." },
         device: { type: "string", enum: ["laptop"], description: "The host: the laptop app (the only one; the phone app hosts no plugins)." },
+        whenBack: { type: "boolean", description: "The laptop is away: keep the action and run it when its app is back (within a day); the chat gets a line then. box:queue lists and cancels these." },
       },
       required: ["plugin", "action"],
       additionalProperties: false,
@@ -92,6 +93,8 @@ export type PluginOfferDeps = {
   /** The box's own state as offers (server/boxOffers.ts): its state dir, and the asking chat's jobs. */
   stateDir?: string;
   jobs?: () => string;
+  /** The asking conversation (a queued action's line goes there). */
+  conv?: string;
 };
 
 const argLine = (schema: Record<string, unknown>): string => {
@@ -298,6 +301,12 @@ export async function pluginOfferTool(d: PluginOfferDeps, name: string, a: Recor
     const to = hostsFor(d, a.device, false);
     if ("error" in to) return { ok: false, text: to.error };
     const host = to.hosts[0]!;
+    // Away, and asked to wait for it: kept as desired state, run when the device is back (server/deviceQueue.ts).
+    if (a.whenBack === true && controlDown(host) && d.stateDir) {
+      const { queueAct } = await import("./deviceQueue");
+      const q = queueAct(d.stateDir, { device: host, vault: d.vault, conv: d.conv ?? null, plugin, action, args: (a.args as Record<string, unknown>) ?? {} });
+      return { ok: true, text: `The ${HOST_NAME[host]} is away, so ${plugin} ${action} is kept (${q.id}) and runs when its app is back (within a day); this chat gets a line then. Nothing has happened on screen yet: say so. box:queue lists it; PluginAct {plugin: "box:queue", action: "cancel", args: {id: "${q.id}"}} drops it.` };
+    }
     // A vault page by its path, file name or title: asked for by its id (its vault path), as the host registered it.
     const pageId = isAppWord(plugin) ? null : pageNamed(d.vault, plugin);
     const r = await ask(d, host, { op: "act", plugin: pageId ?? plugin, action, args: a.args ?? {} });
