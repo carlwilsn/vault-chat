@@ -41,8 +41,9 @@ import { workerWorktree } from "../workerWorktree";
 import { MAIN_ID, projectOfThread, projectThreadId, threadKindOf } from "../../src/threads";
 import { searchHistory } from "./history";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
-import { askText, CLOSED, getAsk, ledgerText, readLedger, upsertAsk, wakeBrief, workFile, type LedgerEntry, type LedgerPatch } from "./ledger";
+import { askText, CLOSED, getAsk, ledgerText, readLedger, readShipResult, upsertAsk, wakeBrief, workFile, type LedgerEntry, type LedgerPatch } from "./ledger";
 import { gitContains, waitKind, type WaitContext } from "./waiters";
+import { shipAuto, type ShipAutoDeps } from "./shipAuto";
 import { lastHostBuild } from "../hostBuild";
 import { storedCores, coreStateDir } from "../coreBundles";
 import { pdfPagesAnswer, pdfPagesSpec, pdfRead, webFetch, webFetchSpec } from "./extraTools";
@@ -120,6 +121,8 @@ export type EngineDeps = {
   workFile?: string;
   /** What the waiter reads (tests replace parts of it). */
   waitContext?: Partial<WaitContext>;
+  /** The box's own handling of failed ship results (tests replace git and the paths). */
+  shipAuto?: Partial<ShipAutoDeps>;
   /** A work session's own checkout of a git project (tests replace it). */
   workTree?: typeof workerWorktree;
   /** The engine of the vault at this path (the owner of a chat this vault's log does not hold). */
@@ -3740,6 +3743,7 @@ export class Engine {
           }
           if (!k) ev = { id: `unknown:${w.kind}:${w.since}`, text: `The box does not know how to wait on "${w.kind}". Decide another way to go on.` };
           if (!ev && now >= w.until) ev = { id: `timeout:${w.until}`, text: `Timed out: ${w.kind} ${Object.values(w.args).join(" ")} did not happen by ${new Date(w.until).toISOString()}. Check it yourself once, then decide (wait again, or set the ask blocked).` };
+          if (ev && ev.id.startsWith("ship:") && this.shipByItself(e, w, ev)) continue;
           if (ev) await this.startWorkSession(e, ev.text, ev.id);
           continue;
         }
@@ -3804,6 +3808,22 @@ export class Engine {
     if (parts.length) await this.notice(convId, `The box restarted (an update) while background work ran: ${parts.join("; ")}.`.slice(0, 500));
     this.log(`cut work of ${convId}: ${started.length} fresh session(s) ${started.join(", ")}`);
     return started;
+  }
+
+  /** A failed ship result the box deals with alone (a flake, a moved main): resubmitted, the wait moved on, no model woken. */
+  private shipByItself(e: LedgerEntry, w: NonNullable<LedgerEntry["wait"]>, ev: { id: string; text: string }): boolean {
+    const name = ev.id.split(":")[1]!.replace(/\.result$/, "");
+    const results = this.shipResultsDir();
+    const body = readShipResult(results, name)?.body ?? "";
+    const r = shipAuto(
+      { name, body, title: e.words, tries: e.autoShips ?? 0, results },
+      { requests: join(dirname(results), "ship-requests"), repo: coreRepo(), scratch: join(dirname(this.workFile()), "scratch"), ...(this.d.shipAuto ?? {}) },
+    );
+    if (!r.done) return false;
+    const now = Date.now();
+    upsertAsk(e.id, { wait: { ...w, kind: "ship", args: { name: r.name }, since: now, until: now + 6 * 3_600_000 }, ship: r.name, autoShips: (e.autoShips ?? 0) + 1, handled: [...(e.handled ?? []), ev.id], last: r.what }, { file: this.workFile(), by: "box" });
+    this.log(`work: ${e.id}: ${r.what}`);
+    return true;
   }
 
   /** A fresh conversation for one ask (work-<ask>-<n>, a chat of its project): the entry and the event are its whole input. */

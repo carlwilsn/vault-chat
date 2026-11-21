@@ -50,6 +50,8 @@ export type LedgerEntry = {
   lease?: { conv: string; until: number };
   /** How many times the box has had to restart a stalled ask. */
   reaps?: number;
+  /** How many failed ship results the box dealt with by itself (resubmitted a flake, rebased onto a moved main). */
+  autoShips?: number;
   sessions?: string[];
   /** Events already taken up, by id: each is handled once. */
   handled?: string[];

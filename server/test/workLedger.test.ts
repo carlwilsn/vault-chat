@@ -226,4 +226,14 @@ describe("the work list", () => {
     expect(waitLoopReason("Bash", { command: "cat ~/agent-work/vault-chat/ship-results/x.result" })).toBeNull();
     expect(waitLoopReason("Bash", { command: "sleep 5 && npm test" })).toBeNull();
   });
+
+  it("a flaky ship result is resubmitted by the box: no session, the wait moves to the new request", async () => {
+    upsertAsk("flaky", { words: "Flaky ship", origin: { vault: rig.vault, conv: "main" }, wait: { kind: "ship", args: { name: "fl-1" }, since: Date.now() - 1000, until: Date.now() + 3600_000, brief: "b" } }, { file });
+    writeFileSync(join(results, "fl-1.result"), "exit=1\nbranch=agent/fl\nnpm ci: ETIMEDOUT\n");
+    const n = rig.backend.turns.length;
+    await rig.engine.tickLedger();
+    expect(rig.backend.turns.length).toBe(n);
+    expect(readFileSync(join(results, "..", "ship-requests", "fl-1-a1.req"), "utf8")).toBe("agent/fl\nFlaky ship\n");
+    expect(ask("flaky")).toMatchObject({ status: "waiting", ship: "fl-1-a1", autoShips: 1, wait: { kind: "ship", args: { name: "fl-1-a1" } } });
+  });
 });
