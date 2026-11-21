@@ -102,7 +102,8 @@ test("the app mounts the Notes panel only through the plugin host; the old direc
   assert.match(app, /import \* as notesPlugin from "\.\/plugins\/notes";/);
   // Nothing else in the app reaches into the plugin's view.
   for (const f of fs.readdirSync(path.join(root, "src"))) {
-    if (!/\.tsx?$/.test(f) || f === "shortcuts.ts") continue; // the shortcut table names the file that handles Esc
+    // The shortcut table names the file that handles Esc; the parity map names every UI file by path.
+    if (!/\.tsx?$/.test(f) || f === "shortcuts.ts" || f === "agencyCoverage.ts") continue;
     assert.doesNotMatch(src(`src/${f}`), /plugins\/notes\/NotesPanel/, f);
   }
   // Its titlebar button follows the supervisor.
