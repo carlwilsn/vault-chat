@@ -11,6 +11,7 @@
 // fullscreen, focused), the open vault and file, the panels and the bar's status as state; the panel toggles, Settings,
 // pop out the chat, the tree's refresh, Hidden files, the terminal, a plugin item's click, minimize
 // and maximize / restore as actions (no close: closing the window is Carl's); what it did as events.
+import { onUpdateChanged, updateActions, updateNow } from "../../updateState";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -62,6 +63,10 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
   };
   return {
     state: {
+      update: {
+        description: "The update banner (src/UpdateBanner.tsx): state idle | available (version, notes) | downloading (downloaded, total) | installing | checked or error (message).",
+        read: () => updateNow(),
+      },
       items: {
         description: "The items vault plugins put in the title bar (api.host.titlebar.item): key, id, by (the plugin), side, label, title, clickable, drawn.",
         read: () => titlebarItems().map(shownItem),
@@ -189,6 +194,29 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
           return { clicked: it.key };
         },
       },
+      checkUpdates: {
+        description: "Check for an app update now (as Settings' Check for updates); read `update` after, or watch updateChanged.",
+        run: async () => {
+          updateActions()?.check();
+          return { update: updateNow() };
+        },
+      },
+      installUpdate: {
+        description: "Install the update the banner offers and restart the app (its Install & restart). It closes and reopens Carl's window: only when he asks for it now.",
+        run: async () => {
+          const a = updateActions();
+          if (!a || updateNow().state !== "available") throw new Error(`no update is offered now (update: ${JSON.stringify(updateNow())})`);
+          await a.install();
+          return { update: updateNow() };
+        },
+      },
+      dismissUpdate: {
+        description: "Dismiss the update banner (the update stays offered at the next check).",
+        run: async () => {
+          updateActions()?.dismiss();
+          return { update: updateNow() };
+        },
+      },
       minimize: {
         description: "Minimize the app window (the – button). Only when Carl asks.",
         run: async () => {
@@ -205,6 +233,7 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
       },
     },
     events: {
+      updateChanged: { description: "The update banner changed: its new state (available, downloading, installing, checked, error, idle)." },
       itemAdded: { description: "A plugin put an item in the bar: key, by, side." },
       itemRemoved: { description: "An item left the bar (its plugin stopped or removed it): key, by." },
       itemClicked: { description: "The agent clicked a plugin's item: key, by." },
@@ -221,6 +250,7 @@ export function mount(el: HTMLElement, api: PluginApi): () => void {
   api.effect(subscribeBoxSync((s) => void (sync = s)));
   const offers = api.offer(titlebarOffers(api, () => sync));
   api.effect(onBarEvent((name, data) => offers.emit(name, data)));
+  api.effect(onUpdateChanged((u) => offers.emit("updateChanged", u)));
   // Items coming and going, as events.
   let known = new Map(titlebarItems().map((i) => [i.key, i] as const));
   api.effect(

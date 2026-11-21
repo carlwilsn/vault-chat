@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { publishUpdate } from "./updateState";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Sparkles, X, RefreshCcw } from "lucide-react";
@@ -42,6 +43,7 @@ function boxIsIdle(): boolean {
 
 export function UpdateBanner() {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  const installRef = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
     if (isDev) return;
@@ -101,12 +103,25 @@ export function UpdateBanner() {
     };
   }, []);
 
+  // The banner as state the agent reads and acts on (src/updateState.ts → app/titlebar's `update`).
+  publishUpdate(
+    phase.kind === "available"
+      ? { state: "available", version: phase.update.version, ...(phase.update.body ? { notes: String(phase.update.body).slice(0, 400) } : {}) }
+      : phase.kind === "downloading"
+        ? { state: "downloading", downloaded: phase.downloaded, total: phase.total }
+        : phase.kind === "error" || phase.kind === "checked"
+          ? { state: phase.kind, message: phase.message }
+          : { state: phase.kind },
+    { install: () => installRef.current?.(), dismiss: () => setPhase({ kind: "idle" }), check: () => checkForUpdatesNow() },
+  );
+
   if (phase.kind === "idle" || phase.kind === "error") return null;
 
   const dismiss = () => setPhase({ kind: "idle" });
 
   const install = async () => {
     if (phase.kind !== "available") return;
+    installRef.current = null;
     const update = phase.update;
     setPhase({ kind: "downloading", downloaded: 0, total: null });
     try {
@@ -129,6 +144,7 @@ export function UpdateBanner() {
       setPhase({ kind: "error", message: String(e) });
     }
   };
+  installRef.current = install;
 
   return (
     <div className="fixed bottom-4 right-4 w-80 z-50 rounded-lg border border-border bg-card shadow-xl overflow-hidden">
