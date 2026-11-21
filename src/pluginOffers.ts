@@ -44,12 +44,22 @@ export type OffersDescription = {
   actions: { name: string; description: string; args: JsonSchema }[];
   events: { name: string; description: string }[];
 };
-export type OfferEventRecord = { event: string; at: number; payload?: unknown };
+/** `seq`: this app's event counter (every plugin's events share it), for watch's `after`. */
+export type OfferEventRecord = { event: string; at: number; seq?: number; payload?: unknown };
 
 type Entry = { id: string; name: string; offers: Offers; events: OfferEventRecord[]; alive: () => boolean };
 /** What a subscriber is handed: which plugin emitted, the event, when, its payload. */
 export type PluginEvent = { plugin: { id: string; name: string }; event: string; at: number; payload?: unknown };
 type Sub = { word: string; event: string; fn: (e: PluginEvent) => void; alive: () => boolean };
+
+const SEQ_KEY = "__vcPluginOfferSeq";
+/** The next event number (one counter per app, on globalThis as the registry is). */
+function nextSeq(): number {
+  const g = globalThis as Record<string, unknown>;
+  const n = (typeof g[SEQ_KEY] === "number" ? (g[SEQ_KEY] as number) : 0) + 1;
+  g[SEQ_KEY] = n;
+  return n;
+}
 
 /** One registry per app (globalThis, so a module loaded twice shares it). */
 const REG_KEY = "__vcPluginOffers";
@@ -114,7 +124,7 @@ export function declareOffers(id: string, name: string, offers: Offers, alive: (
     emit(event, payload) {
       if (!alive() || !(reg.get(id) ?? []).includes(entry)) return;
       if (!offers.events || !Object.prototype.hasOwnProperty.call(offers.events, event)) return;
-      const rec: OfferEventRecord = { event: String(event), at: Date.now(), ...(payload === undefined ? {} : { payload: plain(payload) }) };
+      const rec: OfferEventRecord = { event: String(event), at: Date.now(), seq: nextSeq(), ...(payload === undefined ? {} : { payload: plain(payload) }) };
       entry.events.push(rec);
       if (entry.events.length > MAX_EVENTS) entry.events.splice(0, entry.events.length - MAX_EVENTS);
       deliver(entry, rec);
@@ -323,6 +333,36 @@ export async function readOffers(word: string, selector?: string, ms = OFFER_TIM
   return { ok: errors.length === 0, plugin: { id: e.id, name: e.name }, state, events: [...e.events], ...(errors.length ? { error: errors.join("; ") } : {}) };
 }
 
+/** The longest a watch holds its answer (the box asks with a little less than its own ack wait). */
+export const WATCH_MAX_MS = 25_000;
+
+/**
+ * Watch one plugin: answer (its state and its events after `after`) as soon as it emits an event numbered above
+ * `after`, or when `waitMs` passes with nothing new (`timedOut`). `after` left out: only events from now on count.
+ * The agent follows what Carl does in a plugin this way instead of reading it over and over (Native agency: watch).
+ */
+export async function watchOffers(word: string, after: number | undefined, waitMs: number, selector?: string): Promise<OfferAnswer & { timedOut?: boolean; seq?: number }> {
+  const e = find(word);
+  if (!e) return { ok: false, error: notMounted(word) };
+  const from = typeof after === "number" && Number.isFinite(after) ? after : ((globalThis as Record<string, unknown>)[SEQ_KEY] as number | undefined) ?? 0;
+  const newer = () => e.events.filter((r) => (r.seq ?? 0) > from);
+  let timedOut = false;
+  if (!newer().length) {
+    timedOut = await new Promise<boolean>((resolve) => {
+      let off = () => {};
+      const t = setTimeout(() => (off(), resolve(true)), Math.max(0, Math.min(waitMs, WATCH_MAX_MS)));
+      off = subscribeOffers(e.id, "*", () => {
+        clearTimeout(t);
+        off();
+        resolve(false);
+      });
+    });
+  }
+  const r = await readOffers(e.id, selector);
+  const evs = newer();
+  return { ...r, events: evs, timedOut, seq: Math.max(from, ...evs.map((x) => x.seq ?? 0)) };
+}
+
 /** Run one plugin action with its args, then read its state back. */
 export async function actOffers(word: string, action: string, args: Record<string, unknown> | undefined, ms = OFFER_TIMEOUT_MS): Promise<OfferAnswer> {
   const e = find(word);
@@ -381,7 +421,7 @@ export function pluginReach(alive: () => boolean, track: (off: () => void) => ()
 
 // ---------------------------------------------------------------- the host's half of the box's signal
 
-export type PluginSignal = { type: "plugin"; id: string; to?: string; op?: unknown; plugin?: unknown; state?: unknown; action?: unknown; args?: unknown };
+export type PluginSignal = { type: "plugin"; id: string; to?: string; op?: unknown; plugin?: unknown; state?: unknown; action?: unknown; args?: unknown; after?: unknown; wait?: unknown };
 export type PluginAck = { ok: boolean; landed?: string; error?: string; data?: { answer: string } };
 
 /** Fit an answer into the ack (a long one is cut, and says so). */
@@ -399,8 +439,9 @@ export async function answerPluginSignal(sig: PluginSignal): Promise<PluginAck> 
     const op = String(sig.op ?? "");
     if (op === "list") a = { ok: true, plugins: listOffers(), pages: mountedPages() };
     else if (op === "read") a = await readOffers(String(sig.plugin ?? ""), typeof sig.state === "string" && sig.state ? sig.state : undefined);
+    else if (op === "watch") a = await watchOffers(String(sig.plugin ?? ""), sig.after === null || sig.after === undefined || !Number.isFinite(Number(sig.after)) ? undefined : Number(sig.after), Number(sig.wait) || 0, typeof sig.state === "string" && sig.state ? sig.state : undefined);
     else if (op === "act") a = await actOffers(String(sig.plugin ?? ""), String(sig.action ?? ""), sig.args && typeof sig.args === "object" ? (sig.args as Record<string, unknown>) : {});
-    else a = { ok: false, error: `unknown plugin op "${op}" (list, read, act)` };
+    else a = { ok: false, error: `unknown plugin op "${op}" (list, read, watch, act)` };
   } catch (e) {
     a = { ok: false, error: `the host could not answer: ${errText(e)}` };
   }

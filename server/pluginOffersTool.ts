@@ -44,6 +44,7 @@ export const pluginOfferToolSpecs = [
       "Reach any plugin running in Carl's app (the Notes panel, his vault plugins, in-process pages): each declares what it offers: state you can read, actions you can run (with their args), events it emits. " +
       "No plugin: lists every live plugin with its offers (use it first to learn a plugin's actions and args), and the vault pages whose state the box keeps. plugin (its id, e.g. app/notes, or its name): reads its state (all of it, or the one `state` named) and its recent events, from the screen now. " +
       "A vault .html page that uses vc.state / vc.log (plugin: its vault path, file name or title; vault: another registered vault's name, or an absolute path) is read from the box even when it is closed: its saved state, last change and recent log records; after (the seq it showed) + wait (seconds, at most 25) waits for its next change, to follow what Carl does in it. " +
+      "Any other plugin too: wait (seconds, at most 25) holds the answer until it emits its next event (after: the seq a watch showed; left out: from now), then gives its state and the new events, so you follow what Carl does instead of reading again and again. " +
       "app/context holds what Carl has selected, hovers and is focused in now. Use it to see a plugin's state or before PluginAct. Plugins run on the laptop app and on the phone app (device: \"laptop\" or \"phone\"; left out: a list covers every device online, a read goes to the laptop, else the phone). Only plugins mounted there now are reachable; a plugin that is off or not open says so. What no plugin offers, Act does in his real laptop window.",
     inputSchema: {
       type: "object",
@@ -52,8 +53,8 @@ export const pluginOfferToolSpecs = [
         state: { type: "string", description: "One state name to read (default: all of it)." },
         device: { type: "string", enum: ["laptop", "phone"], description: "Which host: the laptop app or the phone app (default: every device online for a list; the laptop, else the phone, for a read)." },
         vault: { type: "string", description: "A vault page in another registered vault: that vault's name (default: this conversation's vault)." },
-        after: { type: "number", description: "A vault page: the seq its last read showed; with wait, answer once it has something newer." },
-        wait: { type: "number", description: "A vault page: wait up to this many seconds (at most 25) for its next state change or log record." },
+        after: { type: "number", description: "The seq the last read or watch showed (a vault page's record seq, or a plugin's event seq); with wait, answer once it has something newer." },
+        wait: { type: "number", description: "Wait up to this many seconds (at most 25) for its next change: a vault page's next state change or log record, any other plugin's next event." },
       },
       additionalProperties: false,
     },
@@ -129,12 +130,12 @@ function hostsFor(d: PluginOfferDeps, device: unknown, all: boolean): { hosts: H
   return { hosts: all ? live : [live[0]!] };
 }
 
-async function ask(d: PluginOfferDeps, host: Host, body: Record<string, unknown>): Promise<Asked> {
+async function ask(d: PluginOfferDeps, host: Host, body: Record<string, unknown>, extraMs = 0): Promise<Asked> {
   const down = controlDown(host);
   if (down) return { ok: false, text: `${down} Its plugins are mounted there, so none can be read or run now. Say so; don't guess.` };
   const where = HOST_NAME[host];
   const id = `plugin-${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
-  const ms = d.ackMs ?? 20_000;
+  const ms = (d.ackMs ?? 20_000) + extraMs;
   const got = waitAck(id, ms);
   d.emit({ type: "plugin", id, to: host, ...body });
   const ack = await got;
@@ -236,6 +237,20 @@ export async function pluginOfferTool(d: PluginOfferDeps, name: string, a: Recor
     }
     if (pageId && tv && !online) {
       return { ok: true, text: pageRecordsText(tv.vault, tv.name, pageId, readPluginRecords(tv.vault, pageId), `the ${HOST_NAME[host]} is not online, so whether it is open there is unknown and its live offers can't be read`) };
+    }
+    // Watch an app plugin: the device holds its answer until the plugin's next event (src/pluginOffers.ts watchOffers).
+    if (!pageId && Number.isFinite(wait) && wait > 0) {
+      const secs = Math.min(wait, 25);
+      const after = Number.isFinite(Number(a.after)) && a.after !== undefined && a.after !== null ? Math.trunc(Number(a.after)) : null;
+      const w = await ask(d, host, { op: "watch", plugin, after, wait: secs * 1000, ...(typeof a.state === "string" && a.state.trim() ? { state: a.state.trim() } : {}) }, secs * 1000);
+      if (!w.ok) return w;
+      const x = w.answer as OfferAnswer & { timedOut?: boolean; seq?: number };
+      if (!x.plugin) return { ok: false, text: `Error (${HOST_NAME[host]}): ${x.error ?? "no answer"}${/unknown plugin op "watch"/.test(x.error ?? "") ? " (this app is older and cannot watch: read it again instead)" : ""}` };
+      const news = x.timedOut ? `nothing new${after !== null ? ` since seq ${after}` : ""} within ${secs} s` : `new events${after !== null ? ` since seq ${after}` : ""}`;
+      return {
+        ok: x.ok,
+        text: [`${x.plugin.id} "${x.plugin.name}", watched on the ${HOST_NAME[host]}: ${news}.`, ...(x.events?.length ? [`events: ${json(x.events)}`] : []), ...(x.state ? [`state now: ${json(x.state)}`] : []), `seq ${x.seq ?? after ?? 0} (PluginRead {plugin: "${x.plugin.id}", after: ${x.seq ?? after ?? 0}, wait: 25} waits for the next)`, ...(x.error ? [`Error: ${x.error}`] : [])].join("\n"),
+      };
     }
     const r = await ask(d, host, { op: "read", plugin: pageId ?? plugin, ...(typeof a.state === "string" && a.state.trim() ? { state: a.state.trim() } : {}) });
     const liveOk = r.ok && !!r.answer.plugin;
