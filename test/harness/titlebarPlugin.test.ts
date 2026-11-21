@@ -118,7 +118,7 @@ test("mounted through the host, it draws the bar and declares its offers", async
   const d = listOffers().find((p: any) => p.id === "app/titlebar")!;
   assert.ok(d, "listed while it runs");
   assert.deepEqual(d.state.map((s: any) => s.name), ["update", "items", "window", "vault", "panels", "status"]);
-  assert.deepEqual(d.actions.map((a: any) => a.name), ["toggleLeftPanel", "toggleChatPanel", "toggleNotes", "toggleSettings", "popOutChat", "refreshTree", "openHiddenFiles", "closeHiddenFiles", "unhide", "openTerminal", "clickItem", "checkUpdates", "installUpdate", "dismissUpdate", "minimize", "toggleMaximize"]);
+  assert.deepEqual(d.actions.map((a: any) => a.name), ["toggleLeftPanel", "toggleChatPanel", "toggleNotes", "toggleSettings", "popOutChat", "refreshTree", "openHiddenFiles", "closeHiddenFiles", "unhide", "openTerminal", "clickItem", "installUpdate", "dismissUpdate", "minimize", "toggleMaximize"]);
   assert.ok(!d.actions.some((a: any) => /close$/i.test(a.name) && a.name !== "closeHiddenFiles"), "no window close for the agent");
   assert.deepEqual(d.events.map((e: any) => e.name), ["updateChanged", "itemAdded", "itemRemoved", "itemClicked", "refreshed", "unhidden", "windowChanged"]);
 });

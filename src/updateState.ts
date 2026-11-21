@@ -1,8 +1,9 @@
 // The update banner as state (Native agency: it was screen-only; LaptopBuild read versions, not the banner). The
 // banner (src/UpdateBanner.tsx) publishes where it stands and hands over its own actions; app/titlebar offers them:
-// `update` to read, checkUpdates / installUpdate / dismissUpdate to act, `updateChanged` to watch.
-export type UpdateSummary = { state: "idle" | "available" | "downloading" | "installing" | "error" | "checked"; version?: string; notes?: string; downloaded?: number; total?: number | null; message?: string };
-type Actions = { install: () => Promise<void> | void; dismiss: () => void; check: () => void };
+// `update` to read, installUpdate / dismissUpdate to act, `updateChanged` to watch. (The app checks by itself; there is
+// no "check now".)
+export type UpdateSummary = { state: "idle" | "available" | "downloading" | "installing" | "error"; version?: string; notes?: string; downloaded?: number; total?: number | null; message?: string };
+type Actions = { install: () => Promise<void> | void; dismiss: () => void };
 
 const KEY = "__vcUpdateState";
 type Slot = { now: UpdateSummary; actions: Actions | null; fns: Set<(s: UpdateSummary) => void> };

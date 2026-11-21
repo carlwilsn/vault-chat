@@ -109,10 +109,10 @@ export function UpdateBanner() {
       ? { state: "available", version: phase.update.version, ...(phase.update.body ? { notes: String(phase.update.body).slice(0, 400) } : {}) }
       : phase.kind === "downloading"
         ? { state: "downloading", downloaded: phase.downloaded, total: phase.total }
-        : phase.kind === "error" || phase.kind === "checked"
-          ? { state: phase.kind, message: phase.message }
+        : phase.kind === "error"
+          ? { state: "error", message: phase.message }
           : { state: phase.kind },
-    { install: () => installRef.current?.(), dismiss: () => setPhase({ kind: "idle" }), check: () => checkForUpdatesNow() },
+    { install: () => installRef.current?.(), dismiss: () => setPhase({ kind: "idle" }) },
   );
 
   if (phase.kind === "idle" || phase.kind === "error") return null;

@@ -64,7 +64,7 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
   return {
     state: {
       update: {
-        description: "The update banner (src/UpdateBanner.tsx): state idle | available (version, notes) | downloading (downloaded, total) | installing | checked or error (message).",
+        description: "The update banner (src/UpdateBanner.tsx): state idle | available (version, notes) | downloading (downloaded, total) | installing | error (message). The app checks for updates by itself.",
         read: () => updateNow(),
       },
       items: {
@@ -192,13 +192,6 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
           it.onClick();
           emitBarEvent("itemClicked", { key: it.key, by: it.by });
           return { clicked: it.key };
-        },
-      },
-      checkUpdates: {
-        description: "Check for an app update now (as Settings' Check for updates); read `update` after, or watch updateChanged.",
-        run: async () => {
-          updateActions()?.check();
-          return { update: updateNow() };
         },
       },
       installUpdate: {
