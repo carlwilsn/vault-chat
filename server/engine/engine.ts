@@ -3776,6 +3776,7 @@ export class Engine {
           await this.startWorkSession(getAsk(e.id, this.workFile())!, `The last session on this ask (${lease.conv}) ended without recording where it stands. Re-check reality (its worktree, branch, ship-results) and go on from there.`, `reap:${lease.conv}`);
         }
       }
+      await this.notesToAgent();
     } catch (err) {
       this.log(`work: ${(err as Error).message}`);
     } finally {
@@ -3841,6 +3842,21 @@ export class Engine {
     upsertAsk(e.id, { wait: { ...w, kind: "ship", args: { name: r.name }, since: now, until: now + 6 * 3_600_000 }, ship: r.name, autoShips: (e.autoShips ?? 0) + 1, handled: [...(e.handled ?? []), ev.id], last: r.what }, { file: this.workFile(), by: "box" });
     this.log(`work: ${e.id}: ${r.what}`);
     return true;
+  }
+
+  /** A note addressed to the agent (server/noteWake.ts) becomes an ask and wakes a fresh session, once; its
+   *  outcome is told in Main. */
+  async notesToAgent(): Promise<void> {
+    // Notes are the box's, one set for every vault: only the main vault's engine answers them.
+    if (resolve(this.d.vault) !== resolve(loadConfig().vault)) return;
+    const { newNotesForAgent } = await import("../noteWake");
+    const notes = (await (await import("../../src/notes")).readNotes(this.d.vault).catch(() => [])) as never[];
+    for (const n of newNotesForAgent(this.d.vault, notes)) {
+      const r = upsertAsk(undefined, { words: n.ask, origin: { vault: this.d.vault, conv: MAIN_ID }, links: [`note ${n.id}`] }, { file: this.workFile(), by: "note" });
+      if ("error" in r) continue;
+      this.log(`ledger: note ${n.id} asks the agent → ${r.entry.id}`);
+      await this.startWorkSession(r.entry, `Carl left you a note (note ${n.id}, in his Notes; maybe from his phone): "${n.ask}". Do what it asks; when done, resolve the note (PluginAct box:notes resolve) and set the ask done with one line for him.`);
+    }
   }
 
   /** A fresh conversation for one ask (work-<ask>-<n>, a chat of its project): the entry and the event are its whole input. */
