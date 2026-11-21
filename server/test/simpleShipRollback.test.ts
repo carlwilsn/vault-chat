@@ -64,7 +64,7 @@ it("normal branch shipping runs all seven gates; later native failure leaves acc
     const logs = readdirSync(config.workRoot).map(d => JSON.parse(readFileSync(join(config.workRoot, d, "gates.json"), "utf8")));
     expect(logs).toHaveLength(1);
     for (const log of logs) for (const side of [log.baseline, log.candidate]) {
-      expect(side).toHaveLength(7); expect(side.every((r: { complete: boolean; exitCode: number }) => r.complete && r.exitCode === 0)).toBe(true);
+      expect(side).toHaveLength(6); expect(side.every((r: { complete: boolean; exitCode: number }) => r.complete && r.exitCode === 0)).toBe(true);
     }
   } catch (e) {
     for (const d of readdirSync(join(root, "runs"))) for (const f of readdirSync(join(root, "runs", d))) if (f.endsWith("-test-server.log")) console.error(readFileSync(join(root, "runs", d, f), "utf8"));

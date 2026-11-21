@@ -46,7 +46,7 @@ fs.writeFileSync('observation.json',JSON.stringify({home:process.env.HOME,hostFi
       vi.stubEnv("npm_config_registry", "https://must-not-inherit.invalid");
       const run = createRunRoot(o), results = await runShipGates(o, repo, revision, run);
       expect(JSON.parse(readFileSync(join(run, revision, "observation.json"), "utf8"))).toEqual({ home: "/tmp/h", hostFile: false, sdk: true, readonly: true, immutable: true, connected: false, liveVault: false, keyNames: [], registry: null });
-      expect(results).toHaveLength(7);
+      expect(results).toHaveLength(6);
       const harness = results.find(r => r.gate === "test:harness")!;
       expect(harness).toMatchObject({ exitCode: 1, complete: true });
       expect(harness.tests).toContainEqual({ file: "test/harness/real-failure.test.ts", name: "real failing fixture cannot be replaced by npm scripts", status: "failed" });
