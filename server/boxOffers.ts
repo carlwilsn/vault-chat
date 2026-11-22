@@ -15,7 +15,7 @@ import { noun, nouns, type Noun } from "./model";
 
 export type JsonSchema = Record<string, unknown>;
 type State = { description: string; read: () => unknown | Promise<unknown> };
-type Action = { description: string; args?: JsonSchema; run: (args: Record<string, unknown>) => Promise<{ ok: boolean; text: string }> | { ok: boolean; text: string } };
+type Action = { description: string; args?: JsonSchema; /** A search: nothing changes, so no state is read back. */ readOnly?: boolean; run: (args: Record<string, unknown>) => Promise<{ ok: boolean; text: string }> | { ok: boolean; text: string } };
 export type BoxOffer = { id: string; name: string; state: Record<string, State>; actions: Record<string, Action> };
 
 export type BoxOfferDeps = {
@@ -29,6 +29,8 @@ export type BoxOfferDeps = {
   jobs?: () => string;
   /** Every registered vault's path (box:history searches all their logs). */
   vaults?: () => string[];
+  /** The asking conversation (box:history's transcript search defaults to it). */
+  conv?: string;
 };
 
 export const BOX_PREFIX = "box:";
@@ -62,7 +64,7 @@ const str = (description: string) => ({ type: "string", description });
 export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
   const out: BoxOffer[] = [
     // The nouns moved into the model (server/model/): each is a box offer of the same name.
-    ...nouns({ vault: d.vault, emit: d.emit, ackMs: d.ackMs }).map(nounOffer),
+    ...nouns({ vault: d.vault, emit: d.emit, ackMs: d.ackMs, vaults: d.vaults, conv: d.conv }).map(nounOffer),
     {
       id: "box:links",
       name: "Devices",
@@ -72,27 +74,6 @@ export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
       actions: {},
     },
   ];
-  const logs = () => (d.vaults?.() ?? [d.vault]).concat(d.vault);
-  out.push({
-    id: "box:history",
-    name: "History",
-    state: {
-      recent: {
-        description: "the newest 30 things Carl did in the app's parts (offer events: opened a file, switched chat, …), kept in the event log; (before: …) is what that part's state was before it, to put it back by hand",
-        read: async () => (await import("./offerLog")).searchOfferEvents(logs(), { limit: 30 }).map(line),
-      },
-    },
-    actions: {
-      search: {
-        description: "search that history, as far back as it goes: every word of query in the part, event or its details; plugin narrows to one part; days limits how far back",
-        args: obj({ query: str("words that must all appear"), plugin: str("a part, e.g. app/viewer"), days: { type: "number" }, limit: { type: "number" } }),
-        run: async (a) => {
-          const hits = (await import("./offerLog")).searchOfferEvents(logs(), { query: a.query as string, plugin: a.plugin as string, days: Number(a.days) || undefined, limit: Number(a.limit) || undefined });
-          return { ok: true, text: hits.length ? hits.map(line).join("\n") : "nothing matches" };
-        },
-      },
-    },
-  });
   if (d.stateDir) {
     const sd = d.stateDir;
     out.push({
@@ -142,12 +123,7 @@ const noArgs = obj({});
 
 /** A model noun as a box offer: its state, and its actions run by the agent. */
 function nounOffer(n: Noun): BoxOffer {
-  return { id: `${BOX_PREFIX}${n.id}`, name: n.name, state: n.state, actions: Object.fromEntries(Object.entries(n.actions).map(([k, a]) => [k, { description: a.description, args: a.args, run: (args: Record<string, unknown>) => a.run(args, "agent") }])) };
-}
-
-/** One history record as a line Carl could read. */
-function line(r: { at: number; device: string; plugin: string; event: string; payload?: string; before?: string }): string {
-  return `${new Date(r.at).toISOString().slice(0, 16).replace("T", " ")} ${r.device} ${r.plugin} ${r.event}${r.payload ? ` ${r.payload}` : ""}${r.before ? ` (before: ${r.before})` : ""}`;
+  return { id: `${BOX_PREFIX}${n.id}`, name: n.name, state: n.state, actions: Object.fromEntries(Object.entries(n.actions).map(([k, a]) => [k, { description: a.description, args: a.args, readOnly: a.readOnly, run: (args: Record<string, unknown>) => a.run(args, "agent") }])) };
 }
 
 export function describeBoxOffer(o: BoxOffer): OffersDescription {
@@ -229,6 +205,7 @@ export async function actBoxOffer(d: BoxOfferDeps, word: string, action: string,
   } catch (e) {
     r = { ok: false, text: (e as Error)?.message ?? String(e) };
   }
+  if (a.readOnly) return r;
   const back = await readBoxOffer(d, o.id);
   return { ...r, ...(back.state ? { state: back.state } : {}) };
 }

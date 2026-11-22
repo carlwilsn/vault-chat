@@ -274,20 +274,20 @@ describe("a. Ctrl+L on the laptop about a PDF selection, then the phone: \"what 
   });
   // Decided (2026-10-18): the you layer is "what Carl just did" (a 45-minute window, plus his last action whatever
   // its age), so an old Ctrl+L ask is not pushed into every turn of every chat. Older activity is the agent's to
-  // search when he asks about it: RecentActivity (read-only, on every surface pi runs, Ctrl+K / Ctrl+L included).
+  // search when he asks about it: box:history activity (read-only, on every surface pi runs, Ctrl+K / Ctrl+L included).
   let found = "";
   pass("a", "phone chat (pi turn)", "an ask older than the window is not pushed into the turn (no bleed of old activity)", async () => {
     act.appendActivity(vault, { kind: "ask", modality: "ctrl-l", text: 'asked "what is Gauss-Seidel splitting?"', detail: "answer: L+D and U." }, Date.now() - 50 * 60_000);
     late = await turn({ text: "what did I ask about before lunch?", client: "phone" }, "You asked what Gauss-Seidel splitting is.", async (threadId) => {
-      found = (await need(backend.handlers, "tool handlers").toolCall(threadId, "RecentActivity", { query: "asked", hours: 4 })).text;
+      found = (await need(backend.handlers, "tool handlers").toolCall(threadId, "PluginAct", { plugin: "box:history", action: "activity", args: { query: "asked", hours: 4 } })).text;
     });
     expect(need(late, "late turn").texts.join("\n")).not.toContain("Gauss-Seidel");
   });
-  pass("a", "phone chat (agent's pull: RecentActivity)", "the agent finds the older ask, with its answer, when Carl asks about it", () => {
+  pass("a", "phone chat (agent's pull: box:history activity)", "the agent finds the older ask, with its answer, when Carl asks about it", () => {
     expect(found).toContain('Ctrl+L ask: asked "what is Gauss-Seidel splitting?"');
     expect(found).toContain("answer: L+D and U.");
     expect(found).toContain("Why does this guarantee convergence?"); // the recent one too: the search spans the window
-    expect(backend.threads.at(-1)!.tools).toContain("RecentActivity");
+    expect(backend.threads.at(-1)!.tools).toContain("PluginAct");
   });
 });
 

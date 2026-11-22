@@ -39,7 +39,6 @@ import {
 import { patchMeta, readConv, allConvs, createConv, newMessageId, emitTo, pictureOf, logOf, writeNotes, appendNotes, setNoteWriter, ensureMain, ensureProjectThread, type NoteData } from "./convs";
 import { workerWorktree } from "../workerWorktree";
 import { MAIN_ID, projectOfThread, projectThreadId, threadKindOf } from "../../src/threads";
-import { searchHistory } from "./history";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
 import { askText, CLOSED, getAsk, ledgerText, readLedger, readShipResult, upsertAsk, wakeBrief, workFile, type LedgerEntry, type LedgerPatch } from "./ledger";
 import { gitContains, waitKind, type WaitContext } from "./waiters";
@@ -74,7 +73,7 @@ import { projectFolderOf, reviveFolder } from "../projectFolders";
 import { deleteFolder, folderOpsWalls } from "../folderOps";
 import { answerReview, cloneDirOf, ensureClone, isGatedProject, pendingReview } from "../projectChanges";
 import { WRITE_TOOLS, writtenPath } from "../liveEdits";
-import { appendActivity, contextImage, searchActivity, youLayer } from "../activity";
+import { appendActivity, contextImage, youLayer } from "../activity";
 import { CAPTURE_FRESH_MS, chatPointerEntry } from "../../src/activityCore";
 import type { EventBody, ItemImage, PendingInput } from "../../src/convlog/protocol";
 import { isOpen, pendingOf, type Picture } from "../../src/convlog/reduce";
@@ -554,18 +553,6 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
-    name: "RecentActivity",
-    readOnly: true,
-    description:
-      "Search what Carl did on his surfaces over the last days (the shared activity stream: Ctrl+L asks and their answers, Ctrl+K edits, voice lines, captures, files he opened, his messages in other chats). Your turns only get the last ~45 minutes of it; use this when he refers to something older (\"what did I ask before lunch?\"). `query`: words to match (empty: everything); `hours`: how far back (default 24, at most 168).",
-    inputSchema: {
-      type: "object",
-      properties: { query: { type: "string" }, hours: { type: "number" }, limit: { type: "number" } },
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
     name: "Cost",
     readOnly: true,
     description: "Model spend in USD: this conversation by default, or a project's total.",
@@ -582,19 +569,6 @@ export const ENGINE_TOOL_SPECS = [
     description:
       "Compact this conversation's context now (pi's own summary of the earlier conversation; the raw history stays in its file), when Carl asks for it (\"compact\", \"/compact\", \"make the context smaller\"). Optional `focus`: what the summary must keep. It runs when the current turn ends. Never on your own: compaction also happens automatically.",
     inputSchema: { type: "object", properties: { focus: { type: "string" } }, additionalProperties: false },
-  },
-  {
-    type: "function",
-    name: "SearchHistory",
-    readOnly: true,
-    description:
-      "Search a thread's full raw history (pi's own session file: everything ever said, before any compaction or Clear), newest first, with the time of each hit. Use it when Carl refers to something earlier that your context no longer holds (\"what did we decide about X last week?\"). `query`: words that must all appear (case-insensitive); `thread`: \"main\" (default: this thread) or a project's name; `limit`: hits (default 12, at most 40). Read-only.",
-    inputSchema: {
-      type: "object",
-      properties: { query: { type: "string" }, thread: { type: "string" }, limit: { type: "number" } },
-      required: ["query"],
-      additionalProperties: false,
-    },
   },
   {
     type: "function",
@@ -1629,7 +1603,7 @@ export class Engine {
   }
 
   /**
-   * A live page's ask goes into the shared activity stream (what RecentActivity reads) once it ends: one entry with
+   * A live page's ask goes into the shared activity stream (what box:history's activity search reads) once it ends: one entry with
    * the page, Carl's prompt and the reply (each clipped in sanitizeEntry). It makes no chat or conversation.
    */
   private recordPageAsk(side: { wait(id: string): Promise<SideState> }, id: string, page: string, prompt: string): void {
@@ -3287,19 +3261,6 @@ export class Engine {
           });
           return text("Compaction starts as soon as this turn ends (the thread then shows \"Earlier conversation summarized\"). Tell Carl in one line; don't wait for it.");
         }
-        case "SearchHistory": {
-          const want = String(a.thread ?? "").trim();
-          let target = conv.id ? conv : null;
-          if (want) {
-            const slug = want.toLowerCase() === "main" ? null : (await import("../context")).findProject(want)?.slug;
-            if (want.toLowerCase() !== "main" && !slug) return text(`No thread "${want}": "main" or a project's name.`);
-            target = await readConv(vault, slug ? `project-${slug}` : MAIN_ID);
-          }
-          if (!target) return text("No thread to search.");
-          return text(searchHistory(vault, target, String(a.query ?? ""), Number(a.limit) || undefined));
-        }
-        case "RecentActivity":
-          return text(searchActivity(vault, { query: typeof a.query === "string" ? a.query : "", hours: Number(a.hours) || undefined, limit: Number(a.limit) || undefined }));
         case "JobStatus": {
           const agent = this.agentWorker(conv.threadId, String(a.id ?? "").trim());
           if (agent) return text(agent);

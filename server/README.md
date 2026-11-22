@@ -89,7 +89,7 @@ laptop's local chats; the missions system is gone and its mission/worker/ask thr
 ```
 server/engine/
   index.ts          boot: install/locate pi, its agent dir and extension, the sandbox, Engine + PiBackend
-  engine.ts         conversations ↔ pi sessions ("threads"), AskUser/ScheduleWake/StartJob/Notify/RecentActivity,
+  engine.ts         conversations ↔ pi sessions ("threads"), AskUser/ScheduleWake/StartJob/Notify,
                     durable wakes, job-end turns, resume after a crash, cost, subagents (long sessions: pi's compaction;
                     a hung provider: pi's idle timeout and retry)
   convs.ts          one-conversation locked read-modify-write, mirrored into the store (→ /poll events)

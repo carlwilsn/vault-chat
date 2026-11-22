@@ -1,6 +1,6 @@
 // Claude Code's stream, said in pi's words.
 //
-// This is what keeps the three clients, SearchHistory and the turn log out of
+// This is what keeps the three clients, the transcript search and the turn log out of
 // the refactor: vault-chat's feed speaks pi's live events and pi's session
 // entries (src/convlog/protocol.ts, reduce.ts), so a Claude Code turn is
 // translated into exactly those rather than given a shape of its own. Nothing

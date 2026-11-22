@@ -48,6 +48,13 @@ function ensureDir(vault: string): void {
   if (!existsSync(gi)) writeFileSync(gi, "*\n");
 }
 
+const listeners = new Set<(vault: string) => void>();
+/** Call `fn` with the vault after each entry appended (the history noun's watch); returns the unsubscribe. */
+export function onActivity(fn: (vault: string) => void): () => void {
+  listeners.add(fn);
+  return () => void listeners.delete(fn);
+}
+
 /** Append one entry (sanitized, stamped with this clock). Never throws. */
 export function appendActivity(vault: string, raw: unknown, now = Date.now()): ActivityEntry | null {
   if (!activityOn() || !vault) return null;
@@ -65,6 +72,13 @@ export function appendActivity(vault: string, raw: unknown, now = Date.now()): A
     }
     if (size + line.length > LOG_MAX_BYTES) renameSync(log, abs(vault, ACTIVITY_LOG_OLD));
     appendFileSync(log, line);
+    for (const fn of listeners) {
+      try {
+        fn(vault);
+      } catch {
+        /* a watcher's failure is its own */
+      }
+    }
     return e;
   } catch (err) {
     console.warn(`[activity] append failed: ${(err as Error).message}`);
@@ -149,7 +163,7 @@ export function youLayer(vault: string, o: { since?: number | null; convId?: str
 }
 
 /**
- * RecentActivity (a read-only agent tool): the stream searched past the you layer's window — the last `hours`
+ * The history noun's activity search (server/model/history.ts): the stream searched past the you layer's window — the last `hours`
  * (default 24, at most a week), the entries whose words contain every word of `query`, newest last, at most `limit`.
  * The you layer stays "what Carl just did"; anything older is found when he asks about it.
  */

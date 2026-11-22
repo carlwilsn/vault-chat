@@ -293,7 +293,7 @@ describe("a conversation on Claude Code", () => {
     // What the MODEL was given, which is the thing that matters: vault-chat's
     // tools, not deferred behind tool search.
     const offered: string[] = (api.requests[api.requests.length - 1].tools ?? []).map((x: any) => x.name);
-    for (const want of ["AskUser", "Notify", "StartJob", "JobList", "SearchHistory"]) {
+    for (const want of ["AskUser", "Notify", "StartJob", "JobList", "PluginAct"]) {
       expect(offered).toContain(`mcp__vault_chat__${want}`);
     }
     // Of Claude Code's own: everything (Carl: "no bounds on the agent") but the

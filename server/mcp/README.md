@@ -222,12 +222,13 @@ accepted as `X-Vault-Token: <token>` or as the standard
 as a URL parameter or cookie. Both still require the Serve-vouched Tailscale login.
 
 **What an outside client can do.** Every vault-chat tool a side thread may use:
-Show, Layout, Screen, LaptopBuild, PluginRead/PluginAct
-(every live plugin's offers: file tree, notes panel, vault plugins), Settings,
-the Notes tools, Lookup/PdfRead/PdfPages,
+Show, Screen, LaptopBuild, PluginRead/PluginAct
+(every live plugin's offers: file tree, notes panel, vault plugins; the box's
+own nouns: box:settings, box:notes, box:pages, box:workspace, box:history),
+Lookup/PdfRead/PdfPages,
 ListConversations/ReadConversation/PostToConversation (hand work to a chat),
 Rename/Delete/RestoreConversation, ListProjects/OpenProject/RestoreProject,
-JobList/JobStatus, Notify, RecentActivity, SearchHistory, Plugins,
+JobList/JobStatus, Notify,
 WebFetch, Cost, RecordUI (browser-only), and the `vault-chat://context/you`
 resource. Not listed (they need an owning
 vault-chat turn): AskUser, SubmitChange, TodoWrite, StartJob, JobStop,

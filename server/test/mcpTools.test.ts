@@ -1,5 +1,5 @@
 // Protocol/scope integration tests, NOT real-app review proof. The HTTP tests
-// use an independent official MCP Client and the real RecentActivity handler.
+// use an independent official MCP Client and a real tool spec (Cost: optional strings, nothing else) bound to a vault.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createServer, request, type Server as HttpServer } from "node:http";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -26,7 +26,7 @@ beforeAll(async () => {
   // Consume the existing authoritative definitions, never a test-only schema.
   const catalog = await import("../engine/engine");
   specs = catalog.agentToolSpecs();
-  toolSpec = specs.find((tool) => tool.name === "RecentActivity")!;
+  toolSpec = specs.find((tool) => tool.name === "Cost")!;
 });
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
@@ -72,8 +72,8 @@ describe("vault-chat's single catalog over MCP", () => {
     const c = await connected({ specs: [toolSpec], call: async () => { calls++; return { ok: true, text: "unexpected" }; } });
     try {
       await expect(c.client.callTool({ name: "Show", arguments: {} })).rejects.toThrow(/not available/);
-      await expect(c.client.callTool({ name: "RecentActivity", arguments: { query: 42 } })).rejects.toThrow(/string/);
-      await expect(c.client.callTool({ name: "RecentActivity", arguments: { vault: "/another-vault", threadId: "another-thread" } })).rejects.toThrow(/additional properties/);
+      await expect(c.client.callTool({ name: "Cost", arguments: { conversation: 42 } })).rejects.toThrow(/string/);
+      await expect(c.client.callTool({ name: "Cost", arguments: { vault: "/another-vault", threadId: "another-thread" } })).rejects.toThrow(/additional properties/);
       expect(calls).toBe(0);
     } finally { await c.close(); }
   });
@@ -82,7 +82,7 @@ describe("vault-chat's single catalog over MCP", () => {
     const image = { data: "aW1hZ2U=", mimeType: "image/png" };
     const c = await connected({ specs: [toolSpec], call: async () => ({ ok: false, text: "activity unavailable", images: [image] }) });
     try {
-      expect(await c.client.callTool({ name: "RecentActivity" })).toMatchObject({
+      expect(await c.client.callTool({ name: "Cost" })).toMatchObject({
         isError: true,
         content: [{ type: "text", text: "activity unavailable" }, { type: "image", ...image }],
       });
@@ -92,7 +92,7 @@ describe("vault-chat's single catalog over MCP", () => {
   it("returns thrown host errors as failed tool results, not successful text", async () => {
     const c = await connected({ specs: [toolSpec], call: async () => { throw new Error("storage unavailable"); } });
     try {
-      expect(await c.client.callTool({ name: "RecentActivity" })).toMatchObject({ isError: true, content: [{ type: "text", text: "RecentActivity failed: storage unavailable" }] });
+      expect(await c.client.callTool({ name: "Cost" })).toMatchObject({ isError: true, content: [{ type: "text", text: "Cost failed: storage unavailable" }] });
     } finally { await c.close(); }
   });
 
@@ -101,10 +101,10 @@ describe("vault-chat's single catalog over MCP", () => {
     const c = await connected({ specs: [copy], call: async () => ({ ok: true, text: "ok" }) });
     try {
       copy.name = "Show";
-      (copy.inputSchema.properties as Record<string, unknown>).query = { type: "number" };
+      (copy.inputSchema.properties as Record<string, unknown>).conversation = { type: "number" };
       const tools = (await c.client.listTools()).tools;
-      expect(tools[0]?.name).toBe("RecentActivity");
-      await expect(c.client.callTool({ name: "RecentActivity", arguments: { query: 1 } })).rejects.toThrow(/string/);
+      expect(tools[0]?.name).toBe("Cost");
+      await expect(c.client.callTool({ name: "Cost", arguments: { conversation: 1 } })).rejects.toThrow(/string/);
     } finally { await c.close(); }
   });
 
@@ -121,7 +121,7 @@ describe("vault-chat's single catalog over MCP", () => {
     } });
     try {
       const controller = new AbortController();
-      const call = c.client.callTool({ name: "RecentActivity" }, undefined, { signal: controller.signal });
+      const call = c.client.callTool({ name: "Cost" }, undefined, { signal: controller.signal });
       const result = expect(call).rejects.toBeDefined();
       await began;
       controller.abort();
@@ -132,12 +132,12 @@ describe("vault-chat's single catalog over MCP", () => {
 
   it("sends requested progress (including token 0), isolates concurrent calls, and drains in order before results", async () => {
     const server = createToolServer({ specs: [toolSpec], call: async (_n, args, ctx) => {
-      if (args.query === "silent") expect(ctx.progress).toBeUndefined();
+      if (args.conversation === "silent") expect(ctx.progress).toBeUndefined();
       else {
-        void ctx.progress?.(`${args.query}: first`);
-        void ctx.progress?.(`${args.query}: second`);
+        void ctx.progress?.(`${args.conversation}: first`);
+        void ctx.progress?.(`${args.conversation}: second`);
       }
-      return { ok: true, text: String(args.query) };
+      return { ok: true, text: String(args.conversation) };
     } }, "test");
     const client = new Client({ name: "progress-test", version: "test" });
     const [a, b] = InMemoryTransport.createLinkedPair();
@@ -153,9 +153,9 @@ describe("vault-chat's single catalog over MCP", () => {
     await server.connect(a); await client.connect(b);
     try {
       await Promise.all([
-        client.callTool({ name: "RecentActivity", arguments: { query: "zero" }, _meta: { progressToken: 0 } }),
-        client.callTool({ name: "RecentActivity", arguments: { query: "other" }, _meta: { progressToken: "other" } }),
-        client.callTool({ name: "RecentActivity", arguments: { query: "silent" } }),
+        client.callTool({ name: "Cost", arguments: { conversation: "zero" }, _meta: { progressToken: 0 } }),
+        client.callTool({ name: "Cost", arguments: { conversation: "other" }, _meta: { progressToken: "other" } }),
+        client.callTool({ name: "Cost", arguments: { conversation: "silent" } }),
       ]);
       expect(updates.filter((u) => u.progressToken === 0)).toEqual([
         { progressToken: 0, progress: 1, message: "zero: first" },
@@ -179,7 +179,7 @@ describe("vault-chat's single catalog over MCP", () => {
       current: async () => catalog,
       call: async (name) => {
         calls.push(name);
-        if (name === "RecentActivity") catalog = [toolSpec, added];
+        if (name === "Cost") catalog = [toolSpec, added];
         return { ok: true, text: name };
       },
     }, "test");
@@ -193,11 +193,11 @@ describe("vault-chat's single catalog over MCP", () => {
     });
     try {
       expect(client.getServerCapabilities()?.tools?.listChanged).toBe(true);
-      await client.callTool({ name: "RecentActivity", arguments: {} });
+      await client.callTool({ name: "Cost", arguments: {} });
       order.push("result");
-      expect(order).toEqual(["changed", "listed RecentActivity,MadeNow", "result"]);
+      expect(order).toEqual(["changed", "listed Cost,MadeNow", "result"]);
       await client.callTool({ name: "MadeNow", arguments: {} });
-      expect(calls).toEqual(["RecentActivity", "MadeNow"]);
+      expect(calls).toEqual(["Cost", "MadeNow"]);
       // A tool made outside any call: callable even before the client lists again.
       catalog = [toolSpec, added, { ...structuredClone(toolSpec), name: "Later" }];
       await client.callTool({ name: "Later", arguments: {} });
@@ -205,7 +205,7 @@ describe("vault-chat's single catalog over MCP", () => {
       // A broken catalog is not served: the last good one stays.
       catalog = [toolSpec, toolSpec];
       expect(await server.refreshTools()).toBe(false);
-      expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["RecentActivity", "MadeNow", "Later"]);
+      expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["Cost", "MadeNow", "Later"]);
     } finally { await client.close(); await server.close(); }
   });
 
@@ -247,7 +247,7 @@ describe("standard Streamable HTTP with request-local authority", () => {
         if (req.headers["x-test-authorized"] !== "yes") return null;
         const vault = req.url === "/a" ? vaultA : req.url === "/b" ? vaultB : null;
         if (!vault) return null;
-        return { scopeId: vault, specs: [toolSpec], call: async (_name, args) => ({ ok: true, text: searchActivity(vault, { query: typeof args.query === "string" ? args.query : "" }) }) };
+        return { scopeId: vault, specs: [toolSpec], call: async (_name, args) => ({ ok: true, text: searchActivity(vault, { query: typeof args.conversation === "string" ? args.conversation : "" }) }) };
       },
     });
   });
@@ -262,18 +262,18 @@ describe("standard Streamable HTTP with request-local authority", () => {
     return client;
   }
 
-  it("calls the real RecentActivity handler and returns the bound vault's activity", async () => {
+  it("calls a bound tool and returns the bound vault's activity", async () => {
     const client = await connect("/a");
     const tool = (await client.listTools()).tools[0];
-    expect(tool?.name).toBe("RecentActivity");
-    const result = await client.callTool({ name: "RecentActivity" });
+    expect(tool?.name).toBe("Cost");
+    const result = await client.callTool({ name: "Cost" });
     expect(result.isError).not.toBe(true);
     expect(result.content).toEqual([expect.objectContaining({ type: "text", text: expect.stringContaining("Only vault A's file") })]);
   });
 
   it("keeps concurrent callers in their bound vault, not an ambient main vault", async () => {
     const [a, b] = await Promise.all([connect("/a"), connect("/b")]);
-    const [resultA, resultB] = await Promise.all([a.callTool({ name: "RecentActivity" }), b.callTool({ name: "RecentActivity" })]);
+    const [resultA, resultB] = await Promise.all([a.callTool({ name: "Cost" }), b.callTool({ name: "Cost" })]);
     expect(JSON.stringify(resultA)).toContain("Only vault A's file");
     expect(JSON.stringify(resultB)).not.toContain("Only vault A's file");
   });

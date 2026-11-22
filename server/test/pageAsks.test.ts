@@ -1,5 +1,5 @@
 // A live page's vc.ask (src/liveBridge.ts, server/liveProxy.ts → engine.sideStart) is recorded in the shared
-// activity stream that RecentActivity reads: one entry per ask (page path, prompt, reply, time, modality "page"),
+// activity stream that box:history's activity search reads: one entry per ask (page path, prompt, reply, time, modality "page"),
 // with no chat or conversation created, the ask still read-only and the per-page rate limit unchanged.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
@@ -118,7 +118,7 @@ afterAll(() => {
 });
 
 describe("live page asks in the activity stream", () => {
-  it("records page, prompt and reply, makes no conversation, stays read-only, and RecentActivity finds it", async () => {
+  it("records page, prompt and reply, makes no conversation, stays read-only, and the activity search finds it", async () => {
     const before = (await convs.allConvs(vault)).length;
     const r = await engine.sideStart({ kind: "ask", text: "What is 2+2 on my flashcard?", system: "Be brief.", page: "pages/cards.html", persist: true, tools: "act", convId: "x" });
     expect(r.ok).toBe(true);

@@ -26,6 +26,8 @@ describe("PluginRead / PluginAct", () => {
     for (const n of ["PluginRead", "PluginAct"]) expect(names).toContain(n);
     // The layout is box:workspace now (server/model/workspace.ts): the Layout tool is gone.
     expect(names).not.toContain("Layout");
+    // What happened is box:history now (server/model/history.ts): RecentActivity and SearchHistory are gone.
+    for (const n of ["RecentActivity", "SearchHistory"]) expect(names).not.toContain(n);
     // Notes are box:notes now (server/boxOffers.ts): the six note tools are no longer listed.
     for (const n of ["ListNotes", "CreateNote"]) expect(names).not.toContain(n);
     expect(agentToolSpecs().find((t) => t.name === "PluginRead")!.readOnly).toBe(true);
@@ -98,7 +100,7 @@ describe("the box's own state, with no device online", () => {
     expect(bad.ok).toBe(false);
     expect(bad.text).toMatch(/needs text\. Nothing was run/);
     const none = await rig.backend.h.toolCall(tid, "PluginRead", { plugin: "box:nope" });
-    expect(none.text).toMatch(/no box state "box:nope" \(the box offers: box:settings, box:notes, box:pages, box:workspace, box:links/);
+    expect(none.text).toMatch(/no box state "box:nope" \(the box offers: box:settings, box:notes, box:pages, box:workspace, box:history, box:links/);
   });
 
   it("box:logs: the newest lines, with credentials cut out", async () => {

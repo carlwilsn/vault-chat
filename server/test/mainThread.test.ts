@@ -9,7 +9,7 @@
 //     (what is loaded where, re-sent when changed, capped, the rules the agent is given). Whether a
 //     real model follows the rules is a real-pi run on the box, not this file;
 //   - a project's main folder is its thread's working directory;
-//   - SearchHistory finds what was said before a Clear, in pi's own file.
+//   - box:history transcript finds what was said before a Clear, in pi's own file.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -337,15 +337,15 @@ describe("one context, several surfaces: Clear is per surface, /compact compacts
     expect(rig.backend.turns.length).toBe(before + 1); // never a host-side second queue
   });
 
-  it("SearchHistory finds what was said before a compaction, in pi's own file, with its time", async () => {
-    const r = await rig.backend.call(tid, "SearchHistory", { query: "clearmark essay" });
+  it("box:history transcript finds what was said before a compaction, in pi's own file, with its time", async () => {
+    const r = await rig.backend.call(tid, "PluginAct", { plugin: "box:history", action: "transcript", args: { query: "clearmark essay" } });
     expect(r.ok).toBe(true);
     expect(r.text).toMatch(/1 match\(es\) in "Main"'s full history:\n\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] Carl: .*CLEARMARK/);
-    const none = await rig.backend.call(tid, "SearchHistory", { query: "never said this" });
-    expect(none.text).toMatch(/^No match/);
-    const proj = await rig.backend.call(tid, "SearchHistory", { query: "overlap", thread: "Coconut" });
+    const none = await rig.backend.call(tid, "PluginAct", { plugin: "box:history", action: "transcript", args: { query: "never said this" } });
+    expect(none.text).toMatch(/done: No match/);
+    const proj = await rig.backend.call(tid, "PluginAct", { plugin: "box:history", action: "transcript", args: { query: "overlap", thread: "Coconut" } });
     expect(proj.text).toContain('"Coconut"');
-    expect((await rig.backend.call(tid, "SearchHistory", { query: "x", thread: "Nope" })).text).toMatch(/No thread "Nope"/);
+    expect((await rig.backend.call(tid, "PluginAct", { plugin: "box:history", action: "transcript", args: { query: "x", thread: "Nope" } })).text).toMatch(/No thread "Nope"/);
   });
 
   it("/compact on a thread nothing was said in: nothing to compact", async () => {

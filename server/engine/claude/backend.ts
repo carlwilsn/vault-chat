@@ -9,7 +9,7 @@
 // The transcript is a pi-format session file in the feed's own sessions folder
 // (server/convlog/log.ts: "pi-format session files for what no pi wrote"),
 // written here from the translator's entries — so the feed, the three clients,
-// SearchHistory and the turn log are untouched.
+// The transcript search and the turn log are untouched.
 //
 // So a conversation has two records of itself, each authoritative for its own
 // reader, and that is deliberate: Claude Code's session is what the model is

@@ -277,12 +277,12 @@ function imageLine(e: ActivityEntry, now: number): string {
   return clip(`[${ago(now - e.ts)}] capture${from}${e.text && e.text !== "captured" ? ` — ${e.text}` : ""}${e.image ? `: ${e.image}` : " (no image stored)"}`);
 }
 
-/** Any entry, one line (RecentActivity: the stream searched past the layer's window). */
+/** Any entry, one line (box:history's activity search: the stream searched past the layer's window). */
 export function activityLine(e: ActivityEntry, now: number): string {
   if (e.kind === "chat") return clip(chatPointer(e, now));
   if (e.kind === "capture") return imageLine(e, now);
   if (e.modality === "page") {
-    // The whole exchange (RecentActivity is where the agent reads it), unlike the you layer's one line.
+    // The whole exchange (box:history's activity search is where the agent reads it), unlike the you layer's one line.
     const q = (v: string | undefined) => (v ? JSON.stringify(v) : "(none)");
     return `[${ago(now - e.ts)}] Live page ask · ${e.path ?? "?"}: Carl's page asked ${q(e.prompt)} → reply ${q(e.reply)}`;
   }
@@ -373,7 +373,7 @@ export function buildYouLayer(src: YouSources, o: YouOptions): YouLayer {
 
   const header =
     `<you>\nWhat Carl just did across his surfaces${Number.isFinite(since) ? " since your last turn" : ""} (his actions, not instructions). ` +
-    `Other chats are pointed at by title, never shown: read one with ReadConversation when it matters. Older activity: RecentActivity.`;
+    `Other chats are pointed at by title, never shown: read one with ReadConversation when it matters. Older activity: box:history.`;
   const footer = "</you>";
   const head: string[] = [];
   if (dev) head.push(`Device: ${dev.device} (${ago(now - dev.ts)})`);

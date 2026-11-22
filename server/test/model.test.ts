@@ -1,6 +1,7 @@
 // The model on the box (server/model/, report 24 §4) and its parity check: every way the app changes a moved noun is an
 // action of that noun on the box, and every action the box has is one the app has. Listed from the app's own source,
-// so a new control that bypasses the model fails here. Settings (noun 1), notes (noun 2), pages (noun 3), workspace (noun 4).
+// so a new control that bypasses the model fails here. Settings (noun 1), notes (noun 2), pages (noun 3), workspace (noun 4),
+// history (noun 5, read-only).
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -254,5 +255,31 @@ describe("the model's workspace noun", () => {
     expect(r.ok).toBe(false);
     expect(r.text).toMatch(/no link to the laptop here; nothing changed/);
     expect(agentToolSpecs().map((t) => t.name)).not.toContain("Layout");
+  });
+});
+
+describe("the model's history noun", () => {
+  it("parity: history is read-only: the app only appends to it (no control changes it), and every model action is a search", () => {
+    const h = noun("history", deps)!;
+    expect(Object.entries(h.actions).filter(([, a]) => !a.readOnly).map(([k]) => k), "history actions that change something").toEqual([]);
+    expect(Object.keys(h.actions).sort()).toEqual(["activity", "search", "transcript"]);
+    const names = agentToolSpecs().map((t) => t.name);
+    for (const old of ["RecentActivity", "SearchHistory"]) expect(names).not.toContain(old);
+  });
+
+  it("is box:history: the activity search finds an appended entry, its watch hears the append, a search reads nothing back", async () => {
+    const { appendActivity } = await import("../activity");
+    const changed = nextChange(noun("history", deps)!, 5_000);
+    appendActivity(root, { kind: "ask", modality: "ctrl-l", text: 'asked "what is a Gram matrix?"', detail: "answer: inner products." });
+    expect(await changed).toBe(true);
+    const r = await actBoxOffer(deps, "box:history", "activity", { query: "gram", hours: 1 });
+    expect(r.ok).toBe(true);
+    expect(r.text).toContain("Gram matrix");
+    expect(r.state).toBeUndefined();
+    expect((await actBoxOffer(deps, "box:history", "activity", { query: "nothing like this" })).text).toMatch(/^Nothing in the last 24 h/);
+    const t = await actBoxOffer(deps, "box:history", "transcript", { query: "x" });
+    expect(t.ok).toBe(false);
+    expect(t.text).toMatch(/No thread to search/);
+    expect((await actBoxOffer(deps, "box:history", "transcript", {})).text).toMatch(/needs query\. Nothing was run/);
   });
 });

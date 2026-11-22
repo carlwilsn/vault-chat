@@ -1,4 +1,4 @@
-// SearchHistory: the agent's read-only search over a thread's full raw history — pi's own session
+// The history noun's transcript search (server/model/history.ts): the agent's read-only search over a thread's full raw history — pi's own session
 // files, which keep every entry for good (compaction and Clear change only what the model sees).
 // Letta's "a filesystem is enough" result, as a tool: the session files live in the server's state,
 // which the agent's sandbox may not read, so the search runs here (reports/Continuous conversation
@@ -38,7 +38,7 @@ export function sessionFilesOf(vault: string, conv: EngineConv): string[] {
 /** The hits, newest first: `[time] who: …snippet…`. */
 export function searchHistory(vault: string, conv: EngineConv, query: string, limit = 12): string {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!words.length) return "SearchHistory needs a query (words that must all appear).";
+  if (!words.length) return "The transcript search needs a query (words that must all appear).";
   const n = Math.min(Math.max(1, Math.floor(limit)), MAX_HITS);
   const hits: { at: string; who: string; snippet: string }[] = [];
   for (const file of sessionFilesOf(vault, conv)) {

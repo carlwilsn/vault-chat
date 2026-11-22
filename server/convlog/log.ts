@@ -586,7 +586,7 @@ export class ConvLog {
     return set;
   }
 
-  /** Every session file this conversation's feed points into (SearchHistory reads them). */
+  /** Every session file this conversation's feed points into (box:history's transcript search reads them). */
   sessionFilesOf(conv: string): string[] {
     this.pointedIn(conv, "");
     return [...(this.pointed.get(conv)?.keys() ?? [])].filter(Boolean);

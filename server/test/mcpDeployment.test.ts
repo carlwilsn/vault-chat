@@ -69,13 +69,13 @@ describe("built server MCP on its default private route", () => {
     try {
       await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers } }));
       const tools = (await client.listTools()).tools.map((tool) => tool.name);
-      expect(tools).toContain("RecentActivity");
+      expect(tools).toContain("PluginRead");
       // vault-chat's own tools only: the file tools were pi's, and a turn's file
       // tools are Claude Code's own now — an external client gets neither.
       expect(tools).not.toContain("read");
       expect(tools).not.toContain("write");
       expect(tools).not.toContain("bash");
-      const result = await client.callTool({ name: "RecentActivity", arguments: {} });
+      const result = await client.callTool({ name: "PluginAct", arguments: { plugin: "box:history", action: "activity", args: {} } });
       expect(result.isError).not.toBe(true);
       expect(JSON.stringify(result)).toMatch(/activity|Nothing/i);
     } finally { await client.close(); }
