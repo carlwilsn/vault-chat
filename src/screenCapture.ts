@@ -273,7 +273,16 @@ export async function windowSvg(): Promise<{ svg: string; width: number; height:
   html.style.height = `${height}px`;
   html.style.overflow = "hidden";
   const xhtml = new XMLSerializer().serializeToString(html);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><foreignObject x="0" y="0" width="100%" height="100%">${xhtml}</foreignObject></svg>`;
+  // In the drawing the root element is the <svg>, so rem would resolve against the default 16 px, not the app's root
+  // (13 px): everything sized in rem came out ~1.23x too big (the swap picture's jump). Give the svg the page's root size.
+  let rootFont = "";
+  try {
+    rootFont = getComputedStyle(root).fontSize || "";
+  } catch {
+    /* no computed style: the default */
+  }
+  const fontAttr = /^[\d.]+px$/.test(rootFont) ? ` style="font-size:${rootFont}"` : "";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"${fontAttr}><foreignObject x="0" y="0" width="100%" height="100%">${xhtml}</foreignObject></svg>`;
   return { svg, width, height, frames: ctx.frames };
 }
 

@@ -84,3 +84,44 @@ test("the new screen shows once it is back", () => {
   S.revealAfterSwap();
   assert.equal(document.documentElement.classList.contains("vc-swapping"), false);
 });
+
+test("the swap keeps the theme, and the first frame's theme never depends on a full localStorage (the swap flash)", async () => {
+  const T = await import("../../src/firstTheme.ts");
+  const local = new Map<string, string>();
+  const full = { getItem: (k: string) => local.get(k) ?? null, setItem: () => { throw new Error("QuotaExceededError"); }, removeItem: (k: string) => void local.delete(k) };
+  const was = G.localStorage;
+  G.localStorage = full;
+  try {
+    mem.delete(T.THEME_SESSION);
+    assert.equal(T.firstPaintTheme(), "graphite", "nothing kept: the default");
+    T.keepTheme("light");
+    assert.equal(T.firstPaintTheme(), "light", "a full localStorage: the window's own copy carries it");
+    useStore.setState({ theme: "light" } as any);
+    assert.equal(S.swapStateNow(null).theme, "light");
+  } finally {
+    G.localStorage = was;
+    mem.delete(T.THEME_SESSION);
+  }
+});
+
+test("index.html paints a swap's first frame in its theme and with the picture of the old screen", async () => {
+  const { readFileSync } = await import("node:fs");
+  const html = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
+  // The keys index.html reads by name are the modules'.
+  const T = await import("../../src/firstTheme.ts");
+  for (const k of [S.SWAP_KEY, S.SWAP_SHOT_KEY, S.SWAP_SHOT_ID, T.THEME_SESSION, T.THEME_LOCAL]) assert.ok(html.includes(k), `index.html names ${k}`);
+  // The picture goes in before #root, so it is the first thing painted.
+  assert.ok(html.indexOf("vc.coreSwapShot") < html.indexOf('<div id="root">'));
+});
+
+test("reveal fades the picture out and forgets it", async () => {
+  const shot = document.createElement("div");
+  shot.id = S.SWAP_SHOT_ID;
+  document.body.appendChild(shot);
+  mem.set(S.SWAP_SHOT_KEY, "data:image/png;base64,AAAA");
+  G.requestAnimationFrame = (f: () => void) => setTimeout(f, 0);
+  S.revealAfterSwap();
+  assert.equal(mem.has(S.SWAP_SHOT_KEY), false);
+  await new Promise((r) => setTimeout(r, S.SHOT_FADE_MS + 120));
+  assert.equal(document.getElementById(S.SWAP_SHOT_ID), null);
+});

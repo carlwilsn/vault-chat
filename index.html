@@ -6,13 +6,22 @@
     <title>vault-chat</title>
     <script>
       // Set theme synchronously before any paint, so the first frame matches
-      // the user's chosen theme.
-      try {
-        var t = localStorage.getItem("vault_chat_theme");
+      // the user's chosen theme: a core swap's own (src/coreSwap.ts), this
+      // window's copy, then the laptop's (src/firstTheme.ts: keep in step).
+      (function () {
+        var t = null;
+        try {
+          var sw = sessionStorage.getItem("vc.coreSwap");
+          if (sw) t = JSON.parse(sw).theme || null;
+        } catch (e) {}
+        try {
+          if (t !== "light" && t !== "graphite") t = sessionStorage.getItem("vc.theme");
+        } catch (e) {}
+        try {
+          if (t !== "light" && t !== "graphite") t = localStorage.getItem("vault_chat_theme");
+        } catch (e) {}
         document.documentElement.dataset.theme = t === "light" ? "light" : "graphite";
-      } catch (e) {
-        document.documentElement.dataset.theme = "graphite";
-      }
+      })();
     </script>
     <style>
       /* Critical CSS — applied on the first WebView paint, before Vite
@@ -33,6 +42,17 @@
       #root { height: 100%; }
       html.vc-swapping #vault-splash { display: none; }
       html.vc-swapping #root { visibility: hidden; }
+      /* A core swap's picture of the old screen: the first frame, until the
+         restored screen fades in under it (src/coreSwap.ts revealAfterSwap). */
+      #vc-swap-shot {
+        position: fixed;
+        inset: 0;
+        z-index: 10000;
+        pointer-events: none;
+        background-repeat: no-repeat;
+        background-position: 0 0;
+        background-size: 100% 100%;
+      }
 
       /* Splash sits on top of #root while React mounts and the initial
          vault/file listing resolves. It fades out the moment the app
@@ -75,6 +95,21 @@
   </head>
 
   <body>
+    <script>
+      // A core swap: paint the picture of the old screen as the very first frame (src/coreSwap.ts), so the reload
+      // shows no blank. Before #root, so nothing of the new screen is drawn before it.
+      try {
+        if (sessionStorage.getItem("vc.coreSwap")) {
+          var shot = sessionStorage.getItem("vc.coreSwapShot");
+          if (shot && shot.indexOf("data:image/") === 0) {
+            var d = document.createElement("div");
+            d.id = "vc-swap-shot";
+            d.style.backgroundImage = 'url("' + shot + '")';
+            document.body.appendChild(d);
+          }
+        }
+      } catch (e) {}
+    </script>
     <div id="root"></div>
     <div id="vault-splash"><span class="dot"></span>vault-chat</div>
     <script>
@@ -84,7 +119,11 @@
       try {
         if (sessionStorage.getItem("vc.coreSwap")) {
           document.documentElement.classList.add("vc-swapping");
-          setTimeout(function () { document.documentElement.classList.remove("vc-swapping"); }, 6000);
+          setTimeout(function () {
+            document.documentElement.classList.remove("vc-swapping");
+            var d = document.getElementById("vc-swap-shot");
+            if (d) d.remove();
+          }, 6000);
         }
       } catch (e) {}
     </script>

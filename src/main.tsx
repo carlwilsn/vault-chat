@@ -4,6 +4,7 @@ import { Buffer } from "buffer";
 // runs.
 (globalThis as any).Buffer ??= Buffer;
 
+import { firstPaintTheme } from "./firstTheme";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
@@ -55,9 +56,9 @@ setInterval(() => {
   flushDebugLogToDisk(useStore.getState().vaultPath).catch(() => {});
 }, 45_000);
 
-const savedTheme = localStorage.getItem("vault_chat_theme");
-document.documentElement.dataset.theme = savedTheme === "light" ? "light" : "graphite";
-applyHljsTheme(savedTheme === "light" ? "light" : "graphite");
+const savedTheme = firstPaintTheme();
+document.documentElement.dataset.theme = savedTheme;
+applyHljsTheme(savedTheme);
 
 const view = new URLSearchParams(window.location.search).get("view");
 const isPopout = view === "chat";

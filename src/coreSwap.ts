@@ -7,18 +7,32 @@
 // painted and the webview keeps the old frame up (Chromium's paint holding: a same-origin load shows the old page
 // until the new one first paints content); the new bundle puts everything back once its vault and chats are loaded
 // (restoreAfterSwap, main.tsx) and only then shows itself. A swap older than SWAP_MAX_MS is not restored (a crash, a
-// later launch: a fresh start). A picture of the old screen (src/screenCapture.ts) was tried and dropped: its fonts and
-// layout are close, not the same, so the hand-over showed a jump.
+// later launch: a fresh start).
+// The old frame is not held that long on Carl's laptop (WebView2 drops it on the reload: a ~1.4 s blank, dark on his
+// light theme), so the swap also keeps a picture of the screen (src/screenCapture.ts, at the window's own pixels) in
+// sessionStorage: index.html paints it as the very first frame, and the restored screen fades in over it (SHOT_FADE_MS),
+// so the small differences of the drawing never show as a jump. The theme rides along (src/firstTheme.ts): the first
+// frame is never the wrong colour.
 import { useStore, type Pane, type SplitDirection } from "./store";
 
 /** index.html reads this key by name before any script loads: keep the two in step. */
 export const SWAP_KEY = "vc.coreSwap";
 export const SWAP_MAX_MS = 60_000;
+/** index.html reads this key by name too: the picture of the screen (a data: URL). */
+export const SWAP_SHOT_KEY = "vc.coreSwapShot";
+/** The id index.html gives the picture's element. */
+export const SWAP_SHOT_ID = "vc-swap-shot";
+/** How long the restored screen fades in over the picture. */
+export const SHOT_FADE_MS = 160;
+/** A picture bigger than this (characters) is not kept: sessionStorage has ~5 M. */
+const SHOT_MAX_CHARS = 3_500_000;
 /** Pane text kept as it is (unsaved edits included) up to this much in all; over it the files are read again. */
 const PANE_TEXT_MAX = 1_500_000;
 
 export type SwapState = {
   at: number;
+  /** The theme the window shows (index.html paints its first frame in it). */
+  theme?: "graphite" | "light";
   vault: string | null;
   conv: string | null;
   scroll: { top: number; atBottom: boolean } | null;
@@ -50,6 +64,7 @@ export function swapStateNow(draft: SwapState["draft"], now = Date.now()): SwapS
   const el = chatScroller();
   return {
     at: now,
+    theme: s.theme === "light" ? "light" : "graphite",
     vault: s.vaultPath,
     conv: s.activeConversationId,
     scroll: el ? { top: el.scrollTop, atBottom: el.scrollHeight - el.scrollTop - el.clientHeight < 40 } : null,
@@ -78,6 +93,8 @@ export async function saveSwapState(): Promise<SwapState | null> {
     /* no composer here */
   }
   const st = swapStateNow(draft);
+  // The picture first, while the screen is still exactly as Carl sees it (no more than ~2 s; without it the swap still runs).
+  const shot = await screenPicture();
   // The load that follows is on purpose: the window's leave guard (src/linkNav.ts) stands aside for it.
   if (typeof window !== "undefined") (window as { __vcCoreSwapping?: boolean }).__vcCoreSwapping = true;
   try {
@@ -96,7 +113,27 @@ export async function saveSwapState(): Promise<SwapState | null> {
       return null;
     }
   }
+  try {
+    store.removeItem(SWAP_SHOT_KEY);
+    if (shot) store.setItem(SWAP_SHOT_KEY, shot);
+  } catch {
+    /* too big for what is left: the theme-coloured frame instead */
+  }
   return st;
+}
+
+/** The window as Carl sees it, at its own pixels, as a data: URL; null when it can't be drawn in time. Never throws. */
+async function screenPicture(): Promise<string | null> {
+  try {
+    if (typeof window === "undefined") return null;
+    const { captureWindow } = await import("./screenCapture");
+    const px = Math.round(window.innerWidth * (window.devicePixelRatio || 1));
+    const c = await captureWindow("window", { maxWidth: Math.min(Math.max(px, 1), 4096), timeoutMs: 2000 });
+    const url = `data:${c.mimeType};base64,${c.data}`;
+    return url.length <= SHOT_MAX_CHARS ? url : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The kept state, once (it is removed), or null when none or too old. */
@@ -116,7 +153,21 @@ export function takeSwapState(now = Date.now()): SwapState | null {
 
 /** Show the new screen (index.html kept it hidden on a swap's load). */
 export function revealAfterSwap(): void {
-  if (typeof document !== "undefined") document.documentElement.classList.remove("vc-swapping");
+  if (typeof document === "undefined") return;
+  document.documentElement.classList.remove("vc-swapping");
+  try {
+    ss()?.removeItem(SWAP_SHOT_KEY);
+  } catch {
+    /* gone already */
+  }
+  const shot = document.getElementById(SWAP_SHOT_ID);
+  if (!shot) return;
+  // The restored screen is under it now: fade the picture out, then drop it.
+  shot.style.transition = `opacity ${SHOT_FADE_MS}ms ease-out`;
+  requestAnimationFrame(() => {
+    shot.style.opacity = "0";
+    setTimeout(() => shot.remove(), SHOT_FADE_MS + 40);
+  });
 }
 
 export type RestoreDeps = {

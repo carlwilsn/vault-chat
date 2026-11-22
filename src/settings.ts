@@ -10,6 +10,7 @@
 // Moving the laptop's own old values: once, when the box has no record for a setting this laptop kept itself
 // (the theme, the fullscreen chat's sidebar), the laptop sends its value (POST {migrate}: set only where no record is).
 
+import { keepTheme } from "./firstTheme";
 import { useEffect, useState } from "react";
 import { useStore } from "./store";
 import { boxGet, boxLinkFor, boxPost, type Link } from "./boxChat";
@@ -55,7 +56,7 @@ export function setting<K extends SettingKey>(key: K): SettingValue {
 /** The local copy (what first paint reads) for the settings that have one. */
 function cache(key: SettingKey, v: SettingValue): void {
   try {
-    if (key === "theme") localStorage.setItem("vault_chat_theme", String(v));
+    if (key === "theme") keepTheme(v === "light" ? "light" : "graphite");
     else if (key === "chatSidebar") localStorage.setItem("vc_chat_sidebar", v ? "1" : "0");
     else if (key === "voice") localStorage.setItem("vault_chat_elevenlabs_voice", String(v));
   } catch {

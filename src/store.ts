@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { firstPaintTheme, keepTheme } from "./firstTheme";
 import { isPopout } from "./windowKind";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
@@ -243,7 +244,6 @@ export type Keys = Record<string, string>;
 /** Claude Code's sign-in: not a key (src/keyEnv.ts NOT_FOR_COMMANDS). */
 export type ServiceKeys = { claudeCode?: string };
 
-const THEME_STORAGE = "vault_chat_theme";
 const CHAT_SIDEBAR_STORAGE = "vc_chat_sidebar";
 
 /** Fullscreen chat's sidebar: open unless it was last closed. */
@@ -288,8 +288,7 @@ function persistActiveConvId(vault: string | null, id: string | null): void {
 export type Theme = "graphite" | "light";
 
 function loadTheme(): Theme {
-  const raw = localStorage.getItem(THEME_STORAGE);
-  return raw === "light" ? "light" : "graphite";
+  return firstPaintTheme();
 }
 
 /** Read every key (and the Claude sign-in) from the OS keychain into memory.
@@ -1120,12 +1119,12 @@ export const useStore = create<State>((set) => ({
     void import("./settings").then((m) => m.saveSetting("theme", t)).catch(() => {});
   },
   applyTheme: (t) => {
-    localStorage.setItem(THEME_STORAGE, t);
+    keepTheme(t);
     set({ theme: t });
     emit("theme:changed", t).catch(() => {});
   },
   applyThemeFromEvent: (t) => {
-    localStorage.setItem(THEME_STORAGE, t);
+    keepTheme(t);
     set({ theme: t });
   },
   setBoxToken: (token) => {
