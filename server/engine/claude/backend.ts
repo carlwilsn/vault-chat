@@ -77,24 +77,25 @@ export const OWN_WEB_TOOLS: readonly string[] = ["WebSearch"];
  * style". So every Claude Code tool is on, and nothing asks permission
  * (session.ts runs bypassPermissions). Off are only the tools that cannot work
  * in a headless session — they wait for a person in Anthropic's own apps, or
- * act on an app surface vault-chat does not have — and the few vault-chat
- * replaces with its own, so the agent never has two of one thing (vault-chat's
- * TodoWrite draws the chat's plan; its ScheduleWake survives a restart, a
- * session's own cron does not).
+ * act on an app surface vault-chat does not have — and the wakes vault-chat
+ * keeps itself, so the agent never has two of one thing (its ScheduleWake
+ * survives a restart, a session's own cron does not; report 24 §5 #1).
+ * Claude Code's own TodoWrite is on: the chat's plan is its last call
+ * (src/convlog/reduce.ts reads any TodoWrite call).
  */
 export const APP_ONLY_TOOLS: readonly string[] = [
   "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "EndConversation", "OfferChromeSetup", "ShowOnboardingRolePicker",
   "ShareOnboardingGuide", "SendUserMessage", "SendUserFile", "PushNotification", "SendFeedback", "ReportFindings",
   "ClaudeDesign", "Artifact", "DesignSync", "Projects", "propose_skills", "ProposeGoal", "RemoteTrigger",
   "ReadNotifications", "SubagentHandback",
-  "TodoWrite", "ScheduleWakeup", "CronCreate", "CronDelete", "CronList",
+  "ScheduleWakeup", "CronCreate", "CronDelete", "CronList",
 ];
 
 /** Every built-in a conversation (and a worker) has. */
 export const OWN_TOOLS: readonly string[] = CLAUDE_BUILTINS_OFF.filter((n) => !APP_ONLY_TOOLS.includes(n));
 
 /** Conversation tools a worker never gets: they belong to the turn that started it. */
-const NOT_FOR_WORKERS = new Set(["AskUser", "SubmitChange", "TodoWrite", "ScheduleWake"]);
+const NOT_FOR_WORKERS = new Set(["AskUser", "SubmitChange", "ScheduleWake"]);
 
 /** A background worker (background()): its own Claude Code session, run to one result. */
 type Worker = {

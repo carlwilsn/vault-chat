@@ -359,6 +359,7 @@ describe("the model's chats noun", () => {
     restoreProject: "the app's Undo toast after a project delete, a transient control",
     openProject: "Carl's spoken / typed ask to move his screens and call to a project",
     post: "handing work to the chat that owns it",
+    compact: "the chat's own Compact (its header menu, the compact intent), not the chat list's",
   };
   const calls: string[] = [];
   const ok = (t: string) => async () => (calls.push(t), { ok: true, text: t });
@@ -376,6 +377,8 @@ describe("the model's chats noun", () => {
     restoreProject: ok("restoreProject"),
     openProject: ok("openProject"),
     post: ok("post"),
+    compact: ok("compact"),
+    cost: async () => ({ ok: true, text: "$0.10" }),
   };
 
   it("parity: every chat-list control that changes a chat is a model action; the old tools are gone", () => {
@@ -387,7 +390,7 @@ describe("the model's chats noun", () => {
     expect(changing.filter((k) => !(k in AGENT_ONLY)).sort()).toEqual(want.sort());
     for (const k of Object.keys(VIEW)) expect(ui, `${k} is no longer a chat-list control: drop it from VIEW`).toContain(k);
     const names = agentToolSpecs().map((t) => t.name);
-    for (const old of ["ListConversations", "ReadConversation", "ListProjects", "RenameConversation", "DeleteConversation", "RestoreConversation", "RestoreProject", "OpenProject", "PostToConversation"]) expect(names).not.toContain(old);
+    for (const old of ["TodoWrite", "Cost", "Compact", "ListConversations", "ReadConversation", "ListProjects", "RenameConversation", "DeleteConversation", "RestoreConversation", "RestoreProject", "OpenProject", "PostToConversation"]) expect(names).not.toContain(old);
     expect(noun("chats", deps), "no chats noun without the engine").toBeNull();
   });
 

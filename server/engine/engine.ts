@@ -443,47 +443,6 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
-    name: "TodoWrite",
-    description:
-      "Keep a short to-do list Carl sees in the chat while you work on a task with 3+ steps: lay out the plan at the start, then call again after each step with the updated statuses. Each item: content (imperative), status (pending | in_progress | completed), optional activeForm (\"Reading the file\") shown while in progress. At most one in progress.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        todos: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: { content: { type: "string" }, status: { type: "string", enum: ["pending", "in_progress", "completed"] }, activeForm: { type: "string" } },
-            required: ["content", "status"],
-            additionalProperties: false,
-          },
-        },
-      },
-      required: ["todos"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "Cost",
-    readOnly: true,
-    description: "Model spend in USD: this conversation by default, or a project's total.",
-    inputSchema: {
-      type: "object",
-      properties: { conversation: { type: "string" }, project: { type: "string" } },
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "Compact",
-    readOnly: true,
-    description:
-      "Compact this conversation's context now (pi's own summary of the earlier conversation; the raw history stays in its file), when Carl asks for it (\"compact\", \"/compact\", \"make the context smaller\"). Optional `focus`: what the summary must keep. It runs when the current turn ends. Never on your own: compaction also happens automatically.",
-    inputSchema: { type: "object", properties: { focus: { type: "string" } }, additionalProperties: false },
-  },
-  {
-    type: "function",
     name: "Lookup",
     description:
       "Find something in Carl's notes and PDFs (lecture notes, homework) and read it, in one call: give his words (and part of a file name if you know it). Returns the best-matching passages with the lines around them (a PDF's with its page), from the files that match best. Use it instead of a find, grep, read chain.",
@@ -533,7 +492,7 @@ export const handoffSpec = {
   },
 };
 /** The agent's tools a side thread can't use: they belong to a turn (its question, plan, job, wake). */
-const TURN_ONLY_TOOLS = new Set(["AskUser", "SubmitChange", "TodoWrite", "StartJob", "ScheduleWake"]);
+const TURN_ONLY_TOOLS = new Set(["AskUser", "SubmitChange", "StartJob", "ScheduleWake"]);
 /** Voice's Ask (server/voice.ts), a side thread: a question has the read-only tools and Show; an action every tool a
  *  side thread can use (Show, the notes …), with pi's own file tools (sideStart). */
 export function voiceSideToolSpecs(act: boolean): ToolSpec[] {
@@ -806,7 +765,7 @@ export class Engine {
       if (context.conversation && !(await readConv(this.d.vault, context.conversation))) return null;
       // Only what this caller may run is listed: a tool that needs an owning turn (its question, plan,
       // job, wake) is left out rather than listed and then refused.
-      const builtin = agentToolSpecs().filter((t) => !TURN_ONLY_TOOLS.has(t.name) && t.name !== "Compact").map((t) => t.name === "RecordUI" ? { ...t, description: `${t.description} External clients: browser-only http(s) pages; run steps and local-file navigation are refused. Omit out: a fresh vault visuals directory is allocated.` } : t);
+      const builtin = agentToolSpecs().filter((t) => !TURN_ONLY_TOOLS.has(t.name)).map((t) => t.name === "RecordUI" ? { ...t, description: `${t.description} External clients: browser-only http(s) pages; run steps and local-file navigation are refused. Omit out: a fresh vault visuals directory is allocated.` } : t);
       const fs = await this.d.backend.filesystem(this.d.vault, PI_BUILTIN_TOOLS.filter((n) => n !== "bash"), { fileWrite: async () => true }, this.d.vault);
       const specs = [...builtin, ...fs.specs] as ToolSpec[];
       const listed = new Set(specs.map((t) => t.name));
@@ -818,7 +777,7 @@ export class Engine {
           return `Bound device: ${context.device}; conversation: ${context.conversation ?? "none"}.\n${(await this.scoped(() => this.you({ convId: context.conversation, since: null }))).text}`;
         },
         call: async (name: string, args: Record<string, unknown>, contextOfCall: { signal: AbortSignal }) => this.scoped(async () => {
-          if (TURN_ONLY_TOOLS.has(name) || name === "Compact") return { ok: false, text: `${name} needs an owning vault-chat turn; an external MCP client cannot borrow a chat's live turn.` };
+          if (TURN_ONLY_TOOLS.has(name)) return { ok: false, text: `${name} needs an owning vault-chat turn; an external MCP client cannot borrow a chat's live turn.` };
           if (!listed.has(name)) return { ok: false, text: `${name} is not available to external MCP clients.` };
           if (PI_BUILTIN_TOOLS.includes(name)) return fs.call(name, args, { ...contextOfCall, requestId: "external" });
           if (name === "RecordUI") return externalRecordUI(this.d.shell?.(), this.d.vault, args,
@@ -1514,6 +1473,24 @@ export class Engine {
         return r.ok ? { ok: true, text: `Restored project ${r.name}: its notes and its thread (${r.convId}) are back on his screens.` } : { ok: false, text: `Not restored: ${r.error}.` };
       },
       openProject: async (args) => said(await openProject(vault, args, { emit: (ev) => this.d.broadcast?.(ev), message: (b) => this.message(b) })),
+      compact: async (id, focus) => {
+        const target = id || self;
+        if (!target) return { ok: false, text: "compact needs a chat: this request has none. Nothing was run." };
+        if (!this.picture(target)) return { ok: false, text: `No chat ${target}.` };
+        void this.compact(target, focus).then((r) => {
+          if (r && r.ok === false) this.log(`compact on ${target}: ${String(r.error)}`);
+        });
+        return { ok: true, text: `Compaction of ${target === self ? "this chat" : target} starts as soon as ${target === self ? "this turn ends" : "its turn is free"} (the thread then shows "Earlier conversation summarized"). Tell Carl in one line; don't wait for it.` };
+      },
+      cost: async (id, project) => {
+        if (project) {
+          const pc = projectCost(project, (await allConvs(vault, { withDeleted: true })) as any);
+          return pc ? { ok: true, text: `Project ${pc.name}: $${pc.totalUsd.toFixed(4)} over ${pc.parts.length} conversation(s)${pc.missingCalls ? ` (${pc.missingCalls} call(s) without a cost)` : ""}.` } : { ok: false, text: `No project "${project}".` };
+        }
+        const target = id ? await readConv(vault, id) : self ? await readConv(vault, self) : null;
+        if (!target) return { ok: false, text: id ? `No chat ${id}.` : "cost needs id or project: this request has no chat." };
+        return { ok: true, text: `Chat "${target.title}": $${(target.costUsd ?? 0).toFixed(4)}${target.costMissingCalls ? ` (+${target.costMissingCalls} call(s) without a cost)` : ""}. (Costs land a few seconds after each turn.)` };
+      },
       post: async (target, body) => {
         if (!target || !body) return { ok: false, text: "post needs id and text. Nothing was posted." };
         if (target === self) return { ok: false, text: "That is this chat. Answer here instead of posting to yourself." };
@@ -3198,35 +3175,6 @@ export class Engine {
         }
         case "RecordUI":
           return text(await recordUITool(this.d.shell?.(), vault, a, { cwd: this.cwdOf(conv) }));
-        case "Compact": {
-          if (!convId) return text("No conversation to compact.");
-          void this.compact(convId, typeof a.focus === "string" ? a.focus : undefined).then((r) => {
-            if (r && r.ok === false) this.log(`compact on ${convId}: ${String(r.error)}`);
-          });
-          return text("Compaction starts as soon as this turn ends (the thread then shows \"Earlier conversation summarized\"). Tell Carl in one line; don't wait for it.");
-        }
-        case "TodoWrite": {
-          const todos = (Array.isArray(a.todos) ? a.todos : [])
-            .slice(0, 30)
-            .map((t: any) => ({
-              content: String(t?.content ?? "").slice(0, 300),
-              status: t?.status === "completed" || t?.status === "in_progress" ? t.status : "pending",
-              ...(t?.activeForm ? { activeForm: String(t.activeForm).slice(0, 300) } : {}),
-            }))
-            .filter((t: { content: string }) => t.content.trim());
-          // The plan is the call itself (pi's toolCall carries it; the reducer reads the last one).
-          const n = (st: string) => todos.filter((t: { status: string }) => t.status === st).length;
-          return text(`updated: ${todos.length} items (${n("completed")} done, ${n("in_progress")} active, ${n("pending")} pending)`);
-        }
-        case "Cost": {
-          if (a.project) {
-            const pc = projectCost(String(a.project), (await allConvs(vault, { withDeleted: true })) as any);
-            return text(pc ? `Project ${pc.name}: $${pc.totalUsd.toFixed(4)} over ${pc.parts.length} conversation(s)${pc.missingCalls ? ` (${pc.missingCalls} call(s) without a cost)` : ""}.` : `No project "${a.project}".`);
-          }
-          const target = a.conversation ? await readConv(vault, String(a.conversation)) : conv.id ? conv : null;
-          if (!target) return text(`No conversation ${a.conversation}.`);
-          return text(`Conversation "${target.title}": $${(target.costUsd ?? 0).toFixed(4)}${target.costMissingCalls ? ` (+${target.costMissingCalls} call(s) without a cost)` : ""}. (Costs land a few seconds after each turn.)`);
-        }
         default: {
           return { success: false, contentItems: [{ type: "inputText", text: `Unknown tool ${name}.` }] };
         }

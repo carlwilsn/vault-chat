@@ -231,7 +231,7 @@ Lookup/PdfRead/PdfPages,
 Notify,
 WebFetch, Cost, RecordUI (browser-only), and the `vault-chat://context/you`
 resource. Not listed (they need an owning
-vault-chat turn): AskUser, SubmitChange, TodoWrite, StartJob, ScheduleWake,
+vault-chat turn): AskUser, SubmitChange, StartJob, ScheduleWake,
 Compact, box:jobs stop/steer; nor a shell (above).
 The outside client's own file and shell tools are its own, on its own machine.
 

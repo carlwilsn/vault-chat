@@ -287,13 +287,14 @@ describe("one context, several surfaces: Clear is per surface, /compact compacts
     expect(next.text).toContain("- 2026-10-21: the essay is due Friday");
   });
 
-  it("the Compact tool (Carl asks in words or by voice): runs when the turn ends, never inside it", async () => {
+  it("box:chats compact (Carl asks in words or by voice): runs when the turn ends, never inside it", async () => {
     const before = rig.backend.turns.length;
     const n0 = (rig.backend as any).compactions.length;
     await rig.engine.message({ text: "Compact the context please.", client: "laptop" });
     await until(() => rig.backend.turns.length > before);
-    const r = await rig.backend.call(tid, "Compact", { focus: "open tasks" });
+    const r = await rig.backend.call(tid, "PluginAct", { plugin: "box:chats", action: "compact", args: { focus: "open tasks" } });
     expect(r.text).toMatch(/starts as soon as this turn ends/);
+    expect(r.text).toMatch(/Compaction of this chat/);
     await new Promise((x) => setTimeout(x, 200));
     expect((rig.backend as any).compactions.length).toBe(n0);
     rig.backend.end(tid);

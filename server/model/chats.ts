@@ -6,7 +6,7 @@
 // owns it). Where the list is on screen (open, expand, Show more, the panel) stays app/chats: that is the laptop's view.
 // Watched by re-reading every 2 s (a chat changes through each vault's own log, not one event).
 // Was the ListConversations, ReadConversation, ListProjects, RenameConversation, DeleteConversation,
-// RestoreConversation, RestoreProject, OpenProject and PostToConversation tools.
+// RestoreConversation, RestoreProject, OpenProject and PostToConversation tools, and (piece D) Compact and Cost.
 import type { ActResult, Noun } from "./index";
 
 /** What the engine gives the noun for one asking conversation (`self`: its id, "" for an outside client). */
@@ -24,6 +24,8 @@ export type ChatsCtl = {
   restoreProject: (project: string) => Promise<ActResult>;
   openProject: (args: Record<string, unknown>) => Promise<ActResult>;
   post: (id: string, text: string) => Promise<ActResult>;
+  compact: (id?: string, focus?: string) => Promise<ActResult>;
+  cost: (id?: string, project?: string) => Promise<ActResult>;
 };
 
 const obj = (props: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties: props, required, additionalProperties: false });
@@ -65,6 +67,12 @@ export function chatsNoun(ctl: ChatsCtl): Noun {
         args: obj({ project: str("its name or slug") }, ["project"]),
         run: (a) => ctl.projects(s(a.project)),
       },
+      cost: {
+        readOnly: true,
+        description: "model spend in USD: this chat by default, another by id, or a project's total",
+        args: obj({ id: str("a chat's id (default: this chat)"), project: str("a project's name or slug: its total") }),
+        run: (a) => ctl.cost(s(a.id) || undefined, s(a.project) || undefined),
+      },
       deleted: {
         readOnly: true,
         description: "what Carl deleted and restore / restoreProject can bring back: chats and projects, newest first",
@@ -104,6 +112,11 @@ export function chatsNoun(ctl: ChatsCtl): Noun {
         description: "only when Carl asks in so many words (\"start a project for HW4\": create true; \"let's work on Physics\"; \"back to Main\": project \"main\"): makes or finds it, and his screens and a live call move to its thread. request: what he asked to be done there (that thread does it, not you)",
         args: obj({ project: str("its name as Carl said it, or main"), create: { type: "boolean", description: "he asked to start (make) one" }, request: str("what he asked to be done there, in his words") }, ["project"]),
         run: (a) => ctl.openProject(a),
+      },
+      compact: {
+        description: "compact a chat's context now (a summary of the earlier conversation; the raw history stays), only when Carl asks (\"compact\", \"/compact\", \"make the context smaller\"); it runs when the turn ends. focus: what the summary must keep",
+        args: obj({ id: str("the chat (default: this chat)"), focus: str("what the summary must keep") }),
+        run: (a) => ctl.compact(s(a.id) || undefined, s(a.focus) || undefined),
       },
       post: {
         description: "hand work to the chat that already owns it: posts a message there, which starts its own turn (it tells Carl itself; don't wait). Never this chat, never for something Carl should just be told (Notify)",
