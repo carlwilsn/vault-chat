@@ -49,7 +49,6 @@ import { lastHostBuild } from "../hostBuild";
 import { storedCores, coreStateDir } from "../coreBundles";
 import { pdfPagesAnswer, pdfPagesSpec, pdfRead, webFetch, webFetchSpec } from "./extraTools";
 import { show, SHOW_DESCRIPTION, SHOW_SCHEMA } from "../show";
-import { layoutTool, LAYOUT_DESCRIPTION, LAYOUT_SCHEMA } from "../layoutTool";
 import { pluginOfferTool, pluginOfferToolSpecs } from "../pluginOffersTool";
 import { screenTool, SCREEN_DESCRIPTION, SCREEN_SCHEMA } from "../screenTool";
 import { laptopBuildTool, LAPTOP_BUILD_DESCRIPTION, LAPTOP_BUILD_SCHEMA } from "../hostBuild";
@@ -461,12 +460,6 @@ export const ENGINE_TOOL_SPECS = [
     name: "Show",
     description: SHOW_DESCRIPTION,
     inputSchema: SHOW_SCHEMA as unknown as Record<string, unknown>,
-  },
-  {
-    type: "function",
-    name: "Layout",
-    description: LAYOUT_DESCRIPTION,
-    inputSchema: LAYOUT_SCHEMA as unknown as Record<string, unknown>,
   },
   {
     type: "function",
@@ -3205,10 +3198,6 @@ export class Engine {
             return { success: false, contentItems: [{ type: "inputText", text: "Nothing opened: Carl said he is away from his laptop. Keep it in the reply, or Notify him if he should see it on his phone (it lands in its alerts)." }] };
           }
           const r = await show({ vault, device: interaction.device, emit: (ev) => this.d.broadcast?.(ev), dev: (port) => this.devUrl(port), vaults: this.d.vaultList }, a);
-          return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
-        }
-        case "Layout": {
-          const r = await layoutTool({ vault, emit: (ev) => this.d.broadcast?.(ev) }, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "PluginRead":

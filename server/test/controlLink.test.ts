@@ -14,7 +14,9 @@ import { _setChangeLineSink, gateOutcome, type ChangeLine } from "../changeNotic
 import { youLayer } from "../activity";
 import { chatSeen, controlDown, linkState, linkStates, noteAnswer, resetLinks } from "../deviceLink";
 import { screenTool } from "../screenTool";
-import { layoutTool, LAYOUT_DESCRIPTION } from "../layoutTool";
+import { layoutTool, resetKeptLayout } from "../layoutTool";
+import { actBoxOffer, readBoxOffer } from "../boxOffers";
+import { agentToolSpecs } from "../engine/engine";
 
 const home = mkdtempSync(join(tmpdir(), "vc-ctrllink-"));
 const A = join(home, "school2");
@@ -118,7 +120,7 @@ describe("the control link follows the laptop across a vault switch", () => {
   });
 });
 
-describe("Layout openChat", () => {
+describe("the layout (box:workspace) openChat", () => {
   const layout = { panes: [{ pane: "left", path: "a.md" }], chat: { open: true } };
   const answer = (s: Sig) => {
     if (s.type === "plugin") {
@@ -169,8 +171,30 @@ describe("Layout openChat", () => {
     }
   });
 
-  it("the tool descriptions point at openChat, not clicks", () => {
-    expect(LAYOUT_DESCRIPTION).toMatch(/openChat \{id\}/);
+  it("the tool descriptions point at box:workspace's openChat, not clicks", () => {
+    const act = agentToolSpecs().find((t) => t.name === "PluginAct")!.description;
+    expect(act).toMatch(/box:workspace.*"openChat" \{id\}/s);
+  });
+
+  it("is box:workspace: an action answers with what was done and the layout read back once, kept on the box", async () => {
+    resetKeptLayout();
+    const app = laptopOn(A, answer);
+    try {
+      const d = { vault: A, emit: (ev: Record<string, unknown>) => signal(A, ev), ackMs: 3000 };
+      const r = await actBoxOffer(d, "box:workspace", "openChat", { id: "main" });
+      expect(r.ok).toBe(true);
+      expect(r.text).toContain('- openChat: done (open now: {"id":"main","title":"Main","place":"main"})');
+      expect(r.state!.layout).toMatchObject({ ...layout, openChat: { id: "main", title: "Main", place: "main" } });
+      // The read-back is the action's own ack: the laptop was asked once for the chat, once for the layout.
+      expect(app.seen.map((s) => s.type)).toEqual(["plugin", "layout"]);
+      const extra = await actBoxOffer(d, "box:workspace", "openChat", {});
+      expect(extra.text).toMatch(/needs id\. Nothing was run/);
+    } finally {
+      app.close();
+    }
+    // Read again at once: the kept read-back, the laptop not asked again.
+    const r = await readBoxOffer({ vault: A, emit: () => {} }, "box:workspace");
+    expect(JSON.stringify(r.state!.layout)).toContain(JSON.stringify(layout.panes));
   });
 });
 

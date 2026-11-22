@@ -1,6 +1,6 @@
 // The model on the box (server/model/, report 24 §4) and its parity check: every way the app changes a moved noun is an
 // action of that noun on the box, and every action the box has is one the app has. Listed from the app's own source,
-// so a new control that bypasses the model fails here. Settings (noun 1), notes (noun 2), pages (noun 3).
+// so a new control that bypasses the model fails here. Settings (noun 1), notes (noun 2), pages (noun 3), workspace (noun 4).
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -233,5 +233,26 @@ describe("the model's pages noun", () => {
     expect((r.state!.list as any).parts).toEqual(["app/notes: off (by agent)"]);
     expect((await actBoxOffer(deps, "box:pages", "disable", { plugin: "nothing-here" })).text).toMatch(/no page in the vault is named nothing-here; nothing changed/);
     expect(await nextChange(noun("pages", deps)!, 30)).toBe(false);
+  });
+});
+
+describe("the model's workspace noun", () => {
+  it("parity: every layout op the app has (src/layoutOps.ts, what the title bar and plugins call) is a workspace action", () => {
+    // Read from source (src/layoutOps.ts imports the app's store).
+    const ops = readFileSync(join(SRC, "layoutOps.ts"), "utf8");
+    const LAYOUT_OPS = JSON.parse(`[${/export const LAYOUT_OPS = \[([^\]]+)\]/.exec(ops)![1]}]`) as string[];
+    const app = new Set<string>([...LAYOUT_OPS, "openChat"]);
+    // Every op the app applies is listed in LAYOUT_OPS (a case in applyOne that is not listed would bypass the model).
+    for (const m of ops.matchAll(/case "(\w+)":/g)) expect(LAYOUT_OPS, `src/layoutOps.ts case ${m[1]}`).toContain(m[1]);
+    const model = new Set(Object.keys(noun("workspace", deps)!.actions).filter((a) => a !== "arrange"));
+    expect([...app].filter((a) => !model.has(a)), "app layout ops the model lacks").toEqual([]);
+    expect([...model].filter((a) => !app.has(a)), "model actions the app lacks").toEqual([]);
+  });
+
+  it("is box:workspace: no link, nothing changed; the Layout tool is gone", async () => {
+    const r = await actBoxOffer(deps, "box:workspace", "closeLeftPanel", {});
+    expect(r.ok).toBe(false);
+    expect(r.text).toMatch(/no link to the laptop here; nothing changed/);
+    expect(agentToolSpecs().map((t) => t.name)).not.toContain("Layout");
   });
 });

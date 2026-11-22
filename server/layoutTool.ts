@@ -1,4 +1,4 @@
-// The agent's Layout tool: see and arrange Carl's laptop screen. It rides Show's channel (server/show.ts): a
+// Seeing and arranging Carl's laptop screen: the transport of the workspace noun (server/model/workspace.ts, box:workspace). It rides Show's channel (server/show.ts): a
 // {type:"layout", id, to:"laptop", ops} signal on the vault's feed, the laptop applies it through the app's own host
 // layout ops (src/layoutOps.ts, the same ones a plugin has as api.host.layout) and acks over POST /api/v1/show/<id>/ack
 // with the layout it read back from the screen. The result is only ever that ack, or an honest "offline" / "didn't confirm".
@@ -13,33 +13,13 @@ import { controlDown, laptopElsewhere, noteAnswer, unansweredNote, vaultName } f
 const OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "split", "focus", "fullscreenChat", "chatSidebar", "openChat"] as const;
 type Op = Record<string, unknown> & { op: string };
 
-export const LAYOUT_DESCRIPTION =
-  "See and arrange what is on Carl's laptop screen: the viewer's panes (a split of two files, \"left\" and \"right\"; stacked: left is the top), the left panel (file tree), the chat (the right panel, or full screen). " +
-  "action \"get\" returns the real layout now (panes and their files, split, which panel is open, chat open / full screen, window size and the width of each column): use it to see what he sees. " +
-  "The other actions: openLeftPanel / closeLeftPanel, openRightPanel / closeRightPanel (the chat panel), closePane {pane: left|right} (a split goes back to one file), openInPane {path, pane: left|right} (turns the split on when one other file is open), split {on: bool} (off keeps the active pane), focus {target: left|right|chat}, fullscreenChat {on: bool}, chatSidebar {open: bool}, openChat {id} (switch the chat pane to a chat: its id, \"main\" for Main, or \"project-<slug>\" for a project's thread; the result names the chat open after it). " +
-  "Several at once: ops: [{action, ...}, ...]. Every call returns the layout read back from the screen after the change (or why one failed, or that the laptop is offline): never tell Carl it changed without that. " +
-  "Use it when he asks to close the side tabs, hide the file tree or chat, put X on the left, make the viewer bigger, or when you need to know what is on his screen. To switch chats use openChat, not clicks in the chat list (clicking a place's bar, Main or a project, only shows or hides its chats). Only the laptop has these panes.";
-
-export const LAYOUT_SCHEMA = {
-  type: "object",
-  properties: {
-    action: { type: "string", enum: ["get", ...OPS], description: "get, or one change." },
-    pane: { type: "string", enum: ["left", "right"], description: "closePane, openInPane." },
-    path: { type: "string", description: "openInPane: the vault-relative file." },
-    id: { type: "string", description: 'openChat: the chat\'s id (ListConversations), "main", or "project-<slug>".' },
-    on: { type: "boolean", description: "split, fullscreenChat." },
-    open: { type: "boolean", description: "chatSidebar." },
-    target: { type: "string", enum: ["left", "right", "chat"], description: "focus." },
-    ops: { type: "array", items: { type: "object" }, description: "Several changes in order, each {action, ...its fields}." },
-  },
-  additionalProperties: false,
-} as const;
-
 export type LayoutDeps = {
   vault: string;
   emit: (ev: Record<string, unknown>) => void;
   /** How long the laptop has to ack (default 25 s: a file in a pane may sync first). */
   ackMs?: number;
+  /** Say only what was done (the workspace noun reads the layout back as its state). */
+  brief?: boolean;
 };
 
 function parseOps(a: Record<string, unknown>): Op[] | string {
@@ -109,7 +89,26 @@ async function openChat(d: LayoutDeps, chat: string, ms: number): Promise<{ step
   return { step: { op: "openChat", ok: true, note: `open now: ${JSON.stringify(open)}` }, open };
 }
 
-export async function layoutTool(d: LayoutDeps, args: Record<string, unknown>): Promise<{ ok: boolean; text: string }> {
+/** The last layout the laptop read back (any layout ack, by anyone), kept on the box: the workspace noun's state. */
+export type KeptLayout = { layout: unknown; at: number; open?: unknown };
+let kept: KeptLayout | null = null;
+const keptListeners = new Set<() => void>();
+export const keptLayout = (): KeptLayout | null => kept;
+export function onLayoutKept(fn: () => void): () => void {
+  keptListeners.add(fn);
+  return () => keptListeners.delete(fn);
+}
+function keep(layout: unknown, open: unknown): void {
+  const was = kept ? JSON.stringify(kept.layout) : "";
+  kept = { layout, at: Date.now(), ...(open !== undefined ? { open } : kept?.open !== undefined ? { open: kept.open } : {}) };
+  if (JSON.stringify(layout) !== was || open !== undefined) for (const f of [...keptListeners]) f();
+}
+/** Tests: forget it. */
+export function resetKeptLayout(): void {
+  kept = null;
+}
+
+export async function layoutTool(d: LayoutDeps, args: Record<string, unknown>): Promise<{ ok: boolean; text: string; layout?: unknown }> {
   const ops = parseOps(args);
   if (typeof ops === "string") return { ok: false, text: ops };
   const down = controlDown("laptop");
@@ -156,9 +155,11 @@ export async function layoutTool(d: LayoutDeps, args: Record<string, unknown>): 
   if (!lost && (batch.length || !ops.length || ops[ops.length - 1]!.op === "openChat")) await flush();
   const done = results.map((r) => `- ${r.op}: ${r.ok ? `done${r.note ? ` (${r.note})` : ""}` : `FAILED: ${r.error}`}`);
   const last = ack as Ack | null;
-  if (!last) return { ok: false, text: [...(done.length ? ["Before the read-back:", ...done] : []), `Sent the layout request to the laptop, but it did not confirm within ${Math.round(ms / 1000)} s (an older app without layout control, or it is busy). Don't tell Carl it changed; use Layout {action: "get"} to check.${unansweredNote("laptop")}`].join("\n") };
+  if (!last) return { ok: false, text: [...(done.length ? ["Before the read-back:", ...done] : []), `Sent the layout request to the laptop, but it did not confirm within ${Math.round(ms / 1000)} s (an older app without layout control, or it is busy). Don't tell Carl it changed; read box:workspace again to check.${unansweredNote("laptop")}`].join("\n") };
   const data = (last.data ?? {}) as { layout?: unknown };
   if (!data.layout) return { ok: false, text: `The laptop answered without a layout${last.error ? `: ${last.error}` : ""} (an older app?). Nothing is confirmed.` };
+  keep(data.layout, open);
+  if (d.brief) return { ok: allOk && last.ok, text: [ops.length ? (allOk ? "Applied." : "Not everything applied:") : "Read the layout from the screen.", ...done, ...(open !== undefined ? [`Open chat (read back from the chat list): ${JSON.stringify(open)}`] : [])].join("\n"), layout: data.layout };
   const text = [
     ops.length ? (allOk ? "Applied." : "Not everything applied:") : "Layout now:",
     ...done,
@@ -167,5 +168,5 @@ export async function layoutTool(d: LayoutDeps, args: Record<string, unknown>): 
     "Layout (read back from the screen):",
     JSON.stringify(data.layout),
   ].join("\n");
-  return { ok: allOk && last.ok, text };
+  return { ok: allOk && last.ok, text, layout: data.layout };
 }

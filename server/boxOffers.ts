@@ -20,6 +20,9 @@ export type BoxOffer = { id: string; name: string; state: Record<string, State>;
 
 export type BoxOfferDeps = {
   vault: string;
+  /** The feed to the devices (box:workspace asks the laptop over it), and how long it has to answer. */
+  emit?: (ev: Record<string, unknown>) => void;
+  ackMs?: number;
   /** The box's state dir (its logs live in <stateDir>/logs). */
   stateDir?: string;
   /** The jobs and workers of the asking conversation, as JobList says them. */
@@ -59,7 +62,7 @@ const str = (description: string) => ({ type: "string", description });
 export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
   const out: BoxOffer[] = [
     // The nouns moved into the model (server/model/): each is a box offer of the same name.
-    ...nouns({ vault: d.vault }).map(nounOffer),
+    ...nouns({ vault: d.vault, emit: d.emit, ackMs: d.ackMs }).map(nounOffer),
     {
       id: "box:links",
       name: "Devices",

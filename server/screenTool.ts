@@ -1,4 +1,4 @@
-// The agent's Screen tool: see Carl's real laptop app. It rides Show's channel (server/show.ts) like Layout: a
+// The agent's Screen tool: see Carl's real laptop app. It rides Show's channel (server/show.ts) like box:workspace: a
 // {type:"capture", id, to:"laptop", target, maxWidth} signal on the vault's feed; the laptop app (the device host that
 // supplies the `capture` service) draws its own window (src/screenCapture.ts, a picture of the app's DOM, not the
 // desktop) and acks over POST /api/v1/show/<id>/ack with {ok, image:{data, mimeType, width, height}}. The result is
@@ -18,7 +18,7 @@ export const SCREEN_MAX_BASE64 = 8_000_000;
 export const SCREEN_DESCRIPTION =
   "See Carl's real laptop app as it looks now: a picture of the vault-chat window (only the app's own window, never the rest of his desktop), downscaled to at most 1600 px wide. " +
   "target: \"window\" (default, the whole app), \"viewer\" (the file viewer column) or \"chat\" (the chat column). " +
-  "Use it to check what he actually sees (after Show or Layout, when he says \"look at my screen\", \"what's wrong with this\", or to confirm a UI change on his laptop), instead of asking him for a screenshot. " +
+  "Use it to check what he actually sees (after Show or box:workspace, when he says \"look at my screen\", \"what's wrong with this\", or to confirm a UI change on his laptop), instead of asking him for a screenshot. " +
   "Laptop only: when the app isn't open and connected it says so (don't guess what is on screen). A viewer HTML page draws itself into the picture (src/pageSnap.ts); other live frames (inline chat pages) are drawn as a labelled box.";
 
 export const SCREEN_SCHEMA = {
