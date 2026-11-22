@@ -87,7 +87,7 @@ export const SETTINGS = {
     applies: "box",
     kind: "boolean",
     default: true,
-    description: "Whether the box builds the laptop app's core (its frontend) from each accepted main and, once it passes the gate, makes it the laptop's current core, with no installer (server/coreBundles.ts): the laptop takes it at a quiet moment and falls back by itself if it does not start; a switch back returns. Off: nothing is built or landed; the installed app's own core runs.",
+    description: "Whether the box builds the laptop app's core (its frontend) from each accepted main and, once it passes the gate, makes it the laptop's current core, with no installer (server/coreBundles.ts): the laptop takes it when Carl presses OK on the Ready card and falls back by itself if it does not start; a switch back returns. Off: nothing is built or landed; the installed app's own core runs.",
   },
   chatSidebar: {
     applies: "window",

@@ -252,6 +252,28 @@ function boxConnectScenarios(): Scenario[] {
       localStorage: { "vc.landedAck": "a".repeat(40) },
       open: [{ sleep: 1500 }],
     })),
+    ...(["graphite", "light"] as const).map((theme) => ({
+      id: theme === "light" ? "core-ready-light" : "core-ready",
+      theme,
+      title: "Ready — a new core waits for OK",
+      group: "Settings",
+      notes:
+        "The gate kept a newer core: the loader fetched and checked it, and nothing swaps by itself. The bottom-right card lists what it brings (the box's GET /api/v2/core/landed/<running>/<offer>) with OK (swap in now; no Landed card after) and Later (hidden until a newer version or the next start). As state: app/titlebar ready, acceptReady, laterReady.",
+      build: (c: BuildCtx) => world(c),
+      host: {
+        sync: { box: { box: THINKBOX, vault: "summer-demo", name: "thinkbox" }, boxes: { [THINKBOX]: { ...thinkbox, vaults: ["summer-demo"] } } },
+        core: {
+          bundles: [{ version: "cccc1111", commitTime: 300, what: "OK gate" }],
+          kept: "cccc1111",
+          landed: [
+            "OK is the gate: a new interface waits on the bottom-right card until Carl presses OK. Later hides it.",
+            "Composer keeps pasted images across a swap.",
+            "Chat list: projects fold by default; the open one stays open.",
+          ],
+        },
+      },
+      open: [{ sleep: 2500 }],
+    })),
     {
       id: "box-connected",
       title: "Settings → Box — connected, disconnect",

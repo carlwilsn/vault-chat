@@ -6,10 +6,11 @@
 //             fallbacks are told to the box (a plugin.change switch by "auto", so the box stops offering what failed
 //             here); the box's offer is checked against the installed shell (its commands and plugins), the box's API
 //             and the installer's own core; a new bundle is fetched and checked by the loader in the background, and
-//             taken at a quiet moment (no input for 5 minutes, nothing in the composer): the loader serves it and every
-//             window reloads. No installer, no restart of the app. The offer is what the records keep: a new bundle
-//             that passed the gate is kept by "gate" on the box (server/gate.ts landCore); a switch back runs
-//             followCoreNow (at once, not at a quiet moment).
+//             the bottom-right Ready card (src/coreReady.ts) says what it brings. Nothing swaps without Carl's OK
+//             there: OK has the loader serve it and every window reloads (Later hides the card until a newer version
+//             or the next start). No installer, no restart of the app. The offer is what the records keep: a new
+//             bundle that passed the gate is kept by "gate" on the box (server/gate.ts landCore); a switch back
+//             (Carl's or the agent's explicit word) runs followCoreNow at once.
 //   swap      before every swap the screen is kept (src/coreSwap.ts): the old frame stays up until the new bundle
 //             has put back the open chat, its scroll, the composer draft and the panes.
 // Only with a box (never a server this app runs itself), only in the native app's main window.
@@ -40,8 +41,6 @@ export type CoreDeps = {
   link: () => Promise<Link | null>;
   get: (link: Link, path: string) => Promise<any>;
   post: (link: Link, path: string, body: Record<string, unknown>) => Promise<any>;
-  /** Whether now is a moment to reload every window (Carl away, nothing typed in the composer). */
-  quiet: () => boolean;
   /** Just before the loader swaps: keep the screen (src/coreSwap.ts saveSwapState). */
   beforeSwap?: () => Promise<unknown>;
   /** Just before the loader swaps: what the window should run after the load, so the new page says plainly whether it
@@ -142,10 +141,10 @@ export async function reportFallbacks(s: CoreStatus, link: Link, offer: CoreOffe
   return wrote;
 }
 
-export type FollowResult = { step: CoreStep | { kind: "none"; why: string }; did: "nothing" | "installed" | "waiting" | "swapped" | "failed"; error?: string };
+export type FollowResult = { step: CoreStep | { kind: "none"; why: string }; did: "nothing" | "installed" | "waiting" | "swapped" | "failed"; error?: string; /** the loader's state it looked at */ status?: CoreStatus };
 
-/** One look at the box's offer, and what follows from it. `swap`: take it now if quiet (else it waits for later);
- *  `now`: a switch back asked for it: take it whether quiet or not. */
+/** One look at the box's offer, and what follows from it. Without `swap` a new bundle is only fetched and checked
+ *  (the Ready card asks Carl); `swap`: take it now (Carl pressed OK, or a switch back); `now`: it is a switch back. */
 export async function followCoreOnce(d: CoreDeps, o: { swap?: boolean; now?: boolean } = {}): Promise<FollowResult> {
   const s = await coreStatus(d.native);
   if (!s) return { step: { kind: "none", why: "an installed app from before the core loader" }, did: "nothing" };
@@ -168,16 +167,16 @@ export async function followCoreOnce(d: CoreDeps, o: { swap?: boolean; now?: boo
     shell: { commands: s.commands, plugins: s.plugins, abi: s.abi },
     boxApi: typeof box.boxApi === "number" ? box.boxApi : null,
   });
-  if (step.kind === "stay") return { step, did: "nothing" };
+  if (step.kind === "stay") return { step, did: "nothing", status: s };
   const version = step.kind === "install" ? step.offer.version : null;
   if (step.kind === "install") {
     try {
       await d.native("core_install", { baseUrl: link.url, token: link.token, version: step.offer.version, sha256: step.offer.sha256 });
     } catch (e) {
-      return { step, did: "failed", error: String((e as Error)?.message ?? e) };
+      return { step, did: "failed", error: String((e as Error)?.message ?? e), status: s };
     }
   }
-  if (!o.swap || (!o.now && !d.quiet())) return { step, did: step.kind === "install" ? "installed" : "waiting" };
+  if (!o.swap) return { step, did: step.kind === "install" ? "installed" : "waiting", status: s };
   try {
     await d.beforeSwap?.().catch(() => {});
     d.expect?.({ to: version ?? BUILT_IN, kind: o.now ? "back" : "follow" });
@@ -186,7 +185,7 @@ export async function followCoreOnce(d: CoreDeps, o: { swap?: boolean; now?: boo
     clearSwapExpect();
     return { step, did: "failed", error: String((e as Error)?.message ?? e) };
   }
-  return { step, did: "swapped" };
+  return { step, did: "swapped", status: s };
 }
 
 /** A switch back: run what the box says is current now, at once. */
@@ -194,10 +193,28 @@ export async function followCoreNow(): Promise<FollowResult> {
   return followCoreOnce(await defaultDeps(), { swap: true, now: true });
 }
 
-const QUIET_MS = 5 * 60_000;
+/** Carl pressed OK on the Ready card (or the agent did, when he asked): swap in what the box offers now. */
+export async function acceptCoreNow(): Promise<FollowResult> {
+  return followCoreOnce(await defaultDeps(), { swap: true });
+}
+
+/** The Ready card's commit list: the box's GET /api/v2/core/landed/<from>/<to>. */
+export function readyDeps(deps: CoreDeps, s: CoreStatus | null | undefined): import("./coreReady").ReadyDeps {
+  return {
+    running: async () => (s ? s.activeCommit || s.baked.commit || null : null),
+    subjects: async (from, to) => {
+      const link = await deps.link();
+      if (!link) return null;
+      const r = await deps.get(link, `/api/v2/core/landed/${from}/${to}`);
+      return Array.isArray(r?.subjects) ? r.subjects.map(String) : null;
+    },
+  };
+}
+
+const LOOK_MS = 5 * 60_000;
 
 export async function defaultDeps(): Promise<CoreDeps> {
-  const [{ idleMs }, { useDraft, hasDraft }, { saveSwapState }] = await Promise.all([import("./userActivity"), import("./plugins/composer/draft"), import("./coreSwap")]);
+  const { saveSwapState } = await import("./coreSwap");
   return {
     beforeSwap: () => saveSwapState(),
     expect: (e) => expectSwap(e),
@@ -210,7 +227,6 @@ export async function defaultDeps(): Promise<CoreDeps> {
     },
     get: (l, p) => boxGet(l, p, 15_000),
     post: (l, p, b) => boxPost(l, p, b),
-    quiet: () => idleMs() >= QUIET_MS && !hasDraft(useDraft.getState()),
   };
 }
 
@@ -224,8 +240,11 @@ export function startCoreFollow(): void {
     if (running) return;
     running = true;
     try {
-      const r = await followCoreOnce(await defaultDeps(), { swap: true });
+      const deps = await defaultDeps();
+      const r = await followCoreOnce(deps);
       if (r.did !== "nothing") console.info(`[core] ${r.did}${r.error ? `: ${r.error}` : ""}`);
+      // A fetched and checked bundle waits for Carl's OK on the Ready card; a failed fetch shows nothing.
+      if (r.did !== "failed") await (await import("./coreReady")).offerReady(r.step, r.status?.baked.commit ?? null, readyDeps(deps, r.status));
     } catch (e) {
       console.warn("[core] follow failed:", e);
     } finally {
@@ -233,9 +252,9 @@ export function startCoreFollow(): void {
     }
   };
   void look();
-  // A newer core than the one Carl last acknowledged (a swap just loaded it, or a new installer's own): say what landed.
+  // A newer core than the one Carl last acknowledged (a new installer's own; a swap's OK already acknowledged it): say what landed.
   void import("./landed").then((m) => m.startLanded()).catch(() => {});
-  // Every 5 minutes: a new offer, or a bundle installed but not yet taken now that Carl has been away long enough.
-  window.setInterval(() => void look(), QUIET_MS);
+  // Every 5 minutes: a new offer (the Ready card), or the offer gone back to what runs (the card goes).
+  window.setInterval(() => void look(), LOOK_MS);
   window.addEventListener("vc-core-changed", () => void look());
 }

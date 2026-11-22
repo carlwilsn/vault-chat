@@ -7,7 +7,7 @@
 //   settingsGate   the settings draft's runner and landing (server/settings.ts settingsDraftGate): a fail is a discard by
 //                  "gate", otherwise a keep by "gate" (the settings are set). Run when the Settings tool drafts one.
 //   landCore       the newest core bundle the box built: judged once (coreGate) and, passed, kept by "gate" (the
-//                  laptop's loader follows the record at a quiet moment; a bundle that does not boot falls back).
+//                  laptop's loader follows the record once Carl presses OK; a bundle that does not boot falls back).
 //   recordGate     the one result record: {type: "gate.result", ...GateResult}.
 //   gateResults    the one place results are read (GET /api/v2/gate, the Plugins tool's status).
 import { existsSync } from "node:fs";
@@ -194,7 +194,7 @@ export function coreSubmit(version: string | null, conv: string | null = null): 
 
 /**
  * The newest core bundle the box built that nobody decided on (server/coreBundles.ts newestUndecidedCore): judged once
- * and, passed, kept by "gate", so it becomes the laptop's current core (its loader takes it at a quiet moment and falls
+ * and, passed, kept by "gate", so it becomes the laptop's current core (its loader takes it when Carl presses OK and falls
  * back by itself when it does not boot). Returns a line for the box's log, or null when nothing was to land.
  */
 export function landCore(): string | null {

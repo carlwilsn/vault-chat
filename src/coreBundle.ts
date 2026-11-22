@@ -7,7 +7,7 @@
 //            starts scripts/core-publish.ts through the StartJob path, outside the server's memory): `vite build` of that
 //            commit into <state>/core-bundles/<version>/, with manifest.json.
 //   land     a new bundle goes through the one gate (server/gate.ts landCore): passed, it is kept by "gate" and becomes
-//            the core every launch runs; the laptop's loader takes it at a quiet moment (src/coreFollow.ts: the old
+//            the core every launch runs; the laptop's loader takes it when Carl presses OK (src/coreFollow.ts: the old
 //            frame stays up until the new one is back, and the open chat, its scroll, the composer draft and the panes
 //            come back: src/coreSwap.ts). Switch back returns to the core the keep replaced.
 //   version  the first 8 hex digits of the manifest's sha256 (the same shape as a plugin copy's version); the full

@@ -13,6 +13,7 @@
 // and maximize / restore as actions (no close: closing the window is Carl's); what it did as events.
 import { onUpdateChanged, updateActions, updateNow } from "../../updateState";
 import { dismissLanded, landedNow, onLandedChanged } from "../../landed";
+import { laterReady, onReadyChanged, pressReadyOk, readyNow } from "../../coreReady";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -71,6 +72,10 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
       landed: {
         description: "The Landed card (src/landed.ts), shown once after a newer core loaded: shown, revision (the core's main commit), what (the lines it lists). OK (dismissLanded) acknowledges it.",
         read: () => landedNow(),
+      },
+      ready: {
+        description: "The Ready card (src/coreReady.ts): the box has a newer core (interface) than the window runs, fetched and checked, waiting for Carl's OK. shown, version, commit, what (the lines it lists), phase ready | switching | failed (error). Nothing swaps without OK.",
+        read: () => readyNow(),
       },
       items: {
         description: "The items vault plugins put in the title bar (api.host.titlebar.item): key, id, by (the plugin), side, label, title, clickable, drawn.",
@@ -222,6 +227,19 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
           return { landed: landedNow() };
         },
       },
+      acceptReady: {
+        description: "Press OK on the Ready card: swap in the box's newer core now (every window reloads, the screen is kept). Only when Carl asks.",
+        run: async () => {
+          return { ready: await pressReadyOk() };
+        },
+      },
+      laterReady: {
+        description: "Press Later on the Ready card: hidden until the box offers a newer version or the app starts again.",
+        run: async () => {
+          laterReady();
+          return { ready: readyNow() };
+        },
+      },
       minimize: {
         description: "Minimize the app window (the – button). Only when Carl asks.",
         run: async () => {
@@ -239,6 +257,7 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
     },
     events: {
       updateChanged: { description: "The update banner changed: its new state (available, downloading, installing, checked, error, idle)." },
+      readyChanged: { description: "The Ready card showed, changed phase or went: shown, version, commit, what, phase." },
       landedChanged: { description: "The Landed card showed or was dismissed: shown, revision, what." },
       itemAdded: { description: "A plugin put an item in the bar: key, by, side." },
       itemRemoved: { description: "An item left the bar (its plugin stopped or removed it): key, by." },
@@ -258,6 +277,7 @@ export function mount(el: HTMLElement, api: PluginApi): () => void {
   api.effect(onBarEvent((name, data) => offers.emit(name, data)));
   api.effect(onUpdateChanged((u) => offers.emit("updateChanged", u)));
   api.effect(onLandedChanged((l) => offers.emit("landedChanged", l)));
+  api.effect(onReadyChanged((r) => offers.emit("readyChanged", r)));
   // Items coming and going, as events.
   let known = new Map(titlebarItems().map((i) => [i.key, i] as const));
   api.effect(

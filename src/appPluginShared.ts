@@ -60,6 +60,7 @@ export const APP_SHARED: Readonly<Record<string, () => Promise<unknown>>> = {
   "src/editorState": () => import("./editorState"),
   "src/updateState": () => import("./updateState"),
   "src/landed": () => import("./landed"),
+  "src/coreReady": () => import("./coreReady"),
   "src/fitPlaceholder": () => import("./fitPlaceholder"),
   "src/keychain": () => import("./keychain"),
   "src/lib/utils": () => import("./lib/utils"),

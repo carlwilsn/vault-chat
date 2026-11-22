@@ -13,7 +13,7 @@ import { BUILT_IN, landing, type ChangeRecord } from "../../../src/pluginDrafts"
 import { CORE_BOX_API, CORE_PART, type CoreCommit } from "../../../src/coreBundle";
 
 export type CoreBundle = { version: string; sha256?: string; commit?: string; commitTime: number; what: string; css?: string; /** main's commits up to it, newest first (the box's git log) */ commits?: CoreCommit[] };
-export type CoreConfig = { bundles: CoreBundle[]; bakedCommitTime?: number; /** what the box's git lists for any GET /api/v2/core/landed/<from>/<to> (the Landed card) */ landed?: string[] };
+export type CoreConfig = { bundles: CoreBundle[]; bakedCommitTime?: number; /** what the box's git lists for any GET /api/v2/core/landed/<from>/<to> (the Landed card) */ landed?: string[]; /** a bundle the gate kept already when the scenario opens (the Ready card asks for OK) */ kept?: string };
 
 type Loader = { active: string | null; current: string | null; previous: string | null; bad: string[] };
 type Sig = { type: "plugin.change"; plugin: string; change: "keep" | "switch" | "discard"; version: string; from?: string; at: number; by?: string; reason?: string };
@@ -46,6 +46,7 @@ export function coreBoot(namespace: string): boolean {
 /** The scenario's core (null: none, nothing here answers). */
 export function setCoreConfig(c: CoreConfig | null | undefined): void {
   cfg = c ?? null;
+  if (cfg?.kept && !sigs().length) write("recs", [{ type: "plugin.change", plugin: CORE_PART, change: "keep", version: cfg.kept, from: BUILT_IN, at: Date.now(), by: "gate" } satisfies Sig]);
 }
 
 const loader = (): Loader => read<Loader>("loader", { active: null, current: null, previous: null, bad: [] });

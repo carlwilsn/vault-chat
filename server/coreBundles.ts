@@ -13,7 +13,7 @@
 //             vite build takes ~3.6 GB). Two failed builds of one commit: given up.
 //   land      the newest built bundle nobody decided on (newestUndecidedCore) goes through the one gate (server/gate.ts
 //             landCore, coreGate): a pass is a plugin.change keep by "gate" (it becomes the core every window and launch
-//             runs: the laptop's loader takes it at a quiet moment, src/coreFollow.ts, and falls back by itself when it
+//             runs: the laptop's loader takes it when Carl presses OK, src/coreFollow.ts, and falls back by itself when it
 //             does not boot, which switches the record back), a fail a discard. Switch back returns to what it replaced.
 //   routes    GET /api/v2/core: the offer (the version in effect, its sha256, needs), this box's API, recent builds.
 //             GET /api/v2/core/<version>/manifest.json, GET /api/v2/core/<version>/files/<path>: the bundle's bytes.

@@ -4,6 +4,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Sparkles, X, RefreshCcw, Check } from "lucide-react";
 import { dismissLanded, landedNow, onLandedChanged } from "./landed";
+import { laterReady, onReadyChanged, pressReadyOk, readyNow } from "./coreReady";
 import { Button } from "./ui";
 import { isRunInBackground } from "./background";
 import { activeRuns } from "./runRegistry";
@@ -245,10 +246,39 @@ function LandedCard() {
   );
 }
 
-/** The bottom-right notices, stacked: what landed (a new core) above a native update's Install card. */
+/** The box has a newer core (src/coreReady.ts): what it brings, OK (swap in now) and Later. Nothing swaps without OK. */
+function ReadyCard() {
+  const s = useSyncExternalStore(onReadyChanged, readyNow);
+  if (!s.shown) return null;
+  const busy = s.phase === "switching";
+  return (
+    <NoticeCard title="Ready" offer="ready-card">
+      <div className="p-3 space-y-2.5">
+        <ul className="text-[11.5px] text-muted-foreground/90 leading-relaxed max-h-64 overflow-auto space-y-1 list-disc pl-4">
+          {(s.what ?? []).map((w, i) => (
+            <li key={i}>{w}</li>
+          ))}
+        </ul>
+        {s.phase === "failed" && <div className="text-[11px] text-destructive">Couldn't switch: {s.error}</div>}
+        <div className="flex gap-2">
+          <Button data-offer="app/titlebar.acceptReady" size="sm" disabled={busy} onClick={() => void pressReadyOk()} className="bg-primary text-primary-foreground hover:bg-primary/90 flex-1">
+            {busy ? <RefreshCcw className="h-3 w-3 mr-1.5 animate-spin" /> : <Check className="h-3 w-3 mr-1.5" />}
+            {busy ? "Switching…" : "OK"}
+          </Button>
+          <Button data-offer="app/titlebar.laterReady" size="sm" variant="outline" disabled={busy} onClick={laterReady} className="flex-1">
+            Later
+          </Button>
+        </div>
+      </div>
+    </NoticeCard>
+  );
+}
+
+/** The bottom-right notices, stacked: a new core waiting for OK, what landed, then a native update's Install card. */
 export function Notices() {
   return (
     <div className="fixed bottom-4 right-4 w-80 z-50 flex flex-col gap-2">
+      <ReadyCard />
       <LandedCard />
       <UpdateBanner />
     </div>

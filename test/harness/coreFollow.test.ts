@@ -1,6 +1,6 @@
 // The laptop following the box's core bundle (src/coreFollow.ts): it asks the native loader (core_status), tells the
 // box about the loader's fallbacks (a plugin.change switch by "auto", only while the box still offers what failed),
-// has the loader fetch and check a newer compatible bundle, and takes it only at a quiet moment; an app from before the
+// has the loader fetch and check a newer compatible bundle, and takes it only with Carl's OK (swap); an app from before the
 // loader, an older box, a bundle the shell cannot run and the installer's own newer core all leave it where it is.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -15,7 +15,7 @@ const { followCoreOnce } = await import("../../src/coreFollow.ts");
 const OFFER = { version: "abcd1234", sha256: "abcd1234" + "0".repeat(56), commit: "a".repeat(40), commitTime: 200, needs: { commands: ["app_ready"], plugins: ["dialog"], boxApi: CORE_BOX_API }, seq: 5 };
 const status = (o: Partial<CoreStatus> = {}): CoreStatus => ({ shell: "0.9.40", active: "built-in", activeCommit: null, ready: true, current: null, previous: null, bad: [], events: [], commands: ["app_ready", "core_ready"], plugins: ["dialog"], baked: { commit: "b".repeat(40), commitTime: 100 }, ...o });
 
-function deps(o: { status?: CoreStatus | null; offer?: unknown; boxApi?: number; quiet?: boolean; installFails?: string; boxDown?: boolean } = {}) {
+function deps(o: { status?: CoreStatus | null; offer?: unknown; boxApi?: number; installFails?: string; boxDown?: boolean } = {}) {
   const calls: { cmd: string; args?: Record<string, unknown> }[] = [];
   const posts: Record<string, unknown>[] = [];
   const d: CoreDeps = {
@@ -39,12 +39,11 @@ function deps(o: { status?: CoreStatus | null; offer?: unknown; boxApi?: number;
       posts.push(b);
       return { ok: true };
     },
-    quiet: () => o.quiet ?? true,
   };
   return { d, calls, posts, cmds: () => calls.map((c) => c.cmd) };
 }
 
-test("a newer compatible bundle is fetched and checked by the loader, then taken at a quiet moment", async () => {
+test("a newer compatible bundle is fetched and checked by the loader, then taken with OK (swap)", async () => {
   const t = deps();
   const r = await followCoreOnce(t.d, { swap: true });
   assert.equal(r.did, "swapped");
@@ -53,9 +52,11 @@ test("a newer compatible bundle is fetched and checked by the loader, then taken
   assert.deepEqual(t.calls[2]!.args, { version: OFFER.version });
 });
 
-test("while Carl is working (or has text in the composer) it is only installed: no reload under him", async () => {
-  const t = deps({ quiet: false });
-  assert.equal((await followCoreOnce(t.d, { swap: true })).did, "installed");
+test("without OK it is only fetched and checked: nothing swaps by itself, idle or not", async () => {
+  const t = deps();
+  const r = await followCoreOnce(t.d);
+  assert.equal(r.did, "installed");
+  assert.equal(r.status?.active, "built-in");
   assert.ok(!t.cmds().includes("core_use"));
 });
 
@@ -97,7 +98,7 @@ test("a newer installer runs its own core over an older box bundle", async () =>
   assert.deepEqual(t.calls.at(-1), { cmd: "core_use", args: { version: null } });
 });
 
-test("the box's core publishing turned off: back to the installed app's own core, at a quiet moment", async () => {
+test("the box's core publishing turned off: back to the installed app's own core, with OK", async () => {
   const t = deps({ status: status({ active: "11112222" }), offer: null });
   t.d.get = async () => ({ boxApi: CORE_BOX_API, publish: false, offer: null });
   const r = await followCoreOnce(t.d, { swap: true });
@@ -108,7 +109,7 @@ test("the box's core publishing turned off: back to the installed app's own core
 // ---------------------------------------------------------------- a switch back, and what is said after a swap
 
 test("a switch back (now): the core in effect is taken at once, busy or not, after the screen is kept", async () => {
-  const t = deps({ status: status({ active: "77778888" }), offer: null, quiet: false });
+  const t = deps({ status: status({ active: "77778888" }), offer: null });
   const order: string[] = [];
   t.d.beforeSwap = async () => void order.push("kept the screen");
   const native = t.d.native;
@@ -117,9 +118,9 @@ test("a switch back (now): the core in effect is taken at once, busy or not, aft
   assert.equal(r.did, "swapped");
   assert.deepEqual(order, ["kept the screen", "core_use"]);
   assert.deepEqual(t.calls.at(-1), { cmd: "core_use", args: { version: null } });
-  // Not asked for (the periodic look) while he is busy: it waits.
-  const later = deps({ status: status({ active: "77778888" }), offer: null, quiet: false });
-  assert.equal((await followCoreOnce(later.d, { swap: true })).did, "waiting");
+  // Not asked for (the periodic look): it waits for OK.
+  const later = deps({ status: status({ active: "77778888" }), offer: null });
+  assert.equal((await followCoreOnce(later.d)).did, "waiting");
 });
 
 test("after a swap's load the new page says plainly what runs, or why it couldn't switch (never silent)", async () => {
