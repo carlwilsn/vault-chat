@@ -1,6 +1,6 @@
 // The Drive window's side (index.html?view=drive, src/windowKind.ts): a sandboxed copy of the app (src/driveGuard.ts)
 // that waits for its vault to load, says it is ready, and runs what the main window asks: scripted steps
-// (src/driveSteps.ts) or the timing pass (src/driveTiming.ts). It answers only its own main window, never the box.
+// (src/driveSteps.ts). It answers only its own main window, never the box.
 import { isTauri } from "@tauri-apps/api/core";
 import { hasBootMark } from "./bootTiming";
 import { driveStorageIsolated } from "./driveGuard";
@@ -51,14 +51,8 @@ export function installDriveRunner(): void {
     };
     for (const t of ["keydown", "pointerdown", "wheel"]) window.addEventListener(t, onReal, true);
     try {
-      if (m.mode === "steps") {
-        const r = await runSteps(document, m.steps, { signal: ac.signal, shot });
-        send({ kind: "result", reqId: m.reqId, steps: r, ...why(ac) });
-      } else {
-        const { runTiming } = await import("./driveTiming");
-        const t = await runTiming({ ...m.timing, signal: ac.signal }, readyMs);
-        send({ kind: "result", reqId: m.reqId, timing: t, ...why(ac) });
-      }
+      const r = await runSteps(document, m.steps, { signal: ac.signal, shot });
+      send({ kind: "result", reqId: m.reqId, steps: r, ...why(ac) });
     } catch (e) {
       send({ kind: "result", reqId: m.reqId, error: String((e as Error)?.message ?? e) });
     } finally {

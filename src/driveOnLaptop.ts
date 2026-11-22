@@ -1,20 +1,19 @@
-// The laptop's half of the gate's UI runner and the agent's Timing tool (server/gate.ts, server/timingTool.ts). The box puts a
-// {type:"drive"|"timing", id, to:"laptop", ...} signal on the feed; src/boxChat.ts (Carl's main window) hands it here.
+// The laptop's half of the gate's UI runner (server/gate.ts). The box puts a
+// {type:"drive", id, to:"laptop", ...} signal on the feed; src/boxChat.ts (Carl's main window) hands it here.
 //   1. Carl first: if he has used the app's windows within `idleMs` (src/userActivity.ts) it refuses, saying when,
 //      unless the agent passed `force`.
 //   2. The work runs in the Drive copy of the app (src/driveHost.ts: a hidden second window, never his), so his window,
 //      focus and layout are not touched.
 //   3. The moment he types, clicks or moves the mouse in the app, the run is aborted (force or not) and the ack says so,
 //      with the steps done so far.
-// The ack: {ok, data:{where, steps | timing, ...}, images} or {ok:false, error, data:{refused|aborted}}.
+// The ack: {ok, data:{where, steps, ...}, images} or {ok:false, error, data:{refused|aborted}}.
 import { checkSteps, type Shot, type StepsResult } from "./driveSteps";
-import type { TimingResult, TimingMetric } from "./driveTiming";
 import { openDriveHost, releaseDriveHost } from "./driveHost";
 import { cleanDriveTries } from "./driveGuard";
 import type { DriveReply } from "./driveProtocol";
 import { idleMs, noteInput, onInput } from "./userActivity";
 
-export type DriveSignal = { type: "drive" | "timing"; id: string; to?: string; steps?: unknown; force?: unknown; idleMs?: unknown; timeoutMs?: unknown; tries?: unknown; keys?: unknown; toggles?: unknown; metrics?: unknown };
+export type DriveSignal = { type: "drive"; id: string; to?: string; steps?: unknown; force?: unknown; idleMs?: unknown; timeoutMs?: unknown; tries?: unknown };
 export type DriveAckData = {
   where?: string;
   note?: string;
@@ -24,7 +23,6 @@ export type DriveAckData = {
   /** The drafts the Drive copy ran instead of the copies in effect (a gate run): an app that echoes them knows tries. */
   tries?: Record<string, string> | null;
   steps?: Omit<StepsResult, "shots"> & { shots: { name: string; width: number; height: number }[] };
-  timing?: TimingResult;
 };
 export type DriveAck = { ok: boolean; error?: string; landed?: string; data?: DriveAckData; images?: { data: string; mimeType: string; name: string }[] };
 
@@ -40,7 +38,7 @@ export function driveOnLaptop(sig: DriveSignal): Promise<DriveAck> {
 }
 
 async function runDrive(sig: DriveSignal): Promise<DriveAck> {
-  const steps = sig.type === "drive" ? checkSteps(sig.steps) : null;
+  const steps = checkSteps(sig.steps);
   if (typeof steps === "string") return { ok: false, error: `bad steps: ${steps}` };
   const force = sig.force === true;
   const wantIdle = typeof sig.idleMs === "number" && sig.idleMs >= 0 ? Math.min(sig.idleMs, 60 * 60_000) : DEFAULT_IDLE_MS;
@@ -69,7 +67,7 @@ async function runDrive(sig: DriveSignal): Promise<DriveAck> {
     abortRun?.(abortWhy);
   });
   try {
-    const tries = sig.type === "drive" ? cleanDriveTries(sig.tries) : null;
+    const tries = cleanDriveTries(sig.tries);
     const opened = await openDriveHost(tries);
     if (abortWhy) {
       releaseDriveHost(true);
@@ -92,18 +90,7 @@ async function runDrive(sig: DriveSignal): Promise<DriveAck> {
         setTimeout(() => (off(), resolve({ timeout: true })), 3000);
       }, timeoutMs);
       abortRun = (why) => host.send({ kind: "abort", reqId, reason: why });
-      if (sig.type === "drive") host.send({ kind: "run", reqId, mode: "steps", steps: steps! });
-      else
-        host.send({
-          kind: "run",
-          reqId,
-          mode: "timing",
-          timing: {
-            ...(typeof sig.keys === "number" ? { keys: sig.keys } : {}),
-            ...(typeof sig.toggles === "number" ? { toggles: sig.toggles } : {}),
-            ...(Array.isArray(sig.metrics) ? { metrics: sig.metrics.filter((m): m is TimingMetric => typeof m === "string") } : {}),
-          },
-        });
+      host.send({ kind: "run", reqId, mode: "steps", steps });
     });
     // Stopped inside the Drive copy because Carl's input reached it (a frame host has focus): the same as here.
     if (!abortWhy && "reqId" in reply && reply.aborted?.startsWith("Carl")) {
@@ -123,7 +110,6 @@ async function runDrive(sig: DriveSignal): Promise<DriveAck> {
         images: shots.map((s) => ({ data: s.data, mimeType: s.mimeType, name: s.name })),
       };
     }
-    if (reply.timing) return { ok: !abortWhy, ...(abortWhy ? { error: `${abortWhy}; timing was stopped.` } : {}), data: { ...base, timing: reply.timing } };
     return { ok: false, error: "the Drive copy answered with nothing", data: base };
   } catch (e) {
     releaseDriveHost(true);

@@ -152,6 +152,24 @@ export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
       },
     });
   }
+  if (d.stateDir) {
+    const sd = d.stateDir;
+    out.push({
+      id: "box:perf",
+      name: "Perf",
+      state: {
+        builds: { description: "the laptop app's speed per build from Carl's own use (the app's perf probe), newest first: median/p95 ms per metric/method (composer-key, ctrl-k-key, fullscreen-transition, chat-panel-open, launch-interactive, file-open, long tasks; docs/perf-baseline.md)", read: async () => (await import("./perfLog")).perfBuilds(sd) },
+        launch: { description: "the last launch-to-interactive the laptop app reported", read: async () => (await import("./perfLog")).perfLaunch(sd) },
+      },
+      actions: {
+        compare: {
+          description: "compare two builds' speeds (default: the newest against the one before it), or the newest against a perf-baseline.mjs record file; flags a median/p95 worse than the margin",
+          args: obj({ from: str("the older build's revision prefix"), to: str("the newer build's revision prefix"), baseline: str("path on the box to a perf-baseline.mjs record JSON (instead of from)"), marginPct: { type: "number" }, marginMs: { type: "number" } }),
+          run: async (a) => (await import("./perfLog")).perfCompare(sd, a as never),
+        },
+      },
+    });
+  }
   if (d.jobs) out.push({ id: "box:jobs", name: "Jobs", state: { list: { description: "this conversation's background workers and shell jobs (JobStop / JobSteer act on them)", read: () => d.jobs!() } }, actions: {} });
   if (d.stateDir) {
     const dir = join(d.stateDir, "logs");

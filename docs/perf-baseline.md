@@ -41,12 +41,12 @@ Runs of the URLs are interleaved (A, B, A, B, ...) in fresh pages so drift hits 
 
 Limits: this is Chromium, a fake backend and a synthetic conversation, not WebView2 on Carl's laptop and not his history. It shows a regression in render cost between two trees; it does not give the laptop's absolute number (that is section 1). Sample counts can be one or two above keys x runs when the app emits an extra input event.
 
-## 3. On the real laptop: the agent's `Timing` tool
+## 3. On the real laptop, per build: `box:perf`
 
-`Timing` (server/timingTool.ts) measures the same five speeds inside the installed app on the laptop, in its hidden Drive copy (src/driveTiming.ts: synthetic key events, two animation frames, the `double-raf-estimate` quantity; not while Carl is using the laptop), adds the launch-to-interactive the app reported at its last start (server/hostBuild.ts) and Carl's own recorded samples on the current build (section 1's records), and with `baseline` + a margin runs section 1's `compare` on them. Synthetic numbers include render cost, not OS input delay; a throttled (hidden) window is said as such.
+The raw records of section 1 rotate within hours. Each accepted batch is also folded per build revision into `<state>/perf-builds.json` (server/perfLog.ts: the newest 300 samples per metric/method key, the newest 20 builds; tauri-production and visible only, as `flatten`). The agent reads it with `PluginRead {plugin: "box:perf"}` (each build's median/p95 per key and the last launch the app reported, server/hostBuild.ts) and compares with `PluginAct {plugin: "box:perf", action: "compare", args: {from?, to?, baseline?, marginPct | marginMs}}` (default: the newest build against the one before; section 1's `compare` and margin rule). These are Carl's own keystrokes and transitions, not synthetic runs. (This replaced the `Timing` tool, which typed synthetic keys into a hidden copy of the app.)
 
 ## Tests
 
-`server/test/perfBaseline.test.ts` (runs in `npm run test:server`): statistics, filters, merge, compare flags and exit codes over records written by the box's own `recordLaptopPerf`, and the typing tool's URL guard. The browser run itself is not in the test suite.
+`server/test/perfBaseline.test.ts` and `server/test/perfLog.test.ts` (box:perf; both run in `npm run test:server`): statistics, filters, merge, compare flags and exit codes over records written by the box's own `recordLaptopPerf`, and the typing tool's URL guard. The browser run itself is not in the test suite.
 
 `server/test/pdfTyping.test.ts` (runs in `npm run test:server`, serial, so in the ship gates): the preview harness in headless Chromium at a laptop's speed (CPU 4x throttled, DPR 2), a 640-page PDF in split view beside a note in the editor; composer and editor keystroke-to-paint medians must stay under 50 ms (best of three fresh tries). Skipped without a browser.

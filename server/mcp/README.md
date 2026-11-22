@@ -224,7 +224,7 @@ accepted as `X-Vault-Token: <token>` or as the standard
 as a URL parameter or cookie. Both still require the Serve-vouched Tailscale login.
 
 **What an outside client can do.** Every vault-chat tool a side thread may use:
-Show, Layout, Screen, Act, Drive, Timing, LaptopBuild, PluginRead/PluginAct
+Show, Layout, Screen, LaptopBuild, PluginRead/PluginAct
 (every live plugin's offers: file tree, notes panel, vault plugins), Settings,
 the Notes tools, Lookup/PdfRead/PdfPages,
 ListConversations/ReadConversation/PostToConversation (hand work to a chat),

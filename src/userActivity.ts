@@ -1,5 +1,5 @@
 // When Carl last touched the laptop app (a real key, click, wheel or mouse movement in one of its own windows), for
-// the agent's Drive and Timing (src/driveOnLaptop.ts): they refuse while he is using the laptop and stop the moment he
+// the gate's Drive-copy runs (src/driveOnLaptop.ts): they refuse while he is using the laptop and stop the moment he
 // starts. Only trusted events count (the app's own synthetic events never do), and only those the app's windows see:
 // input in other programs is not visible to it. Holds a timestamp, nothing about what was typed or where.
 type Listener = (kind: string) => void;

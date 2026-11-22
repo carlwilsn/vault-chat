@@ -654,9 +654,8 @@ class BoxChatSession {
           .catch((err) => console.warn("[box-chat] capture failed:", err));
         return;
       }
-      case "drive":
-      case "timing": {
-        // The gate's UI runner / the agent's Timing (server/gate.ts, server/timingTool.ts): run in the hidden Drive copy of the app,
+      case "drive": {
+        // The gate's UI runner (server/gate.ts): run in the hidden Drive copy of the app,
         // never while Carl is using it; acked with what happened.
         const id = typeof e.id === "string" ? e.id : "";
         if (e.to !== "laptop" || !id) return;

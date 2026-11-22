@@ -56,7 +56,6 @@ import { laptopBuildTool, LAPTOP_BUILD_DESCRIPTION, LAPTOP_BUILD_SCHEMA } from "
 import { supervisorOf } from "../supervisor";
 import { coreRepo, coreVault } from "../coreBundles";
 import { CORE_PART } from "../../src/coreBundle";
-import { timingTool, TIMING_DESCRIPTION, TIMING_SCHEMA } from "../timingTool";
 import { SERVER_REV as BOX_SERVER_REV } from "../config";
 import { surfaceOff } from "../surfaces";
 import { openProject, OPEN_PROJECT_DESCRIPTION, OPEN_PROJECT_SCHEMA } from "../projectRoutes";
@@ -488,12 +487,6 @@ export const ENGINE_TOOL_SPECS = [
     name: "LaptopBuild",
     description: LAPTOP_BUILD_DESCRIPTION,
     inputSchema: LAPTOP_BUILD_SCHEMA as unknown as Record<string, unknown>,
-  },
-  {
-    type: "function",
-    name: "Timing",
-    description: TIMING_DESCRIPTION,
-    inputSchema: TIMING_SCHEMA as unknown as Record<string, unknown>,
   },
   {
     type: "function",
@@ -3289,10 +3282,6 @@ export class Engine {
         case "Screen": {
           const r = await screenTool({ vault, emit: (ev) => this.d.broadcast?.(ev) }, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }, ...r.images.map((im) => ({ type: "inputImage", data: im.data, mimeType: im.mimeType }))] };
-        }
-        case "Timing": {
-          const r = await timingTool({ vault, stateDir: loadConfig().stateDir, emit: (ev) => this.d.broadcast?.(ev) }, a);
-          return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "LaptopBuild": {
           const r = await laptopBuildTool({ vault, stateDir: loadConfig().stateDir, conv: convId, byCarl: !!this.live.get(convId)?.byCarl, emit: (ev) => this.d.broadcast?.(ev), server: { version: SERVER_VERSION, rev: BOX_SERVER_REV }, coreChange: () => {

@@ -1,5 +1,5 @@
 // The agent's control link to each device app: what carries Screen, Layout, PluginRead / PluginAct, LaptopBuild,
-// the gate's Drive-copy runs and Timing to the laptop (and plugin calls to the phone). It is the app's own feed (/poll, long-polled: each
+// the gate's Drive-copy runs to the laptop (and plugin calls to the phone). It is the app's own feed (/poll, long-polled: each
 // poll is the heartbeat, and the app's feed loop reconnects by itself with backoff, src/boxChat.ts) plus the acks it
 // posts back (POST /api/v1/show/<id>/ack). Carl's chat rides the same feed, but the control signals once went only to
 // the vault the app had open: after a vault switch in the app the tools of a chat in the other vault said "offline"

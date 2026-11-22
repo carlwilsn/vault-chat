@@ -95,7 +95,7 @@ if (isDriveWindow) {
   // Its errors and box drops on the box too (<state>/logs/app.jsonl).
   installAppShip();
   installDiagShortcut();
-  // When Carl last touched the app: the agent's Drive and Timing wait for him to be idle and stop when he starts.
+  // When Carl last touched the app: the gate's Drive-copy runs wait for him to be idle and stop when he starts.
   installUserActivity();
   // Which build this launch runs, told to the box once the first screen is interactive (src/hostBuild.ts): a chat
   // waiting for a new laptop build is woken by it.

@@ -2,7 +2,6 @@
 // events (the main window emits DRIVE_TO_DRIVE to the Drive window's label; the Drive window emits DRIVE_TO_MAIN to
 // "main"). In a browser (the preview harness): postMessage between the page and its hidden Drive frame.
 import type { Step, StepsResult } from "./driveSteps";
-import type { TimingOptions, TimingResult } from "./driveTiming";
 
 export const DRIVE_LABEL = "vc-drive";
 export const DRIVE_TO_DRIVE = "vc-drive:to-drive";
@@ -10,12 +9,11 @@ export const DRIVE_TO_MAIN = "vc-drive:to-main";
 
 export type DriveRequest =
   | { kind: "run"; reqId: string; mode: "steps"; steps: Step[] }
-  | { kind: "run"; reqId: string; mode: "timing"; timing: Omit<TimingOptions, "signal"> }
   | { kind: "abort"; reqId: string; reason: string };
 
 export type DriveReply =
   | { kind: "ready"; ok: boolean; error?: string; note?: string; readyMs: number }
-  | { kind: "result"; reqId: string; steps?: StepsResult; timing?: TimingResult; error?: string; aborted?: string }
+  | { kind: "result"; reqId: string; steps?: StepsResult; error?: string; aborted?: string }
   /** Carl's own click or key reached the Drive window (it is on his screen after all): the main window closes it. */
   | { kind: "close"; reason: string };
 

@@ -1,5 +1,5 @@
 // Asking the laptop app over Show's channel: a {type, id, to:"laptop", ...} signal, answered by an ack on
-// POST /api/v1/show/<id>/ack. Used by Timing (server/timingTool.ts) and the gate's UI runner (server/gate.ts), which run in
+// POST /api/v1/show/<id>/ack. Used by the gate's UI runner (server/gate.ts), which runs in
 // the hidden, read-only Drive copy of the app (src/driveOnLaptop.ts, src/driveHost.ts).
 import { randomBytes } from "node:crypto";
 import { waitAck, type Ack } from "./show";
