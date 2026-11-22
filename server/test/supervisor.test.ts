@@ -11,6 +11,17 @@ import { freePort } from "./helpers";
 import { _resetConvLogs, setFeedVaults } from "../convlog/log";
 import { startHttpServer, type VaultScope } from "../http";
 
+/** The pages noun as the agent reaches it (box:pages): an action, or a plugin's line / the list. */
+function pagesAct(m: typeof import("../model/pages"), vault: string, a: Record<string, unknown>): { ok: boolean; text: string } {
+  const { action, ...args } = a;
+  if (action === "status") {
+    if (!args.plugin) return { ok: true, text: (m.pagesNoun(vault).state.list!.read() as { plugins: string[] }).plugins.join("\n") };
+    const r = m.resolvePlugin(vault, String(args.plugin));
+    return "error" in r ? { ok: false, text: r.error } : { ok: true, text: m.pluginLine(vault, r.id) };
+  }
+  return m.pagesNoun(vault).actions[String(action)]!.run(args, "agent") as { ok: boolean; text: string };
+}
+
 vi.mock("../../src-tauri/assets/phone.html", () => ({ default: "" }));
 vi.mock("../../src-tauri/assets/voice.html", () => ({ default: "" }));
 vi.mock("../../src-tauri/assets/icon-apple-touch.png", () => ({ default: "" }));
@@ -28,7 +39,7 @@ describe("the supervisor", () => {
   let srv: Server | undefined;
   let base = "";
   let sup: typeof import("../supervisor");
-  let tools: typeof import("../supervisorTools");
+  let tools: typeof import("../model/pages");
 
   beforeAll(async () => {
     for (const k of Object.keys(process.env)) if (k.startsWith("VC_")) delete process.env[k];
@@ -56,7 +67,7 @@ describe("the supervisor", () => {
     });
     base = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
     sup = await import("../supervisor");
-    tools = await import("../supervisorTools");
+    tools = await import("../model/pages");
   });
   afterAll(async () => {
     if (srv) await new Promise<void>((resolve) => srv!.close(() => resolve()));
@@ -183,22 +194,22 @@ describe("the supervisor", () => {
     await post("/api/v2/supervisor", { plugin: "pages/other.html", state: "running" });
   });
 
-  it("the agent's Plugins tool: Carl says 'disable html-lab', the record is written by the agent; enable; status", () => {
+  it("the agent's box:pages: Carl says 'disable html-lab', the record is written by the agent; enable; status", () => {
     expect(tools.resolvePlugin(A.path, "html-lab")).toEqual({ id: PAGE });
     expect(tools.resolvePlugin(A.path, "html-lab.html")).toEqual({ id: PAGE });
     expect(tools.resolvePlugin(A.path, PAGE)).toEqual({ id: PAGE });
     expect(tools.resolvePlugin(A.path, "nothing-here")).toMatchObject({ error: expect.stringContaining("no page") });
-    const off = tools.pluginTool(A.path, { action: "disable", plugin: "html-lab" });
+    const off = pagesAct(tools, A.path, { action: "disable", plugin: "html-lab" });
     expect(off).toMatchObject({ ok: true });
     expect(off.text).toContain(`${PAGE}: off (by agent)`);
     expect(desired()).toMatchObject({ state: "stopped", by: "agent" });
-    expect(tools.pluginTool(A.path, { action: "status" }).text).toContain(`${PAGE}: off`);
-    const later = tools.pluginTool(A.path, { action: "enable", plugin: "html-lab" });
+    expect(pagesAct(tools, A.path, { action: "status" }).text).toContain(`${PAGE}: off`);
+    const later = pagesAct(tools, A.path, { action: "enable", plugin: "html-lab" });
     expect(later.text).toContain(`${PAGE}: on`);
     expect(desired().state).toBe("running");
-    const end = tools.pluginTool(A.path, { action: "disable", plugin: "html-lab", at: new Date(Date.now() + 86_400_000).toISOString() });
+    const end = pagesAct(tools, A.path, { action: "disable", plugin: "html-lab", at: new Date(Date.now() + 86_400_000).toISOString() });
     expect(end.text).toMatch(/: on \(by agent\); changes at/);
-    tools.pluginTool(A.path, { action: "enable", plugin: "html-lab" });
+    pagesAct(tools, A.path, { action: "enable", plugin: "html-lab" });
     expect(desired()).toMatchObject({ state: "running", next: null });
   });
 
@@ -207,7 +218,7 @@ describe("the supervisor", () => {
     expect(tools.resolvePlugin(A.path, "Notes")).toEqual({ id: "app/notes" });
     expect(tools.resolvePlugin(A.path, "app/notes")).toEqual({ id: "app/notes" });
     expect(tools.resolvePlugin(A.path, "notes.html")).toMatchObject({ error: expect.stringContaining("no page") });
-    const off = tools.pluginTool(A.path, { action: "disable", plugin: "notes" });
+    const off = pagesAct(tools, A.path, { action: "disable", plugin: "notes" });
     expect(off).toMatchObject({ ok: true });
     expect(off.text).toContain("app/notes: off (by agent)");
     expect(sup.pluginDesired(A.path, "app/notes")).toMatchObject({ state: "stopped", by: "agent" });
@@ -216,8 +227,8 @@ describe("the supervisor", () => {
     expect(recs.records.at(-1).signal).toMatchObject({ type: "plugin.desired", plugin: "app/notes", state: "stopped", by: "agent" });
     // Only the Notes panel: a page is untouched by its word.
     expect(desired().state).toBe("running");
-    expect(tools.pluginTool(A.path, { action: "status", plugin: "notes" }).text).toBe("app/notes: off (by agent)");
-    expect(tools.pluginTool(A.path, { action: "enable", plugin: "notes panel" }).text).toContain("app/notes: on");
+    expect(pagesAct(tools, A.path, { action: "status", plugin: "notes" }).text).toBe("app/notes: off (by agent)");
+    expect(pagesAct(tools, A.path, { action: "enable", plugin: "notes panel" }).text).toContain("app/notes: on");
     expect(sup.pluginDesired(A.path, "app/notes").state).toBe("running");
     // Carl's word from the app is the same record.
     expect((await post("/api/v2/supervisor", { plugin: "app/notes", state: "stopped" })).status).toBe(200);

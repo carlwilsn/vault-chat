@@ -68,7 +68,6 @@ import { loadConfig } from "../config";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { proposeEditSpec } from "./proposeEdit";
 import { PLUGIN_WRITE_TOOL, pluginWrite, pluginWriteSpec } from "../pluginWriteTool";
-import { PLUGIN_TOOL, pluginToolAsync, pluginToolSpecs } from "../supervisorTools";
 import { capabilitiesOf, capabilityNote } from "./capabilities";
 import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -626,7 +625,7 @@ export const ENGINE_TOOL_SPECS = [
 export function agentToolSpecs(): ToolSpec[] {
   // The notes tools are no longer listed: box:notes (PluginRead / PluginAct, server/boxOffers.ts) is the one way. Their
   // names still answer (below) for a session that listed them before, one release, then they go.
-  return [...ENGINE_TOOL_SPECS, pdfPagesSpec, ...contextToolSpecs, ...pluginToolSpecs, ...pluginOfferToolSpecs] as ToolSpec[];
+  return [...ENGINE_TOOL_SPECS, pdfPagesSpec, ...contextToolSpecs, ...pluginOfferToolSpecs] as ToolSpec[];
 }
 /** The model Ctrl+K / Ctrl+L runs on unless Carl picks another: small interactions want speed. */
 export const INLINE_DEFAULT_MODEL = "claude-haiku-5-5";
@@ -3065,11 +3064,6 @@ export class Engine {
       p.signal?.throwIfAborted();
       // ListProjects only reads. A project is made only by Carl: in the app, or by asking for it (OpenProject below).
       if (isContextTool(name)) return await handleContextTool(name, a, { conv: conv as any, convs: (await this.convsEverywhere(vault)) as any });
-      // A plugin turned off or on (server/supervisorTools.ts): a record in the log every view follows.
-      if (name === PLUGIN_TOOL) {
-        const r = await pluginToolAsync(vault, a);
-        return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
-      }
       // Ctrl+K / Ctrl+L changing the app (server/pluginWriteTool.ts): the plugin folders only, a live plugin through its
       // slot's keep (Switch back undoes it). Only a side thread lists it; a turn writes with its own file tools.
       if (name === PLUGIN_WRITE_TOOL && side) {

@@ -1,4 +1,4 @@
-// The phone app is a surface Carl (or the agent's Plugins tool) can switch off and on live, like any
+// The phone app is a surface Carl (or the agent, box:pages) can switch off and on live, like any
 // plugin (src/appPlugins.ts SURFACE_PLUGINS; the record is the supervisor's plugin.desired, server/supervisor.ts). This
 // is the box's half: what a surface that is off no longer gets, and the line said where it would have appeared.
 //   phone  no push (server/pushGate.ts); /phone serves the off line, an open phone goes to it.

@@ -58,7 +58,7 @@ describe("Ctrl+L can change the app", () => {
     script = async () => "ok";
     await ask("what tools?");
     const names = sides.at(-1).hostTools.map((t: any) => t.name);
-    for (const n of ["PluginWrite", "Plugins", "PluginAct", "Handoff", "ProposeEdit"]) expect(names).toContain(n);
+    for (const n of ["PluginWrite", "PluginAct", "Handoff", "ProposeEdit"]) expect(names).toContain(n);
   });
 
   it("\"make my cursor show the text 'hi'\": the plugin file is written, live and on; no \"go to Main\"", async () => {
@@ -66,7 +66,7 @@ describe("Ctrl+L can change the app", () => {
     mkdirSync(plugins(), { recursive: true });
     writeFileSync(join(plugins(), "snail-cursor.js"), CURSOR("snail"));
     script = async (call) => {
-      const off = await call("Plugins", { action: "disable", plugin: "snail-cursor" });
+      const off = await call("PluginAct", { plugin: "box:pages", action: "disable", args: { plugin: "snail-cursor" } });
       expect(off.ok).toBe(true);
       const w = await call("PluginWrite", { path: ".vault-chat/plugins/hi-cursor.js", content: CURSOR("hi"), reason: "cursor shows hi" });
       expect(w.ok).toBe(true);

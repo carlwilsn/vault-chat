@@ -41,7 +41,7 @@ export const pluginOfferToolSpecs = [
     readOnly: true,
     description:
       "Reach any plugin running in Carl's app (the Notes panel, his vault plugins, in-process pages): each declares what it offers: state you can read, actions you can run (with their args), events it emits. " +
-      "No plugin: lists every live plugin with its offers (use it first to learn a plugin's actions and args), the vault pages whose state the box keeps, and the box's own state (box:settings, box:notes, box:jobs, box:links: each device's link and open vault, box:perf: the laptop's speed per build, box:logs, box:history: what Carl did in the app, searchable as far back as the log goes), which the box answers with no device online. plugin (its id, e.g. app/notes, or its name): reads its state (all of it, or the one `state` named) and its recent events, from the screen now. " +
+      "No plugin: lists every live plugin with its offers (use it first to learn a plugin's actions and args), the vault pages whose state the box keeps, and the box's own state (box:settings, box:notes, box:pages: every page and app part on or off, box:jobs, box:links: each device's link and open vault, box:perf: the laptop's speed per build, box:logs, box:history: what Carl did in the app, searchable as far back as the log goes), which the box answers with no device online. plugin (its id, e.g. app/notes, or its name): reads its state (all of it, or the one `state` named) and its recent events, from the screen now. " +
       "A vault .html page that uses vc.state / vc.log (plugin: its vault path, file name or title; vault: another registered vault's name, or an absolute path) is read from the box even when it is closed: its saved state, last change and recent log records; after (the seq it showed) + wait (seconds, at most 25) waits for its next change, to follow what Carl does in it. " +
       "Any other plugin too: wait (seconds, at most 25) holds the answer until it emits its next event (after: the seq a watch showed; left out: from now), then gives its state and the new events, so you follow what Carl does instead of reading again and again. " +
       "app/context holds what Carl has selected, hovers and is focused in now. Use it to see a plugin's state or before PluginAct. Plugins run in the laptop app (the phone app hosts none). Only plugins mounted there now are reachable; a plugin that is off or not open says so.",
@@ -62,7 +62,7 @@ export const pluginOfferToolSpecs = [
     type: "function" as const,
     name: PLUGIN_ACT,
     description:
-      "Run an action a live plugin offers (see PluginRead for its actions and their args), e.g. {plugin: \"app/notes\", action: \"view\", args: {filter: \"resolved\"}}. Carl's settings (theme, model, effort, voice, pushAutomatic, chatSidebar, corePublish): {plugin: \"box:settings\", action: \"set\", args: {key, value}} (value null: its default). " +
+      "Run an action a live plugin offers (see PluginRead for its actions and their args), e.g. {plugin: \"app/notes\", action: \"view\", args: {filter: \"resolved\"}}. Carl's settings (theme, model, effort, voice, pushAutomatic, chatSidebar, corePublish): {plugin: \"box:settings\", action: \"set\", args: {key, value}} (value null: its default). A page or an app part off / on everywhere: {plugin: \"box:pages\", action: \"disable\" | \"enable\", args: {plugin: \"html-lab\"}}. " +
       "Returns the action's result and the plugin's state read back afterwards: tell Carl only what that says. A failing action is an error result; the plugin keeps running.",
     inputSchema: {
       type: "object",
@@ -220,7 +220,7 @@ function pageRecordsText(vault: string, vaultName: string | null, id: string, r:
 export async function pluginOfferTool(d: PluginOfferDeps, name: string, a: Record<string, unknown>): Promise<{ ok: boolean; text: string }> {
   const plugin = typeof a.plugin === "string" ? a.plugin.trim() : "";
   const boxDeps: BoxOfferDeps = { vault: d.vault, stateDir: d.stateDir, jobs: d.jobs, vaults: () => (d.vaults?.() ?? []).map((v) => v.path) };
-  // The box's own state (box:settings, box:notes, box:jobs, box:links, box:logs): answered here, with or without a device.
+  // The box's own state (box:settings, box:notes, box:pages, box:jobs, box:links, box:logs): answered here, with or without a device.
   if (plugin && isBoxWord(plugin)) {
     const only = typeof a.state === "string" && a.state.trim() ? a.state.trim() : undefined;
     if (name === PLUGIN_READ) {

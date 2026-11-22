@@ -4,7 +4,7 @@
 //   landCore       the newest core bundle the box built: judged once (coreGate) and, passed, kept by "gate" (the
 //                  laptop's loader follows the record once Carl presses OK; a bundle that does not boot falls back).
 //   recordGate     the one result record: {type: "gate.result", ...GateResult}.
-//   gateResults    the one place results are read (GET /api/v2/gate, the Plugins tool's status).
+//   gateResults    the one place results are read (GET /api/v2/gate).
 //   inBoxGate      migration drafts, judged here at once (POST /api/v2/gate).
 import { signal, signalLog, type ConvLog } from "./convlog/log";
 import { CORE_PART_ID, GATE_RESULT, gateDecision, gateRecordOf, partKind, type GateResult } from "../src/gateResult";

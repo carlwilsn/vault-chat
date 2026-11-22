@@ -2,10 +2,11 @@
 // and its changes, answered by the box with or without a device. The app's controls and the agent's tools both call
 // these actions; a parity test (server/test/model.test.ts) keeps every UI action of a moved noun reachable here.
 //
-// Moved so far: settings, notes. The agent reaches a noun through PluginRead / PluginAct {plugin: "box:<noun>"} (server/boxOffers.ts
+// Moved so far: settings, notes, pages. The agent reaches a noun through PluginRead / PluginAct {plugin: "box:<noun>"} (server/boxOffers.ts
 // turns each noun into a box offer); the noun's own tool is gone once it is here.
 import type { JsonSchema } from "../boxOffers";
 import { notesNoun } from "./notes";
+import { pagesNoun } from "./pages";
 import { settingsNoun } from "./settings";
 
 export type ActResult = { ok: boolean; text: string };
@@ -20,11 +21,11 @@ export type Noun = {
   watch: (fn: () => void) => () => void;
 };
 
-/** What a noun is read in: the vault of the asking conversation (notes resolve their registry from it). */
+/** What a noun is read in: the vault of the asking conversation (notes resolve their registry from it, pages their records). */
 export type NounCtx = { vault: string };
 
 /** Every moved noun. */
-export const nouns = (ctx: NounCtx): Noun[] => [settingsNoun, notesNoun(ctx.vault)];
+export const nouns = (ctx: NounCtx): Noun[] => [settingsNoun, notesNoun(ctx.vault), pagesNoun(ctx.vault)];
 
 export const noun = (id: string, ctx: NounCtx): Noun | null => nouns(ctx).find((n) => n.id === id) ?? null;
 

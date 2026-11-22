@@ -1,6 +1,6 @@
 // The model on the box (server/model/, report 24 §4) and its parity check: every way the app changes a moved noun is an
 // action of that noun on the box, and every action the box has is one the app has. Listed from the app's own source,
-// so a new control that bypasses the model fails here. Settings (noun 1), notes (noun 2).
+// so a new control that bypasses the model fails here. Settings (noun 1), notes (noun 2), pages (noun 3).
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -95,6 +95,30 @@ function uiNotesActions(): { actions: Set<string>; exempt: string[] } {
   return { actions, exempt };
 }
 
+/** Every way the app turns a page or an app part on or off, as the pages noun's action names, from its POSTs to
+ *  /api/v2/supervisor. A word on a change ({change: keep | discard | switch}: the core bundle, a draft) is not a page's
+ *  on/off: each such line is named. */
+function uiPagesActions(): { actions: Set<string>; exempt: string[] } {
+  const actions = new Set<string>();
+  const exempt: string[] = [];
+  for (const [f, s] of [...source, ...phone]) {
+    for (const l of s.split("\n")) {
+      if (!l.includes("/api/v2/supervisor") || !/boxPost\(|\.post\(|method:\s*"POST"/.test(l)) continue;
+      if (/change:|,\s*body\)/.test(l)) {
+        exempt.push(`${f}: a word on a change (the core bundle's switch, a draft): not a page's on/off`);
+        continue;
+      }
+      if (/"running"\s*:\s*"stopped"/.test(l)) ["enable", "disable"].forEach((a) => actions.add(a));
+      else if (/state:\s*"running"/.test(l)) actions.add("enable");
+      else if (/state:\s*"stopped"/.test(l)) actions.add("disable");
+      else throw new Error(`${f}: POST /api/v2/supervisor the pages noun has no action for: ${l.trim().slice(0, 160)}`);
+    }
+  }
+  return { actions, exempt };
+}
+/** The pages noun's actions no control of the app has (each named, with why). */
+const PAGES_MODEL_ONLY: Record<string, string> = { budget: "a page's budget is set by asking the agent; the app shows its effect (turned off by budget)" };
+
 const root = mkdtempSync(join(tmpdir(), "vc-model-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 let n = 0;
@@ -177,5 +201,37 @@ describe("the model's notes noun", () => {
     expect(r.state!.resolved).toEqual([]);
     expect((await actBoxOffer(deps, "box:notes", "delete", { id: "nope" })).text).toMatch(/no note with id "nope".*nothing changed/);
     expect(await nextChange(noun("notes", deps)!, 30)).toBe(false);
+  });
+});
+
+describe("the model's pages noun", () => {
+  it("parity: the app's page on/off controls are exactly the model's", () => {
+    const { actions, exempt } = uiPagesActions();
+    const model = new Set(Object.keys(noun("pages", deps)!.actions).filter((a) => !PAGES_MODEL_ONLY[a]));
+    expect([...actions].filter((a) => !model.has(a)), "app actions the model lacks").toEqual([]);
+    expect([...model].filter((a) => !actions.has(a)), "model actions the app lacks").toEqual([]);
+    expect(exempt.length).toBeLessThanOrEqual(3);
+  });
+
+  it("is box:pages: turned off and on by name, a budget, refused with nothing changed, and watched without re-reading", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    mkdirSync(join(root, "pages"), { recursive: true });
+    writeFileSync(join(root, "pages", "html-lab.html"), '<!doctype html><html><head><title>HTML lab</title><meta name="vc-capabilities" content="state"></head><body></body></html>');
+    let r = await readBoxOffer(deps, "box:pages");
+    expect((r.state!.list as any).plugins).toEqual(["pages/html-lab.html: on | HTML lab"]);
+    const watched = watchBoxOffer(deps, "box:pages", 5_000);
+    const a = await actBoxOffer(deps, "box:pages", "disable", { plugin: "html-lab", reason: "too slow" });
+    expect(a.text).toBe("pages/html-lab.html: off (by agent: too slow). Every view of it follows (the viewer, chats, the phone, its link).");
+    const w = await watched;
+    expect(w.changed).toBe(true);
+    expect((w.state!.list as any).plugins[0]).toMatch(/^pages\/html-lab\.html: off \(by agent: too slow\)/);
+    expect((await actBoxOffer(deps, "box:pages", "budget", { plugin: "html-lab", callsPerMinute: 30 })).text).toBe("pages/html-lab.html: off (by agent: too slow); budget 30 calls a minute");
+    expect((await actBoxOffer(deps, "box:pages", "enable", { plugin: "pages/html-lab.html" })).ok).toBe(true);
+    expect((await actBoxOffer(deps, "box:pages", "disable", { plugin: "notes" })).text).toContain("app/notes: off (by agent)");
+    r = await readBoxOffer(deps, "box:pages");
+    expect((r.state!.list as any).plugins[0]).toMatch(/^pages\/html-lab\.html: on \(by agent\); budget 30/);
+    expect((r.state!.list as any).parts).toEqual(["app/notes: off (by agent)"]);
+    expect((await actBoxOffer(deps, "box:pages", "disable", { plugin: "nothing-here" })).text).toMatch(/no page in the vault is named nothing-here; nothing changed/);
+    expect(await nextChange(noun("pages", deps)!, 30)).toBe(false);
   });
 });

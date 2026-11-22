@@ -23,7 +23,7 @@ afterAll(() => {
 describe("PluginRead / PluginAct", () => {
   it("are in the agent's tools; PluginRead is read-only, PluginAct is not; the old tools are all still there", () => {
     const names = agentToolSpecs().map((t) => t.name);
-    for (const n of ["PluginRead", "PluginAct", "Plugins", "Layout"]) expect(names).toContain(n);
+    for (const n of ["PluginRead", "PluginAct", "Layout"]) expect(names).toContain(n);
     // Notes are box:notes now (server/boxOffers.ts): the six note tools are no longer listed.
     for (const n of ["ListNotes", "CreateNote"]) expect(names).not.toContain(n);
     expect(agentToolSpecs().find((t) => t.name === "PluginRead")!.readOnly).toBe(true);
@@ -96,7 +96,7 @@ describe("the box's own state, with no device online", () => {
     expect(bad.ok).toBe(false);
     expect(bad.text).toMatch(/needs text\. Nothing was run/);
     const none = await rig.backend.h.toolCall(tid, "PluginRead", { plugin: "box:nope" });
-    expect(none.text).toMatch(/no box state "box:nope" \(the box offers: box:settings, box:notes, box:links/);
+    expect(none.text).toMatch(/no box state "box:nope" \(the box offers: box:settings, box:notes, box:pages, box:links/);
   });
 
   it("box:logs: the newest lines, with credentials cut out", async () => {

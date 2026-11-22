@@ -69,7 +69,7 @@ describe("the catalog", () => {
     expect(c.services.map((s: any) => s.name)).toEqual(["ask", "mic", "persist", "voice-lab", "theme", "state", "log", "converse", "catalog"]);
     expect(c.services.find((s: any) => s.name === "converse")).toMatchObject({ supplier: "box", grantable: true, always: false, call: "vc.converse" });
     expect(c.plugins).toEqual(expected);
-    // Stage 2: the app's own parts that are plugins, by id (the Plugins tool turns them off and on).
+    // Stage 2: the app's own parts that are plugins, by id (box:pages turns them off and on).
     expect(c.app).toEqual([
       { id: "app/notes", name: "Notes", mount: "panel", description: expect.stringContaining("notes.jsonl") },
       { id: "app/chats", name: "Chats", mount: "panel", description: expect.stringContaining("chat list") },

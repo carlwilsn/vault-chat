@@ -1,11 +1,11 @@
 // Vault plugins on the box: the code files in .vault-chat/plugins are in the catalog as plugins (name and description
-// from their meta) and the Plugins tool turns them off and on by name.
+// from their meta) and box:pages turns them off and on by name.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { pluginCatalog } from "../pluginCatalog";
-import { resolvePlugin } from "../supervisorTools";
+import { resolvePlugin } from "../model/pages";
 
 let dir = "";
 afterEach(() => dir && rmSync(dir, { recursive: true, force: true }));

@@ -41,6 +41,13 @@ export function supervisorOf(vault: string): Supervisor {
   return followed(signalLog(vault)).sup;
 }
 
+/** Call `fn` each time one of the vault's supervisor records arrives (the pages noun's watch); returns the unsubscribe. */
+export function onSupervisorChanged(vault: string, fn: () => void): () => void {
+  const f = followed(signalLog(vault));
+  f.changed.add(fn);
+  return () => void f.changed.delete(fn);
+}
+
 /** What the plugin should be now. */
 export function pluginDesired(vault: string, plugin: string, now = Date.now()): Desired {
   return supervisorOf(vault).desired(plugin, now);
@@ -70,7 +77,7 @@ export function setPluginBudget(vault: string, b: Record<string, unknown> | null
   return write(vault, budgetSignal(b, by, Date.now()));
 }
 
-/** Who may be named on a change record: Carl (the app's own Keep), the agent (offers, the scripts, the Plugins tool), an
+/** Who may be named on a change record: Carl (the app's own Keep), the agent (offers, the scripts, box:pages), an
  *  auto-discard or auto-revert, the gate (core bundles, migrations). */
 const CHANGE_BY = new Set(["carl", "agent", "auto", "gate"]);
 
@@ -83,7 +90,7 @@ export function setPluginChange(vault: string, b: Record<string, unknown> | null
   const sig = changeSignal(b, who, Date.now());
   if ("error" in sig) return sig;
   const plugin = pluginIdOf(sig.plugin);
-  if (isMigrationId(plugin)) return { status: 400, error: `${plugin} is a migration: its word goes through POST /api/v2/supervisor or the Plugins tool (it runs migrate)` };
+  if (isMigrationId(plugin)) return { status: 400, error: `${plugin} is a migration: its word goes through POST /api/v2/supervisor (it runs migrate)` };
   if (plugin === CORE_PART) {
     // The app's core bundle (server/coreBundles.ts): nothing moves, the record is the switch; the loaders follow it.
     // Whatever vault the request names, the records are the main vault's (one core for the box).

@@ -13,6 +13,17 @@ import { PushGate, resetAttention, type PushOffer } from "../pushGate";
 import { appPluginNamed } from "../../src/appPlugins";
 import { catalogAppPlugins } from "../../src/pluginCatalog";
 
+/** The pages noun as the agent reaches it (box:pages): an action, or a plugin's line / the list. */
+function pagesAct(m: typeof import("../model/pages"), vault: string, a: Record<string, unknown>): { ok: boolean; text: string } {
+  const { action, ...args } = a;
+  if (action === "status") {
+    if (!args.plugin) return { ok: true, text: (m.pagesNoun(vault).state.list!.read() as { plugins: string[] }).plugins.join("\n") };
+    const r = m.resolvePlugin(vault, String(args.plugin));
+    return "error" in r ? { ok: false, text: r.error } : { ok: true, text: m.pluginLine(vault, r.id) };
+  }
+  return m.pagesNoun(vault).actions[String(action)]!.run(args, "agent") as { ok: boolean; text: string };
+}
+
 vi.mock("../../src-tauri/assets/phone.html", () => ({ default: "<html><body>the phone app</body></html>" }));
 vi.mock("../../src-tauri/assets/voice.html", () => ({ default: "" }));
 vi.mock("../../src-tauri/assets/icon-apple-touch.png", () => ({ default: "" }));
@@ -26,7 +37,7 @@ describe("the phone app is a surface that switches off", () => {
   const A: VaultScope = { name: "main-vault", path: join(home, "a"), bare: "", main: true };
   let srv: Server | undefined;
   let base = "";
-  let tools: typeof import("../supervisorTools");
+  let tools: typeof import("../model/pages");
   let surfaces: typeof import("../surfaces");
 
   beforeAll(async () => {
@@ -53,7 +64,7 @@ describe("the phone app is a surface that switches off", () => {
       vaultList: () => [A],
     });
     base = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
-    tools = await import("../supervisorTools");
+    tools = await import("../model/pages");
     surfaces = await import("../surfaces");
   });
   afterAll(async () => {
@@ -72,7 +83,7 @@ describe("the phone app is a surface that switches off", () => {
     return { status: r.status, json: (await r.json().catch(() => ({}))) as any };
   };
 
-  it("they are registered: named by the Plugins tool and listed in the catalog", () => {
+  it("they are registered: named by box:pages and listed in the catalog", () => {
     for (const w of ["phone", "Phone app", "app/phone", "iphone"]) expect(appPluginNamed(w)?.id, w).toBe("app/phone");
     for (const w of ["board", "iPad", "app/board", "whiteboard"]) expect(appPluginNamed(w), w).toBeNull();
     expect(tools.resolvePlugin(A.path, "phone")).toEqual({ id: "app/phone" });
@@ -82,10 +93,10 @@ describe("the phone app is a surface that switches off", () => {
 
   it("'disable phone': /phone says it is off (no token), a push to it is dropped; 'enable phone' brings it back", async () => {
     expect((await get("/phone")).text).toContain("the phone app");
-    const off = tools.pluginTool(A.path, { action: "disable", plugin: "phone", reason: "on holiday" });
+    const off = pagesAct(tools, A.path, { action: "disable", plugin: "phone", reason: "on holiday" });
     expect(off).toMatchObject({ ok: true });
     expect(off.text).toContain("app/phone: off (by agent: on holiday)");
-    expect(tools.pluginTool(A.path, { action: "status", plugin: "phone" }).text).toBe("app/phone: off (by agent: on holiday)");
+    expect(pagesAct(tools, A.path, { action: "status", plugin: "phone" }).text).toBe("app/phone: off (by agent: on holiday)");
     const line = surfaces.surfaceOff(A.path, "phone");
     expect(line).toContain("The phone app is turned off by agent (on holiday)");
     const page = await get("/phone");
@@ -107,7 +118,7 @@ describe("the phone app is a surface that switches off", () => {
     expect(sent).toEqual([]);
     expect(lines.at(-1)).toContain("the phone app is turned off");
 
-    expect(tools.pluginTool(A.path, { action: "enable", plugin: "phone app" }).text).toContain("app/phone: on");
+    expect(pagesAct(tools, A.path, { action: "enable", plugin: "phone app" }).text).toContain("app/phone: on");
     expect(surfaces.surfaceOff(A.path, "phone")).toBeNull();
     const back = await get("/phone");
     expect(back.text).toContain("the phone app");
