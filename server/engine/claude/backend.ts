@@ -77,18 +77,18 @@ export const OWN_WEB_TOOLS: readonly string[] = ["WebSearch"];
  * style". So every Claude Code tool is on, and nothing asks permission
  * (session.ts runs bypassPermissions). Off are only the tools that cannot work
  * in a headless session — they wait for a person in Anthropic's own apps, or
- * act on an app surface vault-chat does not have — and the wakes vault-chat
- * keeps itself, so the agent never has two of one thing (its ScheduleWake
- * survives a restart, a session's own cron does not; report 24 §5 #1).
- * Claude Code's own TodoWrite is on: the chat's plan is its last call
- * (src/convlog/reduce.ts reads any TodoWrite call).
+ * act on an app surface vault-chat does not have. Claude Code's own TodoWrite
+ * is on (the chat's plan is its last call, src/convlog/reduce.ts), and so are
+ * its own waiting tools, ScheduleWakeup and Cron* (Carl 11-22: trust the
+ * harness): a session with a wakeup pending is kept warm until it fires
+ * (reapIdle, translate.ts scheduledUntil), and the wakeup arrives as an
+ * unprompted turn like a finished background task.
  */
 export const APP_ONLY_TOOLS: readonly string[] = [
   "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "EndConversation", "OfferChromeSetup", "ShowOnboardingRolePicker",
   "ShareOnboardingGuide", "SendUserMessage", "SendUserFile", "PushNotification", "SendFeedback", "ReportFindings",
   "ClaudeDesign", "Artifact", "DesignSync", "Projects", "propose_skills", "ProposeGoal", "RemoteTrigger",
   "ReadNotifications", "SubagentHandback",
-  "ScheduleWakeup", "CronCreate", "CronDelete", "CronList",
 ];
 
 /** Every built-in a conversation (and a worker) has. */
@@ -1252,7 +1252,8 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     } catch (e) {
       this.log(`idle worker check: ${(e as Error).message}`);
     }
-    for (const live of [...this.live.values()]) if (!live.turnId && !live.translator.workers() && now - live.lastUsed > idle) this.closeLive(live.id);
+    // A session with a wakeup or cron job of its own pending stays warm: closing it would drop the wakeup.
+    for (const live of [...this.live.values()]) if (!live.turnId && !live.translator.workers() && live.translator.scheduledUntil(now) <= now && now - live.lastUsed > idle) this.closeLive(live.id);
   }
 
   private closeLive(threadId: string): void {

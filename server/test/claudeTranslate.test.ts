@@ -496,3 +496,29 @@ describe("a failure on something passing", () => {
     expect(next).not.toHaveProperty("transient");
   });
 });
+
+describe("Claude Code's own waiting tools keep the session warm (Carl 11-22: trust the harness)", () => {
+  it("a ScheduleWakeup holds the session up to its delay plus a margin; a cron job until deleted; nothing pending is 0", () => {
+    const t = new ClaudeTranslator();
+    const now = 1_000_000;
+    expect(t.scheduledUntil(now)).toBe(0);
+    t.noteSchedule("ScheduleWakeup", { delaySeconds: 120 }, now);
+    expect(t.scheduledUntil(now)).toBe(now + 120_000 + 5 * 60_000);
+    // Once it is past, it is let go.
+    expect(t.scheduledUntil(now + 120_000 + 5 * 60_000 + 1)).toBe(0);
+    t.noteSchedule("CronCreate", { cron: "*/5 * * * *", prompt: "check" }, now);
+    expect(t.scheduledUntil(now)).toBe(now + 7 * 86_400_000);
+    t.noteSchedule("CronDelete", { id: "x" }, now);
+    expect(t.scheduledUntil(now)).toBe(0);
+    t.noteSchedule("Bash", { command: "sleep 1" }, now);
+    expect(t.scheduledUntil(now)).toBe(0);
+  });
+
+  it("the waiting tools are no longer switched off", async () => {
+    const { APP_ONLY_TOOLS, OWN_TOOLS } = await import("../engine/claude/backend");
+    for (const n of ["ScheduleWakeup", "CronCreate", "CronDelete", "CronList"]) {
+      expect(APP_ONLY_TOOLS).not.toContain(n);
+    }
+    expect(OWN_TOOLS.filter((n) => ["ScheduleWakeup", "CronCreate"].includes(n)).length).toBeGreaterThan(0);
+  });
+});

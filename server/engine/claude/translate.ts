@@ -427,6 +427,7 @@ export class ClaudeTranslator {
     }
     const args = blk.final?.input !== undefined ? blk.final.input : parseArgs(blk.acc);
     const toolCall = { type: "toolCall", id: blk.id!, name: blk.name!, arguments: args };
+    this.noteSchedule(blk.name!, args);
     o.content[ci] = toolCall as PiBlock;
     return [{ kind: "live", ev: { type: "message_update", assistantMessageEvent: { type: "toolcall_end", contentIndex: ci, toolCall } } }];
   }
@@ -513,6 +514,31 @@ export class ClaudeTranslator {
     const status = tag("status");
     if (!status) return [];
     return this.workerNotice({ task_id: tag("task-id") || tag("task_id"), status, summary: tag("summary") });
+  }
+
+  /** Claude Code's own wakeups this session asked for (ScheduleWakeup, CronCreate), each with when it can be let go. */
+  private schedules: { kind: "wakeup" | "cron"; until: number }[] = [];
+
+  /** A call to one of Claude Code's waiting tools: remember how long the session must stay up for it. */
+  noteSchedule(name: string, args: unknown, now = Date.now()): void {
+    const a = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
+    if (name === "ScheduleWakeup") {
+      const s = Number(a.delaySeconds ?? a.delay_seconds ?? a.seconds);
+      // Its delay (capped at a day), plus a margin for the turn it starts.
+      this.schedules.push({ kind: "wakeup", until: now + Math.min(Number.isFinite(s) && s > 0 ? s : 3600, 86_400) * 1000 + 5 * 60_000 });
+    } else if (name === "CronCreate") {
+      // A cron job lives until deleted, and Claude Code ends recurring ones after 7 days.
+      this.schedules.push({ kind: "cron", until: now + 7 * 86_400_000 });
+    } else if (name === "CronDelete") {
+      const i = this.schedules.findIndex((x) => x.kind === "cron");
+      if (i >= 0) this.schedules.splice(i, 1);
+    }
+  }
+
+  /** Until when this session must stay warm for its own wakeups (0: none pending). */
+  scheduledUntil(now = Date.now()): number {
+    this.schedules = this.schedules.filter((x) => x.until > now);
+    return this.schedules.reduce((m, x) => Math.max(m, x.until), 0);
   }
 
   /** Background workers started in this session and not finished: live from task_started to the final notice. */
