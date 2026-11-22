@@ -38,6 +38,7 @@ import {
 } from "./context";
 import { patchMeta, readConv, allConvs, createConv, newMessageId, emitTo, pictureOf, logOf, writeNotes, appendNotes, setNoteWriter, ensureMain, ensureProjectThread, type NoteData } from "./convs";
 import { workerWorktree } from "../workerWorktree";
+import type { JobsCtl } from "../model/jobs";
 import { MAIN_ID, projectOfThread, projectThreadId, threadKindOf } from "../../src/threads";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
 import { askText, CLOSED, getAsk, ledgerText, readLedger, readShipResult, upsertAsk, wakeBrief, workFile, type LedgerEntry, type LedgerPatch } from "./ledger";
@@ -252,7 +253,7 @@ export function cutText(w: CutWork): string {
     lines.push(
       "Resume each of these Agent-tool workers NOW, in this turn, one SendMessage call each (a send resumes it from its transcript, with its whole context; load SendMessage first with ToolSearch {query: \"select:SendMessage\"} if you do not have it):",
       ...w.workers.map((x) => `- SendMessage {to: "${x.id}", message: "${RESUME_WORKER}"}  (${x.title.slice(0, 120)})`),
-      "If one says it cannot be found or already finished, check JobList and go on. Their reports arrive as usual: do not wait for them.",
+      "If one says it cannot be found or already finished, check box:jobs (PluginAct list) and go on. Their reports arrive as usual: do not wait for them.",
     );
   }
   if (w.commands.length) lines.push(`Background commands that ended (a shell cannot be resumed; start one again only if it is still needed): ${titles(w.commands)}.`);
@@ -430,32 +431,6 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
-    name: "JobList",
-    readOnly: true,
-    description: "This conversation's background work: its Agent-tool workers (id, task, state read from their transcripts: running / waiting on tool X / waiting on its own background work / IDLE / finished / interrupted by a restart, last tool, tool-call count, age; an interrupted or idle one shows its one-call SendMessage resume) and its StartJob jobs (all: true for every job in the vault, and finished workers from the last days): id, state, age, command.",
-    inputSchema: { type: "object", properties: { all: { type: "boolean" } }, additionalProperties: false },
-  },
-  {
-    type: "function",
-    name: "JobStop",
-    description: "Stop a running background worker or StartJob job by its id (JobList). A stopped worker's turn still follows, saying it was stopped.",
-    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
-  },
-  {
-    type: "function",
-    name: "JobStatus",
-    readOnly: true,
-    description: "A progress line for one background worker now, without waiting for it to finish (an Agent worker's id or its first 6+ characters: state, last tool and when, tool calls, files written, its latest words), or a StartJob job's state and last output lines.",
-    inputSchema: { type: "object", properties: { id: { type: "string" }, tail: { type: "number" } }, required: ["id"], additionalProperties: false },
-  },
-  {
-    type: "function",
-    name: "JobSteer",
-    description: "Pass Carl's change to a running background worker (\"make it shorter\"): it takes it up after its current step and keeps going. The id is from JobList.",
-    inputSchema: { type: "object", properties: { id: { type: "string" }, message: { type: "string" } }, required: ["id", "message"], additionalProperties: false },
-  },
-  {
-    type: "function",
     name: "Show",
     description: SHOW_DESCRIPTION,
     inputSchema: SHOW_SCHEMA as unknown as Record<string, unknown>,
@@ -621,7 +596,7 @@ export const handoffSpec = {
   },
 };
 /** The agent's tools a side thread can't use: they belong to a turn (its question, plan, job, wake). */
-const TURN_ONLY_TOOLS = new Set(["AskUser", "SubmitChange", "TodoWrite", "StartJob", "JobStop", "JobSteer", "ScheduleWake"]);
+const TURN_ONLY_TOOLS = new Set(["AskUser", "SubmitChange", "TodoWrite", "StartJob", "ScheduleWake"]);
 /** Voice's Ask (server/voice.ts), a side thread: a question has the read-only tools and Show; an action every tool a
  *  side thread can use (Show, the notes …), with pi's own file tools (sideStart). */
 export function voiceSideToolSpecs(act: boolean): ToolSpec[] {
@@ -1504,22 +1479,47 @@ export class Engine {
     return { ok: true, ...(convId ? { convId } : {}), ...(patch.model ? { model: patch.model } : {}), ...(patch.effort !== undefined ? { effort: patch.effort } : {}) };
   }
 
-  /** POST /api/v1/conversations/:id/subagents/:sid/{steer,stop}. */
+  /** POST /api/v1/conversations/:id/subagents/:sid/{steer,stop}: the chat's Stop / Steer, the same as box:jobs stop / steer. */
   async subagent(convId: string, sid: string, op: "steer" | "stop", body: { text?: string }): Promise<Record<string, unknown>> {
-    const conv = await readConv(this.d.vault, convId);
-    if (!conv) return { ok: false, error: `conversation ${convId} not found` };
-    const rec = (conv.subagents ?? []).find((s: any) => s.threadId === sid) as Record<string, unknown> | undefined;
-    if (!rec) return { ok: false, error: `no subagent ${sid} on this conversation` };
-    if (rec.kind === "job") {
-      // A StartJob job (a dev server, a build): Stop stops its unit; there is no one to steer.
-      if (op === "steer") return { ok: false, error: "a shell job can't be steered: stop it, or tell the agent" };
-      const out = jobStop(this.d.jobEnv, sid);
-      if (!/^Stopped job /.test(out)) return { ok: false, error: out };
-      this.jobRowEnded(convId, sid, "stopped");
-      this.devSweep();
-      return { ok: true };
+    if (!(await readConv(this.d.vault, convId))) return { ok: false, error: `conversation ${convId} not found` };
+    const r = await this.jobControl(convId, sid, op, body?.text);
+    return r.ok ? { ok: true } : { ok: false, error: r.text };
+  }
+
+  /** Stop or steer one of a conversation's workers or StartJob jobs (box:jobs and the chat's chip both come here). */
+  private async jobControl(convId: string, id: string, op: "stop" | "steer", message?: string): Promise<{ ok: boolean; text: string }> {
+    if (!id) return { ok: false, text: "No id: the list (box:jobs) names them. Nothing was changed." };
+    const rec = ((this.picture(convId)?.meta.subagents ?? []) as Record<string, any>[]).find((s) => s.threadId === id) ?? null;
+    if (rec && rec.kind !== "job") {
+      if (op === "steer" && !message) return { ok: false, text: "steer needs a message. Nothing was changed." };
+      const r = await this.d.backend.subagentControl(id, op, message);
+      if (!r.ok) return { ok: false, text: `Not ${op === "stop" ? "stopped" : "passed"}: ${r.error ?? "it is not running"}.` };
+      return { ok: true, text: op === "stop" ? `Stopping worker ${id}; its "Delegated work failed (stopped)" turn follows.` : `Passed to worker ${id}; it takes it up after its current step.` };
     }
-    return this.d.backend.subagentControl(sid, op, body?.text);
+    // A StartJob job (a dev server, a build): stop stops its unit; there is no one to steer.
+    if (op === "steer") return { ok: false, text: rec ? "A shell job can't be steered: stop it, or tell the agent." : `No background worker ${id} in this conversation (box:jobs lists them).` };
+    const out = jobStop(this.d.jobEnv, id, convId);
+    if (!/^Stopped job /.test(out)) return { ok: false, text: out };
+    this.jobRowEnded(convId, id, "stopped");
+    this.devSweep();
+    return { ok: true, text: out };
+  }
+
+  /** box:jobs for one conversation (server/model/jobs.ts): what it lists and how it stops and steers. `turn`: the
+   *  asker owns a turn; a side thread only reads. */
+  private jobsCtl(threadId: string | undefined, convId: string, turn: boolean): JobsCtl | undefined {
+    if (!convId) return undefined;
+    return {
+      turn,
+      list: (all) => {
+        const workers = this.workerList(convId);
+        const agents = this.agentWorkers(threadId, all);
+        const jobs = jobList(this.d.jobEnv, convId, all);
+        return [workers ? `Background workers:\n${workers}` : "", agents ? `Agent workers (Agent tool):\n${agents}` : "", workers || agents ? `Shell jobs (StartJob):\n${jobs}` : jobs].filter(Boolean).join("\n\n");
+      },
+      status: (id, tail) => this.agentWorker(threadId, id) ?? this.workerStatus(convId, id) ?? this.withExposed(id, jobStatus(this.d.jobEnv, { id, tail })),
+      control: (id, op, text) => this.jobControl(convId, id, op, text),
+    };
   }
 
   // ---------------------------------------------------------------- side threads (pi/side.ts)
@@ -3176,7 +3176,7 @@ export class Engine {
         }
         case "PluginRead":
         case "PluginAct": {
-          const r = await pluginOfferTool({ vault, emit: (ev) => this.d.broadcast?.(ev), vaults: this.d.vaultList, stateDir: loadConfig().stateDir, jobs: () => jobList(this.d.jobEnv, convId, true), conv: convId }, name, a);
+          const r = await pluginOfferTool({ vault, emit: (ev) => this.d.broadcast?.(ev), vaults: this.d.vaultList, stateDir: loadConfig().stateDir, jobs: this.jobsCtl(conv.threadId, convId, !side), conv: convId }, name, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "Screen": {
@@ -3260,38 +3260,6 @@ export class Engine {
             if (r && r.ok === false) this.log(`compact on ${convId}: ${String(r.error)}`);
           });
           return text("Compaction starts as soon as this turn ends (the thread then shows \"Earlier conversation summarized\"). Tell Carl in one line; don't wait for it.");
-        }
-        case "JobStatus": {
-          const agent = this.agentWorker(conv.threadId, String(a.id ?? "").trim());
-          if (agent) return text(agent);
-          return text(this.workerStatus(convId, String(a.id ?? "").trim()) ?? this.withExposed(String(a.id ?? "").trim(), jobStatus(this.d.jobEnv, a)));
-        }
-        case "JobList": {
-          const workers = this.workerList(convId);
-          const agents = this.agentWorkers(conv.threadId, a.all === true);
-          const jobs = jobList(this.d.jobEnv, convId, a.all === true);
-          return text([workers ? `Background workers:\n${workers}` : "", agents ? `Agent workers (Agent tool):\n${agents}` : "", workers || agents ? `Shell jobs (StartJob):\n${jobs}` : jobs].filter(Boolean).join("\n\n"));
-        }
-        case "JobStop": {
-          const id = String(a.id ?? "").trim();
-          if (this.workerRec(convId, id)) {
-            const r = await this.d.backend.subagentControl(id, "stop");
-            return text(r.ok ? `Stopping worker ${id}; its "Delegated work failed (stopped)" turn follows.` : `Not stopped: ${r.error ?? "it is not running"}.`);
-          }
-          const out = jobStop(this.d.jobEnv, id, convId);
-          if (/^Stopped job /.test(out)) {
-            this.jobRowEnded(convId, id, "stopped");
-            this.devSweep();
-          }
-          return text(out);
-        }
-        case "JobSteer": {
-          const id = String(a.id ?? "").trim();
-          const message = String(a.message ?? "").trim();
-          if (!this.workerRec(convId, id)) return text(`No background worker ${id} in this conversation (JobList shows them).`);
-          if (!message) return text("JobSteer needs a message.");
-          const r = await this.d.backend.subagentControl(id, "steer", message);
-          return text(r.ok ? `Passed to worker ${id}; it takes it up after its current step.` : `Not passed: ${r.error ?? "it is not running"}.`);
         }
         case "TodoWrite": {
           const todos = (Array.isArray(a.todos) ? a.todos : [])

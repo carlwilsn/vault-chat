@@ -12,6 +12,7 @@ import { join } from "node:path";
 import type { OffersDescription } from "../src/pluginOffers";
 import { linkStates } from "./deviceLink";
 import { noun, nouns, type Noun } from "./model";
+import type { JobsCtl } from "./model/jobs";
 
 export type JsonSchema = Record<string, unknown>;
 type State = { description: string; read: () => unknown | Promise<unknown> };
@@ -25,8 +26,8 @@ export type BoxOfferDeps = {
   ackMs?: number;
   /** The box's state dir (its logs live in <stateDir>/logs). */
   stateDir?: string;
-  /** The jobs and workers of the asking conversation, as JobList says them. */
-  jobs?: () => string;
+  /** The asking conversation's workers and jobs (box:jobs, server/model/jobs.ts). */
+  jobs?: JobsCtl;
   /** Every registered vault's path (box:history searches all their logs). */
   vaults?: () => string[];
   /** The asking conversation (box:history's transcript search defaults to it). */
@@ -64,7 +65,7 @@ const str = (description: string) => ({ type: "string", description });
 export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
   const out: BoxOffer[] = [
     // The nouns moved into the model (server/model/): each is a box offer of the same name.
-    ...nouns({ vault: d.vault, emit: d.emit, ackMs: d.ackMs, vaults: d.vaults, conv: d.conv }).map(nounOffer),
+    ...nouns({ vault: d.vault, emit: d.emit, ackMs: d.ackMs, vaults: d.vaults, conv: d.conv, jobs: d.jobs }).map(nounOffer),
     {
       id: "box:links",
       name: "Devices",
@@ -106,7 +107,6 @@ export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
       },
     });
   }
-  if (d.jobs) out.push({ id: "box:jobs", name: "Jobs", state: { list: { description: "this conversation's background workers and shell jobs (JobStop / JobSteer act on them)", read: () => d.jobs!() } }, actions: {} });
   if (d.stateDir) {
     const dir = join(d.stateDir, "logs");
     out.push({
@@ -164,7 +164,7 @@ export async function readBoxOffer(d: BoxOfferDeps, word: string, only?: string)
 export async function watchBoxOffer(d: BoxOfferDeps, word: string, ms: number, only?: string, everyMs = 500): Promise<{ ok: boolean; id?: string; state?: Record<string, unknown>; error?: string; changed?: boolean }> {
   // A model noun says when it changes (listened to before the first read, so no change is missed): no re-reading.
   const o = find(d, word);
-  const n = o ? noun(o.id.slice(BOX_PREFIX.length), { vault: d.vault }) : null;
+  const n = o ? noun(o.id.slice(BOX_PREFIX.length), { vault: d.vault, jobs: d.jobs }) : null;
   let hits = 0;
   let wake: (() => void) | null = null;
   const off = n ? n.watch(() => (hits++, wake?.())) : () => {};

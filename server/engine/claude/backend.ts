@@ -1238,7 +1238,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
         const key = `${t.sessionId}:${r.id}:${r.facts.lastAt}`;
         if (r.state !== "idle" || !mine.has(r.id) || this.flagged.has(key)) continue;
         this.flagged.add(key);
-        this.writeUserEntry(t, `Worker idle for ${Math.round((now - r.facts.lastAt) / 60_000)} min, not finished (check JobStatus {id: "${r.id}"}): ${r.title}`.slice(0, 300), { v: 1, clientId: `worker-${randomUUID()}`, via: "wake" }, []);
+        this.writeUserEntry(t, `Worker idle for ${Math.round((now - r.facts.lastAt) / 60_000)} min, not finished (check box:jobs status {id: "${r.id}"}): ${r.title}`.slice(0, 300), { v: 1, clientId: `worker-${randomUUID()}`, via: "wake" }, []);
       }
     }
   }

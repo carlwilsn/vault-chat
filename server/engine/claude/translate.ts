@@ -150,7 +150,7 @@ export function workerNoticeText(description: string, status: string, summary: s
     return `Worker finished${tail}`;
   }
   if (status === "failed") return `Worker failed${tail}`;
-  if (status === "stopped") return reason === "worker_restart" ? `Worker interrupted by a restart (check JobList: it may have finished, or resume it)${tail}` : `Worker stopped${tail}`;
+  if (status === "stopped") return reason === "worker_restart" ? `Worker interrupted by a restart (check box:jobs: it may have finished, or resume it)${tail}` : `Worker stopped${tail}`;
   return "";
 }
 

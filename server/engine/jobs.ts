@@ -1,4 +1,4 @@
-// Detached jobs for the pi engine (StartJob / JobStatus / JobList / JobStop).
+// Detached jobs for the pi engine (StartJob; read and stopped through box:jobs, server/model/jobs.ts).
 // Inside pi's sandbox a background `&`, setsid or tmux dies with the turn's pid
 // namespace, and the user's systemd bus is hidden from the agent (it would
 // escape the sandbox). So the SERVER starts the job: `systemd-run --user`
@@ -109,7 +109,7 @@ export function startServiceJob(env: JobEnv, a: { name: string; command: string;
       if (rec.state === "running") { rec.state = "finished"; rec.exit = 1; }
     } finally { clearTimeout(timer); }
   });
-  return { job, text: `Started ${id}. Service-owned proof runs in background; JobStatus/JobStop use this same job. Acceptance is not Shipped; laptop push, CI and both devices must still verify. Restart invalidates proof and requires rerun.` };
+  return { job, text: `Started ${id}. Service-owned proof runs in background; box:jobs status/stop use this same job. Acceptance is not Shipped; laptop push, CI and both devices must still verify. Restart invalidates proof and requires rerun.` };
 }
 
 const unitOf = (id: string) => `vc-job-${id}`;
@@ -268,7 +268,7 @@ export function startJobWith(env: JobEnv, cwd: string, a: { command?: string; na
   const max = env.max ?? (Number(process.env.VC_JOB_MAX) || 4);
   const running = runningJobs(env);
   if (running.length >= max) {
-    return no(`Not started: ${running.length} jobs are already running in this vault (the cap is ${max}). Wait for one to finish, or stop one (JobList, JobStop): ${running.map((j) => j.id).join(", ")}.`);
+    return no(`Not started: ${running.length} jobs are already running in this vault (the cap is ${max}). Wait for one to finish, or stop one (box:jobs list, stop): ${running.map((j) => j.id).join(", ")}.`);
   }
   const name = String(a?.name ?? "job").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 24) || "job";
   const id = `${name}-${Date.now().toString(36)}`;
@@ -303,7 +303,7 @@ export function startJobWith(env: JobEnv, cwd: string, a: { command?: string; na
   const job: JobRec = { id, ...(conv ? { conv } : {}), ...(byCarl ? { byCarl } : {}), name, command: cmd.slice(0, 2000), startedAt: Date.now(), timeoutS, state: "running", ...(pid ? { pid } : {}) };
   writeJobs(env, [...readJobs(env), job]);
   const h = Math.round((timeoutS / 3600) * 10) / 10;
-  return { job, text: `Started job ${id} (survives this turn and restarts; stopped after ${h} h). Output: ${log}. When it ends you get a wake turn with its exit code and last lines; JobStatus{id:"${id}"} checks it before that. A dev server it starts shows on Carl's devices with Show {url: "http://localhost:<port>"}; JobStop stops it.${asksAllInterfaces(cmd) ? " Warning: this command binds every interface (0.0.0.0 / a bare --host), so on the tailnet its port answers without Carl's login. Stop it (JobStop) and start it again on localhost (--host 127.0.0.1, or no --host): Show reaches it through the box either way." : ""}` };
+  return { job, text: `Started job ${id} (survives this turn and restarts; stopped after ${h} h). Output: ${log}. When it ends you get a wake turn with its exit code and last lines; box:jobs status {id: "${id}"} checks it before that. A dev server it starts shows on Carl's devices with Show {url: "http://localhost:<port>"}; box:jobs stop stops it.${asksAllInterfaces(cmd) ? " Warning: this command binds every interface (0.0.0.0 / a bare --host), so on the tailnet its port answers without Carl's login. Stop it (box:jobs stop) and start it again on localhost (--host 127.0.0.1, or no --host): Show reaches it through the box either way." : ""}` };
 }
 
 /** A job's state now: from its log's "[exit N]" line, else systemd's view of its unit. */
@@ -351,7 +351,7 @@ function describe(state: JobRec["state"], exit: number | undefined, timeoutS: nu
 
 export function jobStatus(env: JobEnv, a: { id?: string; tail?: number }): string {
   const id = String(a?.id ?? "").trim();
-  if (!/^[a-z0-9-]+$/.test(id)) return "JobStatus needs the job id StartJob returned.";
+  if (!/^[a-z0-9-]+$/.test(id)) return "status needs the job id StartJob returned.";
   const rec: JobRec = readJobs(env).find((j) => j.id === id) ?? { id, name: id, command: "", startedAt: 0, timeoutS: JOB_MAX_TIMEOUT_S, state: "running" };
   const p = probeJob(env, rec);
   let tail = "";

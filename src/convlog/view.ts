@@ -131,7 +131,7 @@ export function workerLine(text: string): { content: string; failed?: boolean } 
   if ((m = /^Worker interrupted by a restart(?: \([^)]*\))?(?:: ([\s\S]*))?$/.exec(t))) return { content: say("Worker interrupted by a restart", m[1] ?? "") };
   if ((m = /^Worker stopped: Background agent "([^"]*)" didn't finish before the previous session ended/.exec(t))) return { content: say("Worker interrupted by a restart", m[1]!) };
   if ((m = /^Worker stopped(?:: ([\s\S]*))?$/.exec(t))) return { content: say("Worker stopped", m[1] ?? "") };
-  if ((m = /^Worker idle for (\d+) min, not finished \(check JobStatus[^)]*\)(?:: ([\s\S]*))?$/.exec(t))) return { content: say(`Worker quiet for ${m[1]} min, not finished`, m[2] ?? "") };
+  if ((m = /^Worker idle for (\d+) min, not finished \(check (?:JobStatus|box:jobs status)[^)]*\)(?:: ([\s\S]*))?$/.exec(t))) return { content: say(`Worker quiet for ${m[1]} min, not finished`, m[2] ?? "") };
   return null;
 }
 

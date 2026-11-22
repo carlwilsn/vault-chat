@@ -1,7 +1,7 @@
 // The model on the box (server/model/, report 24 §4) and its parity check: every way the app changes a moved noun is an
 // action of that noun on the box, and every action the box has is one the app has. Listed from the app's own source,
 // so a new control that bypasses the model fails here. Settings (noun 1), notes (noun 2), pages (noun 3), workspace (noun 4),
-// history (noun 5, read-only).
+// history (noun 5, read-only), jobs (noun 6).
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -281,5 +281,56 @@ describe("the model's history noun", () => {
     expect(t.ok).toBe(false);
     expect(t.text).toMatch(/No thread to search/);
     expect((await actBoxOffer(deps, "box:history", "transcript", {})).text).toMatch(/needs query\. Nothing was run/);
+  });
+});
+
+describe("the model's jobs noun", () => {
+  /** What the chat's background-task chip does to a worker or job (src/boxChat.ts boxSubagent → POST …/subagents/:sid/{op}). */
+  function uiJobActions(): Set<string> {
+    const out = new Set<string>();
+    for (const [, s] of [...source, ...phone]) {
+      if (!/\/subagents\/\$\{[^}]+\}\/\$\{op\}/.test(s)) continue;
+      const m = /op:\s*((?:"[a-z]+"\s*\|?\s*)+)/.exec(s);
+      for (const x of m?.[1]?.match(/"([a-z]+)"/g) ?? []) out.add(x.slice(1, -1));
+    }
+    return out;
+  }
+  const calls: string[] = [];
+  const ctl = (turn: boolean) => ({
+    turn,
+    list: (all: boolean) => `- job-1: running${all ? " (all)" : ""}`,
+    status: (id: string) => `${id}: running, 3 tool calls`,
+    control: async (id: string, op: "stop" | "steer", text?: string) => (calls.push(`${op}:${id}${text ? `:${text}` : ""}`), { ok: true, text: `${op} ${id}` }),
+  });
+
+  it("parity: the chip's Stop and Steer are exactly the model's changing actions; the old tools are gone", () => {
+    const j = noun("jobs", { ...deps, jobs: ctl(true) })!;
+    const changing = Object.entries(j.actions).filter(([, a]) => !a.readOnly).map(([k]) => k).sort();
+    expect(changing).toEqual([...uiJobActions()].sort());
+    expect(changing).toEqual(["steer", "stop"]);
+    const names = agentToolSpecs().map((t) => t.name);
+    for (const old of ["JobList", "JobStatus", "JobStop", "JobSteer"]) expect(names).not.toContain(old);
+    expect(noun("jobs", deps), "no jobs noun without a conversation").toBeNull();
+  });
+
+  it("is box:jobs: listed, a status reads nothing back, stop and steer reach the engine; a side thread only reads", async () => {
+    calls.length = 0;
+    const d = { ...deps, jobs: ctl(true) };
+    expect((await readBoxOffer(d, "box:jobs")).state).toEqual({ list: "- job-1: running" });
+    expect((await actBoxOffer(d, "box:jobs", "list", { all: true })).text).toBe("- job-1: running (all)");
+    const st = await actBoxOffer(d, "box:jobs", "status", { id: "abc123" });
+    expect(st.text).toBe("abc123: running, 3 tool calls");
+    expect(st.state).toBeUndefined();
+    const stop = await actBoxOffer(d, "box:jobs", "stop", { id: "job-1" });
+    expect(stop.ok).toBe(true);
+    expect(stop.state).toEqual({ list: "- job-1: running" });
+    await actBoxOffer(d, "box:jobs", "steer", { id: "w1", message: "make it shorter" });
+    expect(calls).toEqual(["stop:job-1", "steer:w1:make it shorter"]);
+    expect((await actBoxOffer(d, "box:jobs", "steer", { id: "w1" })).text).toMatch(/needs message\. Nothing was run/);
+    const side = { ...deps, jobs: ctl(false) };
+    const r = await actBoxOffer(side, "box:jobs", "stop", { id: "job-1" });
+    expect(r.ok).toBe(false);
+    expect(r.text).toMatch(/needs an owning turn/);
+    expect(calls).toHaveLength(2);
   });
 });

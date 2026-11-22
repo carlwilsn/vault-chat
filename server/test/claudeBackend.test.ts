@@ -287,13 +287,13 @@ describe("a conversation on Claude Code", () => {
   it("vault-chat's own tools are there, and one the agent calls is answered by the engine", async () => {
     // The session's tools are the engine's host catalog, bound over vault-chat's
     // loopback MCP server with a bearer that lives only in the session's headers.
-    const r = await engine.message({ text: 'CALL mcp__vault_chat__JobList {}', convId: "cc-conv-2" });
-    await answered(r.convId, 'CALL mcp__vault_chat__JobList {}');
+    const r = await engine.message({ text: 'CALL mcp__vault_chat__PluginRead {"plugin":"box:jobs"}', convId: "cc-conv-2" });
+    await answered(r.convId, 'CALL mcp__vault_chat__PluginRead {"plugin":"box:jobs"}');
 
     // What the MODEL was given, which is the thing that matters: vault-chat's
     // tools, not deferred behind tool search.
     const offered: string[] = (api.requests[api.requests.length - 1].tools ?? []).map((x: any) => x.name);
-    for (const want of ["AskUser", "Notify", "StartJob", "JobList", "PluginAct"]) {
+    for (const want of ["AskUser", "Notify", "StartJob", "PluginRead", "PluginAct"]) {
       expect(offered).toContain(`mcp__vault_chat__${want}`);
     }
     // Of Claude Code's own: everything (Carl: "no bounds on the agent") but the
@@ -307,7 +307,7 @@ describe("a conversation on Claude Code", () => {
     // The row says the tool's own name: the clients strip vault-chat's prefix.
     const p = engine.picture(r.convId);
     const tools = p.items.filter((i: any) => i.kind === "tool");
-    expect(tools.map((t: any) => [t.name, t.status])).toEqual([["JobList", "done"]]);
+    expect(tools.map((t: any) => [t.name, t.status])).toEqual([["PluginRead", "done"]]);
     // It really ran: the engine answered it, so the row carries its result.
     expect(String(tools[0].result ?? "")).not.toBe("");
     expect(p.items.filter((i: any) => i.kind === "assistant").length).toBeGreaterThan(0);

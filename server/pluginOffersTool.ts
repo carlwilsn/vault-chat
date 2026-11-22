@@ -41,7 +41,7 @@ export const pluginOfferToolSpecs = [
     readOnly: true,
     description:
       "Reach any plugin running in Carl's app (the Notes panel, his vault plugins, in-process pages): each declares what it offers: state you can read, actions you can run (with their args), events it emits. " +
-      "No plugin: lists every live plugin with its offers (use it first to learn a plugin's actions and args), the vault pages whose state the box keeps, and the box's own state (box:settings, box:notes, box:pages: the plugins in this vault and the app's parts, each on or off (what plugins Carl has), box:workspace: what is on his laptop screen (panes and their files, the file tree, the chat panel), box:jobs, box:links: each device's link and open vault, box:perf: the laptop's speed per build, box:logs, box:history: what Carl did (in the app, on every surface) and every thread's full transcript, searchable), which the box answers with no device online. plugin (its id, e.g. app/notes, or its name): reads its state (all of it, or the one `state` named) and its recent events, from the screen now. " +
+      "No plugin: lists every live plugin with its offers (use it first to learn a plugin's actions and args), the vault pages whose state the box keeps, and the box's own state (box:settings, box:notes, box:pages: the plugins in this vault and the app's parts, each on or off (what plugins Carl has), box:workspace: what is on his laptop screen (panes and their files, the file tree, the chat panel), box:jobs: this chat's background workers and StartJob jobs, box:links: each device's link and open vault, box:perf: the laptop's speed per build, box:logs, box:history: what Carl did (in the app, on every surface) and every thread's full transcript, searchable), which the box answers with no device online. plugin (its id, e.g. app/notes, or its name): reads its state (all of it, or the one `state` named) and its recent events, from the screen now. " +
       "A vault .html page that uses vc.state / vc.log (plugin: its vault path, file name or title; vault: another registered vault's name, or an absolute path) is read from the box even when it is closed: its saved state, last change and recent log records; after (the seq it showed) + wait (seconds, at most 25) waits for its next change, to follow what Carl does in it. " +
       "Any other plugin too: wait (seconds, at most 25) holds the answer until it emits its next event (after: the seq a watch showed; left out: from now), then gives its state and the new events, so you follow what Carl does instead of reading again and again. " +
       "app/context holds what Carl has selected, hovers and is focused in now. Use it to see a plugin's state or before PluginAct. Plugins run in the laptop app (the phone app hosts none). Only plugins mounted there now are reachable; a plugin that is off or not open says so.",
@@ -65,6 +65,7 @@ export const pluginOfferToolSpecs = [
       "Run an action a live plugin offers (see PluginRead for its actions and their args), e.g. {plugin: \"app/notes\", action: \"view\", args: {filter: \"resolved\"}}. Carl's settings (theme, model, effort, voice, pushAutomatic, chatSidebar, corePublish): {plugin: \"box:settings\", action: \"set\", args: {key, value}} (value null: its default). A page or an app part off / on everywhere, by its name, no read first: {plugin: \"box:pages\", action: \"disable\" | \"enable\", args: {plugin: \"notes\" (the Notes panel) | \"phone\" | \"html-lab\"}}. " +
       "Arrange his laptop screen, no read first: {plugin: \"box:workspace\", action: \"closeLeftPanel\" (the file tree) | \"openLeftPanel\" | \"closeRightPanel\" (the chat panel) | \"openRightPanel\" | \"openInPane\" {path, pane: left|right} | \"closePane\" {pane} | \"split\" {on} | \"focus\" {target} | \"fullscreenChat\" {on} | \"chatSidebar\" {open} | \"openChat\" {id} | \"arrange\" {ops: [{action, ...}]}}; it answers with the layout read back from the screen (never claim a change without it). " +
       "Search what happened, read-only: {plugin: \"box:history\", action: \"activity\" {query?, hours?} (what Carl did on his surfaces past what your turn shows) | \"transcript\" {query, thread?: \"main\" or a project} (a thread's full raw history, before any compaction or Clear)}. " +
+      "Your background work: {plugin: \"box:jobs\", action: \"list\" {all?} | \"status\" {id} (one worker's or job's progress now) | \"stop\" {id} | \"steer\" {id, message} (Carl's change to a running worker)}; answer \"still running?\" from these, never from a notice alone. " +
       "Returns the action's result and the plugin's state read back afterwards: tell Carl only what that says. A failing action is an error result; the plugin keeps running.",
     inputSchema: {
       type: "object",
@@ -94,7 +95,7 @@ export type PluginOfferDeps = {
   vaults?: () => NamedVault[];
   /** The box's own state as offers (server/boxOffers.ts): its state dir, and the asking chat's jobs. */
   stateDir?: string;
-  jobs?: () => string;
+  jobs?: import("./model/jobs").JobsCtl;
   /** The asking conversation (a queued action's line goes there). */
   conv?: string;
 };

@@ -1,5 +1,5 @@
 // Long runs, in process on a fake pi: job control (StartJob's limits, the cap,
-// JobList, JobStop, a wake turn when a job ends).
+// box:jobs list and stop, a wake turn when a job ends).
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -40,7 +40,7 @@ describe("Job control", () => {
     expect(jobTimeoutS(5)).toBe(60);
   });
 
-  it("the state machine: a cap of 4 running, JobList, JobStop, and a wake turn when a job finishes or hits its time limit (once)", async () => {
+  it("the state machine: a cap of 4 running, box:jobs list and stop, and a wake turn when a job finishes or hits its time limit (once)", async () => {
     const logDir = join(rig.root, "jobs4");
     const units = new Map<string, string>();
     const calls: string[][] = [];
@@ -70,11 +70,11 @@ describe("Job control", () => {
       expect(calls.find((c) => c.includes(`--unit=vc-job-${ids[1]}`))).toContain("--property=RuntimeMaxSec=7200");
       const fifth = await rig.backend.call(s.tid, "StartJob", { command: "sleep 1" });
       expect(out(fifth)).toMatch(/Not started: 4 jobs are already running in this vault \(the cap is 4\)/);
-      expect(out(await rig.backend.call(s.tid, "JobList", {}))).toMatch(new RegExp(`${ids[0]}: running`));
-      const stop = await rig.backend.call(s.tid, "JobStop", { id: ids[3] });
+      expect(out(await rig.backend.call(s.tid, "PluginAct", { plugin: "box:jobs", action: "list" }))).toMatch(new RegExp(`${ids[0]}: running`));
+      const stop = await rig.backend.call(s.tid, "PluginAct", { plugin: "box:jobs", action: "stop", args: { id: ids[3] } });
       expect(out(stop)).toMatch(/Stopped job/);
       expect(calls.some((c) => c[0] === "systemctl" && c[2] === "stop" && c[3] === `vc-job-${ids[3]}`)).toBe(true);
-      expect(out(await rig.backend.call(s.tid, "JobList", {}))).toMatch(new RegExp(`${ids[3]}: stopped`));
+      expect(out(await rig.backend.call(s.tid, "PluginAct", { plugin: "box:jobs", action: "list" }))).toMatch(new RegExp(`${ids[3]}: stopped`));
       rig.backend.end(s.tid);
       await until(async () => (await rig.readConv(s.convId))?.state === "idle");
       // Job 0 finishes (its log's exit line); job 1's unit is gone past its time limit.

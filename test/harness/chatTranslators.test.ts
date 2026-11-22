@@ -85,6 +85,8 @@ test("U28: a worker's line says what happened in Carl's words, and a repeat sinc
   assert.deepEqual(workerLine("Worker NOT finished, waiting on its own background work (interim notice): Fix composer test"), { content: "Worker reported, still waiting on its own work · Fix composer test" });
   assert.deepEqual(workerLine('Worker stopped: Background agent "Lane F: chat pane" didn\'t finish before the previous session ended. Use SendMessage to resume'), { content: "Worker interrupted by a restart · Lane F: chat pane" });
   assert.deepEqual(workerLine('Worker idle for 11 min, not finished (check JobStatus {id: "abc123"}): Resubmit lanes'), { content: "Worker quiet for 11 min, not finished · Resubmit lanes" });
+  assert.deepEqual(workerLine('Worker idle for 11 min, not finished (check box:jobs status {id: "abc123"}): Resubmit lanes'), { content: "Worker quiet for 11 min, not finished · Resubmit lanes" });
+  assert.deepEqual(workerLine("Worker interrupted by a restart (check box:jobs: it may have finished, or resume it): Lane C"), { content: "Worker interrupted by a restart · Lane C" });
   assert.deepEqual(workerLine("Worker interrupted by a restart (check JobList: it may have finished, or resume it): Lane C"), { content: "Worker interrupted by a restart · Lane C" });
   assert.deepEqual(workerLine("Worker stopped: wait for ship result"), { content: "Worker stopped · wait for ship result" });
   assert.equal(workerLine("Job x finished"), null);

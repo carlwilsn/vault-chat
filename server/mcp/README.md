@@ -224,15 +224,16 @@ as a URL parameter or cookie. Both still require the Serve-vouched Tailscale log
 **What an outside client can do.** Every vault-chat tool a side thread may use:
 Show, Screen, LaptopBuild, PluginRead/PluginAct
 (every live plugin's offers: file tree, notes panel, vault plugins; the box's
-own nouns: box:settings, box:notes, box:pages, box:workspace, box:history),
+own nouns: box:settings, box:notes, box:pages, box:workspace, box:history,
+box:jobs read-only),
 Lookup/PdfRead/PdfPages,
 ListConversations/ReadConversation/PostToConversation (hand work to a chat),
 Rename/Delete/RestoreConversation, ListProjects/OpenProject/RestoreProject,
-JobList/JobStatus, Notify,
+Notify,
 WebFetch, Cost, RecordUI (browser-only), and the `vault-chat://context/you`
 resource. Not listed (they need an owning
-vault-chat turn): AskUser, SubmitChange, TodoWrite, StartJob, JobStop,
-JobSteer, ScheduleWake, Compact; nor a shell (above).
+vault-chat turn): AskUser, SubmitChange, TodoWrite, StartJob, ScheduleWake,
+Compact, box:jobs stop/steer; nor a shell (above).
 The outside client's own file and shell tools are its own, on its own machine.
 
 A missing credential variable, explicitly disabled Host allowlist, failed local

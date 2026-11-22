@@ -428,7 +428,7 @@ export function devProxies(refuse: number[] = []): DevProxies {
 export function exposedNote(ports: number[]): string {
   if (!ports.length) return "";
   const list = ports.join(", ");
-  return `Port ${list} listens on all interfaces (0.0.0.0), so on the tailnet it answers without Carl's login. Restart it on localhost: JobStop it, then StartJob again with --host 127.0.0.1 (or without --host; Vite's default is localhost). Show still opens it through the box.`;
+  return `Port ${list} listens on all interfaces (0.0.0.0), so on the tailnet it answers without Carl's login. Restart it on localhost: stop it (box:jobs stop), then StartJob again with --host 127.0.0.1 (or without --host; Vite's default is localhost). Show still opens it through the box.`;
 }
 
 /** Common dev servers read these for the address they bind: StartJob sets them (an explicit flag still wins). */
