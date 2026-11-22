@@ -19,10 +19,8 @@ again at each `tools/list`, after each call, at each turn start and after
 Claude Code's own Bash/Write/Edit (a PostToolUse hook). When it changed, the
 server (which advertises `tools.listChanged`) sends
 `notifications/tools/list_changed` and holds that call's result, or the turn,
-until the client has listed again (at most 3 s), so a vault tool the agent
-writes in `.vault-chat/tools` is callable at its very next step and a running
-session never keeps a stale schema. A catalog that fails validation keeps the
-last good one; a vault tool whose name the API would refuse is left out.
+until the client has listed again (at most 3 s), so a running session never
+keeps a stale schema. A catalog that fails validation keeps the last good one.
 
 `tools.ts` validates both the catalog and each call with the same schemas, and
 adapts `ToolAnswer` text, images and embedded binary resources to standard MCP
@@ -159,7 +157,7 @@ installed deny-read/deny-write policy and outer sandbox. `PdfRead`/`PdfPages`
 also validate external source paths against the bound root and deny policy.
 External filesystem access fails closed without the installed sandbox, even
 when unsafe native test mode is enabled. No command keys are provided to this
-loadout. Carl's vault tools (`.vault-chat/tools`) are not listed or callable externally, and external write/edit refuse that folder: a vault tool runs Carl's code with every command key. Any name outside the bound list is refused. External bash is intentionally unavailable: the existing native shell
+loadout. Any name outside the bound list is refused. External bash is intentionally unavailable: the existing native shell
 sandbox allows more than one vault and is not a vault-only external shell
 policy. `StartJob` remains turn-owned. `RecordUI` instead has a narrow external
 browser-only binding: explicit http(s) pages, real browser input, no `run`
@@ -229,11 +227,11 @@ Show, Layout, Screen, LaptopBuild, PluginRead/PluginAct
 the Notes tools, Lookup/PdfRead/PdfPages,
 ListConversations/ReadConversation/PostToConversation (hand work to a chat),
 Rename/Delete/RestoreConversation, ListProjects/OpenProject/RestoreProject,
-JobList/JobStatus, Notify, RecentActivity, SearchHistory, Catalog, Plugins,
+JobList/JobStatus, Notify, RecentActivity, SearchHistory, Plugins,
 WebFetch, Cost, RecordUI (browser-only), and the `vault-chat://context/you`
 resource. Not listed (they need an owning
 vault-chat turn): AskUser, SubmitChange, TodoWrite, StartJob, JobStop,
-JobSteer, ScheduleWake, Compact; nor Carl's vault tools or a shell (above).
+JobSteer, ScheduleWake, Compact; nor a shell (above).
 The outside client's own file and shell tools are its own, on its own machine.
 
 A missing credential variable, explicitly disabled Host allowlist, failed local

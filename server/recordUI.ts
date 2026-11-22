@@ -8,7 +8,7 @@
 // (small ISO-BMFF and EBML writers). MP4/H.264 is what an iPhone plays.
 //
 // The tool runs the recorder as a child of this same bundle (`vault-chat-server.mjs record-ui`) inside the
-// agent's command sandbox (server/vaultTools.ts runSandboxed): the browser sees what the agent's shell sees and
+// agent's command sandbox (server/sandboxRun.ts runSandboxed): the browser sees what the agent's shell sees and
 // no more, and a `run` step is a command in that sandbox.
 import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { openPage } from "./headless";
-import { runSandboxed } from "./vaultTools";
+import { runSandboxed } from "./sandboxRun";
 
 export type Step =
   | { wait: number }

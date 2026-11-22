@@ -143,14 +143,6 @@ export const LIVE_SERVICES: readonly LiveService[] = [
     grantable: true,
     page: "catalog",
   }),
-  // The box's own plugins (server/boxPlugins.ts): their routes, /api/v2/box/<name>/…, through vc.fetch.
-  named({
-    name: "box",
-    description: "Use the box plugins in your vault (server-side code you or the agent added there)",
-    supplier: "box",
-    routes: [{ methods: ["GET", "POST"], path: /^\/api\/v2\/box\/[a-z][a-z0-9-]{0,40}(?:[/?].*)?$/ }],
-    grantable: true,
-  }),
 ];
 
 /** The service a grant entry belongs to, if any is registered. */

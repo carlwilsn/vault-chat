@@ -274,7 +274,7 @@ test("Carl's real pages (html-lab, voice-chat) declare the same grant as before 
 test("the registry: one entry per service, every box route has a handler, every page function exists", async () => {
   const { LIVE_SERVICES, serviceNamed, serviceOfCap, servicesFor } = await import("../../src/liveServices.ts");
   const { HANDLERS } = await import("../../server/liveProxy.ts");
-  assert.deepEqual(LIVE_SERVICES.map((s) => s.name), ["ask", "mic", "persist", "voice-lab", "theme", "state", "log", "converse", "catalog", "box"]);
+  assert.deepEqual(LIVE_SERVICES.map((s) => s.name), ["ask", "mic", "persist", "voice-lab", "theme", "state", "log", "converse", "catalog"]);
   for (const s of LIVE_SERVICES) {
     assert.ok(s.description.length > 10, s.name);
     if (s.supplier === "box" && s.grantable && s.routes.length) assert.equal(typeof HANDLERS[s.name], "function", `${s.name} has a box handler`);
@@ -685,7 +685,7 @@ test("the box's catalog walks the vault: pages in folders and .vault-chat/visual
     put("proj/node_modules/pkg/x.html", '<meta name="vc-capabilities" content="ask">');
     const c = pluginCatalog(dir);
     assert.equal(c.truncated, undefined);
-    assert.deepEqual(c.services.map((s) => s.name), ["ask", "mic", "persist", "voice-lab", "theme", "state", "log", "converse", "catalog", "box"]);
+    assert.deepEqual(c.services.map((s) => s.name), ["ask", "mic", "persist", "voice-lab", "theme", "state", "log", "converse", "catalog"]);
     assert.deepEqual(c.plugins, [
       { id: ".vault-chat/visuals/html-lab.html", name: "HTML lab", mount: "iframe", needs: ["ask", "voice-lab"], refused: [] },
       { id: "Apps/clock.htm", name: "clock.htm", mount: "in-process", needs: [], refused: [] },

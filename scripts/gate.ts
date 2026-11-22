@@ -12,8 +12,6 @@
 //       else (or --harness) ui-harness (scripts/draft-check.ts: the live copy and the draft side by side in the harness)
 //   preset (app/preset): .vault-chat/app-plugins/preset.draft.json; runner preset (src/gateChecks.ts presetGate: a preset,
 //       every mount an app plugin this app has), then ui-harness with the draft preset tried
-//   box/<name>: .vault-chat/box-plugins/<name>.draft.js; runner box-copy (server/gateBox.ts: live copy and draft loaded
-//       apart from the box on a scratch copy of the vault, the same GET routes asked of both)
 //   settings (app/settings-values): the waiting settings draft; runner settings, in the box (POST /api/v2/gate): every
 //       value one the box takes, it still waits and changes something
 //   core (app/core): the newest core bundle the box built; runner core-bundle, in the box: every file as its manifest
@@ -153,27 +151,6 @@ export async function judgePart(p: ReturnType<typeof partOf>, o: RunOpts): Promi
     const verdict: GateVerdict = v.verdict === "fail" ? "fail" : v.verdict === "borderline" || g.seen.length ? "borderline" : "pass";
     const reasons = v.verdict === "fail" ? v.reasons : [...g.seen, ...v.reasons.filter((r) => !(g.seen.length && r.startsWith("no new errors")))];
     return { verdict, reasons, version, what: g.what, runner: "preset+ui-harness", data: v.data, detail: { textAdded: v.textAdded.slice(0, 40), textRemoved: v.textRemoved.slice(0, 40) } };
-  }
-  if (p.kind === "box-plugin") {
-    const dir = join(o.vault, p.slot!.dir);
-    const draft = read(join(dir, p.slot!.draft));
-    if (draft === undefined) throw new Error(`no draft: ${p.slot!.dir}/${p.slot!.draft}`);
-    const live = read(join(dir, p.slot!.live));
-    const scratch = mkdtempSync(join(tmpdir(), "vc-gate-box-"));
-    const before = process.env.VC_STATE_DIR;
-    try {
-      const copy = await scratchVault(o, scratch);
-      // The copy's own box-plugin files are not the candidate's: the two copies are handed over as code.
-      rmSync(join(copy.dir, p.slot!.dir), { recursive: true, force: true });
-      process.env.VC_STATE_DIR = join(scratch, "state"); // where the loaded modules are written (server/boxPlugins.ts)
-      const { boxGate } = await import("../server/gateBox.ts");
-      const v = await boxGate({ copy: copy.dir, name: p.part.slice(4), live, draft });
-      return { verdict: v.verdict, reasons: v.reasons, version: v.version, what: draftWhat(draft), runner: "box-copy", data: copy.data, detail: { live: v.live && { routes: v.live.routes, tools: v.live.tools.map((t) => t.name) }, draft: { routes: v.draft.routes, tools: v.draft.tools.map((t) => t.name), error: v.draft.error } } };
-    } finally {
-      if (before === undefined) delete process.env.VC_STATE_DIR;
-      else process.env.VC_STATE_DIR = before;
-      rmSync(scratch, { recursive: true, force: true });
-    }
   }
   throw new Error(`${p.part}: the ${p.kind} gate runs in the box (POST /api/v2/gate)`);
 }

@@ -84,16 +84,12 @@ import type { EventBody, ItemImage, PendingInput } from "../../src/convlog/proto
 import { isOpen, pendingOf, type Picture } from "../../src/convlog/reduce";
 import { toolName } from "../../src/convlog/view";
 import { lookupAll } from "./lookup";
-import { pluginCatalog } from "../pluginCatalog";
-import { catalogText } from "../../src/pluginCatalog";
 import { attachmentAt, attachmentsNote } from "../attachments";
 import { readEntries } from "../convlog/piSession";
 import { PiFeed, type Expected, type UserRequest } from "./piFeed";
 import { READ_ONLY_TOOLS, type ModelChoice, type SideLog, type SideState } from "./backend";
 import { TurnRecorder, type TurnLine } from "./turnLog";
 import { SERVER_VERSION } from "../config";
-import { runVaultTool, vaultToolSpecsFor } from "../vaultTools";
-import { boxAgentCall, boxAgentPrompt, boxAgentTools, boxHiddenTools, cleanTries, type BoxTries } from "../boxPlugins";
 import { submitChangeJob, SUBMIT_CHANGE_SCHEMA } from "../submitChange";
 import { isClaudeModel, isEffort, type Effort } from "./claude/models";
 import { SIGN_IN_AGAIN } from "./claude/auth";
@@ -140,7 +136,7 @@ export type EngineDeps = {
   vaultList?: () => { name: string; path: string }[];
   /** One structured line per turn (turnLog.ts): the box's turn log and the journal. */
   turnLog?: (line: TurnLine) => void;
-  /** The per-command sandbox the vault's own tools run in (server/vaultTools.ts); null: none (not Linux). */
+  /** The per-command sandbox RecordUI's browser runs in (server/sandboxRun.ts); null: none (not Linux). */
   shell?: () => string[] | null | undefined;
   /** How long Ctrl+L's Handoff waits for the chat it started before it reports by an alert instead (tests). */
   handoffWaitMs?: number;
@@ -612,14 +608,6 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
-    name: "Catalog",
-    readOnly: true,
-    description:
-      "What vault-chat's pages can be built from: every registered service a page can name in its <meta name=\"vc-capabilities\"> manifest (what each does, who supplies it, its vc.<fn>), and the plugins in this vault (.html pages with a vc-capabilities or vc-mount manifest: path, name, where it runs, the services it needs). Use it for \"what services exist?\" or \"what plugins do I have?\". Read-only. To read or drive a running plugin's own state and actions, use PluginRead / PluginAct.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-  },
-  {
-    type: "function",
     name: "Lookup",
     description:
       "Find something in Carl's notes and PDFs (lecture notes, homework) and read it, in one call: give his words (and part of a file name if you know it). Returns the best-matching passages with the lines around them (a PDF's with its page), from the files that match best. Use it instead of a find, grep, read chain.",
@@ -678,8 +666,6 @@ export function voiceSideToolSpecs(act: boolean): ToolSpec[] {
 }
 
 const text = (t: string) => ({ success: true, contentItems: [{ type: "inputText", text: t }] });
-/** The box plugin drafts a conversation tries (its `tries`, set when Carl started it while trying one). */
-const triesOf = (conv: unknown): BoxTries => cleanTries((conv as { tries?: unknown } | null)?.tries);
 
 /** A tool's answer for pi: its text, and the images it attaches (Screen's pictures) as pi's image blocks. */
 export function toolAnswer(r: any): import("./backend").ToolAnswer {
@@ -945,13 +931,9 @@ export class Engine {
       // Only what this caller may run is listed: a tool that needs an owning turn (its question, plan,
       // job, wake) is left out rather than listed and then refused.
       const builtin = agentToolSpecs().filter((t) => !TURN_ONLY_TOOLS.has(t.name) && t.name !== "Compact").map((t) => t.name === "RecordUI" ? { ...t, description: `${t.description} External clients: browser-only http(s) pages; run steps and local-file navigation are refused. Omit out: a fresh vault visuals directory is allocated.` } : t);
-      // Carl's vault tools (.vault-chat/tools) are not offered here: each runs his own code in the
-      // command sandbox with every command key (vaultTools.ts), the shell authority this endpoint
-      // withholds. For the same reason an external write never lands in that folder.
       const fs = await this.d.backend.filesystem(this.d.vault, PI_BUILTIN_TOOLS.filter((n) => n !== "bash"), { fileWrite: async () => true }, this.d.vault);
       const specs = [...builtin, ...fs.specs] as ToolSpec[];
       const listed = new Set(specs.map((t) => t.name));
-      const toolsDir = resolve(this.d.vault, ".vault-chat", "tools");
       return {
         specs,
         resources: [{ uri: "vault-chat://context/you", name: "Authorized device and file context", mimeType: "text/plain" }],
@@ -962,11 +944,6 @@ export class Engine {
         call: async (name: string, args: Record<string, unknown>, contextOfCall: { signal: AbortSignal }) => this.scoped(async () => {
           if (TURN_ONLY_TOOLS.has(name) || name === "Compact") return { ok: false, text: `${name} needs an owning vault-chat turn; an external MCP client cannot borrow a chat's live turn.` };
           if (!listed.has(name)) return { ok: false, text: `${name} is not available to external MCP clients.` };
-          if ((name === "write" || name === "edit") && typeof args.path === "string") {
-            const target = resolve(this.d.vault, args.path);
-            const rel = relative(toolsDir, target);
-            if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return { ok: false, text: "External MCP clients cannot write vault tools (.vault-chat/tools)." };
-          }
           if (PI_BUILTIN_TOOLS.includes(name)) return fs.call(name, args, { ...contextOfCall, requestId: "external" });
           if (name === "RecordUI") return externalRecordUI(this.d.shell?.(), this.d.vault, args,
             (path, write) => this.d.backend.externalPath(this.d.vault, path, write), { signal: contextOfCall.signal });
@@ -1262,8 +1239,6 @@ export class Engine {
     via?: string;
     /** The rest of his previous line (a pause on a call cut it in two): it steers the running turn. */
     continues?: boolean;
-    /** A new chat started while Carl tries box plugin drafts ({"box/<name>": version}): it tries them (server/boxPlugins.ts). */
-    tries?: unknown;
   }, viewerRoot = this.d.vault): Promise<Record<string, unknown> | null> {
     const clientId = typeof body.clientMsgId === "string" && body.clientMsgId.trim() ? body.clientMsgId.trim().slice(0, 80) : newMessageId();
     if (typeof body?.unqueue === "string" && body.convId) return this.takeBack(body.convId, body.unqueue);
@@ -1276,10 +1251,7 @@ export class Engine {
     const projectAsked = !body.convId && typeof body.project === "string" && body.project.trim() ? body.project.trim() : undefined;
     let conv: EngineConv | null;
     try {
-      // A chat Carl starts while he tries a box plugin's draft keeps trying it (its tools, its prompt): `tries`, set
-      // only when the chat is made (server/boxPlugins.ts).
-      const tries = cleanTries(body.tries);
-      conv = await this.target(body.convId, projectAsked, { ...(body.source === "voice" ? { source: "voice" } : {}), ...(tries ? { tries } : {}) } as Partial<EngineConv>, textIn || "Image");
+      conv = await this.target(body.convId, projectAsked, { ...(body.source === "voice" ? { source: "voice" } : {}) } as Partial<EngineConv>, textIn || "Image");
     } catch (e) {
       return { error: (e as Error).message };
     }
@@ -2494,15 +2466,11 @@ export class Engine {
     // A runtime that is given the vault's memory by its own means (Claude Code
     // imports it in the session) must not be told it again in front of the turn.
     const ownMemory = !!this.d.backend.carriesMemory?.(threadId);
-    // The box plugins' prompt fragments (server/boxPlugins.ts box.prompt): sent when they change, and once more when
-    // the last one is gone, so a running session drops what no longer applies.
-    const boxText = await boxAgentPrompt(this.d.vault, triesOf(conv)).catch(() => "");
-    const box = { key: "box-plugins", text: boxText || (sent.get("box-plugins") ? "<box-plugins>(none now: what the box plugins said before no longer applies)</box-plugins>" : "") };
     // The asks Carl made in this chat, as the work list has them now: what finished, what needs him, what runs. Sent
     // when it changes, so "did X land?" has an answer here without a turn being spent on telling it.
     const asks = this.workOf(conv.id) ? [] : readLedger(this.workFile()).filter((e) => e.origin?.conv === conv.id && this.mine(e) && Date.now() - e.updatedAt < 2 * 86_400_000);
     const work = { key: "work", text: asks.length ? `<work>Your asks from this chat in Carl's work list (the box runs them in fresh sessions; Ledger reads and changes them):\n${asks.map((e) => `- ${e.id} [${e.status}] ${e.words.slice(0, 120)}${e.last ? ` — ${e.last.slice(0, 200)}` : ""}${e.question ? ` — question: ${e.question.text.slice(0, 200)}` : ""}`).join("\n")}</work>` : sent.get("work") ? "<work>(no asks from this chat in the work list now)</work>" : "" };
-    for (const x of [...turnSections(conv as any, { folder: this.folderOf(conv) }), files, ...(box.text ? [box] : []), ...(work.text ? [work] : [])]) {
+    for (const x of [...turnSections(conv as any, { folder: this.folderOf(conv) }), files, ...(work.text ? [work] : [])]) {
       if (ownMemory && x.key === "memory") continue;
       if (sent.get(x.key) === x.text) continue;
       sent.set(x.key, x.text);
@@ -2511,23 +2479,15 @@ export class Engine {
     return out.join("\n\n");
   }
 
-  /** Ctrl+K / Ctrl+L: the tools a side thread can use (notes, Show …, Carl's own vault tools), and ProposeEdit when the open file can take an edit. */
+  /** Ctrl+K / Ctrl+L: the tools a side thread can use (notes, Show …), and ProposeEdit when the open file can take an edit. */
   private async inlineHostTools(editable: boolean): Promise<ToolSpec[]> {
     return [...(await this.hostToolCatalog("voiceAct")), pluginWriteSpec, handoffSpec, ...(editable ? [proposeEditSpec] : [])] as ToolSpec[];
   }
 
-  /** One current host policy for new and resumed sessions; vault tools keep collision checks. */
-  private async hostToolCatalog(loadout: HostLoadout, convId?: string): Promise<ToolSpec[]> {
+  /** One current host policy for new and resumed sessions. */
+  private async hostToolCatalog(loadout: HostLoadout, _convId?: string): Promise<ToolSpec[]> {
     if (loadout === "readOnly") return sideToolSpecs();
-    const builtin = agentToolSpecs();
-    const own = await vaultToolSpecsFor(this.d.vault, [...builtin.map((t) => t.name), ...PI_BUILTIN_TOOLS]);
-    const selected = loadout === "conversation" ? builtin : voiceSideToolSpecs(loadout === "voiceAct");
-    // The box plugins' (server/boxPlugins.ts): their tools join, the tools they hide leave; a draft only for the
-    // conversation Carl started while trying it.
-    const tries = convId ? triesOf(await readConv(this.d.vault, convId)) : null;
-    const hidden = await boxHiddenTools(this.d.vault, tries).catch(() => new Set<string>());
-    const box = await boxAgentTools(this.d.vault, tries, [...builtin.map((t) => t.name), ...own.map((t) => t.name), ...PI_BUILTIN_TOOLS]).catch(() => []);
-    return [...selected.filter((t) => !hidden.has(t.name)), ...own, ...box] as ToolSpec[];
+    return (loadout === "conversation" ? agentToolSpecs() : voiceSideToolSpecs(loadout === "voiceAct")) as ToolSpec[];
   }
 
   /**
@@ -3105,9 +3065,6 @@ export class Engine {
     const interaction: Interaction = p.interaction ?? p.notifyScope?.interaction ?? this.interaction(convId);
     try {
       p.signal?.throwIfAborted();
-      // A tool a box plugin hides (server/boxPlugins.ts box.hideTool): refused even from a session that listed it before.
-      if (agentToolSpecs().some((t) => t.name === name) && (await boxHiddenTools(vault, triesOf(conv)).catch(() => new Set<string>())).has(name))
-        return { success: false, contentItems: [{ type: "inputText", text: `${name} is turned off by a box plugin (.vault-chat/box-plugins/; the Plugins tool's status says which).` }] };
       // ListProjects only reads. A project is made only by Carl: in the app, or by asking for it (OpenProject below).
       if (isContextTool(name)) return await handleContextTool(name, a, { conv: conv as any, convs: (await this.convsEverywhere(vault)) as any });
       // The notes tools: the same code voice runs (server/notesTools.ts), every result read back from the file.
@@ -3115,9 +3072,9 @@ export class Engine {
         const r = await noteTool(vault, name, a);
         return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
       }
-      // A plugin turned off or on, or its draft kept / dropped / gated (server/supervisorTools.ts): a record in the log every view follows.
+      // A plugin turned off or on (server/supervisorTools.ts): a record in the log every view follows.
       if (name === PLUGIN_TOOL) {
-        const r = await pluginToolAsync(vault, a, { jobs: this.d.jobEnv, convId, byCarl: !!this.live.get(convId)?.byCarl });
+        const r = await pluginToolAsync(vault, a);
         return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
       }
       // Ctrl+K / Ctrl+L changing the app (server/pluginWriteTool.ts): the plugin folders only, a live plugin through its
@@ -3260,8 +3217,6 @@ export class Engine {
         }
         case "Lookup":
           return text(await lookupAll(vault, a));
-        case "Catalog":
-          return text(catalogText(pluginCatalog(vault)));
         case "Show": {
           // On the device he names (or is on): a signal the laptop / phone acks.
           if ((!a.where || a.where === "here") && interaction.device === "laptop" && /\b(?:not|away from)\s+(?:near\s+)?(?:at\s+)?my\s+(?:laptop|computer)\b/i.test(interaction.request)) {
@@ -3429,12 +3384,6 @@ export class Engine {
           return text(`Conversation "${target.title}": $${(target.costUsd ?? 0).toFixed(4)}${target.costMissingCalls ? ` (+${target.costMissingCalls} call(s) without a cost)` : ""}. (Costs land a few seconds after each turn.)`);
         }
         default: {
-          // One of Carl's own vault tools (.vault-chat/tools), run in the command sandbox.
-          const out = await runVaultTool(vault, this.d.shell?.(), name, a);
-          if (out !== null) return { success: !/^(Error|exit \d|\(timed out\))/.test(out), contentItems: [{ type: "inputText", text: out }] };
-          // A box plugin's tool (server/boxPlugins.ts box.tool): the draft's in a conversation that tries it.
-          const boxed = await boxAgentCall(vault, name, a, { tries: triesOf(conv), conv: conv.id || null, signal: p.signal });
-          if (boxed) return { success: boxed.ok, contentItems: [{ type: "inputText", text: boxed.text }] };
           return { success: false, contentItems: [{ type: "inputText", text: `Unknown tool ${name}.` }] };
         }
       }

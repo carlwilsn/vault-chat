@@ -44,7 +44,6 @@ describe("migration drafts", () => {
   let base = "";
   let ps: typeof import("../pluginState");
   let mig: typeof import("../migrations");
-  let tools: typeof import("../supervisorTools");
 
   beforeAll(async () => {
     for (const k of Object.keys(process.env)) if (k.startsWith("VC_")) delete process.env[k];
@@ -71,7 +70,6 @@ describe("migration drafts", () => {
     base = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
     ps = await import("../pluginState");
     mig = await import("../migrations");
-    tools = await import("../supervisorTools");
   });
   afterAll(async () => {
     if (srv) await new Promise<void>((resolve) => srv!.close(() => resolve()));
@@ -188,17 +186,11 @@ describe("migration drafts", () => {
     boot();
     expect((await state()).state).toEqual({ placement: "pinned", legacy: 1, "off:x": true, "off:y": true });
     // Forward again: the migrated epoch as it was left (the set made there included).
-    const fwd = tools.pluginToolAsync(A.path, { action: "back", plugin: "migrate/plan-shape" });
-    expect(await fwd).toMatchObject({ ok: true, text: expect.stringMatching(/forward/) });
+    const fwd = (await import("../migrations")).migrationChange(A.path, { plugin: "migrate/plan-shape", change: "switch" }, "agent");
+    expect(await fwd).toMatchObject({ text: expect.stringMatching(/forward/) });
     expect(await state()).toMatchObject({ state: migrated.state, epoch: migrated.epoch });
     boot();
     expect(await state()).toMatchObject({ state: migrated.state, epoch: migrated.epoch });
-    // The agent cannot keep a migration for Carl.
-    const v2 = write("again", draft("again", "  return { ...old, shape: 3 };"));
-    expect(await tools.pluginToolAsync(A.path, { action: "keep", plugin: "migrate/again" })).toMatchObject({ ok: false });
-    expect(await tools.pluginToolAsync(A.path, { action: "discard", plugin: "migrate/again" })).toMatchObject({ ok: true });
-    expect(existsSync(join(A.path, DIR, "again.draft.js"))).toBe(false);
-    void v2;
   });
 
   it("a migration on top of a migration: switch back goes one step, and only the newest can switch", async () => {

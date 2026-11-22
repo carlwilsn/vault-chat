@@ -127,8 +127,6 @@ async function main(): Promise<void> {
     ]);
   }
   for (const v of vaultRefs()) convLog(v.path);
-  // Box plugins (server/boxPlugins.ts): the vault's own server-side modules, loaded live by this server, the owner now.
-  (await import("./boxPlugins")).startBoxPlugins(() => vaultRefs().map((v) => v.path));
   // The laptop app's core is a bundle this box builds from accepted main and serves (server/coreBundles.ts): its records
   // are app/core plugin.change records in the main vault's log; a new main is built as a StartJob job outside this
   // server while Carl's setting corePublish is on (the default); a built bundle that passes the one gate is kept by

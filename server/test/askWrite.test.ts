@@ -81,7 +81,7 @@ describe("Ctrl+L can change the app", () => {
     expect(pluginDesired(rig.vault, ".vault-chat/plugins/snail-cursor.js").state).toBe("stopped");
   });
 
-  it("editing a plugin that was off: live, on again, and Switch back undoes it", async () => {
+  it("editing a plugin that was off: live, on again", async () => {
     script = async (call) => (await call("PluginWrite", { path: ".vault-chat/plugins/snail-cursor.js", oldText: "// snail", newText: "// shail" })).text;
     const done = await ask("make the snail say shail");
     expect(done.text).toMatch(/live now/);
@@ -89,9 +89,6 @@ describe("Ctrl+L can change the app", () => {
     expect(readFileSync(join(plugins(), "snail-cursor.prev.js"), "utf8")).toContain("// snail");
     const { pluginDesired } = await import("../supervisor");
     expect(pluginDesired(rig.vault, ".vault-chat/plugins/snail-cursor.js").state).toBe("running");
-    script = async (call) => (await call("Plugins", { action: "back", plugin: ".vault-chat/plugins/snail-cursor.js" })).text;
-    await ask("switch it back");
-    expect(readFileSync(join(plugins(), "snail-cursor.js"), "utf8")).toContain("// snail");
   });
 
   it("writes nothing outside the plugin folders; drafts wait for the gate", async () => {

@@ -1,6 +1,6 @@
 // Exercise Engine's actual policy resolver, including vault-tool collision rules.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeRig, type Rig } from "./longRig";
 import { cleanup } from "./helpers";
@@ -20,21 +20,19 @@ beforeAll(async () => { rig = await makeRig(); });
 afterAll(() => { rig?.engine.stop(); cleanup(rig?.root); });
 
 describe("current host loadout policy", () => {
-  it("uses current built-in definitions and collision-filtered vault tools on every resolution", async () => {
+  it("uses current built-in definitions on every resolution; a folder in .vault-chat/tools is not a tool", async () => {
     own("shadow-review", "SubmitChange"); own("shadow-read", "read");
-    const added = own("custom", "CalendarFixture");
+    own("custom", "CalendarFixture");
     const all = await catalog("conversation");
     expect(all.some(t => t.name === "ReadyForReview")).toBe(false);
     expect(all.find((t) => t.name === "SubmitChange")).toEqual(agentToolSpecs().find((t) => t.name === "SubmitChange"));
     expect(all.filter((t) => t.name === "SubmitChange")).toHaveLength(1);
     expect(all.find((t) => t.name === "read")).toBeUndefined(); // filesystem is bound independently
-    expect(all.some((t) => t.name === "CalendarFixture")).toBe(true);
+    expect(all.some((t) => t.name === "CalendarFixture")).toBe(false);
     expect(all.find((t) => t.name === "SubmitChange")!.inputSchema.required).toContain("branch");
-    rmSync(added, { recursive: true });
-    expect((await catalog("conversation")).some((t) => t.name === "CalendarFixture")).toBe(false);
   });
 
-  it("keeps read-only, voice and conversation authority separate; a newly added vault tool is not silently read-only", async () => {
+  it("keeps read-only, voice and conversation authority separate; a vault tools folder adds nothing", async () => {
     own("custom", "CalendarFixture");
     const readonly = await catalog("readOnly");
     expect(readonly).toEqual(sideToolSpecs());
@@ -42,9 +40,7 @@ describe("current host loadout policy", () => {
     expect(readonly.some((t) => t.name === "CalendarFixture")).toBe(false);
     for (const loadout of ["voiceRead", "voiceAct"] as const) {
       const selected = await catalog(loadout);
-      expect(selected.filter((t) => t.name !== "CalendarFixture")).toEqual(voiceSideToolSpecs(loadout === "voiceAct"));
-      // Existing voice policy intentionally permits Carl's own vault tools.
-      expect(selected.some((t) => t.name === "CalendarFixture")).toBe(true);
+      expect(selected).toEqual(voiceSideToolSpecs(loadout === "voiceAct"));
       expect(selected.some((t) => t.name === "SubmitChange")).toBe(false);
       expect(selected.some((t) => t.name === "AskUser")).toBe(false);
     }

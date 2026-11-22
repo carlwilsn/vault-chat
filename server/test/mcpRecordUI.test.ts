@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { browserOnlyError } from "../recordUI";
 import { externalRecordUI } from "../mcp/recordUI";
-import { runSandboxed } from "../vaultTools";
+import { runSandboxed } from "../sandboxRun";
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const url = "http://127.0.0.1:1500/";
