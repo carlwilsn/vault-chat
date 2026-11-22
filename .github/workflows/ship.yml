@@ -389,29 +389,6 @@ jobs:
           gh release upload "v${{ needs.prepare.outputs.version }}" \
             --repo "${{ github.repository }}" --clobber release-server/*
 
-  # macOS: a check (.github/workflows/mac-check.yml: build, launch, self-tests,
-  # the recorded tour, mac-proof.zip on the release) whose fully passing build
-  # alone becomes a signed Mac update with mac-update.json on the release; no
-  # Mac user gets it until the box promotes it (mac-promote.yml). It is in
-  # nobody's `needs`, latest.json never names it, and its jobs are
-  # continue-on-error, so Windows/Linux ship exactly as before. With no arm64
-  # runner to be had it re-runs itself on macos-15-intel.
-  build_macos:
-    needs: prepare
-    if: needs.prepare.outputs.has_changes == 'true'
-    permissions:
-      contents: write
-      actions: write
-      checks: read
-    uses: ./.github/workflows/mac-check.yml
-    # The updater key, for mac-check's mac_publish (Linux) only: it signs a Mac
-    # update when every Mac check passed; the Mac runner never sees it.
-    secrets: inherit
-    with:
-      sha: ${{ needs.prepare.outputs.sha }}
-      version: ${{ needs.prepare.outputs.version }}
-      runner: macos-15
-
   # ── Phase 3: one complete updater manifest, then publish ─────────────────
   # Every build is done and its files are on the draft. Assemble a SINGLE
   # latest.json covering every platform (replacing the per-job race that kept

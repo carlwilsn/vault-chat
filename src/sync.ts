@@ -1,6 +1,5 @@
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { LogicalPosition } from "@tauri-apps/api/window";
 import { useStore, type ChatMessage, type FileEntry, type LiveTool, type Theme } from "./store";
 import { sendMessage, stopAgent, interruptAndSend, sendNow, takeBack } from "./chat-controller";
 import type { Conversation } from "./conversations";
@@ -8,7 +7,6 @@ import { newConversationId } from "./conversations";
 import { listProjects, openProjectNotes, openThread, routeProjectChangesTo, routeProjectNotesTo, setConversationProject } from "./projects";
 import { toggleVoice, voiceBarLevels } from "./voiceCall";
 import { isPopout } from "./windowKind";
-import { isMac } from "./macChrome";
 
 const POPOUT_LABEL = "chat-popout";
 const MAIN_LABEL = "main";
@@ -364,12 +362,8 @@ export async function openChatPopout() {
     height: 820,
     minWidth: 380,
     minHeight: 400,
-    // Windows/Linux: no native frame, the chat's bar draws the window controls (src/WindowControls.tsx). macOS: the
-    // main window's frame (src-tauri/tauri.macos.conf.json), traffic lights over the top-left that the chat keeps
-    // clear of (src/macChrome.ts); without it a Mac popout had no way to close.
-    ...(isMac
-      ? { decorations: true, titleBarStyle: "overlay" as const, hiddenTitle: true, trafficLightPosition: new LogicalPosition(14, 12) }
-      : { decorations: false }),
+    // No native frame: the chat's bar draws the window controls (src/WindowControls.tsx).
+    decorations: false,
     backgroundColor: "#1f1f23",
     theme: "dark",
     // Stay hidden until the popout's main.tsx has mounted React and the

@@ -6,7 +6,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { intersects, TRAFFIC_LIGHTS_INSET, TRAFFIC_LIGHTS_RECT } from "../../src/macChrome.ts";
 import { parseSelfTest, runSelfTest, selfTestResult, sha256Hex, statusMismatch, type SelfTestDeps } from "../../src/selfTest.ts";
 
 function deps(over: Partial<SelfTestDeps> = {}): SelfTestDeps & { ran: unknown[]; clock: { t: number } } {
@@ -192,7 +191,7 @@ test("the recorded tour the Mac job runs is a valid steps file, paced, every sur
   const p = plan as Exclude<typeof plan, string>;
   assert.ok((p.pace ?? 0) >= 500, "steps pause so the recording is watchable");
   const all = JSON.stringify(p.steps);
-  for (const want of ["Mod+K", "Mod+L", "Mod+Shift+F", "Mod+M", "chat-popout", "settings-pane", "\"drag\"", "Rename", "noFile", "ask-answer", "composer", "traffic-lights"]) assert.ok(all.includes(want), `the tour covers ${want}`);
+  for (const want of ["Mod+K", "Mod+L", "Mod+Shift+F", "Mod+M", "chat-popout", "settings-pane", "\"drag\"", "Rename", "noFile", "ask-answer", "composer"]) assert.ok(all.includes(want), `the tour covers ${want}`);
   assert.ok(!/Control\+|Ctrl\+|Meta\+/.test(all), "keys go through Mod, so the same tour is Ctrl on Linux and Cmd on a Mac");
 });
 
@@ -219,23 +218,3 @@ test("each step's cap is its own timeout (or wait) plus a minute", async () => {
   assert.equal(stepCapMs({ click: "#a" }), 70_000);
 });
 
-test("the traffic lights' corner: clear passes with what it measured, anything under them fails, no Mac says so", async () => {
-  assert.match(String(parseSelfTest([{ expect: { clear: "the corner" } }])), /traffic-lights/);
-  let under: string[] = ['text "Chats" at 37,14 34x18'];
-  const d = deps({ trafficLights: () => ({ under, header: '"Chats" at 98,50 34x18' }) });
-  const failed = await runSelfTest([{ expect: { clear: "traffic-lights", timeout: 1000 }, label: "nothing under the traffic lights" }], d);
-  assert.equal(failed.ok, false);
-  assert.match(failed.steps[0]!.error ?? "", /under the traffic lights: text "Chats" at 37,14/);
-  under = [];
-  const passed = await runSelfTest([{ expect: { clear: "traffic-lights" } }], d);
-  assert.equal(passed.ok, true);
-  assert.match(passed.steps[0]!.note ?? "", /clear of the traffic lights .*"Chats" at 98,50/);
-  const elsewhere = await runSelfTest([{ expect: { clear: "traffic-lights" } }], deps());
-  assert.equal(elsewhere.ok, true);
-  assert.match(elsewhere.steps[0]!.note ?? "", /not macOS/);
-  // The reserved room covers the buttons: a header after the left inset, or below the top strip, is clear.
-  assert.ok(TRAFFIC_LIGHTS_INSET.left >= TRAFFIC_LIGHTS_RECT.right && TRAFFIC_LIGHTS_INSET.top >= TRAFFIC_LIGHTS_RECT.bottom);
-  assert.equal(intersects({ left: 16, top: 12, right: 60, bottom: 30 }), true, "the old 'Chats' header (px-4 py-3) sat under them");
-  assert.equal(intersects({ left: 16, top: TRAFFIC_LIGHTS_INSET.top + 12, right: 60, bottom: TRAFFIC_LIGHTS_INSET.top + 30 }), false);
-  assert.equal(intersects({ left: TRAFFIC_LIGHTS_INSET.left, top: 4, right: 104, bottom: 32 }), false);
-});

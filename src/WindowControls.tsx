@@ -1,10 +1,9 @@
-// Minimize / maximize-restore / close (Windows and Linux; macOS has its own traffic lights). Core, not a plugin: the
+// Minimize / maximize-restore / close (Windows and Linux). Core, not a plugin: the
 // title bar plugin (src/plugins/titlebar) draws them, its built-in fallback (src/Titlebar.tsx) draws them when the
 // plugin is off or failing, and fullscreen chat draws them top-right, so the window can always be closed.
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Minus, Square, Copy, X } from "lucide-react";
-import { isMac } from "./macChrome";
 
 /** onBar: drawn on the (blue) title bar, in its colours; elsewhere (fullscreen chat, the chat's own bar) the theme's. */
 export function WindowControls({ className = "", onBar = false }: { className?: string; onBar?: boolean }) {
@@ -33,7 +32,6 @@ export function WindowControls({ className = "", onBar = false }: { className?: 
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  if (isMac) return null;
   const tone = onBar ? "hover:bg-titlebar-hover text-titlebar-muted" : "hover:bg-accent/60 text-muted-foreground";
   return (
     <div className={`flex items-center ${className}`} data-el="window-controls">

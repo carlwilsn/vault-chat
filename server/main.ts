@@ -20,7 +20,6 @@ import { setLegacySource, signal, signalLog, convLog, setSharedClock, setFeedVau
 import { endOwnProcesses, promote, takeOwnership } from "./owner";
 import type { FileLocalStorage } from "./shims/globals";
 import { legacySource } from "./convlog/importer";
-import { macGitStatus, prepareMacEnv, type GitState } from "./macEnv";
 import { pluginStopped, supervisorOf } from "./supervisor";
 import { CORE_PART } from "../src/coreBundle";
 
@@ -30,10 +29,8 @@ function fatal(msg: string, code = 2): never {
 }
 
 
-let gitState: GitState = "missing";
+let gitState: "ok" | "missing" = "missing";
 function checkGit(): void {
-  // On a Mac, never run /usr/bin/git just to see: with no Command Line Tools it opens Apple's install dialog.
-  if (process.platform === "darwin") { gitState = macGitStatus(); return; }
   const r = spawnSync("git", ["--version"], { windowsHide: true, timeout: 10_000 });
   gitState = r.status === 0 ? "ok" : "missing";
 }
@@ -45,8 +42,6 @@ async function main(): Promise<void> {
     fatal(`VC_VAULT ${cfg.vault} is not a directory (set VC_VAULT to the box working copy)`);
   }
 
-  // A Finder/Dock launch on macOS has launchd's bare PATH: the login shell's, Homebrew's and ~/.local/bin first.
-  prepareMacEnv(cfg.stateDir);
   registerCommands();
 
   // Keys: in-process from the box's encrypted store. The server still starts
@@ -170,10 +165,6 @@ async function main(): Promise<void> {
       else switchBacks.push(line);
     });
   }
-  // The Mac friend channel (server/macFriend.ts): every few hours the box looks whether a release passed every Mac check
-  // and soaked 24 h on Carl's laptop with no new app errors, and at most every 7 days points the friend's manifest at it
-  // (a pushed tag that .github/workflows/mac-promote.yml turns into latest-mac.json). Box only (Linux + the repo).
-  (await import("./macFriend")).startMacFriend({ stateDir: cfg.stateDir, repo: (await import("./coreBundles")).coreRepo() });
   // Carl's settings are records in the main vault's log (server/settings.ts); what the box kept in its localStorage
   // file moves there once, backed up first (outside the vault).
   {
@@ -363,7 +354,6 @@ async function main(): Promise<void> {
       })(),
       vault: cfg.vaultName,
       git: gitState,
-      ...(gitState === "needs-command-line-tools" ? { gitHelp: "git needs macOS's Command Line Tools: run xcode-select --install (or brew install git)" } : {}),
       keys: { claudeCode: hasKey(CLAUDE_CODE_KEY) },
       // A live voice session counts as a run: the updater waits for busy.runs == 0
       // (server/deploy/vault-chat-update.sh), so it never restarts under someone talking.

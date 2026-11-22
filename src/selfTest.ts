@@ -23,9 +23,6 @@
 //   {expect: {noFile: "rel/path", timeout?}}             that file is no longer on disk in the vault
 //   {expect: {gone: "css", timeout?}}                    nothing visible matches that selector (any more)
 //   {expect: {window: "<label>", open: true|false, timeout?}}  the app's window with that label is open / closed
-//   {expect: {clear: "traffic-lights", timeout?}}       nothing visible (text, a control, an icon) is under the macOS
-//                                                        traffic lights (src/macChrome.ts); passes, saying so, elsewhere
-import { isMac, TRAFFIC_LIGHTS_RECT, firstHeaderText, underTrafficLights } from "./macChrome";
 import { checkSteps, find, runSteps, stepAction, visibleText, type Step, type StepOutcome } from "./driveSteps";
 
 export type Expect =
@@ -37,8 +34,7 @@ export type Expect =
   | { key: string; sha256: string; timeout?: number }
   | { noFile: string; timeout?: number }
   | { gone: string; timeout?: number }
-  | { window: string; open: boolean; timeout?: number }
-  | { clear: "traffic-lights"; timeout?: number };
+  | { window: string; open: boolean; timeout?: number };
 export type SelfTestStep = (Step | { expect: Expect } | { closeWindow: string }) & { label?: string };
 export type SelfTestPlan = { vault?: string; pace?: number; steps: SelfTestStep[] };
 export type SelfTestConfig = { steps: unknown; out: string; vault: string; tempVault?: boolean };
@@ -94,9 +90,8 @@ function checkStep(raw: unknown): string | null {
     if (!e || typeof e !== "object") return "expect needs {health}, {text} or {file}";
     const o = e as Record<string, unknown>;
     if (o.timeout !== undefined && !(typeof o.timeout === "number" && o.timeout > 0 && o.timeout <= MAX_WAIT_MS)) return `timeout is at most ${MAX_WAIT_MS} ms`;
-    const kinds = ["health", "text", "file", "notText", "status", "key", "noFile", "gone", "window", "clear"].filter((k) => k in o);
-    if (kinds.length !== 1) return "expect needs exactly one of health, text, file, notText, status, key, noFile, gone, window, clear";
-    if ("clear" in o && o.clear !== "traffic-lights") return 'expect.clear is "traffic-lights"';
+    const kinds = ["health", "text", "file", "notText", "status", "key", "noFile", "gone", "window"].filter((k) => k in o);
+    if (kinds.length !== 1) return "expect needs exactly one of health, text, file, notText, status, key, noFile, gone, window";
     if ("gone" in o && !(typeof o.gone === "string" && o.gone.trim())) return "expect.gone needs a CSS selector";
     if ("window" in o && !(typeof o.window === "string" && /^[\w-]+$/.test(o.window) && typeof o.open === "boolean")) return "expect.window needs a window label and open: true or false";
     if ("noFile" in o && !(typeof o.noFile === "string" && o.noFile.trim() && !o.noFile.startsWith("/") && !/^[a-z]:/i.test(o.noFile) && !o.noFile.split(/[\\/]/).includes(".."))) return "expect.noFile needs a vault-relative path inside the vault";
@@ -146,9 +141,6 @@ export type SelfTestDeps = {
   /** Whether the app's window with that label is open; closing one. */
   windowOpen?: (label: string) => Promise<boolean>;
   closeWindow?: (label: string) => Promise<void>;
-  /** What is drawn under the macOS traffic lights (empty: nothing) and the first header text, for the note; null
-   * where there are no traffic lights (Windows, Linux). */
-  trafficLights?: () => { under: string[]; header: string | null } | null;
   /** Whether a visible element matches the selector. */
   shows?: (css: string) => boolean;
   /** A pause after every step (the plan's pace). */
@@ -258,11 +250,6 @@ async function expect(e: Expect, deps: SelfTestDeps, sleep: (ms: number) => Prom
       const open = await (deps.windowOpen ?? (async () => false))(e.window).catch(() => false);
       if (open === e.open) return undefined;
       last = `window ${e.window} is ${open ? "open" : "not open"}`;
-    } else if ("clear" in e) {
-      const t = (deps.trafficLights ?? (() => null))();
-      if (t === null) return "no traffic lights here (not macOS)";
-      if (t.under.length === 0) return `clear of the traffic lights (x ${TRAFFIC_LIGHTS_RECT.left}-${TRAFFIC_LIGHTS_RECT.right}, y ${TRAFFIC_LIGHTS_RECT.top}-${TRAFFIC_LIGHTS_RECT.bottom}); first header text ${t.header ?? "none"}`;
-      last = `under the traffic lights: ${t.under.join("; ")}`;
     } else if ("key" in e) {
       const h = await (deps.keyHash ?? (async () => null))(e.key).catch(() => null);
       if (h === e.sha256) return `the value kept under ${e.key} matches`;
@@ -381,7 +368,6 @@ export async function startSelfTestIfAsked(): Promise<void> {
         await w.close();
       },
       shows: (css) => !!find(document, css),
-      trafficLights: () => (isMac ? { under: underTrafficLights(document), header: firstHeaderText(document) } : null),
       pace: plan.pace,
       progress: (i, action, outcome) => void invoke("selftest_progress", { i, action, outcome: outcome ?? null }).catch(() => {}),
     });

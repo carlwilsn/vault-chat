@@ -14,7 +14,6 @@ mod web_embed;
 mod self_test;
 mod core_loader;
 mod safety;
-mod mac_menu;
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -5879,9 +5878,6 @@ pub fn run() {
     } else {
         builder
     };
-    // macOS: the default menu with Minimize off Cmd+M, which is the app's own capture key there (mac_menu.rs).
-    #[cfg(target_os = "macos")]
-    let builder = builder.menu(mac_menu::build).on_menu_event(mac_menu::on_event);
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())

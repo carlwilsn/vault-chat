@@ -66,7 +66,6 @@ export const APP_SHARED: Readonly<Record<string, () => Promise<unknown>>> = {
   "src/lib/utils": () => import("./lib/utils"),
   "src/linkNav": () => import("./linkNav"),
   "src/liveReload": () => import("./liveReload"),
-  "src/macChrome": () => import("./macChrome"),
   "src/master": () => import("./master"),
   "src/mdPipeline": () => import("./mdPipeline"),
   "src/meta": () => import("./meta"),

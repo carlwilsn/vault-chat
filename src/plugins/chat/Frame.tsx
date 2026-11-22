@@ -13,26 +13,13 @@ import { WindowControls } from "../../WindowControls";
 import { useStore } from "../../store";
 import { isPopout } from "../../windowKind";
 import { shortcutHint } from "../../shortcuts";
-import { isMac, macBarInset, TRAFFIC_LIGHTS_INSET } from "../../macChrome";
 
 export function Frame() {
   const chatSidebarOpen = useStore((s) => s.chatSidebarOpen);
   const toggleChatSidebar = useStore((s) => s.toggleChatSidebar);
   return (
     <div className="flex-1 min-h-0 flex relative">
-      {chatSidebarOpen &&
-        (isMac ? (
-          // No title bar here: on a Mac the traffic lights float over the window's top-left (src/macChrome.ts), so the
-          // sidebar starts below a strip of their own (a drag region, like the chat's bar beside it).
-          <div data-el="chats-sidebar-mac" className="h-full shrink-0 flex flex-col bg-background">
-            <div data-tauri-drag-region data-el="traffic-lights-strip" className="shrink-0" style={{ height: TRAFFIC_LIGHTS_INSET.top }} />
-            <div className="flex-1 min-h-0 flex">
-              <ChatsSidebar />
-            </div>
-          </div>
-        ) : (
-          <ChatsSidebar />
-        ))}
+      {chatSidebarOpen && <ChatsSidebar />}
       <div className="flex-1 min-w-0 flex flex-col bg-card">
         {/* The chat's own top bar, in the chat's colour: sidebar toggle (when
             it's hidden), the chat's name and ⋯ menu (the chat pane plugin, app/chat), the window controls (this window's). */}
@@ -41,7 +28,7 @@ export function Frame() {
           className="h-9 shrink-0 flex items-center relative select-none"
           title={isPopout ? "Drag to move window" : `Drag to move window — ${shortcutHint("view.fullscreen")} to exit fullscreen chat`}
         >
-          <div className="px-2 flex items-center relative z-10" style={chatSidebarOpen ? undefined : macBarInset}>
+          <div className="px-2 flex items-center relative z-10">
             {!chatSidebarOpen && (
               <button
                 onClick={toggleChatSidebar}

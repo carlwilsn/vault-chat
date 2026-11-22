@@ -18,8 +18,6 @@ type Phase =
   | { kind: "installing" }
   | { kind: "error"; message: string };
 
-/** The Mac app (the friend channel, latest-mac.json): never installs by itself, only when its user clicks. */
-const isMacApp = typeof navigator !== "undefined" && /Macintosh/.test(navigator.userAgent);
 
 const isDev = import.meta.env.DEV;
 
@@ -56,8 +54,7 @@ export function UpdateBanner() {
     // the box kept missing shipped fixes. Auto-apply updates there, but only
     // when idle so a restart never kills a live mission. Interactive machines
     // keep the manual banner.
-    // A Mac never installs unattended: an ad-hoc signed update may ask for permissions again, so it waits for a click.
-    const unattended = isRunInBackground() && !isMacApp;
+    const unattended = isRunInBackground();
 
     const applyUnattended = async (update: Update) => {
       try {

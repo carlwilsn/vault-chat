@@ -18,7 +18,6 @@ import { WindowControls } from "./WindowControls";
 import * as titlebarPlugin from "./plugins/titlebar";
 import { Bar } from "./plugins/titlebar/Bar";
 import { shortcutHint } from "./shortcuts";
-import { macBarInset } from "./macChrome";
 
 // The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
 placeModule(TITLEBAR_PLUGIN, () => titlebarPlugin);
@@ -41,7 +40,7 @@ export function TitlebarFallback({ info }: { info: PluginFallbackInfo }) {
   const setShowSettings = useStore((s) => s.setShowSettings);
   return (
     <div data-tauri-drag-region data-el="titlebar-fallback" className="h-9 flex items-center bg-titlebar border-b border-titlebar-border select-none shrink-0 relative">
-      <div className="flex items-center gap-1 px-2" style={macBarInset}>
+      <div className="flex items-center gap-1 px-2">
         <button onClick={toggleLeft} className={`${BTN} ${leftCollapsed ? "text-titlebar-muted" : "text-titlebar-foreground"}`} title={`${leftCollapsed ? "Show" : "Hide"} file panel (${shortcutHint("view.files")})`}>
           <PanelLeft className="h-3.5 w-3.5" />
         </button>
