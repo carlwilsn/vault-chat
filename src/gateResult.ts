@@ -2,20 +2,14 @@
 // a candidate on a safe copy of real data with a runner suited to the part, gives one verdict, and lands it by one rule.
 // This module is the shared vocabulary: which kind a part is, the verdict -> decision rule, and the one result record.
 //
-//   kind           parts                                       runner (server/gate.ts, scripts/draft-check.ts)
-//   ui-plugin      app/<name> live copies, vault plugins       the live copy and the draft side by side in the app
-//                                                              (scripts/draft-check.ts): errors, visible text, typing
-//   preset         app/preset (preset.draft.json)              a preset at all, every mount an app plugin this app has,
-//                                                              then the UI runner with the draft preset tried
-//   box-plugin     box/<name>                                  live copy and draft loaded apart from the box on a copy
-//                                                              of the vault (server/gateBox.ts): load, routes, tools
-//   settings       app/settings-values (setting.draft)         every value one the box takes, it still waits, it changes
-//                                                              something (server/settings.ts settingsDraftGate)
+//   kind           parts                                       runner (server/gate.ts, scripts/core-boot.ts)
+//   ui-plugin      vault plugins (.vault-chat/plugins/<name>.js)   (no runner since the job gate went, 11-22: a draft
+//                                                              waits; old records stay readable)
 //   migration      migrate/<name>                              its dry run on a copy of the plugin's real state, in the
 //                                                              box (server/gate.ts inBoxGate)
 //   frontend-core  app/core (a core bundle the box built)      its stored bytes: every file as the manifest says,
 //                                                              index.html loads only its own files, no newer box API
-//                                                              (server/coreBundles.ts judgeCore), once per bundle
+//                                                              (server/coreBundles.ts judgeCore, scripts/core-boot.ts), once per bundle
 //
 // The verdict (Kayenta's success / marginal / failure): pass (nothing Carl can see changes, nothing new breaks),
 // borderline (something he can see changes), fail (it breaks: dropped). Anything but a fail lands live (there is no
@@ -28,14 +22,12 @@
 import { isMigrationId } from "./migrations";
 
 export const GATE_RESULT = "gate.result";
-export const PART_KINDS = ["ui-plugin", "preset", "box-plugin", "settings", "migration", "frontend-core"] as const;
+export const PART_KINDS = ["ui-plugin", "migration", "frontend-core"] as const;
 export type PartKind = (typeof PART_KINDS)[number];
 export type GateVerdict = "pass" | "borderline" | "fail";
 export type GateDecision = "keep" | "discard";
 
-/** The ids of the parts that are not plugins' slots. */
-export const PRESET_PART = "app/preset";
-export const SETTINGS_PART = "app/settings-values";
+/** The id of the part that is not a plugin's slot. */
 export const CORE_PART_ID = "app/core";
 
 export type GateResult = {
@@ -48,7 +40,7 @@ export type GateResult = {
   /** What it wrote: keep (applied), discard (dropped), null: nothing (not landed). */
   decision: GateDecision | null;
   reasons: string[];
-  /** Which runner judged it (ui-harness, preset, box-copy, settings). */
+  /** Which runner judged it (migration-dry-run, core-bundle). */
   runner: string;
   /** The data it ran on ("a fresh copy of the box's real data", "the synthetic vault" …). */
   data?: string;
@@ -62,12 +54,9 @@ export type GateResult = {
 /** Which kind of part an id is (a plugin id as the supervisor writes it), or null when no part. */
 export function partKind(part: string): PartKind | null {
   const p = String(part ?? "");
-  if (p === PRESET_PART) return "preset";
-  if (p === SETTINGS_PART) return "settings";
   if (p === CORE_PART_ID) return "frontend-core";
   if (isMigrationId(p)) return "migration";
-  if (/^box\/[a-z][a-z0-9-]{0,40}$/.test(p)) return "box-plugin";
-  if (/^app\/[a-z][a-z0-9-]{0,40}$/.test(p) || /^\.vault-chat\/plugins\/[^/]+\.m?js$/i.test(p)) return "ui-plugin";
+  if (/^\.vault-chat\/plugins\/[^/]+\.m?js$/i.test(p)) return "ui-plugin";
   return null;
 }
 
@@ -81,13 +70,10 @@ export function gateDecision(_kind: PartKind, v: { verdict: GateVerdict; reasons
   return { change: "keep", reason: `${asked ? "asked for" : "not asked for"}; the gate passed it: ${why}` };
 }
 
-/** The machine-readable last line a gate run prints (scripts/draft-check.ts): `VC-GATE {GateResult}`. */
-export const GATE_LINE = "VC-GATE ";
-
 const VERDICTS = new Set(["pass", "borderline", "fail"]);
 const DECISIONS = new Set(["keep", "discard"]);
 
-/** A gate result from loose JSON (a VC-GATE line, a record), or null when it is not one. */
+/** A gate result from loose JSON (a record), or null when it is not one. */
 export function cleanGateResult(j: unknown, at = Date.now()): GateResult | null {
   if (!j || typeof j !== "object") return null;
   const o = j as Record<string, unknown>;
@@ -111,17 +97,6 @@ export function cleanGateResult(j: unknown, at = Date.now()): GateResult | null 
     ...(typeof o.conv === "string" ? { conv: o.conv.slice(0, 120) } : {}),
     at: Number(o.at) || at,
   };
-}
-
-/** The last VC-GATE line of a gate run's output, or null. */
-export function gateLineOf(out: string): GateResult | null {
-  const line = String(out ?? "").split("\n").reverse().find((l) => l.startsWith(GATE_LINE));
-  if (!line) return null;
-  try {
-    return cleanGateResult(JSON.parse(line.slice(GATE_LINE.length)));
-  } catch {
-    return null;
-  }
 }
 
 /** A log record's gate result, or null when it is not one. */

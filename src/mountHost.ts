@@ -74,7 +74,7 @@ export type PluginApi = {
 };
 /** An app plugin's code (src/appPlugins.ts): its module, already loaded with the app. A vault plugin (src/vaultPlugins.ts)
  *  is the same, trusted and in the light DOM, but its module is loaded from `code` (the file's text) on each mount. */
-export type AppPluginSource = { name: string; module?: unknown; code?: string; part?: string };
+export type AppPluginSource = { name: string; module?: unknown; code?: string };
 /** Load the module's code: the module, the URL it was loaded from (errors name it), and a release of that URL. */
 export type LoadModule = (code: string) => Promise<{ module: any; url: string; dispose(): void }>;
 export type PluginHandle = {
@@ -269,10 +269,7 @@ export function mountPlugin(
       fx.add("markup", clear);
       fx.listen(win, "error", onWinError);
       fx.listen(win, "unhandledrejection", onRejection);
-      // `part`: the export that is this mount (an app plugin's live copy mounted where its built-in `sidebar` is).
-      const whole = loaded.module ?? {};
-      const m = app?.part ? whole[app.part] : whole;
-      if (!m) throw new Error(`the module exports no ${app?.part}`);
+      const m = loaded.module ?? {};
       const f = typeof m.mount === "function" ? m.mount : m.default && typeof m.default.mount === "function" ? m.default.mount : typeof m.default === "function" ? m.default : null;
       if (!f) throw new Error("the module exports no mount(el, api)");
       const size = () => ({ w: root.clientWidth || 0, h: root.clientHeight || 0 });

@@ -146,7 +146,7 @@ const server = createServer(async (req, res) => {
       res.setHeader("content-type", "application/json");
       return void res.end(JSON.stringify((await r.json()).bases));
     }
-    // A built core bundle the gate boots (scripts/draft-check.ts coreBootCheck, VC_PREVIEW_CORE_FILES: its files/ dir):
+    // A built core bundle the gate boots (scripts/core-boot.ts coreBoot, VC_PREVIEW_CORE_FILES: its files/ dir):
     // its absolute /assets/… references land here, from this origin, as the native loader serves them at the app's.
     if (url.pathname.startsWith("/assets/") && process.env.VC_PREVIEW_CORE_FILES) {
       const dir = resolve(process.env.VC_PREVIEW_CORE_FILES);

@@ -7,8 +7,8 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConvLog } from "../convlog/log";
-import { SETTING, emptySettings, foldSettings, pendingSettingsDraft, settingProblem } from "../../src/settingsRecords";
-import { configureSettings, migrateSettings, readSetting, readSettings, setSetting, settingsChange, settingsRoute } from "../settings";
+import { SETTING, emptySettings, foldSettings, settingProblem } from "../../src/settingsRecords";
+import { configureSettings, migrateSettings, readSetting, readSettings, setSetting, settingsRoute } from "../settings";
 import { settingsTool, settingsToolSpecs } from "../settingsTool";
 import { agentToolSpecs } from "../engine/engine";
 

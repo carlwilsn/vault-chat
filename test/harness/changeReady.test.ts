@@ -2,7 +2,7 @@
 // never runs by itself; the gate lands it (a keep, plugin.change records written by the box's real route,
 // server/supervisor.ts, which moves the files) and a kept change's Undo is the switch back. There is no Try step (the
 // Try flow and its tests were removed 2026-11-20). A kept copy that fails or slows typing switches back by itself.
-// The draft check (scripts/draft-check.ts) judges a side-by-side run.
+// The core boot check (scripts/core-boot.ts) judges a side-by-side run.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -73,8 +73,9 @@ const { loadSupervisor, _appReconciler } = await import("../../src/pluginSupervi
 const CR = await import("../../src/changeReady.ts");
 const { scanVaultPlugins } = await import("../../src/VaultPluginHost.tsx");
 const { pluginReach } = await import("../../src/pluginOffers.ts");
-const { judge, slotFor, gateDecision, landVerdict, captureRealData } = await import("../../scripts/draft-check.ts");
-const { postBoxChange } = await import("../../scripts/boxChange.ts");
+const { judge } = await import("../../scripts/core-boot.ts");
+const { gateDecision: sharedDecision } = await import("../../src/gateResult.ts");
+const gateDecision = (v: { verdict: "pass" | "borderline" | "fail"; reasons: string[] }, asked: boolean) => sharedDecision("ui-plugin", v, asked);
 
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(what: string, fn: () => boolean, ms = 4000): Promise<void> {
@@ -86,20 +87,18 @@ async function waitFor(what: string, fn: () => boolean, ms = 4000): Promise<void
 }
 const rec = (seq: number, change: ChangeRecord["change"], version: string, from: string | null = null): ChangeRecord => ({ seq, plugin: "app/x", change, version, from, at: seq, by: "carl", reason: null });
 
-test("which copy runs: a draft only while tried or once kept; the newest keep / switch lands; discarded never again", () => {
+test("which copy runs: a draft only once kept; the newest keep / switch lands; discarded never again", () => {
   const slot = { draft: "D", live: "L", prev: "P" };
   const [d, l, p] = ["D", "L", "P"].map(versionOf) as [string, string, string];
   assert.match(d, /^[0-9a-f]{8}$/);
-  assert.deepEqual(chooseCopy(slot, [], null), { kind: "live", why: "live" });
-  assert.deepEqual(chooseCopy(slot, [], d), { kind: "draft", why: "tried" });
-  assert.deepEqual(chooseCopy(slot, [], "deadbeef"), { kind: "live", why: "live" }, "another version tried: not this draft");
-  assert.deepEqual(chooseCopy(slot, [rec(1, "discard", d)], d), { kind: "live", why: "live" });
-  assert.deepEqual(chooseCopy(slot, [rec(1, "keep", d, l)], null), { kind: "draft", why: "kept" }, "kept: runs before its file moved");
-  assert.deepEqual(chooseCopy({ live: "D", prev: "L" }, [rec(1, "keep", d, l)], null), { kind: "live", why: "landed" });
-  assert.deepEqual(chooseCopy({ live: "D", prev: "L" }, [rec(1, "keep", d, l), rec(2, "switch", l, d)], null), { kind: "prev", why: "landed" }, "switched back before the files swapped");
-  assert.deepEqual(chooseCopy({ live: "D" }, [rec(1, "keep", d, BUILT_IN), rec(2, "switch", BUILT_IN, d)], null), { kind: null, why: "built-in" });
-  assert.deepEqual(chooseCopy({ live: "N" }, [rec(1, "keep", d, BUILT_IN), rec(2, "switch", BUILT_IN, d)], null), { kind: "live", why: "live" }, "a live copy written since runs");
-  assert.deepEqual(chooseCopy({ prev: "P" }, [], null), { kind: null, why: "built-in" });
+  assert.deepEqual(chooseCopy(slot, []), { kind: "live", why: "live" });
+  assert.deepEqual(chooseCopy(slot, [rec(1, "discard", d)]), { kind: "live", why: "live" });
+  assert.deepEqual(chooseCopy(slot, [rec(1, "keep", d, l)]), { kind: "draft", why: "kept" }, "kept: runs before its file moved");
+  assert.deepEqual(chooseCopy({ live: "D", prev: "L" }, [rec(1, "keep", d, l)]), { kind: "live", why: "landed" });
+  assert.deepEqual(chooseCopy({ live: "D", prev: "L" }, [rec(1, "keep", d, l), rec(2, "switch", l, d)]), { kind: "prev", why: "landed" }, "switched back before the files swapped");
+  assert.deepEqual(chooseCopy({ live: "D" }, [rec(1, "keep", d, BUILT_IN), rec(2, "switch", BUILT_IN, d)]), { kind: null, why: "built-in" });
+  assert.deepEqual(chooseCopy({ live: "N" }, [rec(1, "keep", d, BUILT_IN), rec(2, "switch", BUILT_IN, d)]), { kind: "live", why: "live" }, "a live copy written since runs");
+  assert.deepEqual(chooseCopy({ prev: "P" }, []), { kind: null, why: "built-in" });
   void p;
   assert.equal(draftPending(slot, []), d);
   assert.equal(draftPending(slot, [rec(1, "discard", d)]), null);
@@ -137,9 +136,7 @@ test("vault plugins: a draft next to a plugin (or alone) is a slot, never a plug
   for (const p of l) fs.rmSync(path.join(dir, p.file.replace(/\.js$/, ".draft.js")), { force: true });
 });
 
-test("the draft check's verdict: pass, borderline (text or timing), fail (did not run, new errors, over the typing limit)", () => {
-  assert.equal(slotFor("pen-cursor").plugin, ".vault-chat/plugins/pen-cursor.js");
-  assert.equal(slotFor(".vault-chat/plugins/pen.draft.js").draft, "pen.draft.js");
+test("the boot check's verdict: pass, borderline (text or timing), fail (did not run, new errors, over the typing limit)", () => {
   const side = (o: Partial<{ errors: string[]; text: string[]; ran: boolean; typingMs: number[] }> = {}) => ({ errors: [], text: ["Chats", "Send"], ran: true, typingMs: Array(12).fill(10), ...o });
   assert.equal(judge("app/composer", "v", side(), side()).verdict, "pass");
   assert.equal(judge("app/composer", "v", side({ errors: ["noise"] }), side({ errors: ["noise"] })).verdict, "pass", "errors on both sides are the harness's");
@@ -161,7 +158,7 @@ test("after Keep: the keep is watched for a while, then left alone; the gate lan
   assert.equal(watchedKeep([at(1, "keep", "b", "a", now - KEEP_WATCH_MS - 1)], now), null, "long enough ago: no longer watched");
   assert.equal(watchedKeep([at(1, "keep", "b", "a", now - 1000), at(2, "switch", "a", "b", now)], now), null, "already switched back");
   assert.equal(watchedKeep([at(1, "keep", "b", "a", now - 1000), at(2, "discard", "c", null, now)], now)?.version, "b", "a discard of another draft changes nothing");
-  // The gate (scripts/draft-check.ts --unasked / --asked).
+  // The gate's one landing rule (src/gateResult.ts gateDecision).
   const v = (verdict: "pass" | "borderline" | "fail") => ({ verdict, reasons: [verdict === "fail" ? "errors only with the draft: boom" : "fine"] });
   assert.equal(gateDecision(v("pass"), false).change, "keep", "not asked for, nothing on screen changes: applies");
   assert.equal(gateDecision(v("borderline"), false).change, "keep", "not asked for, something on screen changes: applies too (no Try step)");

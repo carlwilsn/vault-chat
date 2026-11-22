@@ -5,23 +5,11 @@
 //
 //   {type: "setting", key, value, by}   one setting set (value null: back to its default)
 //
-// A change the agent makes on its own initiative (not Carl's direct "set X") is a draft first (reports/07 corrected
-// model point 4, "settings/config count as behavior"), through the same gate as a plugin's draft (server/gate.ts):
-//
-//   {type: "setting.draft", values: {key: value …}, version, what, by, at}
-//       settings the agent proposes; the newest one waits for the gate (a draft written while another waits carries both).
-//   {type: "setting.change", change: "keep" | "discard" | "switch", version, from?, values?, was?, by, reason?, at}
-//       the word on it (the gate's keep or discard, a switch back), shaped like a plugin.change record (src/pluginDrafts.ts). A keep also writes a `setting`
-//       record per key (the settings themselves never live anywhere else) and names what it replaced (`was`, null:
-//       the default), so Switch back writes those back; another switch writes the kept ones again.
-//
-// A draft is checked by its values (SettingDef.applies "window": the theme, the sidebar; or a setting the box applies:
-// the model, the voice …). Both kinds ride every feed with the settings.
+// Old logs may still hold setting.draft / setting.change records (the agent's drafts, gone 11-22): nothing folds them.
 //
 // Secrets (API keys, tokens) are never settings: they stay in the key store. Machine-local things (the laptop's
 // folder, the box it connects to) are not settings either. Shared by the box (server/settings.ts), the laptop
-// (src/settings.ts), the phone and the preview's fake box: no imports but src/pluginDrafts.ts (none either).
-import { CHANGE_KINDS, VERSION_RE, versionOf, type ChangeKind, type ChangeRecord } from "./pluginDrafts";
+// (src/settings.ts), the phone and the preview's fake box: no imports.
 
 export const SETTING = "setting";
 
@@ -106,24 +94,10 @@ export type SettingsState = {
   seq: number;
   values: Record<SettingKey, SettingValue>;
   set: Partial<Record<SettingKey, { by: string; seq: number }>>;
-  /** The agent's drafts (setting.draft), oldest first, and Carl's word on them (setting.change), oldest first. */
-  drafts: SettingsDraft[];
-  changes: SettingsChange[];
 };
-
-export const SETTING_DRAFT = "setting.draft";
-export const SETTING_CHANGE = "setting.change";
-/** The settings' id where drafts are named (the gate, the Plugins tool, POST /api/v2/supervisor).
- *  Not app/settings: that is the Settings pane, a plugin with drafts of its own code. */
-export const SETTINGS_DRAFT_ID = "app/settings-values";
-/** What Carl calls them in the notice. */
-export const SETTINGS_DRAFT_NAME = "Settings";
 
 /** Some settings, each a value it takes (null: back to its default). */
 export type SettingValues = Partial<Record<SettingKey, SettingValue>>;
-export type SettingsDraft = { seq: number; version: string; values: SettingValues; what: string; by: string; at: number };
-/** A change record (src/pluginDrafts.ts ChangeRecord) with what it put in effect and what that replaced. */
-export type SettingsChange = ChangeRecord & { values: SettingValues; was: SettingValues };
 
 export const SETTING_KEYS = Object.keys(SETTINGS) as SettingKey[];
 export const isSettingKey = (k: unknown): k is SettingKey => typeof k === "string" && Object.prototype.hasOwnProperty.call(SETTINGS, k);
@@ -134,7 +108,7 @@ export function defaultSettings(): Record<SettingKey, SettingValue> {
   return out;
 }
 
-export const emptySettings = (): SettingsState => ({ seq: 0, values: defaultSettings(), set: {}, drafts: [], changes: [] });
+export const emptySettings = (): SettingsState => ({ seq: 0, values: defaultSettings(), set: {} });
 
 /** What a setting takes, in a few words (the agent's tool and every refusal say it). */
 export function settingTakes(key: SettingKey): string {
@@ -175,82 +149,4 @@ export function legacyValue(key: SettingKey, raw: string | null | undefined): Se
   const d = SETTINGS[key] as SettingDef;
   const v = d.legacy?.read ? d.legacy.read(raw) : raw;
   return settingProblem(key, v) === null && v !== null ? (v as SettingValue) : undefined;
-}
-
-// ---------------------------------------------------------------- drafts (the agent's own idea, Carl's word)
-
-/** The settings in `v` this version takes, or null when one is not a setting or a value it doesn't take. */
-export function settingValuesOf(v: unknown): SettingValues | null {
-  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
-  const out: SettingValues = {};
-  for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
-    const val = x === undefined ? null : x;
-    if (!isSettingKey(k) || settingProblem(k, val) !== null) return null;
-    out[k] = val as SettingValue;
-  }
-  return out;
-}
-
-/** The values in one order (a version is over this). */
-export const canonicalValues = (v: SettingValues): string => JSON.stringify(SETTING_KEYS.filter((k) => k in v).map((k) => [k, v[k]]));
-
-/** A draft's version: over its values and when it was written (the same values drafted again are a new draft). */
-export const draftVersion = (v: SettingValues, at: number): string => versionOf(`${canonicalValues(v)}@${at}`);
-
-/** `key = value` for each, as the notice and the tools say it. */
-export function describeValues(v: SettingValues): string {
-  const show = (k: SettingKey, x: SettingValue | undefined) => {
-    if (x === null || x === undefined) return `${k} back to its default`;
-    if (typeof x === "boolean") return `${k} ${x ? "on" : "off"}`;
-    return `${k} ${x}`;
-  };
-  return SETTING_KEYS.filter((k) => k in v).map((k) => show(k, v[k])).join(", ");
-}
-
-/** Whether `v` has a setting Carl's windows apply (the gate draws those in the app's hidden copy). */
-export const triable = (v: SettingValues): boolean => SETTING_KEYS.some((k) => k in v && SETTINGS[k].applies === "window");
-/** The settings of `v` Carl's windows apply (what the gate's hidden copy shows). */
-export function windowValues(v: SettingValues): SettingValues {
-  const out: SettingValues = {};
-  for (const k of SETTING_KEYS) if (k in v && SETTINGS[k].applies === "window") out[k] = v[k];
-  return out;
-}
-
-/** Fold a draft or a change record (anything else: false). The settings themselves are foldSettings'. */
-export function foldSettingDraft(s: SettingsState, rec: { seq: number; at?: number; type?: unknown; signal?: unknown }): boolean {
-  const g = rec.type === "signal" ? (rec.signal as Record<string, unknown> | undefined) : undefined;
-  if (!g || (g.type !== SETTING_DRAFT && g.type !== SETTING_CHANGE) || !Number.isFinite(rec.seq)) return false;
-  if (s.drafts.some((d) => d.seq === rec.seq) || s.changes.some((c) => c.seq === rec.seq)) return false;
-  const version = typeof g.version === "string" && VERSION_RE.test(g.version) ? g.version : null;
-  const at = Number(g.at ?? rec.at) || 0;
-  const by = typeof g.by === "string" ? g.by.slice(0, 40) : null;
-  if (g.type === SETTING_DRAFT) {
-    const values = settingValuesOf(g.values);
-    if (!version || !values || !Object.keys(values).length) return false;
-    s.drafts.push({ seq: rec.seq, version, values, what: typeof g.what === "string" ? g.what.slice(0, 200) : "", by: by ?? "?", at });
-    s.drafts.sort((a, b) => a.seq - b.seq);
-    return true;
-  }
-  if (!CHANGE_KINDS.includes(g.change as ChangeKind) || !version) return false;
-  s.changes.push({
-    seq: rec.seq,
-    plugin: SETTINGS_DRAFT_ID,
-    change: g.change as ChangeKind,
-    version,
-    from: typeof g.from === "string" ? g.from : null,
-    at,
-    by,
-    reason: typeof g.reason === "string" ? g.reason : null,
-    values: settingValuesOf(g.values) ?? {},
-    was: settingValuesOf(g.was) ?? {},
-  });
-  s.changes.sort((a, b) => a.seq - b.seq);
-  return true;
-}
-
-/** The draft waiting for Carl: the newest, unless he (or the agent, or an auto-discard) already decided on it. */
-export function pendingSettingsDraft(s: Pick<SettingsState, "drafts" | "changes">): SettingsDraft | null {
-  const d = s.drafts[s.drafts.length - 1];
-  if (!d) return null;
-  return s.changes.some((c) => c.version === d.version && c.change !== "switch") ? null : d;
 }

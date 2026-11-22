@@ -12,7 +12,7 @@ import { AppPluginMount } from "./PluginMount";
 import { useStore } from "./store";
 import { VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES, isVaultPluginFile, parseVaultPluginMeta, vaultPluginId, vaultPluginRunsOn } from "./vaultPlugins";
 import { chooseCopy, slotFileOf, versionOf, watchedKeep } from "./pluginDrafts";
-import { autoRevert, setVaultSlots, useTried } from "./changeReady";
+import { autoRevert, setVaultSlots } from "./changeReady";
 import { supervisorChangesNow, useSupervisorVersion } from "./pluginSupervisorApp";
 
 /** A plugin of the folder: its live file (`code`; "" with `added` when only a draft is there) and its draft and the
@@ -85,14 +85,13 @@ export function useVaultPlugins(vault: string | null, everyMs = 2000): VaultPlug
 
 function One({ p }: { p: VaultPluginFile }) {
   const info = useMemo(() => ({ id: p.id, name: p.name }), [p.id, p.name]);
-  const tried = useTried(p.id);
   useSupervisorVersion();
   const slot = { ...(p.added ? {} : { live: p.code }), ...(p.draft !== undefined ? { draft: p.draft } : {}), ...(p.prev !== undefined ? { prev: p.prev } : {}) };
-  const choice = chooseCopy(slot, supervisorChangesNow(p.id), tried);
+  const choice = chooseCopy(slot, supervisorChangesNow(p.id));
   const code = choice.kind ? slot[choice.kind] : undefined;
   if (code === undefined) return null;
   // A kept copy that fails while its keep is watched switches back by itself.
-  const kept = choice.why !== "tried" ? watchedKeep(supervisorChangesNow(p.id), Date.now()) : null;
+  const kept = watchedKeep(supervisorChangesNow(p.id), Date.now());
   const fallback =
     kept && kept.version === versionOf(code)
       ? (info: { error: string | null }): ReactNode => (info.error ? <KeptFailed plugin={p.id} version={kept.version} why={info.error} /> : null)

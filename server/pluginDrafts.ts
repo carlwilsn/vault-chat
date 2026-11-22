@@ -1,7 +1,6 @@
 // The box's side of change by asking (src/pluginDrafts.ts): Carl's Keep / Discard / Switch back on a plugin's draft is
 // one plugin.change record in the log, and the box moves the slot's files to match (the laptop and the phone get them by
-// the vault's sync; a host trusts the record before they arrive). The script draft-check.ts goes
-// through the same route (scripts/boxChange.ts), so every change is a record.
+// the vault's sync; a host trusts the record before they arrive). Every change is a record.
 //
 //   keep     prev := live (none: prev removed, the built-in one was in effect), live := draft, draft removed
 //   discard  draft removed (only the version Carl saw: a newer draft written meanwhile stays)
@@ -9,15 +8,11 @@
 //            version, only while that version is live (an auto-revert after Keep)
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { BUILT_IN, boxPluginName, boxSlot, versionOf, vaultSlot, type ChangeKind, type DraftSlot } from "../src/pluginDrafts";
+import { BUILT_IN, versionOf, vaultSlot, type ChangeKind, type DraftSlot } from "../src/pluginDrafts";
 import { isVaultPluginFile, vaultPluginFile } from "../src/vaultPlugins";
 
-/** The slot of a plugin id: a box plugin (box/<name>) or a vault plugin (its .js path). */
+/** The slot of a plugin id: a vault plugin (its .js path). */
 export function slotOf(plugin: string): DraftSlot | null {
-  if (plugin.startsWith("box/")) {
-    const name = boxPluginName(plugin);
-    return name ? boxSlot(name) : null;
-  }
   const file = vaultPluginFile(plugin);
   if (file && isVaultPluginFile(file)) {
     const m = /^(.*?)(\.m?js)$/i.exec(file);

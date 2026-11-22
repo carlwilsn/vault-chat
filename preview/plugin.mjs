@@ -33,7 +33,7 @@ export function baseDirs() {
       ],
     },
   };
-  // Bases a caller names (the draft check, scripts/draft-check.ts: a copy of real data with a plugin's copies laid
+  // Bases a caller names (the core boot check, scripts/core-boot.ts: the synthetic vault and an empty folder laid
   // over it): VC_PREVIEW_BASES='{"name": {"vaultName": "v", "dirs": ["/abs/dir", ...]}}', later dirs over earlier.
   try {
     const extra = JSON.parse(process.env.VC_PREVIEW_BASES || "{}");

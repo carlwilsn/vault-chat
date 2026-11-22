@@ -9,10 +9,7 @@
 //
 // Moving the laptop's own old values: once, when the box has no record for a setting this laptop kept itself
 // (the theme, the fullscreen chat's sidebar), the laptop sends its value (POST {migrate}: set only where no record is).
-//
-// The agent's settings drafts and Carl's word on them (setting.draft / setting.change) are followed here the same way
-// (settingsDraftsNow). A preview-harness run (src/changeReady.ts) lays a draft's window settings over the
-// records in that frame only (setSettingsTry): nothing is written.
+
 import { useEffect, useState } from "react";
 import { useStore } from "./store";
 import { boxGet, boxLinkFor, boxPost, type Link } from "./boxChat";
@@ -20,15 +17,12 @@ import {
   SETTINGS,
   SETTING_KEYS,
   emptySettings,
-  foldSettingDraft,
   isSettingKey,
   legacyValue,
   settingProblem,
   type SettingDef,
   type SettingKey,
   type SettingValue,
-  type SettingValues,
-  type SettingsState,
 } from "./settingsRecords";
 
 const MIGRATED = "vc_settings_moved";
@@ -50,12 +44,10 @@ let values: Record<SettingKey, SettingValue> = (() => {
   return v;
 })();
 const subs = new Set<() => void>();
-/** A draft Carl tries on this app's windows: its window settings, over the records (empty: none). */
-let overlay: SettingValues = {};
-/** What the screen shows for `key`: the tried value, else the records'. */
-const shown = (key: SettingKey): SettingValue => (key in overlay ? (overlay[key] === null ? SETTINGS[key].default : overlay[key]!) : values[key]);
+/** What the screen shows for `key`: the records'. */
+const shown = (key: SettingKey): SettingValue => values[key];
 
-/** A setting as this app shows it now (a tried draft's value while Carl tries it). */
+/** A setting as this app shows it now. */
 export function setting<K extends SettingKey>(key: K): SettingValue {
   return shown(key);
 }
@@ -83,11 +75,7 @@ function apply(key: SettingKey, v: SettingValue): void {
 function show(key: SettingKey, was: SettingValue): void {
   const v = shown(key);
   const st = useStore.getState();
-  // A tried theme is shown without touching the first-paint copy (applyTheme writes it): a restart shows the records'.
-  if (key === "theme" && (v === "graphite" || v === "light") && st.theme !== v) {
-    if (key in overlay) useStore.setState({ theme: v });
-    else st.applyTheme(v);
-  }
+  if (key === "theme" && (v === "graphite" || v === "light") && st.theme !== v) st.applyTheme(v);
   if (key === "chatSidebar" && typeof v === "boolean" && st.chatSidebarOpen !== v) useStore.setState({ chatSidebarOpen: v });
   if ((key === "model" || key === "effort") && was !== v && st.vaultPath) void import("./chatModels").then((m) => m.refreshChatModels(st.vaultPath!)).catch(() => {});
   if (was !== v) for (const f of [...subs]) f();
@@ -127,7 +115,6 @@ export async function loadBoxSettings(link: Link): Promise<void> {
       }
       localStorage.setItem(MIGRATED, "1");
     }
-    loadDrafts(r as { drafts?: unknown; changes?: unknown });
     const at = Number(r.seq ?? 0);
     if (at < seq || !r.values) return;
     seq = at;
@@ -135,12 +122,6 @@ export async function loadBoxSettings(link: Link): Promise<void> {
   } catch {
     /* an older box without settings, or offline: the local copy stands */
   }
-}
-
-/** Read every setting and draft from the box again now (after Carl's word on a draft: the feed brings it too). */
-export async function refreshBoxSettings(): Promise<void> {
-  const link = await boxLinkFor(useStore.getState().vaultPath).catch(() => null);
-  if (link) await loadBoxSettings(link);
 }
 
 /** Carl's pick: shown here at once, then a record on the box (which every other app and the phone follow). */
@@ -166,63 +147,8 @@ export function useSetting(key: SettingKey): SettingValue {
   return v;
 }
 
-// ---------------------------------------------------------------- drafts (src/settingsRecords.ts) and trying one
-
-let drafts: Pick<SettingsState, "drafts" | "changes"> = { drafts: [], changes: [] };
-let draftsVersion = 0;
-const draftSubs = new Set<() => void>();
-function draftsChanged(): void {
-  draftsVersion++;
-  for (const f of [...draftSubs]) f();
-}
-
-/** The settings drafts and the word on them as this app knows them. */
-export const settingsDraftsNow = (): Pick<SettingsState, "drafts" | "changes"> => drafts;
-/** Follow them (a counter that moves when a draft or a word arrives). */
-export function onSettingsDrafts(fn: () => void): () => void {
-  draftSubs.add(fn);
-  return () => void draftSubs.delete(fn);
-}
-export const settingsDraftsVersion = () => draftsVersion;
-
-/** A setting.draft / setting.change record from the feed (src/boxChat.ts), or the box's list on connect. */
-export function settingDraftSignal(e: Record<string, unknown>, recSeq: number): void {
-  const next = { drafts: [...drafts.drafts], changes: [...drafts.changes] } as SettingsState;
-  if (!foldSettingDraft(next, { seq: recSeq, type: "signal", signal: e })) return;
-  drafts = { drafts: next.drafts, changes: next.changes };
-  draftsChanged();
-}
-
-function loadDrafts(r: { drafts?: unknown; changes?: unknown }): void {
-  if (!Array.isArray(r.drafts) && !Array.isArray(r.changes)) return;
-  const next = { drafts: [...drafts.drafts], changes: [...drafts.changes] } as SettingsState;
-  let any = false;
-  for (const d of (Array.isArray(r.drafts) ? r.drafts : []) as Record<string, unknown>[]) any = foldSettingDraft(next, { seq: Number(d.seq), type: "signal", signal: { ...d, type: "setting.draft" } }) || any;
-  for (const c of (Array.isArray(r.changes) ? r.changes : []) as Record<string, unknown>[]) any = foldSettingDraft(next, { seq: Number(c.seq), type: "signal", signal: { ...c, type: "setting.change" } }) || any;
-  if (!any) return;
-  drafts = { drafts: next.drafts, changes: next.changes };
-  draftsChanged();
-}
-
-/** Lay a gate run's draft window settings over the records in this window (null: take it away). Nothing is
- *  written anywhere: the records, the box and the first-paint copy stay as they are. */
-export function setSettingsTry(v: SettingValues | null): void {
-  const next: SettingValues = {};
-  for (const k of SETTING_KEYS) if (v && k in v && SETTINGS[k].applies === "window" && settingProblem(k, v[k]) === null) next[k] = v[k];
-  const keys = new Set([...Object.keys(overlay), ...Object.keys(next)] as SettingKey[]);
-  if ([...keys].every((k) => overlay[k] === next[k] && (k in overlay) === (k in next))) return;
-  const before = Object.fromEntries([...keys].map((k) => [k, shown(k)])) as Record<SettingKey, SettingValue>;
-  overlay = next;
-  for (const k of keys) show(k, before[k]);
-}
-
-/** What a gate run's tried draft lays over the records now (tests). */
-export const settingsTriedNow = (): SettingValues => overlay;
-
 /** Tests: forget what was applied. */
 export function _resetSettings(): void {
   seq = 0;
   values = emptySettings().values;
-  overlay = {};
-  drafts = { drafts: [], changes: [] };
 }

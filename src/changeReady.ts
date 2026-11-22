@@ -2,8 +2,6 @@
 // There is no Try step: a change lands when the one gate passes it (a keep record) and runs here from the record. Not a
 // plugin itself, so a change can never break what undoes it.
 //
-// - Tried drafts exist only in the preview harness (?try=, preview/runtime/boot.ts, for scripts/draft-check.ts). Carl's
-//   windows never try anything.
 // - After a keep, the kept copy is watched for KEEP_WATCH_MS: when it throws, fails to load or makes typing slow (within
 //   KEEP_TYPING_MS of the keep), it switches back by itself (a switch record by "auto" naming the kept version, so two
 //   windows switch once); the chat says why (server/changeNotices.ts autoUndone). Nothing listens to typing unless a
@@ -11,12 +9,9 @@
 // - Switch back is the undo: a record (another switch redoes it).
 // - After a core swap (src/coreFollow.ts) the window says plainly what runs now.
 // - app/changes (PluginRead / PluginAct): what happened last, and switchBack.
-import { useSyncExternalStore } from "react";
 import { useStore } from "./store";
-import { postPluginChange, supervisorChangedNow, supervisorChangesNow } from "./pluginSupervisorApp";
+import { postPluginChange, supervisorChangesNow } from "./pluginSupervisorApp";
 import { APP_PLUGINS } from "./appPlugins";
-import { SETTINGS_DRAFT_ID, SETTINGS_DRAFT_NAME, pendingSettingsDraft, windowValues } from "./settingsRecords";
-import { onSettingsDrafts, refreshBoxSettings, setSettingsTry, settingsDraftsNow } from "./settings";
 import { isMigrationId } from "./migrations";
 import { CORE_NAME, CORE_PART } from "./coreBundle";
 import { UNDO_CHORD, plainWhy } from "./changeFlow";
@@ -24,55 +19,9 @@ import { BUILT_IN, KEEP_TYPING_MS, KEEP_WATCH_MS, TRY_SLOW_MS, landing, slowMedi
 
 export const CHANGES_PLUGIN = { id: "app/changes", name: "Changes" } as const;
 
-// ---------------------------------------------------------------- what a gate run tries in this window
-
-type Tries = Readonly<Record<string, string>>;
-const NONE: Tries = Object.freeze({});
-/** Where the preview harness puts the drafts its frame tries (preview/runtime/boot.ts, from ?try=). */
-export const HARNESS_TRIES = "__vcHarnessTries";
-
-function readTries(): Tries {
-  const h = (globalThis as Record<string, unknown>)[HARNESS_TRIES];
-  if (!h || typeof h !== "object") return NONE;
-  const out: Record<string, string> = {};
-  for (const [k, x] of Object.entries(h as Record<string, unknown>)) if (typeof x === "string") out[k] = x;
-  return out;
-}
-
-let tries: Tries | null = null;
-const triesNow = (): Tries => (tries ??= readTries());
-const noSubscribe = () => () => {};
-
-/** The version of `plugin`'s draft a gate run tries in this window, or null (always null in Carl's windows). */
-export function triedVersion(plugin: string): string | null {
-  return triesNow()[plugin] ?? null;
-}
-
-/** triedVersion, for a component (null plugin: nothing). It never changes while the window runs. */
-export function useTried(plugin: string | null): string | null {
-  const get = () => (plugin ? triedVersion(plugin) : null);
-  return useSyncExternalStore(noSubscribe, get, get);
-}
-
-// ---------------------------------------------------------------- Carl's settings (src/settings.ts)
-
-/** A plugin's change records: the supervisor's, or for the settings, the settings' own (they live with them). */
+/** A plugin's change records (the supervisor's). */
 export function changesOf(plugin: string): readonly ChangeRecord[] {
-  return plugin === SETTINGS_DRAFT_ID ? settingsDraftsNow().changes : supervisorChangesNow(plugin);
-}
-
-/** A gate run that tries the settings draft shows its window settings over the records (in that window only). */
-function syncSettingsTry(): void {
-  const d = pendingSettingsDraft(settingsDraftsNow());
-  const on = !!d && triedVersion(SETTINGS_DRAFT_ID) === d.version;
-  setSettingsTry(on ? windowValues(d!.values) : null);
-  // The page says which settings draft it shows (the gate's Drive run waits for it: server/gate.ts renderSettings).
-  try {
-    if (on) globalThis.document?.documentElement.setAttribute("data-vc-settings-try", d!.version);
-    else globalThis.document?.documentElement.removeAttribute("data-vc-settings-try");
-  } catch {
-    /* no DOM */
-  }
+  return supervisorChangesNow(plugin);
 }
 
 // ---------------------------------------------------------------- the vault plugins' slots (VaultPluginHost writes them)
@@ -110,17 +59,12 @@ export const clearOutcome = () => {
 export const lastOutcome = () => outcome;
 
 const appName = (id: string) => APP_PLUGINS.find((p) => p.id === id)?.name ?? id.replace(/^app\//, "");
-const nameOf = (plugin: string) => (plugin === CORE_PART ? CORE_NAME : plugin === SETTINGS_DRAFT_ID ? SETTINGS_DRAFT_NAME : plugin.startsWith("app/") ? appName(plugin) : isMigrationId(plugin) ? `Data: ${plugin.slice(8)}` : plugin.startsWith("box/") ? `Box: ${plugin.slice(4)}` : vaultSlots.find((s) => s.id === plugin)?.name ?? plugin.split("/").pop() ?? plugin);
+const nameOf = (plugin: string) => (plugin === CORE_PART ? CORE_NAME : plugin.startsWith("app/") ? appName(plugin) : isMigrationId(plugin) ? `Data: ${plugin.slice(8)}` : vaultSlots.find((s) => s.id === plugin)?.name ?? plugin.split("/").pop() ?? plugin);
 
 // ---------------------------------------------------------------- the undo
 
-/** A word on a change: the box's route (for the settings too: it hands theirs to them); the settings then read back at
- *  once, not when the feed brings them. */
-async function post(body: Parameters<typeof postPluginChange>[0]): Promise<{ ok: boolean; text: string }> {
-  const r = await postPluginChange(body);
-  if (body.plugin === SETTINGS_DRAFT_ID) await refreshBoxSettings();
-  return r;
-}
+/** A word on a change: the box's route. */
+const post = (body: Parameters<typeof postPluginChange>[0]): Promise<{ ok: boolean; text: string }> => postPluginChange(body);
 
 /** Switch back: the copy the last keep replaced runs again (a record; undo is another switch). */
 export async function switchBack(plugin: string, by = "carl"): Promise<{ ok: boolean; text: string }> {
@@ -138,11 +82,10 @@ export function canSwitchBack(plugin: string): boolean {
 
 // ---------------------------------------------------------------- after a keep: switching back by itself
 
-/** Every plugin that can have drafts here: the app plugins with live copies and the vault plugins' slots. */
-const slotIds = (): string[] => [...vaultSlots.map((s) => s.id), SETTINGS_DRAFT_ID, CORE_PART];
-/** Every plugin a change can apply to here (the slots, the box's own plugins with records): the dead-man's switch
- *  watches them. */
-export const changeablePlugins = (): string[] => [...new Set([...slotIds(), ...supervisorChangedNow().filter((p) => p.startsWith("box/"))])];
+/** Every plugin that can have drafts here: the vault plugins' slots and the core. */
+const slotIds = (): string[] => [...vaultSlots.map((s) => s.id), CORE_PART];
+/** Every plugin a change can apply to here: the dead-man's switch watches them. */
+export const changeablePlugins = (): string[] => [...new Set(slotIds())];
 
 /** The keeps under watch now (src/pluginDrafts.ts watchedKeep): plugin, kept version, when the watch ends. */
 export function keepsUnderWatch(now = Date.now()): { plugin: string; version: string; until: number }[] {
@@ -275,7 +218,6 @@ export function watchTyping(): void {
 
 // ---------------------------------------------------------------- after a core swap
 
-let settingsHooked = false;
 let swapChecked = false;
 /** Once per page: a core swap just loaded this window, so say plainly what runs now (src/coreFollow.ts
  *  checkSwapOutcome): the new frontend, or why it could not switch. Tests replace the check. */
@@ -299,15 +241,6 @@ function checkCoreSwap(): void {
 /** Start (the app's ChangeKeeper calls it once). */
 export function startChangeReady(): void {
   checkCoreSwap();
-  if (!settingsHooked) {
-    settingsHooked = true;
-    // A settings draft arrived, was decided or replaced: a gate run's window follows (and a keep may be watched).
-    onSettingsDrafts(() => {
-      syncSettingsTry();
-      watchTyping();
-    });
-  }
-  syncSettingsTry();
   watchTyping();
 }
 
@@ -332,9 +265,7 @@ export function changeOffers() {
 export function _resetChangeReady(): void {
   typing?.off();
   typing = null;
-  tries = null;
   vaultSlots = [];
   outcome = null;
   revertDone.clear();
-  setSettingsTry(null);
 }

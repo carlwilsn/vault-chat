@@ -1,17 +1,14 @@
 // The box's side of the one gate (src/gateResult.ts): every kind of change goes through `gate <part>`, and every end of
 // it is one gate.result record in the vault's log plus the chat lines (server/changeNotices.ts gateOutcome).
 //
-//   settingsGate   the settings draft's runner and landing (server/settings.ts settingsDraftGate): a fail is a discard by
-//                  "gate", otherwise a keep by "gate" (the settings are set). Run when the Settings tool drafts one.
 //   landCore       the newest core bundle the box built: judged once (coreGate) and, passed, kept by "gate" (the
 //                  laptop's loader follows the record once Carl presses OK; a bundle that does not boot falls back).
 //   recordGate     the one result record: {type: "gate.result", ...GateResult}.
 //   gateResults    the one place results are read (GET /api/v2/gate, the Plugins tool's status).
-//   inBoxGate      the settings draft and migration drafts, judged here at once (POST /api/v2/gate).
+//   inBoxGate      migration drafts, judged here at once (POST /api/v2/gate).
 import { signal, signalLog, type ConvLog } from "./convlog/log";
-import { CORE_PART_ID, GATE_RESULT, SETTINGS_PART, gateDecision, gateRecordOf, partKind, type GateResult } from "../src/gateResult";
+import { CORE_PART_ID, GATE_RESULT, gateDecision, gateRecordOf, partKind, type GateResult } from "../src/gateResult";
 import { gateOutcome } from "./changeNotices";
-import { settingsDraftGate } from "./settings";
 import { setPluginChange, supervisorOf } from "./supervisor";
 import { readSetting } from "./settings";
 import { migrationChange, migrationDraft, tryMigration } from "./migrations";
@@ -55,19 +52,14 @@ export function gateResults(vault: string, part?: string | null, version?: strin
     .reverse();
 }
 
-// ---------------------------------------------------------------- the gates the box runs itself: settings, migrations
+// ---------------------------------------------------------------- the gate the box runs itself: migrations
 
 type Judged = { version: string; what: string; verdict: "pass" | "borderline" | "fail"; reasons: string[]; runner: string; data: string };
 
-/** The in-box runners: the settings draft (server/settings.ts settingsDraftGate) and a migration draft (its dry run on
- *  a copy of the plugin's real state, server/migrations.ts tryMigration: a throw, a timeout or a non-object fails it). */
+/** The in-box runner: a migration draft (its dry run on a copy of the plugin's real state, server/migrations.ts
+ *  tryMigration: a throw, a timeout or a non-object fails it). */
 async function judgeInBox(vault: string, part: string, version: string | null): Promise<Judged | { error: string }> {
   const kind = partKind(part);
-  if (kind === "settings") {
-    const j = settingsDraftGate(version);
-    if ("error" in j) return j;
-    return { ...j, runner: "settings", data: "the box's settings now" };
-  }
   if (kind === "migration") {
     const d = migrationDraft(vault, part);
     if (!d) return { error: `${part} has no migration draft` };
@@ -82,13 +74,13 @@ async function judgeInBox(vault: string, part: string, version: string | null): 
 }
 
 /**
- * A gate the box runs at once (settings, migrations): the draft (or `version`) judged; with `land`, a fail is discarded
- * by "gate" and a pass is kept by "gate" (the settings set, the migration run). A version the gate already landed is not
+ * A gate the box runs at once (migrations): the draft (or `version`) judged; with `land`, a fail is discarded by "gate"
+ * and a pass is kept by "gate" (the migration run). A version the gate already landed is not
  * judged again (`again`: it is).
  */
 export async function inBoxGate(vault: string, part: string, o: { asked?: boolean; land?: boolean; conv?: string | null; version?: string | null; again?: boolean } = {}): Promise<{ result: GateResult; fresh: boolean } | { error: string }> {
   const kind = partKind(part);
-  if (kind !== "settings" && kind !== "migration") return { error: `${part}: not a gate the box runs itself` };
+  if (kind !== "migration") return { error: `${part}: not a gate the box runs itself` };
   const j = await judgeInBox(vault, part, o.version ?? null);
   if ("error" in j) return { error: j.error };
   if (o.land && !o.again) {
@@ -113,9 +105,6 @@ export async function inBoxGate(vault: string, part: string, o: { asked?: boolea
   }
   return { result, fresh: true };
 }
-
-/** The settings draft's gate (inBoxGate for app/settings-values). */
-export const settingsGate = (vault: string, o: Parameters<typeof inBoxGate>[2] = {}) => inBoxGate(vault, SETTINGS_PART, o);
 
 // ---------------------------------------------------------------- the app's core bundle: judged in the box
 
@@ -166,7 +155,7 @@ export function landCore(): string | null {
 }
 
 /** GET /api/v2/gate?part=&version= (the results, newest first); POST {part, asked?, land?, conv?}: a gate the box runs
- *  itself (the settings draft, migrations, the core). */
+ *  itself (migrations, the core). */
 export async function gateRoute(vault: string, method: string, query: URLSearchParams, body: Record<string, unknown> | null): Promise<{ status: number; body: unknown }> {
   if (method === "GET") return { status: 200, body: { results: gateResults(vault, query.get("part"), query.get("version")).slice(0, Math.max(1, Math.min(200, Number(query.get("limit")) || 20))) } };
   if (method !== "POST") return { status: 405, body: { error: "GET or POST" } };
@@ -175,7 +164,7 @@ export async function gateRoute(vault: string, method: string, query: URLSearchP
     const r = coreSubmit(String(body?.version ?? "") || null, typeof body?.conv === "string" ? body.conv : null);
     return "error" in r ? { status: 409, body: { error: r.error } } : { status: 200, body: { result: r.result, fresh: true } };
   }
-  if (partKind(part) !== "settings" && partKind(part) !== "migration") return { status: 400, body: { error: `${part || "(no part)"}: only the settings draft, migrations and the core have a gate` } };
+  if (partKind(part) !== "migration") return { status: 400, body: { error: `${part || "(no part)"}: only migrations and the core have a gate` } };
   const r = await inBoxGate(vault, part, { asked: body?.asked === true, land: body?.land !== false, conv: typeof body?.conv === "string" ? body.conv : null, again: true });
   return "error" in r ? { status: 409, body: { error: r.error } } : { status: 200, body: r };
 }

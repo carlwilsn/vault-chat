@@ -1,6 +1,6 @@
 // How a change reaches Carl: no card, no glow, no Try step. Everything is a line in a chat.
 //
-// - Every gated change (Plugins submit, asked for or not; a settings draft; a migration; the app's core): nothing reaches
+// - Every gated change (a migration; the app's core; a vault plugin's kept draft): nothing reaches
 //   the laptop until the one gate (src/gateResult.ts) has passed it. Then it applies at once (a keep by "gate") and the
 //   chat that submitted it gets "Done: <what> (what was checked)" with Undo. A fail, or a gate that could not run, is one
 //   plain line there when Carl asked for it.
@@ -70,10 +70,6 @@ export function plainWhy(reasons: readonly string[] | string | null | undefined)
 /** What the gate checked, in Carl's words, by its runner (src/gateResult.ts GateResult.runner), or null. */
 export function checkedText(runner: string | null | undefined): string | null {
   const r = String(runner ?? "");
-  if (r === "ui-drive" || r === "settings+ui-drive") return "checked in a hidden copy of the app on your real data";
-  if (r.includes("ui-harness")) return "checked side by side with the current version on a copy of your data";
-  if (r === "box-copy") return "checked beside the running copy on a copy of your vault";
-  if (r === "settings") return "checked that the box takes every value";
   if (r === "migration-dry-run") return "checked by a dry run on a copy of its data";
   if (r === "core-bundle") return "checked its files and that it starts";
   return null;

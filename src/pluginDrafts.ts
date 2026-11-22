@@ -4,7 +4,6 @@
 //
 // A plugin with drafts has a slot of three files in one folder:
 //   vault plugins (src/vaultPlugins.ts)  .vault-chat/plugins/<name>.js, <name>.draft.js, <name>.prev.js
-//   box plugins (server/boxPlugins.ts)   .vault-chat/box-plugins/<name>.js, <name>.draft.js, <name>.prev.js
 // The live file runs; the draft waits for the gate; prev is what the last Keep replaced (absent: the built-in one, or for a
 // vault plugin nothing), so Switch back swaps live and prev.
 //
@@ -60,21 +59,6 @@ export function slotFileOf(name: string): { base: string; ext: string; kind: "li
   return { base: m[1]!, ext: m[3]!, kind: m[2] ? (m[2].toLowerCase() === ".draft" ? "draft" : "prev") : "live" };
 }
 
-// ---------------------------------------------------------------- box plugins (server/boxPlugins.ts)
-
-/** The box's own plugins: server-side modules in the vault the running box loads live (id box/<name>). */
-export const BOX_PLUGIN_DIR = ".vault-chat/box-plugins";
-const BOX_NAME_RE = /^[a-z][a-z0-9-]{0,40}$/;
-/** A box plugin's name from its id (box/<name>) or its name, or null. */
-export function boxPluginName(id: string): string | null {
-  const m = /^(?:box\/)?([^/]+)$/.exec(String(id ?? "").trim());
-  return m && BOX_NAME_RE.test(m[1]!) ? m[1]! : null;
-}
-/** The slot of a box plugin by its name. */
-export const boxSlot = (name: string): DraftSlot => ({ plugin: `box/${name}`, dir: BOX_PLUGIN_DIR, live: `${name}.js`, draft: `${name}.draft.js`, prev: `${name}.prev.js` });
-/** The request header (or `vc-try` query word) a window trying a box plugin's draft sends: `<version>`. */
-export const BOX_TRY_HEADER = "x-vc-try";
-
 // ---------------------------------------------------------------- records
 
 const WHO_RE = /^[a-z][a-z0-9_.-]{0,39}$/;
@@ -116,7 +100,7 @@ export function changeOf(rec: { seq: number; at?: number; type?: unknown; signal
 export type SlotCode = { draft?: string; live?: string; prev?: string };
 export type CopyKind = "draft" | "live" | "prev";
 /** What runs for a slot: a copy (and why), or none (the built-in module; for a vault plugin, nothing). */
-export type Choice = { kind: CopyKind | null; why: "tried" | "kept" | "landed" | "live" | "built-in" };
+export type Choice = { kind: CopyKind | null; why: "kept" | "landed" | "live" | "built-in" };
 
 /** The newest keep or switch: the version in effect, by the records. */
 export function landing(changes: readonly ChangeRecord[]): ChangeRecord | null {
@@ -142,15 +126,13 @@ export function draftPending(slot: SlotCode, changes: readonly ChangeRecord[]): 
 }
 
 /**
- * Which copy of a slot runs. The draft only when tried (`tried`: the version the preview harness hands this window) or kept by a
- * record whose files have not moved yet; the version the newest keep/switch names when its file is here; else the live
+ * Which copy of a slot runs. The draft only when kept by a record whose files have not moved yet; the version the newest keep/switch names when its file is here; else the live
  * copy (a live copy written since the switch, outside the records, runs too); else none.
  */
-export function chooseCopy(slot: SlotCode, changes: readonly ChangeRecord[], tried: string | null): Choice {
+export function chooseCopy(slot: SlotCode, changes: readonly ChangeRecord[]): Choice {
   const dv = slot.draft !== undefined ? versionOf(slot.draft) : null;
   const lv = slot.live !== undefined ? versionOf(slot.live) : null;
   const pv = slot.prev !== undefined ? versionOf(slot.prev) : null;
-  if (dv && tried === dv && decision(changes, dv) !== "discard") return { kind: "draft", why: "tried" };
   const land = landing(changes);
   if (land) {
     if (dv && land.version === dv) return { kind: "draft", why: "kept" };

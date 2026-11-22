@@ -94,14 +94,14 @@ export const BOOT_FILE = "boot.json";
 
 /**
  * The one gate's boot of a built bundle (src/gateResult.ts, frontend-core): the stored files booted in the preview
- * harness in place of the source of the same commit (scripts/draft-check.ts, core mode: ?core=1, the synthetic vault, no
+ * harness in place of the source of the same commit (scripts/core-boot.ts: ?core=1, the synthetic vault, no
  * scenario steps), side by side with that source: it must come up (its plugins mount) with no errors the source does
  * not have. Never throws: a check that cannot run says so ({verdict: null, error}).
  */
 export async function bootCheck(root: string, version: string, src: string): Promise<{ verdict: "pass" | "borderline" | "fail" | null; reasons: string[]; at: number; error?: string }> {
   try {
-    const { draftCheck } = await import("./draft-check.ts");
-    const v = await draftCheck({ plugin: "app/core", vault: src, synthetic: true, runs: 1, keys: 0, core: { files: join(root, version, "files"), version } });
+    const { coreBoot } = await import("./core-boot.ts");
+    const v = await coreBoot({ vault: src, files: join(root, version, "files"), version });
     return { verdict: v.verdict, reasons: v.reasons, at: Date.now() };
   } catch (e) {
     return { verdict: null, reasons: [], at: Date.now(), error: String((e as Error)?.message ?? e).slice(0, 400) };

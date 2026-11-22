@@ -6,16 +6,14 @@
 //   - GET /api/v2/supervisor answers the records (a host folds them itself) and waits for the next (?after=seq&wait=ms);
 //     POST /api/v2/supervisor writes Carl's word ({plugin, state, from?, reason?}) or a budget ({plugin, callsPerMinute}),
 //     or his word on a draft ({plugin, change: keep | discard | switch, version, reason?}: the record, and the files moved
-//     to match, server/pluginDrafts.ts), for app/settings-values: the settings draft's word, written with the settings, server/settings.ts; for
-//     migrate/<name>: a migration draft's word, server/migrations.ts).
+//     to match, server/pluginDrafts.ts; for app/core: the core bundle's switch; for migrate/<name>: a migration draft's word, server/migrations.ts).
 // What is policy (a disable, an end date, a budget) is only ever a record; the hosts reconcile from the same records.
 import { signal, signalLog, type ConvLog } from "./convlog/log";
 import { budgetSignal, desiredSignal, offLine, pluginIdOf, Supervisor, type Desired, type SupervisorRecord } from "../src/pluginSupervisor";
 import type { LogRecord } from "../src/convlog/protocol";
 import { changeSignal } from "../src/pluginDrafts";
 import { landChange, slotOf } from "./pluginDrafts";
-import { SETTINGS_DRAFT_ID } from "../src/settingsRecords";
-import { readSetting, settingsChange } from "./settings";
+import { readSetting } from "./settings";
 import { isMigrationId } from "../src/migrations";
 import { migrationChange } from "./migrations";
 import { CORE_PART } from "../src/coreBundle";
@@ -73,7 +71,7 @@ export function setPluginBudget(vault: string, b: Record<string, unknown> | null
 }
 
 /** Who may be named on a change record: Carl (the app's own Keep), the agent (offers, the scripts, the Plugins tool), an
- *  auto-discard or auto-revert, the draft gate (scripts/draft-check.ts --unasked: a clear pass or fail). */
+ *  auto-discard or auto-revert, the gate (core bundles, migrations). */
 const CHANGE_BY = new Set(["carl", "agent", "auto", "gate"]);
 
 /**
@@ -86,11 +84,6 @@ export function setPluginChange(vault: string, b: Record<string, unknown> | null
   if ("error" in sig) return sig;
   const plugin = pluginIdOf(sig.plugin);
   if (isMigrationId(plugin)) return { status: 400, error: `${plugin} is a migration: its word goes through POST /api/v2/supervisor or the Plugins tool (it runs migrate)` };
-  if (plugin === SETTINGS_DRAFT_ID) {
-    // Carl's settings (server/settings.ts): their draft and his word on it live with the settings, in the main log.
-    const c = settingsChange(sig.change, sig.version, who, sig.reason);
-    return c.ok ? { status: 200, seq: c.seq, text: c.text } : { status: c.status, error: c.error };
-  }
   if (plugin === CORE_PART) {
     // The app's core bundle (server/coreBundles.ts): nothing moves, the record is the switch; the loaders follow it.
     // Whatever vault the request names, the records are the main vault's (one core for the box).

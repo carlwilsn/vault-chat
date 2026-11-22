@@ -852,7 +852,7 @@ const MAIN = "main";
 /** Signals about conversations, and Carl's settings (src/settingsRecords.ts): every surface hears them whatever vault it
  *  has open. Every other signal (a file or the vault changed, the inbox, a Show) is about one vault's files and reaches
  *  only the surfaces on that vault. */
-const CONVERSATION_SIGNALS = new Set(["follow", "project", "notif", "setting", "setting.draft", "setting.change"]);
+const CONVERSATION_SIGNALS = new Set(["follow", "project", "notif", "setting"]);
 /** The agent's requests to a device app (Screen, Layout, PluginRead / PluginAct, LaptopBuild:
  *  server/deviceLink.ts): about the app's window, not a vault, so every vault's feed carries them whatever vault the
  *  app has open (each names its device in `to` and has its own id; the app acks it once). Before, a vault switch in

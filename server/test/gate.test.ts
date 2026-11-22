@@ -11,8 +11,7 @@ import { _resetConvLogs, setFeedVaults, signalLog } from "../convlog/log";
 import { startHttpServer, type VaultScope } from "../http";
 import { configureSettings, readSettings } from "../settings";
 import { versionOf } from "../../src/pluginDrafts";
-import { gateDecision, gateLineOf, partKind, type PartKind } from "../../src/gateResult";
-import { SETTING_DRAFT, draftVersion } from "../../src/settingsRecords";
+import { cleanGateResult, gateDecision, partKind, type PartKind } from "../../src/gateResult";
 
 vi.mock("../../src-tauri/assets/phone.html", () => ({ default: "" }));
 vi.mock("../../src-tauri/assets/voice.html", () => ({ default: "" }));
@@ -68,14 +67,14 @@ describe("the one gate", () => {
   const get = async (path: string) => (await fetch(base + path)).json() as Promise<any>;
 
   it("every part has a kind; one decision rule: a fail is dropped, anything else applies, asked for or not", () => {
-    expect([".vault-chat/plugins/pen.js", "app/composer", "app/preset", "app/settings-values", "box/hello", "migrate/x", "app/core", "nope"].map(partKind)).toEqual(["ui-plugin", "ui-plugin", "preset", "settings", "box-plugin", "migration", "frontend-core", null]);
+    expect([".vault-chat/plugins/pen.js", "app/composer", "app/preset", "app/settings-values", "box/hello", "migrate/x", "app/core", "nope"].map(partKind)).toEqual(["ui-plugin", null, null, null, null, "migration", "frontend-core", null]);
     const d = (kind: PartKind, verdict: "pass" | "borderline" | "fail", asked: boolean) => gateDecision(kind, { verdict, reasons: ["x"] }, asked).change;
-    for (const kind of ["ui-plugin", "preset", "box-plugin", "settings", "migration", "frontend-core"] as const) {
+    for (const kind of ["ui-plugin", "migration", "frontend-core"] as const) {
       expect([d(kind, "pass", true), d(kind, "borderline", true), d(kind, "fail", true)]).toEqual(["keep", "keep", "discard"]);
       expect([d(kind, "pass", false), d(kind, "borderline", false), d(kind, "fail", false)]).toEqual(["keep", "keep", "discard"]);
     }
-    expect(gateLineOf('noise\nVC-GATE {"plugin":"app/notes","version":"0000000a","decision":"keep","verdict":"pass","reasons":["ok"]}')).toMatchObject({ part: "app/notes", kind: "ui-plugin", decision: "keep", verdict: "pass" });
-    expect(gateLineOf("no line")).toBeNull();
+    expect(cleanGateResult({ plugin: "migrate/x", version: "0000000a", decision: "keep", verdict: "pass", reasons: ["ok"] })).toMatchObject({ part: "migrate/x", kind: "migration", decision: "keep", verdict: "pass" });
+    expect(cleanGateResult({ part: "app/preset", kind: "preset", verdict: "pass" })).toBeNull();
   });
 
 
