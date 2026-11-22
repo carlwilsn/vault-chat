@@ -55,7 +55,7 @@ export function VoiceCockpit() {
       className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center z-10 pointer-events-auto"
     >
       {voiceConnecting ? (
-        <div className="text-[10.5px] font-medium tabular-nums whitespace-nowrap text-muted-foreground animate-pulse">
+        <div className="text-[10.5px] font-medium tabular-nums whitespace-nowrap text-titlebar-muted animate-pulse">
           Connecting…
         </div>
       ) : chatOpen ? (
@@ -70,7 +70,7 @@ export function VoiceCockpit() {
           className={`relative flex items-center rounded px-0.5 ${muted ? "opacity-40" : ""}`}
         >
           <VoiceWaves />
-          {muted && <span aria-hidden className="pointer-events-none absolute left-1/2 top-1/2 h-[1.5px] w-[22px] -translate-x-1/2 -translate-y-1/2 -rotate-45 rounded bg-foreground/80" />}
+          {muted && <span aria-hidden className="pointer-events-none absolute left-1/2 top-1/2 h-[1.5px] w-[22px] -translate-x-1/2 -translate-y-1/2 -rotate-45 rounded bg-titlebar-foreground/80" />}
         </button>
       )}
     </div>
@@ -80,8 +80,8 @@ export function VoiceCockpit() {
 /** The bars, and under them the waiting line (src/voiceWaitLine.ts): one element, the same on every surface. */
 function VoiceWaves() {
   return (
-    <div className="flex flex-col items-stretch text-primary">
-      <VoiceBars />
+    <div className="flex flex-col items-stretch text-titlebar-foreground">
+      <VoiceBars colorClass="bg-titlebar-foreground" />
       <WaitLine />
     </div>
   );
@@ -160,8 +160,8 @@ export function VoiceMicGroup() {
         }}
         disabled={!vaultPath}
         data-el="voice-mic"
-        className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 relative z-10 bg-card disabled:opacity-40 ${
-          voiceMode ? "text-foreground" : "text-muted-foreground"
+        className={`h-7 w-7 flex items-center justify-center rounded bg-titlebar hover:bg-titlebar-hover relative z-10 disabled:opacity-40 ${
+          voiceMode ? "text-titlebar-foreground" : "text-titlebar-muted"
         }`}
         title={voiceMode ? `Voice mode (on) — ${shortcutHint("voice.toggle")} to turn off` : `Voice mode (off) — ${shortcutHint("voice.toggle")} to turn on`}
       >
@@ -175,8 +175,8 @@ export function VoiceMicGroup() {
         >
           <button
             onClick={() => setVoiceTextPanelOpen(!voiceTextPanelOpen)}
-            className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 ${
-              voiceTextPanelOpen ? "text-foreground" : "text-muted-foreground"
+            className={`h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover ${
+              voiceTextPanelOpen ? "text-titlebar-foreground" : "text-titlebar-muted"
             }`}
             title={voiceTextPanelOpen ? "Close text input" : "Type to the voice agent instead of speaking"}
           >
@@ -261,7 +261,8 @@ function VoiceBars({
   height = 14,
   barClass = "w-[2px] rounded-sm",
   gapClass = "gap-[2px]",
-}: { count?: number; height?: number; barClass?: string; gapClass?: string } = {}) {
+  colorClass = "bg-primary",
+}: { count?: number; height?: number; barClass?: string; gapClass?: string; colorClass?: string } = {}) {
   const n = count;
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
   const smoothed = useRef<number[]>(new Array(n).fill(0));
@@ -300,7 +301,7 @@ function VoiceBars({
           ref={(el) => {
             barRefs.current[i] = el;
           }}
-          className={`${barClass} bg-primary`}
+          className={`${barClass} ${colorClass}`}
           style={{
             height: `${height}px`,
             transformOrigin: "center",

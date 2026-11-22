@@ -39,6 +39,13 @@ export default {
           DEFAULT: "hsl(var(--popover))",
           foreground: "hsl(var(--popover-foreground))",
         },
+        titlebar: {
+          DEFAULT: "hsl(var(--titlebar))",
+          foreground: "hsl(var(--titlebar-foreground))",
+          muted: "hsl(var(--titlebar-muted))",
+          hover: "hsl(var(--titlebar-hover))",
+          border: "hsl(var(--titlebar-border))",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",

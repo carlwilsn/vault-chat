@@ -25,10 +25,10 @@ function TasksRunning({ hidden, onOpen }: { hidden: boolean; onOpen: () => void 
   const n = useStore((s) => runningTaskCount(s.conversations));
   if (hidden || !n) return null;
   return (
-    <button onClick={onOpen} data-el="titlebar-tasks" title="Background tasks running — open the chat" className="h-6 mr-2 px-2 flex items-center gap-1.5 rounded-full border border-border/60 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/60">
+    <button onClick={onOpen} data-el="titlebar-tasks" title="Background tasks running — open the chat" className="h-6 mr-2 px-2 flex items-center gap-1.5 rounded-full border border-titlebar-foreground/30 text-[11px] text-titlebar-muted hover:text-titlebar-foreground hover:bg-titlebar-hover">
       <span className="relative inline-flex h-1.5 w-1.5">
-        <span className="absolute inset-0 rounded-full bg-primary opacity-60 animate-ping" />
-        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+        <span className="absolute inset-0 rounded-full bg-titlebar-foreground opacity-60 animate-ping" />
+        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-titlebar-foreground" />
       </span>
       <span className="tabular-nums">{n} running</span>
     </button>
@@ -70,7 +70,7 @@ export function Bar() {
     <div
       data-tauri-drag-region
       data-el="titlebar"
-      className="h-9 flex items-center bg-card border-b border-border select-none shrink-0 relative"
+      className="h-9 flex items-center bg-titlebar border-b border-titlebar-border select-none shrink-0 relative"
     >
       <VoiceCockpit />
       <div
@@ -79,7 +79,7 @@ export function Bar() {
       >
         <button
           onClick={toggleLeft}
-          className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 ${leftCollapsed ? "text-muted-foreground" : "text-foreground/90"}`}
+          className={`h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover ${leftCollapsed ? "text-titlebar-muted" : "text-titlebar-foreground"}`}
           title={`${leftCollapsed ? "Show" : "Hide"} file panel (${shortcutHint("view.files")})`}
         >
           <PanelLeft className="h-3.5 w-3.5" />
@@ -89,7 +89,7 @@ export function Bar() {
           <>
             <button
               onClick={() => void refreshTree()}
-              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground disabled:opacity-50"
+              className="h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover text-titlebar-muted disabled:opacity-50"
               title="Refresh file tree"
               disabled={refreshSpin}
             >
@@ -97,7 +97,7 @@ export function Bar() {
             </button>
             <button
               onClick={() => void openHidden().catch((e) => console.error(e))}
-              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground"
+              className="h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover text-titlebar-muted"
               title="Hidden files"
             >
               <Eye className="h-3.5 w-3.5" />
@@ -106,14 +106,14 @@ export function Bar() {
               onClick={() => setShowNotesPanel(!showNotesPanel)}
               className={`h-7 w-7 flex items-center justify-center rounded relative ${
                 showNotesPanel
-                  ? "bg-accent text-foreground"
-                  : "hover:bg-accent/60 text-muted-foreground"
+                  ? "bg-titlebar-hover text-titlebar-foreground"
+                  : "hover:bg-titlebar-hover text-titlebar-muted"
               }`}
               title={`Notes (${shortcutHint("files.note")} to create)`}
             >
               <StickyNote className="h-3.5 w-3.5" />
               {openNotes && (
-                <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-primary" />
+                <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-titlebar-foreground" />
               )}
             </button>}
             <VoiceMicGroup />
@@ -134,7 +134,7 @@ export function Bar() {
         <button
           onClick={toggleRight}
           disabled={popoutOpen}
-          className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 mr-1 disabled:opacity-40 disabled:cursor-not-allowed ${rightCollapsed ? "text-muted-foreground" : "text-foreground/90"}`}
+          className={`h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover mr-1 disabled:opacity-40 disabled:cursor-not-allowed ${rightCollapsed ? "text-titlebar-muted" : "text-titlebar-foreground"}`}
           title={
             popoutOpen
               ? "Chat is popped out — close the popout window to dock"
@@ -146,7 +146,7 @@ export function Bar() {
         <button
           onClick={() => openChatPopout().catch((err) => console.error("[popout] failed:", err))}
           disabled={popoutOpen}
-          className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground mr-1 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover text-titlebar-muted mr-1 disabled:opacity-40 disabled:cursor-not-allowed"
           title={popoutOpen ? "Chat is popped out" : "Pop out chat"}
         >
           <ExternalLink className="h-3.5 w-3.5" />
@@ -154,12 +154,12 @@ export function Bar() {
         <TerminalButton vaultPath={vaultPath} />
         <button
           onClick={() => setShowSettings(!showSettings)}
-          className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground mr-1"
+          className="h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover text-titlebar-muted mr-1"
           title="Settings"
         >
           <Settings className="h-3.5 w-3.5" />
         </button>
-        <WindowControls />
+        <WindowControls onBar />
       </div>
     </div>
     {hiddenOpen && (
@@ -269,6 +269,8 @@ function SyncChip() {
   const kind = att.kind;
   const Icon = kind === "conflict" ? GitMerge : kind === "tailscale" ? WifiOff : kind === "offline" ? CloudOff : kind === "big" ? FileWarning : AlertTriangle;
   const color = att.level === "red" ? "text-destructive" : "text-amber-500";
+  // On the blue bar itself: lighter shades that read there.
+  const barColor = att.level === "red" ? "text-red-200" : "text-amber-200";
   const since = new Date(att.since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const hint =
     kind === "conflict"
@@ -286,7 +288,7 @@ function SyncChip() {
     <div ref={ref} className="relative mr-1 flex items-center">
       <button
         onClick={() => setOpen((o) => !o)}
-        className={`h-7 flex items-center gap-1.5 px-2 rounded hover:bg-accent/60 text-[11.5px] ${color}`}
+        className={`h-7 flex items-center gap-1.5 px-2 rounded hover:bg-titlebar-hover text-[11.5px] ${barColor}`}
         title="Vault sync needs attention"
       >
         <Icon className="h-3.5 w-3.5" />
@@ -295,14 +297,14 @@ function SyncChip() {
       {canOpenTs && (
         <button
           onClick={() => void openTs()}
-          className="h-7 px-1.5 rounded hover:bg-accent/60 text-[11.5px] text-foreground/90 underline underline-offset-2"
+          className="h-7 px-1.5 rounded hover:bg-titlebar-hover text-[11.5px] text-titlebar-foreground underline underline-offset-2"
           data-testid="open-tailscale"
         >
           Open Tailscale
         </button>
       )}
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 w-[360px] rounded-md border border-border bg-card shadow-xl p-3 space-y-2">
+        <div className="absolute right-0 top-full mt-1 z-50 w-[360px] rounded-md border border-border bg-card text-card-foreground shadow-xl p-3 space-y-2">
           <div className="flex items-baseline justify-between gap-2">
             <div className={`text-[12px] font-semibold ${color}`}>{att.text}</div>
             <div className="text-[10.5px] text-muted-foreground shrink-0">since {since}</div>
@@ -350,7 +352,7 @@ function TerminalButton({ vaultPath }: { vaultPath: string | null }) {
   return (
     <>
       {note && (
-        <span className="text-[11px] text-muted-foreground mr-1 max-w-[280px] truncate" title={note} data-testid="terminal-note">
+        <span className="text-[11px] text-titlebar-muted mr-1 max-w-[280px] truncate" title={note} data-testid="terminal-note">
           {note}
         </span>
       )}
@@ -358,7 +360,7 @@ function TerminalButton({ vaultPath }: { vaultPath: string | null }) {
         onClick={(e) => {
           void openTerminal({ shift: e.shiftKey }).catch((err) => console.error("[terminal] failed:", err));
         }}
-        className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground mr-1"
+        className="h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover text-titlebar-muted mr-1"
         title={terminalTitle(box)}
         aria-label={terminalTitle(box)}
       >
@@ -391,7 +393,7 @@ function ButtonItem({ item }: { item: TitlebarItem }) {
       title={name}
       aria-label={name}
       onClick={() => item.onClick?.()}
-      className={`h-7 ${item.icon ? "min-w-7 px-1" : "px-2"} flex items-center justify-center gap-1 rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground text-[11.5px]`}
+      className={`h-7 ${item.icon ? "min-w-7 px-1" : "px-2"} flex items-center justify-center gap-1 rounded hover:bg-titlebar-hover text-titlebar-muted hover:text-titlebar-foreground text-[11.5px]`}
     >
       {item.icon ? (
         svg ? <span className="h-3.5 w-3.5 flex items-center justify-center [&>svg]:h-3.5 [&>svg]:w-3.5" dangerouslySetInnerHTML={{ __html: item.icon }} /> : <span className="leading-none">{item.icon}</span>
@@ -413,5 +415,5 @@ function DrawnItem({ item }: { item: TitlebarItem }) {
       el.replaceChildren();
     };
   }, [item]);
-  return <span ref={ref} data-el="titlebar-item" data-item={item.key} title={item.title} className="h-7 inline-flex items-center" />;
+  return <span ref={ref} data-el="titlebar-item" data-item={item.key} title={item.title} className="h-7 inline-flex items-center text-titlebar-foreground" />;
 }

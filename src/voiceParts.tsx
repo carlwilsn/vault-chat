@@ -116,7 +116,7 @@ function PlainMic() {
       disabled={!vaultPath}
       data-el="voice-mic"
       data-plain="1"
-      className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 disabled:opacity-40 ${voiceMode ? "text-foreground" : "text-muted-foreground"}`}
+      className={`h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover disabled:opacity-40 ${voiceMode ? "text-titlebar-foreground" : "text-titlebar-muted"}`}
       title={voiceMode ? `Voice mode (on) — ${shortcutHint("voice.toggle")} to turn off` : `Voice mode (off) — ${shortcutHint("voice.toggle")} to turn on`}
     >
       <Mic className="h-3.5 w-3.5" strokeWidth={voiceMode ? 2.5 : 2} />
@@ -148,7 +148,7 @@ function PlainCockpit() {
   const connecting = useStore((s) => s.voiceConnecting);
   if (!voiceMode) return null;
   return (
-    <div data-el="voice-plain" className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10 text-[10.5px] font-medium text-muted-foreground whitespace-nowrap">
+    <div data-el="voice-plain" className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10 text-[10.5px] font-medium text-titlebar-muted whitespace-nowrap">
       {connecting ? "Connecting…" : "Voice on"}
     </div>
   );

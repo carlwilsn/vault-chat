@@ -152,7 +152,7 @@ export function Picker() {
       <button
         onClick={() => (isOpen ? close() : setOpen(true))}
         data-el="vault-picker"
-        className="h-7 flex items-center gap-1.5 px-2 rounded hover:bg-accent/60 text-[12px] text-foreground/90"
+        className="h-7 flex items-center gap-1.5 px-2 rounded hover:bg-titlebar-hover text-[12px] text-titlebar-foreground"
         title="Change vault"
         aria-expanded={isOpen}
       >
@@ -160,7 +160,7 @@ export function Picker() {
         <span className="max-w-[220px] truncate">{vaultName ?? "Open folder"}</span>
       </button>
       {isOpen && (
-        <div data-el="vault-picker-menu" className="absolute left-0 top-8 z-50 w-72 rounded-md border border-border bg-popover shadow-lg p-1">
+        <div data-el="vault-picker-menu" className="absolute left-0 top-8 z-50 w-72 rounded-md border border-border bg-popover text-popover-foreground shadow-lg p-1">
           {!m && (
             <div className="px-2.5 pt-1 pb-1.5 text-[11px] text-muted-foreground">Set the vault-chat folder in Settings to list your vaults here.</div>
           )}

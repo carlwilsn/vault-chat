@@ -28,7 +28,7 @@ export function Titlebar() {
   return <PlaceMount place="titlebar" fallback={(f) => (f.pending ? <Bar /> : <TitlebarFallback info={f} />)} />;
 }
 
-const BTN = "h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60";
+const BTN = "h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover";
 
 /** The minimal built-in bar: drag, the two panels, the vault picker, Settings, the window controls. */
 export function TitlebarFallback({ info }: { info: PluginFallbackInfo }) {
@@ -40,9 +40,9 @@ export function TitlebarFallback({ info }: { info: PluginFallbackInfo }) {
   const showSettings = useStore((s) => s.showSettings);
   const setShowSettings = useStore((s) => s.setShowSettings);
   return (
-    <div data-tauri-drag-region data-el="titlebar-fallback" className="h-9 flex items-center bg-card border-b border-border select-none shrink-0 relative">
+    <div data-tauri-drag-region data-el="titlebar-fallback" className="h-9 flex items-center bg-titlebar border-b border-titlebar-border select-none shrink-0 relative">
       <div className="flex items-center gap-1 px-2" style={macBarInset}>
-        <button onClick={toggleLeft} className={`${BTN} ${leftCollapsed ? "text-muted-foreground" : "text-foreground/90"}`} title={`${leftCollapsed ? "Show" : "Hide"} file panel (${shortcutHint("view.files")})`}>
+        <button onClick={toggleLeft} className={`${BTN} ${leftCollapsed ? "text-titlebar-muted" : "text-titlebar-foreground"}`} title={`${leftCollapsed ? "Show" : "Hide"} file panel (${shortcutHint("view.files")})`}>
           <PanelLeft className="h-3.5 w-3.5" />
         </button>
         <VaultPicker />
@@ -50,9 +50,9 @@ export function TitlebarFallback({ info }: { info: PluginFallbackInfo }) {
       {info.off ? (
         <PluginOff path={TITLEBAR_PLUGIN.id} desired={info.off} className="py-0 min-w-0" />
       ) : (
-        <div data-el="titlebar-fallback-error" className="flex items-center gap-2 px-3 min-w-0 text-[11.5px] text-muted-foreground">
+        <div data-el="titlebar-fallback-error" className="flex items-center gap-2 px-3 min-w-0 text-[11.5px] text-titlebar-muted">
           <span className="truncate" title={info.error ?? ""}>The title bar stopped; a plain one until it is back.</span>
-          <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
+          <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-titlebar-foreground/30 px-2 py-0.5 text-[11.5px] hover:text-titlebar-foreground">
             Reload
           </button>
         </div>
@@ -62,15 +62,15 @@ export function TitlebarFallback({ info }: { info: PluginFallbackInfo }) {
         <button
           onClick={toggleRight}
           disabled={popoutOpen}
-          className={`${BTN} mr-1 disabled:opacity-40 disabled:cursor-not-allowed ${rightCollapsed ? "text-muted-foreground" : "text-foreground/90"}`}
+          className={`${BTN} mr-1 disabled:opacity-40 disabled:cursor-not-allowed ${rightCollapsed ? "text-titlebar-muted" : "text-titlebar-foreground"}`}
           title={popoutOpen ? "Chat is popped out — close the popout window to dock" : `${rightCollapsed ? "Show" : "Hide"} chat panel (${shortcutHint("view.chat")})`}
         >
           <PanelRight className="h-3.5 w-3.5" />
         </button>
-        <button onClick={() => setShowSettings(!showSettings)} className={`${BTN} text-muted-foreground mr-1`} title="Settings">
+        <button onClick={() => setShowSettings(!showSettings)} className={`${BTN} text-titlebar-muted mr-1`} title="Settings">
           <Settings className="h-3.5 w-3.5" />
         </button>
-        <WindowControls />
+        <WindowControls onBar />
       </div>
     </div>
   );

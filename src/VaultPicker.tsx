@@ -46,7 +46,7 @@ export function VaultPickerFallback({ info }: { info: PluginFallbackInfo }) {
       <button
         onClick={() => setPickerOpen(!open)}
         data-el="vault-picker"
-        className="h-7 flex items-center gap-1.5 px-2 rounded hover:bg-accent/60 text-[12px] text-foreground/90"
+        className="h-7 flex items-center gap-1.5 px-2 rounded hover:bg-titlebar-hover text-[12px] text-titlebar-foreground"
         title="Change vault"
         aria-expanded={open}
       >
@@ -54,7 +54,7 @@ export function VaultPickerFallback({ info }: { info: PluginFallbackInfo }) {
         <span className="max-w-[220px] truncate">{vaultName ?? "Open folder"}</span>
       </button>
       {open && (
-        <div data-el="vault-picker-menu" className="absolute left-0 top-8 z-50 w-72 rounded-md border border-border bg-popover shadow-lg p-1">
+        <div data-el="vault-picker-menu" className="absolute left-0 top-8 z-50 w-72 rounded-md border border-border bg-popover text-popover-foreground shadow-lg p-1">
           {info.off ? (
             <PluginOff path={VAULTS_PLUGIN.id} desired={info.off} className="px-2.5" />
           ) : (
