@@ -13,10 +13,8 @@ import { ackShow, feedOpened, resetPresence, show } from "../show";
 import { _setChangeLineSink, gateOutcome, type ChangeLine } from "../changeNotices";
 import { youLayer } from "../activity";
 import { chatSeen, controlDown, linkState, linkStates, noteAnswer, resetLinks } from "../deviceLink";
-import { actTool } from "../actTool";
 import { screenTool } from "../screenTool";
 import { layoutTool, LAYOUT_DESCRIPTION } from "../layoutTool";
-import { ACT_DESCRIPTION } from "../actTool";
 
 const home = mkdtempSync(join(tmpdir(), "vc-ctrllink-"));
 const A = join(home, "school2");
@@ -64,17 +62,13 @@ beforeEach(() => resetPresence());
 const actAck = { ok: true, data: { steps: { ok: true, steps: [{ i: 1, action: "wait", ok: true, ms: 1 }], errors: [], text: "Chats", shots: [], ms: 1 } } };
 
 describe("the control link follows the laptop across a vault switch", () => {
-  it("Act from a chat in school2 reaches the app after it switched to vault-chat (the 2026-11-17 wedge)", async () => {
-    const app = laptopOn(B, (s) => (s.type === "act" ? actAck : s.type === "capture" ? { ok: false, error: "not drawn in this test" } : null));
+  it("Screen from a chat in school2 reaches the app after it switched to vault-chat (the 2026-11-17 wedge)", async () => {
+    const app = laptopOn(B, (s) => (s.type === "capture" ? { ok: false, error: "not drawn in this test" } : null));
     try {
-      const r = await actTool({ vault: A, emit: (ev) => signal(A, ev), ackMs: 3000 }, { steps: [{ wait: 1 }], force: true });
-      expect(r.text).not.toMatch(/isn't online|did not answer/);
-      expect(r.ok).toBe(true);
-      expect(app.seen.map((s) => s.type)).toEqual(["act"]);
-      // Screen too: the same channel.
       const shot = await screenTool({ vault: A, emit: (ev) => signal(A, ev), ackMs: 3000 }, {});
+      expect(shot.text).not.toMatch(/isn't online|did not answer/);
       expect(shot.text).toMatch(/could not draw its screen: not drawn in this test/);
-      expect(app.seen.map((s) => s.type)).toEqual(["act", "capture"]);
+      expect(app.seen.map((s) => s.type)).toEqual(["capture"]);
     } finally {
       app.close();
     }
@@ -95,9 +89,9 @@ describe("the control link follows the laptop across a vault switch", () => {
     const t0 = Date.now();
     resetLinks(t0 - 60_000);
     expect(controlDown("laptop", t0)).toMatch(/^The laptop isn't online: control link down since .*has not connected since the box started/);
-    const r = await actTool({ vault: A, emit: () => {}, ackMs: 200 }, { steps: [{ wait: 1 }], force: true });
+    const r = await screenTool({ vault: A, emit: () => {}, ackMs: 200 }, {});
     expect(r.ok).toBe(false);
-    expect(r.text).toMatch(/isn't online: control link down since .*So nothing was done there/);
+    expect(r.text).toMatch(/isn't online: control link down since .*So its screen can't be seen/);
     const leave = feedOpened(B, "laptop");
     leave();
     chatSeen("laptop");
@@ -111,12 +105,12 @@ describe("the control link follows the laptop across a vault switch", () => {
   it("an app that is connected but does not answer is said so, and one answer clears it", async () => {
     const app = laptopOn(B, () => null);
     try {
-      const r1 = await actTool({ vault: A, emit: (ev) => signal(A, ev), ackMs: 150 }, { steps: [{ wait: 1 }], force: true });
-      const r2 = await actTool({ vault: A, emit: (ev) => signal(A, ev), ackMs: 150 }, { steps: [{ wait: 1 }], force: true });
+      const r1 = await screenTool({ vault: A, emit: (ev) => signal(A, ev), ackMs: 150 }, {});
+      const r2 = await screenTool({ vault: A, emit: (ev) => signal(A, ev), ackMs: 150 }, {});
       expect(r1.text).toMatch(/did not answer/);
       expect(r2.text).toMatch(/has not answered 2 requests in a row since/);
-      expect(linkState("laptop")).toMatchObject({ control: "up", unanswered: 2, lastUnanswered: { type: "act" } });
-      noteAnswer("laptop", "act", true);
+      expect(linkState("laptop")).toMatchObject({ control: "up", unanswered: 2, lastUnanswered: { type: "capture" } });
+      noteAnswer("laptop", "capture", true);
       expect(linkState("laptop").unanswered).toBe(0);
     } finally {
       app.close();
@@ -177,8 +171,6 @@ describe("Layout openChat", () => {
 
   it("the tool descriptions point at openChat, not clicks", () => {
     expect(LAYOUT_DESCRIPTION).toMatch(/openChat \{id\}/);
-    expect(ACT_DESCRIPTION).toMatch(/To switch chats use Layout \{action: "openChat", id\}/);
-    expect(ACT_DESCRIPTION).toMatch(/a place's bar \(Main or a project\) only shows or hides its chats/);
   });
 });
 

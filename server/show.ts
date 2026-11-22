@@ -96,7 +96,7 @@ function ackImage(raw: unknown): { image?: { data: string; mimeType?: string } }
   return { image: { data: im.data, ...(typeof im.mimeType === "string" ? { mimeType: im.mimeType.slice(0, 40) } : {}) } };
 }
 
-/** Several pictures in an ack (the Drive tool's shots, server/driveTool.ts checks each): at most 6, ~16 MB in all. */
+/** Several pictures in an ack (the gate's UI runner shots): at most 6, ~16 MB in all. */
 function ackImages(raw: unknown): { images?: { data: string; mimeType?: string; name?: string }[] } {
   if (!Array.isArray(raw)) return {};
   const out: { data: string; mimeType?: string; name?: string }[] = [];

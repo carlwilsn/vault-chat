@@ -1,5 +1,5 @@
-// The agent's Drive and Timing tools, end to end over the real channel: the box's tools (server/driveTool.ts,
-// server/timingTool.ts) put a signal on a fake box's REAL feed; the laptop's box chat (src/boxChat.ts) hands it to
+// The gate's UI runner and the agent's Timing tool, end to end over the real channel: the box (server/gate.ts,
+// server/timingTool.ts) puts a signal on a fake box's REAL feed; the laptop's box chat (src/boxChat.ts) hands it to
 // src/driveOnLaptop.ts, which checks Carl's activity (src/userActivity.ts), opens the Drive copy of the app
 // (src/driveHost.ts) and acks over POST /api/v1/show/<id>/ack. The Drive copy itself needs a webview: here a fake host
 // stands in for it, speaking the real protocol (src/driveProtocol.ts). The DOM step runner is checked in Chromium
@@ -9,7 +9,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import zlib from "node:zlib";
 import { installFakeTauri, makeTempVault } from "./fakes.ts";
 import { FakeBox } from "./fakeBox.ts";
 
@@ -35,46 +34,15 @@ fake.setHandler("conversations_write_all", () => null);
 
 const { useStore } = await import("../../src/store.ts");
 const bc = await import("../../src/boxChat.ts");
-const { driveTool } = await import("../../server/driveTool.ts");
 const { timingTool } = await import("../../server/timingTool.ts");
 const { recordHostBuild } = await import("../../server/hostBuild.ts");
 const { resetPresence } = await import("../../server/show.ts");
-const { controlLive } = await import("../../server/deviceLink.ts");
 const { setDriveHostFactory } = await import("../../src/driveHost.ts");
 const { noteInput, _resetUserActivity } = await import("../../src/userActivity.ts");
 const { checkSteps, parseKey } = await import("../../src/driveSteps.ts");
 const { driveCommandRefusal, memoryStorage } = await import("../../src/driveGuard.ts");
 const { isDriveWindow } = await import("../../src/windowKind.ts");
 const S = () => useStore.getState();
-
-function png(width: number, height: number): Buffer {
-  const crcTable = Array.from({ length: 256 }, (_, n) => {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    return c >>> 0;
-  });
-  const crc = (b: Buffer) => {
-    let c = 0xffffffff;
-    for (const x of b) c = crcTable[(c ^ x) & 0xff]! ^ (c >>> 8);
-    return (c ^ 0xffffffff) >>> 0;
-  };
-  const chunk = (type: string, data: Buffer) => {
-    const len = Buffer.alloc(4);
-    len.writeUInt32BE(data.length);
-    const td = Buffer.concat([Buffer.from(type, "ascii"), data]);
-    const c = Buffer.alloc(4);
-    c.writeUInt32BE(crc(td));
-    return Buffer.concat([len, td, c]);
-  };
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8;
-  ihdr[9] = 0;
-  const raw = Buffer.alloc((width + 1) * height, 0x80);
-  for (let y = 0; y < height; y++) raw[y * (width + 1)] = 0;
-  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", ihdr), chunk("IDAT", zlib.deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
-}
 
 async function waitFor(what: string, fn: () => boolean, ms = 8000): Promise<void> {
   const end = Date.now() + ms;
@@ -113,7 +81,6 @@ setDriveHostFactory(fakeFactory);
 
 const sent: Record<string, unknown>[] = [];
 const emit = (ev: Record<string, unknown>) => (sent.push(ev), void box.emit(null, { type: "signal", signal: ev } as any));
-const Drive = (args: Record<string, unknown>, o: { vault?: string; ackMs?: number } = {}) => driveTool({ vault: o.vault ?? vault, emit, ackMs: o.ackMs ?? 8000 }, args);
 const Timing = (args: Record<string, unknown>) => timingTool({ vault, stateDir, emit, ackMs: 8000 }, args);
 const stepsOk = (steps: unknown[], extra: Record<string, unknown> = {}) => ({
   steps: { ok: true, steps: steps.map((s, i) => ({ i: i + 1, action: Object.keys(s as object)[0], ok: true, ms: 3 })), errors: [], text: "Main\nAsk anything", shots: [], ms: 40, ...extra },
@@ -132,55 +99,6 @@ after(async () => {
   setDriveHostFactory(null);
   bc.stopBoxChat();
   await box.close();
-});
-
-test("offline and bad steps: refused before anything is sent", async () => {
-  const before = sent.length;
-  resetPresence(); // no poll from the laptop since: its control link is down (whatever vault it follows)
-  let r = await Drive({ steps: [{ click: "#x" }] });
-  assert.equal(r.ok, false);
-  assert.match(r.text, /laptop isn't online/);
-  r = await Drive({ steps: [{ click: "#x", press: "Enter" }] });
-  assert.match(r.text, /exactly one of/);
-  r = await Drive({ steps: [] });
-  assert.match(r.text, /non-empty/);
-  assert.equal(sent.length, before);  await waitFor("the laptop polls again", () => controlLive("laptop"));
-});
-
-test("Carl is using the laptop: refused with when, nothing opened; force runs anyway", async () => {
-  noteInput("keydown");
-  const was = opened;
-  let r = await Drive({ steps: [{ waitFor: { text: "Main" } }] });
-  assert.equal(sent.at(-1)!.type, "drive");
-  assert.equal(r.ok, false);
-  assert.match(r.text, /Refused by the laptop: Carl is using the laptop: his last key\/click\/mouse movement in the app was \d+ s ago \(needs 5 min idle\)/);
-  assert.equal(opened, was, "no Drive copy was opened");
-  // A shorter idle requirement he set is honoured too.
-  answer = async (req) => stepsOk(req.steps!);
-  r = await Drive({ steps: [{ waitFor: { text: "Main" } }], idleMinutes: 0 });
-  assert.equal(r.ok, true, r.text);
-  answer = async (req) => stepsOk(req.steps!);
-  r = await Drive({ steps: [{ waitFor: { text: "Main" } }], force: true });
-  assert.equal(r.ok, true, r.text);
-});
-
-test("idle: the steps run in the Drive copy; outcomes, errors, text and screenshots come back", async () => {
-  _resetUserActivity();
-  const pic = png(1280, 800);
-  answer = async (req) => {
-    assert.equal(req.mode, "steps");
-    assert.deepEqual(req.steps, [{ click: { text: "Notes" } }, { type: "hi", into: "textarea" }, { press: "Control+K" }, { shot: "after" }]);
-    return { steps: { ok: true, steps: [1, 2, 3, 4].map((i) => ({ i, action: ["click", "type", "press", "shot"][i - 1], ok: true, ms: 5, ...(i === 4 ? { note: "1280x800" } : {}) })), errors: ["TypeError: x is undefined"], text: "Notes\nhi", shots: [{ name: "after", data: pic.toString("base64"), mimeType: "image/png", width: 1280, height: 800 }], ms: 90 } };
-  };
-  const r = await Drive({ steps: [{ click: { text: "Notes" } }, { type: "hi", into: "textarea" }, { press: "Control+K" }, { shot: "after" }] });
-  assert.equal(r.ok, true, r.text);
-  assert.match(r.text, /Ran in a fake Drive copy; Carl's own window was not touched\./);
-  assert.match(r.text, /- step 1 click: ok \(5 ms\)/);
-  assert.match(r.text, /- step 4 shot: ok \(5 ms\) 1280x800/);
-  assert.match(r.text, /App errors while it ran \(1\):\n  TypeError: x is undefined/);
-  assert.match(r.text, /Visible text at the end:\nNotes\nhi/);
-  assert.equal(r.images.length, 1);
-  assert.deepEqual(Buffer.from(r.images[0]!.data, "base64"), pic);
 });
 
 test("the gate's UI runner on the real app: a draft is run in a fresh Drive copy started with it (echoed), never the warm one; bad tries are refused", async () => {
@@ -206,38 +124,6 @@ test("the gate's UI runner on the real app: a draft is run in a fresh Drive copy
   noteInput("keydown");
   assert.match(String(((await gateDriveRoute(vault, { steps: [{ wait: 10 }] }, emit)).body as any).unavailable), /Carl is using the laptop/);
   _resetUserActivity();
-});
-
-test("a failing step: said with its error and what was not run", async () => {
-  answer = async () => ({ steps: { ok: false, steps: [{ i: 1, action: "waitFor", ok: false, ms: 5000, error: "#nope did not appear within 5000 ms" }], errors: [], text: "", shots: [], ms: 5000 } });
-  const r = await Drive({ steps: [{ waitFor: "#nope" }, { click: "#x" }] });
-  assert.equal(r.ok, false);
-  assert.match(r.text, /step 1 waitFor: FAILED: #nope did not appear within 5000 ms/);
-  assert.match(r.text, /1 step not run/);
-});
-
-test("Carl starts typing mid-run: the run is aborted at once and the Drive copy closed", async () => {
-  const closedBefore = closed;
-  answer = async (req, aborted) => {
-    setTimeout(() => noteInput("keydown"), 50);
-    const why = await aborted;
-    return { steps: { ok: false, aborted: why, steps: [{ i: 1, action: "wait", ok: true, ms: 50 }], errors: [], text: "", shots: [], ms: 60 } };
-  };
-  const r = await Drive({ steps: [{ wait: 5000 }, { click: "#x" }] });
-  assert.equal(r.ok, false);
-  assert.match(r.text, /Stopped: Carl started using the laptop \(typing\)\./);
-  assert.ok(closed > closedBefore, "the Drive copy is closed at once");
-  _resetUserActivity();
-});
-
-test("the Drive copy can't start: said, with why", async () => {
-  readyFail = "the Drive window refuses to run: no guard";
-  setDriveHostFactory(fakeFactory);
-  const r = await Drive({ steps: [{ wait: 1 }] });
-  readyFail = null;
-  setDriveHostFactory(fakeFactory);
-  assert.equal(r.ok, false);
-  assert.match(r.text, /couldn't open the Drive copy of the app: the Drive window refuses to run: no guard/);
 });
 
 test("Timing: live numbers in the harness's metric/method keys, the last launch, and a baseline compare", async () => {

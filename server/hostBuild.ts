@@ -161,7 +161,7 @@ export function recordHostBuild(stateDir: string, raw: unknown, o: { now?: numbe
         (o.wake ?? addWake)(w.vault, {
           conv: w.conv,
           at: now,
-          reason: `${b.host} now on build ${buildLine(b)}${w.since ? `; it was on v${w.since.version} (${short(w.since.revision)})` : ""}. Run your laptop checks now (LaptopBuild, Drive, Timing, Screen).`,
+          reason: `${b.host} now on build ${buildLine(b)}${w.since ? `; it was on v${w.since.version} (${short(w.since.revision)})` : ""}. Run your laptop checks now (LaptopBuild, Timing, Screen).`,
           ...(w.byCarl ? { byCarl: true } : {}),
         });
         woke++;
@@ -188,7 +188,7 @@ export const LAPTOP_BUILD_DESCRIPTION =
   "action \"get\" (default): asks the laptop app live (when it is open and connected) for its frontend version and git revision, the installed native app version, its webview runtime, its last launch-to-interactive time and the server it carries if it runs one; shows the last build it reported at launch and the box's own server build next to it. " +
   "Its frontend (the core) comes apart from the native shell: the box builds a core bundle from each accepted main itself and the app's loader takes it with no installer (it falls back to the previous bundle, then the installed app's own, when one does not boot); the answer says which core runs. " +
   "Native changes (Rust commands, plugins, the installer) still arrive only through the app's updater: " + "a push to main that touches the app is built by GitHub Actions (ship.yml: version bump commit vX.Y.Z on a release tag, Windows installer, latest.json) and the app offers \"Install & restart\" (it checks at launch and every 5 min; Carl clicks it unless the app runs in background mode, which installs when idle). The revision the app reports is that version-bump commit, whose parent is the main commit it was built from. " +
-  "action \"wake\": wake this conversation with one short turn the next time the laptop reports a different build at launch (or the given version / revision), instead of polling. Use it after shipping something the laptop must get; then run your checks (Drive, Timing, Screen) in that turn.";
+  "action \"wake\": wake this conversation with one short turn the next time the laptop reports a different build at launch (or the given version / revision), instead of polling. Use it after shipping something the laptop must get; then run your checks (Timing, Screen) in that turn.";
 
 export const LAPTOP_BUILD_SCHEMA = {
   type: "object",

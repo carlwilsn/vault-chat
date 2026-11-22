@@ -13,7 +13,7 @@ import { summarize, table, compare, compareTable, flatten, dedupe, REQUIRED } fr
 import { controlDown } from "./deviceLink";
 import { readLaptopPerf } from "./laptopPerf";
 import { lastHostBuild } from "./hostBuild";
-import { askLaptop, laptopRunArgs } from "./driveTool";
+import { askLaptop, laptopRunArgs } from "./laptopAsk";
 
 type Sample = { key: string; at: string; session: string; rev: string; ms: number };
 type Stats = Record<string, { count: number; medianMs: number; p95Ms: number; minMs: number; maxMs: number }>;

@@ -25,7 +25,7 @@ import { setPluginChange, supervisorOf } from "./supervisor";
 import { readSetting } from "./settings";
 import { migrationChange, migrationDraft, tryMigration } from "./migrations";
 import { coreCommits, coreRepo, coreStateDir, coreVault, judgeCore, newestUndecidedCore, storedCores } from "./coreBundles";
-import { askLaptop } from "./driveTool";
+import { askLaptop } from "./laptopAsk";
 import { controlDown } from "./deviceLink";
 import { checkSteps } from "../src/driveSteps";
 import { cleanDriveTries } from "../src/driveGuard";

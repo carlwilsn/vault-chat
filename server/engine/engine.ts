@@ -56,8 +56,6 @@ import { laptopBuildTool, LAPTOP_BUILD_DESCRIPTION, LAPTOP_BUILD_SCHEMA } from "
 import { supervisorOf } from "../supervisor";
 import { coreRepo, coreVault } from "../coreBundles";
 import { CORE_PART } from "../../src/coreBundle";
-import { driveTool, DRIVE_DESCRIPTION, DRIVE_SCHEMA } from "../driveTool";
-import { actTool, ACT_DESCRIPTION, ACT_SCHEMA } from "../actTool";
 import { timingTool, TIMING_DESCRIPTION, TIMING_SCHEMA } from "../timingTool";
 import { SERVER_REV as BOX_SERVER_REV } from "../config";
 import { surfaceOff } from "../surfaces";
@@ -490,18 +488,6 @@ export const ENGINE_TOOL_SPECS = [
     name: "LaptopBuild",
     description: LAPTOP_BUILD_DESCRIPTION,
     inputSchema: LAPTOP_BUILD_SCHEMA as unknown as Record<string, unknown>,
-  },
-  {
-    type: "function",
-    name: "Drive",
-    description: DRIVE_DESCRIPTION,
-    inputSchema: DRIVE_SCHEMA as unknown as Record<string, unknown>,
-  },
-  {
-    type: "function",
-    name: "Act",
-    description: ACT_DESCRIPTION,
-    inputSchema: ACT_SCHEMA as unknown as Record<string, unknown>,
   },
   {
     type: "function",
@@ -3302,14 +3288,6 @@ export class Engine {
         }
         case "Screen": {
           const r = await screenTool({ vault, emit: (ev) => this.d.broadcast?.(ev) }, a);
-          return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }, ...r.images.map((im) => ({ type: "inputImage", data: im.data, mimeType: im.mimeType }))] };
-        }
-        case "Drive": {
-          const r = await driveTool({ vault, emit: (ev) => this.d.broadcast?.(ev) }, a);
-          return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }, ...r.images.map((im) => ({ type: "inputImage", data: im.data, mimeType: im.mimeType }))] };
-        }
-        case "Act": {
-          const r = await actTool({ vault, stateDir: loadConfig().stateDir, conv: convId, emit: (ev) => this.d.broadcast?.(ev) }, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }, ...r.images.map((im) => ({ type: "inputImage", data: im.data, mimeType: im.mimeType }))] };
         }
         case "Timing": {

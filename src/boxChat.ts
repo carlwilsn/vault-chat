@@ -656,7 +656,7 @@ class BoxChatSession {
       }
       case "drive":
       case "timing": {
-        // The agent's Drive / Timing (server/driveTool.ts, server/timingTool.ts): run in the hidden Drive copy of the app,
+        // The gate's UI runner / the agent's Timing (server/gate.ts, server/timingTool.ts): run in the hidden Drive copy of the app,
         // never while Carl is using it; acked with what happened.
         const id = typeof e.id === "string" ? e.id : "";
         if (e.to !== "laptop" || !id) return;
@@ -665,18 +665,6 @@ class BoxChatSession {
           .then((m) => m.driveOnLaptop(e as unknown as import("./driveOnLaptop").DriveSignal))
           .then((ack) => httpPost(link, `/api/v1/show/${encodeURIComponent(id)}/ack`, ack as unknown as Record<string, unknown>))
           .catch((err) => console.warn("[box-chat] drive failed:", err));
-        return;
-      }
-      case "act": {
-        // The agent's Act (server/actTool.ts): steps in THIS window (Carl's real app), never while he is using it,
-        // stopped when he starts; acked with each step's outcome and a picture of the window after.
-        const id = typeof e.id === "string" ? e.id : "";
-        if (e.to !== "laptop" || !id) return;
-        const link = this.link;
-        void import("./actOnLaptop")
-          .then((m) => m.actOnLaptop(e as unknown as import("./actOnLaptop").ActSignal))
-          .then((ack) => httpPost(link, `/api/v1/show/${encodeURIComponent(id)}/ack`, ack as unknown as Record<string, unknown>))
-          .catch((err) => console.warn("[box-chat] act failed:", err));
         return;
       }
       case "build": {

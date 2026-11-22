@@ -1,4 +1,4 @@
-// The laptop's half of the agent's Drive and Timing tools (server/driveTool.ts, server/timingTool.ts). The box puts a
+// The laptop's half of the gate's UI runner and the agent's Timing tool (server/gate.ts, server/timingTool.ts). The box puts a
 // {type:"drive"|"timing", id, to:"laptop", ...} signal on the feed; src/boxChat.ts (Carl's main window) hands it here.
 //   1. Carl first: if he has used the app's windows within `idleMs` (src/userActivity.ts) it refuses, saying when,
 //      unless the agent passed `force`.
