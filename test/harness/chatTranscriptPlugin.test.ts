@@ -42,8 +42,6 @@ const { AppPluginMount } = await import("../../src/PluginMount.tsx");
 const { _appReconciler } = await import("../../src/pluginSupervisorApp.ts");
 const chat = await import("../../src/plugins/chat/index.tsx");
 const { ChatPane, TranscriptSlot, TranscriptFallback } = await import("../../src/ChatPane.tsx");
-const { buildLiveCopy } = await import("../../scripts/app-plugin-live.ts");
-const { liveLoader } = await import("../../src/appPluginLiveHost.ts");
 const S = () => useStore.getState();
 const THEME = { mode: "dark" as const, vars: {} };
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
@@ -208,16 +206,3 @@ test("a transcript that throws: the plain one stands in with the composer (no er
   await tick();
 });
 
-test("its live copy draws the transcript on the app's own modules (one store)", async () => {
-  _resetOffers();
-  const { code } = await buildLiveCopy("chat");
-  useStore.setState({ messages: msgs(5) } as any);
-  const h = mountPlugin(el(), { name: "Chat pane", code, part: "transcript" }, { path: CHAT_PLUGIN_ID, theme: () => THEME, host: appHostBackend, load: liveLoader(CHAT_PLUGIN_ID, dataLoad) });
-  await h.ready;
-  assert.equal(h.error, null);
-  const r = await readOffers("app/chat", "scroll");
-  assert.equal(r.ok, true, r.error);
-  assert.equal(r.state.scroll.total, 5, "the app's store and the app's scroll handle");
-  h.unmount();
-  await tick();
-});

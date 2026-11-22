@@ -5,12 +5,12 @@
 import { useEffect } from "react";
 import { VOICE_PLUGIN } from "./appPlugins";
 import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
-import { placeModule } from "./presetApp";
+import { placeModule } from "./places";
 import { setVoicePartsFailed } from "./voiceParts";
 import * as voicePlugin from "./plugins/voice";
 import { VoiceTextPanel } from "./plugins/voice/TextPanel";
 
-// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+// The built-in module(s) of the places below (src/places.ts).
 placeModule(VOICE_PLUGIN, () => voicePlugin);
 
 export function VoiceSlot() {

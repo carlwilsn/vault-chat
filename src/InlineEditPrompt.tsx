@@ -1,19 +1,18 @@
 // Where a viewer opens the Ctrl+K / Ctrl+L box. The box is a plugin (src/plugins/ask, app/ask; part `prompt`), mounted
 // through the plugin host and the supervisor's records (src/PluginMount.tsx AppPluginMount) with the viewer's request,
-// editable, onAccept and onCancel as its props (src/pluginProps.ts), so a live copy of app/ask runs instead of the
-// built-in one. Carl's question never just disappears:
+// editable, onAccept and onCancel as its props (src/pluginProps.ts). Carl's question never just disappears:
 //  - while the records are not known yet, or app/ask is turned off, the same box is drawn here in the app's own tree
 //    (nothing looks different; off, the agent cannot reach it);
 //  - failing to mount or render (the built-in copy too), a plain box says so, with Reload and Close.
 import { createPortal } from "react-dom";
 import { ASK_PLUGIN } from "./appPlugins";
 import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
-import { placeModule } from "./presetApp";
+import { placeModule } from "./places";
 import * as askPlugin from "./plugins/ask";
 import { AskPrompt, type AskPromptProps } from "./plugins/ask/Prompt";
 import { shortcutHint } from "./shortcuts";
 
-// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+// The built-in module(s) of the places below (src/places.ts).
 placeModule(ASK_PLUGIN, () => askPlugin.prompt, "prompt");
 
 export type { InlineEditAnchor, InlineEditRequest, PdfContext } from "./plugins/ask/view";

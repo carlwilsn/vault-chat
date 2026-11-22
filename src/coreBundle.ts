@@ -22,14 +22,6 @@
 //            baked one. An error thrown before ready does the same at once. The fallback is the loader's, never this
 //            bundle's: a bundle that cannot boot cannot rescue itself.
 //
-// app/* live copies and the bundle: an app plugin's kept live copy (.vault-chat/app-plugins/<name>.js) is a copy of
-// that plugin built against some core. The bundle carries every plugin's built-in module, so a later core fix to the
-// same plugin lands in the bundle while the live copy keeps running over it: today a kept live copy HIDES later core
-// fixes to its plugin until it is switched back to built-in (Plugins tool back, or the line's Undo). So:
-// fix app/* plugins in the core (src/plugins/<name>, shipped as a bundle) and use live copies only for quick tries and
-// vault plugins; after a core fix to a plugin that has a kept live copy, switch that copy back (or rebuild it from the
-// new built-in). Not built yet: a live copy naming the core it was made from, so a newer core wins over it by itself.
-//
 // Shared by the app, the box and the build script: no imports.
 
 export const CORE_PART = "app/core";

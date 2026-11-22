@@ -11,7 +11,7 @@ import { ArrowUp, Square } from "lucide-react";
 import { useStore } from "./store";
 import { COMPOSER_PLUGIN } from "./appPlugins";
 import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
-import { placeModule } from "./presetApp";
+import { placeModule } from "./places";
 import { PluginOff } from "./PluginOff";
 import { Button, Textarea } from "./ui";
 import { useChatGate } from "./chatGate";
@@ -21,7 +21,7 @@ import * as composerPlugin from "./plugins/composer";
 import { Composer } from "./plugins/composer/Composer";
 import { sendDraft, setInput, stopAgent, useDraft } from "./plugins/composer/draft";
 
-// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+// The built-in module(s) of the places below (src/places.ts).
 placeModule(COMPOSER_PLUGIN, () => composerPlugin);
 
 /** The composer, in the chat pane under the thread. Memoized: the pane's own redraws (a streaming reply) never reach it. */

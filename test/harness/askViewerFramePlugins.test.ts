@@ -45,7 +45,6 @@ const { mountPlugin } = await import("../../src/mountHost.ts");
 const { appHostBackend } = await import("../../src/hostBackend.ts");
 const { listOffers, readOffers, actOffers, _resetOffers } = (await import("../../src/pluginOffers.ts")) as any;
 const apps = await import("../../src/appPlugins.ts");
-const { LIVE_APP_PLUGINS, liveStateFiles } = await import("../../src/appPluginLive.ts");
 const { AppPluginMount } = await import("../../src/PluginMount.tsx");
 const { _appReconciler } = await import("../../src/pluginSupervisorApp.ts");
 const { propsChannel, sameProps } = await import("../../src/pluginProps.ts");
@@ -56,8 +55,6 @@ const viewer = await import("../../src/plugins/viewer/index.ts");
 const { MarkdownView, PaneFallback } = await import("../../src/MarkdownView.tsx");
 const chat = await import("../../src/plugins/chat/index.tsx");
 const { FullscreenChat, FrameFallback } = await import("../../src/FullscreenChat.tsx");
-const { buildLiveCopy } = await import("../../scripts/app-plugin-live.ts");
-const { liveLoader } = await import("../../src/appPluginLiveHost.ts");
 const S = () => useStore.getState();
 const THEME = { mode: "dark" as const, vars: {} };
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
@@ -111,9 +108,6 @@ test("the three are registered app plugins with live copies, each mounted throug
   for (const w of ["ctrl+k", "Ctrl+K box", "ctrl+l", "app/ask", "inline edit"]) assert.equal(apps.appPluginNamed(w)?.id, "app/ask", w);
   assert.equal(apps.appPluginNamed("viewer")?.id, "app/viewer", "the others keep their words");
   assert.equal(apps.appPluginNamed("chat pane")?.id, "app/chat");
-  for (const id of ["app/ask", "app/viewer", "app/chat"]) assert.ok(LIVE_APP_PLUGINS.includes(id), id);
-  assert.ok(liveStateFiles("app/viewer").includes("panes"), "the panes on screen are the app's");
-  assert.ok(liveStateFiles("app/ask").includes("view"), "the open boxes are the app's");
   const wrap = fs.readFileSync("src/InlineEditPrompt.tsx", "utf8");
   assert.match(wrap, /<PlaceMount\s+place="ask\.prompt"\s+props=\{props\}/);
   assert.match(wrap, /placeModule\(ASK_PLUGIN, \(\) => askPlugin\.prompt, "prompt"\)/);
@@ -233,22 +227,6 @@ test("InlineEditPrompt, as the viewers use it, mounts the box through app/ask", 
   await tick(40);
 });
 
-test("its live copy draws the box on the app's own registry (one list of open boxes)", async () => {
-  const { code, shared } = await buildLiveCopy("ask");
-  assert.ok(shared.includes("src/plugins/ask/view"), "the open boxes are the app's");
-  assert.ok(!shared.includes("src/plugins/ask/request"), "the request it sends is the copy's own");
-  const props = propsChannel<any>({ request, onAccept: () => {}, onCancel: () => {} });
-  const h = mountPlugin(el(), { name: "Ctrl+K box", code, part: "prompt" }, { path: "app/ask", theme: () => THEME, host: appHostBackend, load: liveLoader("app/ask", dataLoad), extend: () => ({ props: { get: props.get, on: props.on } }) });
-  await h.ready;
-  assert.equal(h.error, null);
-  await waitFor("the copy's box", () => askView.askBoxes().length === 1);
-  const r = await readOffers("app/ask", "open");
-  assert.equal(r.state.open[0].selection, "A line.", "the built-in offers see the copy's box");
-  h.unmount();
-  await tick(40);
-  offersHandle?.unmount();
-});
-
 test("the viewer's pane through the host; its header's Reload / Keep mine / Close pane are offers; failing, a plain pane", async () => {
   _resetOffers();
   const offers = mountPlugin(el(), { name: "Viewer", module: viewer }, { path: "app/viewer", theme: () => THEME, host: appHostBackend });
@@ -302,12 +280,3 @@ test("the fullscreen frame through the host: the sidebar, the bar, the pane; fra
   assert.match(failing, /data-tauri-drag-region/, "the window still drags");
 });
 
-test("live copies of the viewer and the chat build with the new parts", async () => {
-  const v = await buildLiveCopy("viewer");
-  assert.ok(v.shared.includes("src/plugins/viewer/panes"));
-  assert.ok(v.shared.includes("src/InlineEditPrompt"), "the Ctrl+K box is app/ask's, mounted through the app");
-  assert.match(v.code, /Keep mine/, "the pane is the copy's own");
-  const c = await buildLiveCopy("chat");
-  assert.ok(c.shared.includes("src/ChatPane"), "the frame mounts the app's pane");
-  assert.match(c.code, /Show chats \(\$\{/, "the frame is the copy's own");
-});

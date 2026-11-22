@@ -1,7 +1,6 @@
 // A viewer pane (the one viewer, or each pane of a split: src/MarkdownArea.tsx). The pane is a part of the viewer plugin
 // (src/plugins/viewer/Pane.tsx, app/viewer, part `pane`): mounted through the plugin host and the supervisor's records
-// (src/PluginMount.tsx AppPluginMount) with the pane's id as its props, so a live copy of app/viewer draws it instead
-// of the built-in one. The file Carl has open never just disappears:
+// (src/PluginMount.tsx AppPluginMount) with the pane's id as its props. The file Carl has open never just disappears:
 //  - while the records are not known yet, or app/viewer is turned off, the same pane is drawn here in the app's own tree
 //    (nothing flashes, nothing looks different; off, the agent cannot reach the viewer);
 //  - failing to mount or render (the built-in copy too), a plain pane stands in: the file's text, read only, with one
@@ -9,12 +8,12 @@
 import { memo } from "react";
 import { VIEWER_PLUGIN } from "./appPlugins";
 import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
-import { placeModule } from "./presetApp";
+import { placeModule } from "./places";
 import * as viewerPlugin from "./plugins/viewer";
 import { Pane } from "./plugins/viewer/Pane";
 import { useStore } from "./store";
 
-// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+// The built-in module(s) of the places below (src/places.ts).
 placeModule(VIEWER_PLUGIN, () => viewerPlugin.pane, "pane");
 
 type Props = { paneId?: string };

@@ -9,14 +9,14 @@ import { memo } from "react";
 import { BookOpen } from "lucide-react";
 import { CHAT_PLUGIN } from "./appPlugins";
 import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
-import { placeModule } from "./presetApp";
+import { placeModule } from "./places";
 import { PluginOff } from "./PluginOff";
 import { ChatTitle } from "./ProjectChip";
 import * as chatPlugin from "./plugins/chat";
 import { BarTitle, DockHeader } from "./plugins/chat/Header";
 import { openChatMemory } from "./plugins/chat/model";
 
-// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+// The built-in module(s) of the places below (src/places.ts).
 placeModule(CHAT_PLUGIN, () => chatPlugin);
 placeModule(CHAT_PLUGIN, () => chatPlugin.bar, "bar");
 

@@ -7,10 +7,10 @@ import { VAULT_PANE_MIME, treeDrag } from "./dnd";
 import { isUnreadableAsText } from "./fileKind";
 import { VIEWER_PLUGIN } from "./appPlugins";
 import { PlaceMount } from "./PluginMount";
-import { placeModule } from "./presetApp";
+import { placeModule } from "./places";
 import * as viewerPlugin from "./plugins/viewer";
 
-// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+// The built-in module(s) of the places below (src/places.ts).
 placeModule(VIEWER_PLUGIN, () => viewerPlugin);
 
 type DropMode = { kind: "edge"; side: DropSide } | { kind: "fill" } | null;

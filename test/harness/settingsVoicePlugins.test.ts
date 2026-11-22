@@ -38,7 +38,6 @@ const { mountPlugin } = await import("../../src/mountHost.ts");
 const { appHostBackend } = await import("../../src/hostBackend.ts");
 const { listOffers, readOffers, actOffers, _resetOffers } = (await import("../../src/pluginOffers.ts")) as any;
 const { SETTINGS_PLUGIN, VOICE_PLUGIN, appPluginNamed, APP_PLUGINS } = await import("../../src/appPlugins.ts");
-const { LIVE_APP_PLUGINS } = await import("../../src/appPluginLive.ts");
 const { AppPluginMount } = await import("../../src/PluginMount.tsx");
 const { _appReconciler } = await import("../../src/pluginSupervisorApp.ts");
 const settings = await import("../../src/plugins/settings/index.tsx");
@@ -79,7 +78,6 @@ test("Settings and voice are registered app plugins that load live, mounted only
   ] as const) {
     assert.equal(p.id, id);
     assert.ok(APP_PLUGINS.includes(p));
-    assert.ok(LIVE_APP_PLUGINS.includes(id), `${id}: its live copy runs instead of the built-in one`);
     for (const w of words) assert.equal(appPluginNamed(w)?.id, id, w);
   }
   {

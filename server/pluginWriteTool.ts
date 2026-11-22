@@ -7,14 +7,11 @@
 //                                             (src/pluginDrafts.ts), so a switch back undoes it, and the
 //                                             plugin is turned on if a record had it off.
 //   .vault-chat/plugins/<name>.draft.js       a draft: waits for the gate (Plugins submit), which lands it.
-//   .vault-chat/app-plugins/<part>.draft.js   an app plugin's draft (the gate).
-//   .vault-chat/box-plugins/<name>.draft.js   a box plugin's draft (the gate; a live box plugin is never written here).
 //   .vault-chat/migrations/<name>.draft.js    a migration draft (the gate: its dry run, then the keep).
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { isVaultPluginFile, VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES } from "../src/vaultPlugins";
-import { BOX_PLUGIN_DIR, boxPluginName, slotFileOf, vaultSlot, versionOf } from "../src/pluginDrafts";
-import { APP_PLUGIN_LIVE_DIR, LIVE_APP_PLUGINS } from "../src/appPluginLive";
+import { slotFileOf, vaultSlot, versionOf } from "../src/pluginDrafts";
 import { MIGRATION_DIR } from "../src/migrations";
 import { pluginDesired, setPluginChange, setPluginDesired } from "./supervisor";
 import { withinVault } from "./phoneData";
@@ -28,7 +25,7 @@ export const pluginWriteSpec = {
     "Write or edit one of Carl's app plugin files (an app change he asked for: \"make my cursor say X\", \"add a button that …\"). Only these paths, vault-relative: " +
     ".vault-chat/plugins/<name>.js (a vault plugin: an ES module exporting mount(el, api), optional `export const meta = { name, description }`; api.effect(cleanup) undoes what mount did; it runs in the laptop app's own window, light DOM, the app's styles). " +
     "Writing a vault plugin's .js lands it LIVE at once and turns it on (the copy it replaced stays: Plugins back, or Carl's Undo, undoes it). " +
-    "A draft instead (<name>.draft.js in .vault-chat/plugins, .vault-chat/app-plugins/<part>.draft.js, .vault-chat/box-plugins/<name>.draft.js, .vault-chat/migrations/<name>.draft.js) reaches Carl only after Plugins submit has run it through the gate (asked: true when he asked for it); passed, it applies live with \"Done\" + Undo in this chat. " +
+    "A draft instead (<name>.draft.js in .vault-chat/plugins, .vault-chat/migrations/<name>.draft.js) reaches Carl only after Plugins submit has run it through the gate (asked: true when he asked for it); passed, it applies live with \"Done\" + Undo in this chat. " +
     "content: the whole file; or oldText + newText: one exact replacement in the existing file. To turn another plugin off or on, use Plugins.",
   inputSchema: {
     type: "object",
@@ -63,22 +60,12 @@ export function pluginWriteTarget(path: unknown): Target | { error: string } {
     if (f?.kind === "draft") return { kind: "draft", rel: p, what: `the draft of ${VAULT_PLUGIN_DIR}/${f.base}${f.ext}` };
     return { error: `${file}: a vault plugin is <name>.js or <name>.mjs (or its <name>.draft.js)` };
   }
-  if (dir === APP_PLUGIN_LIVE_DIR) {
-    const m = /^([a-z][a-z0-9-]*)\.draft\.js$/.exec(file);
-    if (m && LIVE_APP_PLUGINS.includes(`app/${m[1]}`)) return { kind: "draft", rel: p, what: `the draft of app/${m[1]}` };
-    return { error: `${file}: an app plugin is changed by its draft, <part>.draft.js, one of ${LIVE_APP_PLUGINS.map((x) => x.slice(4)).join(", ")}` };
-  }
-  if (dir === BOX_PLUGIN_DIR) {
-    const m = /^(.+)\.draft\.js$/.exec(file);
-    if (m && boxPluginName(m[1]!)) return { kind: "draft", rel: p, what: `the draft of box/${m[1]}` };
-    return { error: `${file}: a box plugin is written as its draft, <name>.draft.js (lowercase letters, digits, -); Plugins submit lands it through the gate` };
-  }
   if (dir === MIGRATION_DIR) {
     const m = /^([a-z0-9][a-z0-9-]*)\.draft\.js$/i.exec(file);
     if (m) return { kind: "draft", rel: p, what: `the migration draft migrate/${m[1]}` };
     return { error: `${file}: a migration is <name>.draft.js` };
   }
-  return { error: `${p} is not a plugin file: PluginWrite writes only in ${VAULT_PLUGIN_DIR}/, ${APP_PLUGIN_LIVE_DIR}/ (drafts), ${BOX_PLUGIN_DIR}/ (drafts) and ${MIGRATION_DIR}/ (drafts)` };
+  return { error: `${p} is not a plugin file: PluginWrite writes only in ${VAULT_PLUGIN_DIR}/ and ${MIGRATION_DIR}/ (drafts)` };
 }
 
 const read = (f: string): string | undefined => {

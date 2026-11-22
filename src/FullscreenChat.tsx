@@ -1,8 +1,7 @@
 // The fullscreen chat: the main window on Ctrl+Shift+F (src/App.tsx), and the chat popout window, always
 // (src/ChatWindow.tsx). Its frame (the chats sidebar, the chat's top bar with its name, ⋯ and the window controls, the
 // chat pane) is a part of the chat pane plugin (src/plugins/chat/Frame.tsx, app/chat, part `frame`), mounted through the
-// plugin host and the supervisor's records (src/PluginMount.tsx AppPluginMount), so a live copy of app/chat draws it
-// instead of the built-in one. The chat never just disappears:
+// plugin host and the supervisor's records (src/PluginMount.tsx AppPluginMount). The chat never just disappears:
 //  - while the records are not known yet, or app/chat is turned off, the same frame is drawn here in the app's own tree;
 //  - failing to mount or render (the built-in copy too), a plain frame stands in: a bar to drag the window with the
 //    window controls, one line that says what happened with Reload, and the chat pane.
@@ -10,13 +9,13 @@
 import { memo, type ReactNode } from "react";
 import { CHAT_PLUGIN } from "./appPlugins";
 import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
-import { placeModule } from "./presetApp";
+import { placeModule } from "./places";
 import * as chatPlugin from "./plugins/chat";
 import { Frame } from "./plugins/chat/Frame";
 import { ChatPane } from "./ChatPane";
 import { WindowControls } from "./WindowControls";
 
-// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+// The built-in module(s) of the places below (src/places.ts).
 placeModule(CHAT_PLUGIN, () => chatPlugin.frame, "frame");
 
 export function FullscreenChat({ children }: { children?: ReactNode }) {

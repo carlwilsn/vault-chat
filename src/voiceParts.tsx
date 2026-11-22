@@ -1,7 +1,6 @@
 // Where the voice controls are drawn. Voice is a plugin (src/plugins/voice, app/voice): while it runs, its controls
 // (the title bar's mic and waves, the composer's Mute, fullscreen chat's waves) are registered here by its mount and
-// drawn by the title bar and the composer in their places through these components, so a live copy of app/voice
-// (src/appPluginLive.ts) changes them with no release. The call itself is core (src/voiceCall.ts), so voice never just
+// drawn by the title bar and the composer in their places through these components. The call itself is core (src/voiceCall.ts), so voice never just
 // stops working:
 //  - while the records are not known yet, or the plugin has not drawn yet, the built-in controls are drawn
 //    (./plugins/voice/Controls.tsx, the same code the built-in plugin registers: nothing flashes);

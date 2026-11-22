@@ -96,8 +96,8 @@ describe("Ctrl+L can change the app", () => {
     expect("error" in pluginWriteTarget(".vault-chat/plugins/../conversations/x.js")).toBe(true);
     expect("error" in pluginWriteTarget(".vault-chat/box-plugins/x.js")).toBe(true);
     expect("error" in pluginWriteTarget("/etc/passwd")).toBe(true);
-    expect(pluginWriteTarget(".vault-chat/box-plugins/greet.draft.js")).toMatchObject({ kind: "draft" });
-    expect(pluginWriteTarget(".vault-chat/app-plugins/composer.draft.js")).toMatchObject({ kind: "draft" });
+    expect("error" in pluginWriteTarget(".vault-chat/box-plugins/greet.draft.js")).toBe(true);
+    expect("error" in pluginWriteTarget(".vault-chat/app-plugins/composer.draft.js")).toBe(true);
     let out = { ok: true, text: "" };
     script = async (call) => ((out = await call("PluginWrite", { path: ".vault-chat/notes.jsonl", content: "x" })), out.text);
     await ask("write my notes file");

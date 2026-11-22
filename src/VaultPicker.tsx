@@ -11,13 +11,13 @@ import { Check, FolderOpen } from "lucide-react";
 import { useStore } from "./store";
 import { VAULTS_PLUGIN } from "./appPlugins";
 import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
-import { placeModule } from "./presetApp";
+import { placeModule } from "./places";
 import { PluginOff } from "./PluginOff";
 import * as vaultsPlugin from "./plugins/vaults";
 import { Picker } from "./plugins/vaults/Picker";
 import { isOpenRow, loadRows, setPickerOpen, switchTo, usePicker } from "./plugins/vaults/model";
 
-// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+// The built-in module(s) of the places below (src/places.ts).
 placeModule(VAULTS_PLUGIN, () => vaultsPlugin);
 
 /** The picker, in the title bar. */

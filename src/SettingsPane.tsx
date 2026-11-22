@@ -10,7 +10,7 @@ import { ArrowLeft } from "lucide-react";
 import { useStore } from "./store";
 import { SETTINGS_PLUGIN } from "./appPlugins";
 import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
-import { placeModule } from "./presetApp";
+import { placeModule } from "./places";
 import { PluginOff } from "./PluginOff";
 import { Button } from "./ui";
 import { openShortcutSheet } from "./ShortcutSheet";
@@ -18,7 +18,7 @@ import { chordText } from "./shortcuts";
 import * as settingsPlugin from "./plugins/settings";
 import { Pane } from "./plugins/settings/Pane";
 
-// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+// The built-in module(s) of the places below (src/places.ts).
 placeModule(SETTINGS_PLUGIN, () => settingsPlugin);
 
 /** The Settings pane. */

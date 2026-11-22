@@ -1,7 +1,6 @@
 // The chat pane. Settings in its place when open (src/SettingsPane.tsx, app/settings); otherwise the transcript, part
 // `transcript` of the chat pane plugin (src/plugins/chat/Transcript.tsx, app/chat), mounted through the plugin host and
-// the supervisor's records (src/PluginMount.tsx AppPluginMount), so a live copy of app/chat runs instead of the
-// built-in one. The transcript is how Carl reads the chat, so it never just disappears:
+// the supervisor's records (src/PluginMount.tsx AppPluginMount). The transcript is how Carl reads the chat, so it never just disappears:
 //  - while the records are not known yet, or app/chat is turned off, the same transcript is drawn here in the app's own
 //    tree (nothing flashes, nothing looks different; off, the header's plain stand-in says so, and the agent cannot
 //    reach the pane's offers);
@@ -25,10 +24,10 @@ import * as chatPlugin from "./plugins/chat";
 import { Transcript } from "./plugins/chat/Transcript";
 import { MessageBubble } from "./plugins/chat-rows/rows";
 import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
-import { placeModule } from "./presetApp";
+import { placeModule } from "./places";
 import { ComposerSlot } from "./ComposerPanel";
 
-// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+// The built-in module(s) of the places below (src/places.ts).
 placeModule(CHAT_ROWS_PLUGIN, () => chatRowsPlugin);
 placeModule(CHAT_PLUGIN, () => chatPlugin.transcript, "transcript");
 

@@ -2,8 +2,8 @@
 // selection and the text around it, a PDF page's context), and the boxes open now. Each open box (./Prompt.tsx, the
 // plugin's or the built-in copy drawn in the app's tree) registers here while it is on screen, with what it shows and
 // what its buttons do, so the offers (./index.tsx) read and act on the box Carl sees: what the agent does through
-// PluginAct is what his keys and clicks do. Shared with the app (a live copy of app/ask takes this module from the
-// running app), so the copies and the fallback see the same boxes.
+// PluginAct is what his keys and clicks do. Shared with the app, so the plugin
+// and the fallback see the same boxes.
 import type { EditProposal } from "../../complete";
 
 export type InlineEditAnchor = {

@@ -25,15 +25,14 @@
 // this runner (draftCheck) for plugins and the preset, lands the verdict by one rule and prints `VC-GATE {GateResult}`.
 // A real-data capture that fails (the data changed while it copied) is tried again for up to VC_DRAFT_CHECK_CAPTURE_MS
 // (default 20 min), a minute apart: the draft is never dropped for it.
-//   --keep / --discard / --back   the record by hand (the agent's own word), as app-plugin-live.ts writes it.
+//   --keep / --discard / --back   the record by hand (the agent's own word).
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
-import { appPluginFolder } from "../src/appPluginLive.ts";
-import { TRY_SLOW_MS, appSlot, slowMedian, vaultSlot, versionOf, type DraftSlot } from "../src/pluginDrafts.ts";
+import { TRY_SLOW_MS, slowMedian, vaultSlot, versionOf, type DraftSlot } from "../src/pluginDrafts.ts";
 // @ts-expect-error a plain .mjs module (no types)
 import { launch, evalIn, stats } from "./typing-bench.mjs";
 import { postBoxChange } from "./boxChange.ts";
@@ -48,11 +47,9 @@ export type Step = { click?: string | { text: string }; press?: string; type?: s
 export type Side = { errors: string[]; text: string[]; ran: boolean; typingMs: number[] };
 export type Verdict = { verdict: "pass" | "borderline" | "fail"; data?: string; reasons: string[]; plugin: string; version: string; live: Side; draft: Side; typing: { liveMedianMs: number | null; draftMedianMs: number | null }; textAdded: string[]; textRemoved: string[] };
 
-/** The slot a word names: an app plugin's folder or id, or a vault plugin's name or path. */
+/** The slot a word names: a vault plugin's name or path. */
 export function slotFor(word: string): DraftSlot {
   const w = word.replace(/\\/g, "/").replace(/^\.\//, "");
-  const folder = appPluginFolder(w.startsWith("app/") ? w : `app/${w}`);
-  if (folder) return appSlot(folder);
   const m = /^(?:\.vault-chat\/plugins\/)?([^/]+?)(?:\.draft)?(\.m?js)?$/i.exec(w);
   if (!m) throw new Error(`${word}: not an app plugin or a vault plugin`);
   return vaultSlot(m[1]!, m[2] ?? ".js");

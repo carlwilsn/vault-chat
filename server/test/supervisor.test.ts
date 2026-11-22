@@ -236,9 +236,9 @@ describe("the supervisor", () => {
   it("change by asking: Keep / Discard / Switch back on a draft are records, and the box moves the slot's files to match", async () => {
     const { existsSync, readFileSync } = await import("node:fs");
     const { versionOf } = await import("../../src/pluginDrafts");
-    const dir = join(A.path, ".vault-chat", "app-plugins");
+    const dir = join(A.path, ".vault-chat", "plugins");
     mkdirSync(dir, { recursive: true });
-    const head = (what: string) => `// @vc-app-plugin ${JSON.stringify({ plugin: "app/context", shared: [], what })}\nexport function mount(){}`;
+    const head = (what: string) => `// @vc-change ${what}\nexport function mount(){}`;
     writeFileSync(join(dir, "context.js"), head("live"));
     writeFileSync(join(dir, "context.draft.js"), head("bigger buttons"));
     const lv = versionOf(head("live"));
@@ -246,37 +246,37 @@ describe("the supervisor", () => {
     const rec = async () => JSON.parse((await get("/api/v2/supervisor")).text).records.at(-1).signal;
 
     // A stale Keep (the draft changed since Carl saw it) moves nothing and writes nothing.
-    const stale = await post("/api/v2/supervisor", { plugin: "app/context", change: "keep", version: "00000000" });
+    const stale = await post("/api/v2/supervisor", { plugin: ".vault-chat/plugins/context.js", change: "keep", version: "00000000" });
     expect(stale.status).toBe(409);
     expect(existsSync(join(dir, "context.draft.js"))).toBe(true);
 
-    const kept = await post("/api/v2/supervisor", { plugin: "app/context", change: "keep", version: dv });
+    const kept = await post("/api/v2/supervisor", { plugin: ".vault-chat/plugins/context.js", change: "keep", version: dv });
     expect(kept.status).toBe(200);
     expect(kept.json.text).toContain("kept");
-    expect(await rec()).toMatchObject({ type: "plugin.change", plugin: "app/context", change: "keep", version: dv, from: lv, by: "carl" });
+    expect(await rec()).toMatchObject({ type: "plugin.change", plugin: ".vault-chat/plugins/context.js", change: "keep", version: dv, from: lv, by: "carl" });
     expect(readFileSync(join(dir, "context.js"), "utf8")).toBe(head("bigger buttons"));
     expect(readFileSync(join(dir, "context.prev.js"), "utf8")).toBe(head("live"));
     expect(existsSync(join(dir, "context.draft.js"))).toBe(false);
-    expect(sup.supervisorOf(A.path).changes("app/context").map((c) => c.change)).toEqual(["keep"]);
+    expect(sup.supervisorOf(A.path).changes(".vault-chat/plugins/context.js").map((c) => c.change)).toEqual(["keep"]);
 
     // Undo is the switch back (another record), and the switch back again redoes it.
-    const back = await post("/api/v2/supervisor", { plugin: "app/context", change: "switch" });
+    const back = await post("/api/v2/supervisor", { plugin: ".vault-chat/plugins/context.js", change: "switch" });
     expect(back.status).toBe(200);
     expect(await rec()).toMatchObject({ change: "switch", version: lv, from: dv });
     expect(readFileSync(join(dir, "context.js"), "utf8")).toBe(head("live"));
     expect(readFileSync(join(dir, "context.prev.js"), "utf8")).toBe(head("bigger buttons"));
-    await post("/api/v2/supervisor", { plugin: "app/context", change: "switch" });
+    await post("/api/v2/supervisor", { plugin: ".vault-chat/plugins/context.js", change: "switch" });
     expect(readFileSync(join(dir, "context.js"), "utf8")).toBe(head("bigger buttons"));
 
     // Discard (here an auto-discard from a tried draft that broke): the record names why; only that version goes.
     writeFileSync(join(dir, "context.draft.js"), head("broken"));
     const d2 = versionOf(head("broken"));
-    const gone = await post("/api/v2/supervisor", { plugin: "app/context", change: "discard", version: d2, by: "auto", reason: "it stopped: boom" });
+    const gone = await post("/api/v2/supervisor", { plugin: ".vault-chat/plugins/context.js", change: "discard", version: d2, by: "auto", reason: "it stopped: boom" });
     expect(gone.status).toBe(200);
     expect(await rec()).toMatchObject({ change: "discard", version: d2, by: "auto", reason: "it stopped: boom" });
     expect(existsSync(join(dir, "context.draft.js"))).toBe(false);
 
-    // A vault plugin's draft is the same: a new plugin kept from nothing, then switched back to nothing.
+    // A new vault plugin: kept from nothing, then switched back to nothing.
     const vp = join(A.path, ".vault-chat", "plugins");
     mkdirSync(vp, { recursive: true });
     writeFileSync(join(vp, "pen.draft.js"), "// @vc-change a pen cursor\nexport function mount(){}");
@@ -290,48 +290,6 @@ describe("the supervisor", () => {
     // Bad words are refused.
     expect((await post("/api/v2/supervisor", { plugin: "pages/x.html", change: "keep", version: pv })).status).toBe(400);
     expect((await post("/api/v2/supervisor", { plugin: "app/context", change: "keep", version: "nope" })).status).toBe(400);
-  });
-  it("the app's preset (app/preset): Keep of its draft writes an app.preset record, a bad draft is refused, Switch back returns to the built-in daily one", async () => {
-    const { existsSync } = await import("node:fs");
-    const { versionOf } = await import("../../src/pluginDrafts");
-    const { DAILY_PRESET } = await import("../../src/appPreset");
-    const dir = join(A.path, ".vault-chat", "app-plugins");
-    mkdirSync(dir, { recursive: true });
-    const file = join(dir, "preset.draft.json");
-    const signals = async () => JSON.parse((await get("/api/v2/supervisor")).text).records.map((r: { signal: Record<string, unknown> }) => r.signal);
-    expect(sup.presetInEffect(A.path)).toMatchObject({ builtIn: true, version: "built-in", preset: DAILY_PRESET });
-
-    // Not a preset: refused, nothing written, the draft stays (the gate fails it).
-    const bad = JSON.stringify({ name: "bad", mounts: [{ place: "nowhere", plugin: "app/notes" }] });
-    writeFileSync(file, bad);
-    const before = (await signals()).length;
-    const refused = await post("/api/v2/supervisor", { plugin: "app/preset", change: "keep", version: versionOf(bad) });
-    expect(refused.status).toBe(400);
-    expect(refused.json.error).toMatch(/not a preset.*place/);
-    expect((await signals()).length).toBe(before);
-
-    // A preset without the Notes panel: Keep writes the preset record and the change record; the draft goes.
-    const lean = { name: "lean", what: "no Notes panel", mounts: DAILY_PRESET.mounts.filter((m) => m.plugin !== "app/notes"), settings: { "app/titlebar": { compact: true } } };
-    const text = JSON.stringify(lean);
-    writeFileSync(file, text);
-    const v = versionOf(text);
-    expect((await post("/api/v2/supervisor", { plugin: "app/preset", change: "keep", version: "00000000" })).status).toBe(409);
-    const kept = await post("/api/v2/supervisor", { plugin: "app/preset", change: "keep", version: v });
-    expect(kept.status).toBe(200);
-    const [presetRec, changeRec] = (await signals()).slice(-2);
-    expect(presetRec).toMatchObject({ type: "app.preset", version: v, by: "carl", preset: { name: "lean", settings: { "app/titlebar": { compact: true } } } });
-    expect(presetRec.preset).not.toHaveProperty("what");
-    expect(changeRec).toMatchObject({ type: "plugin.change", plugin: "app/preset", change: "keep", version: v, from: "built-in" });
-    expect(existsSync(file)).toBe(false);
-    expect(sup.presetInEffect(A.path)).toMatchObject({ builtIn: false, version: v, by: "carl" });
-    expect(sup.presetInEffect(A.path).preset.mounts.some((m) => m.plugin === "app/notes")).toBe(false);
-
-    // Switch back: the built-in daily preset again (a null preset record); again: the kept one.
-    expect((await post("/api/v2/supervisor", { plugin: "app/preset", change: "switch" })).status).toBe(200);
-    expect((await signals()).slice(-2)[0]).toMatchObject({ type: "app.preset", preset: null, version: "built-in" });
-    expect(sup.presetInEffect(A.path)).toMatchObject({ builtIn: true, preset: DAILY_PRESET });
-    expect((await post("/api/v2/supervisor", { plugin: "app/preset", change: "switch" })).status).toBe(200);
-    expect(sup.presetInEffect(A.path)).toMatchObject({ builtIn: false, preset: { name: "lean" } });
   });
 
 });

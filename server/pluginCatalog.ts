@@ -4,7 +4,6 @@
 import { closeSync, openSync, readSync, readdirSync, statSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES, isVaultPluginFile, parseVaultPluginMeta, vaultPluginDevices, vaultPluginId, type PluginDevice } from "../src/vaultPlugins";
-import { APP_PLUGIN_LIVE_DIR, liveCopyId, liveCopyOf } from "../src/appPluginLive";
 import { CATALOG_LIMITS, catalogAppPlugins, catalogEnters, catalogPlugin, catalogReads, catalogServices, type Catalog, type CatalogPlugin } from "../src/pluginCatalog";
 
 function readText(full: string, size: number): string | null {
@@ -93,27 +92,9 @@ function vaultCodeFiles(vault: string): { file: string; name: string; descriptio
   return out;
 }
 
-/** The app plugins' copies in the vault (src/appPluginLive.ts), by plugin id: the ids of the files there, the draft first. */
-export function appPluginCopies(vault: string): Record<string, string[]> {
-  let names: string[];
-  try {
-    names = readdirSync(join(vault, APP_PLUGIN_LIVE_DIR));
-  } catch {
-    return {};
-  }
-  const out: Record<string, string[]> = {};
-  for (const n of names) {
-    const c = liveCopyOf(n);
-    if (!c) continue;
-    (out[c.plugin] ??= []).push(liveCopyId(c.folder, c.kind));
-  }
-  for (const l of Object.values(out)) l.sort((a, b) => (a.endsWith(".draft.js") ? -1 : b.endsWith(".draft.js") ? 1 : 0));
-  return out;
-}
-
 /** The whole catalog: the services, then the vault's plugins, then the app's own (src/appPlugins.ts). */
 export function pluginCatalog(vault: string): Catalog {
   const { plugins, truncated } = vaultPlugins(vault);
   plugins.unshift(...vaultCodePlugins(vault).map((c): CatalogPlugin => ({ id: vaultPluginId(c.file), name: c.name, mount: "module", description: c.description || undefined, devices: c.devices, needs: [], refused: [] })));
-  return { services: catalogServices(), plugins, app: catalogAppPlugins(appPluginCopies(vault)), ...(truncated ? { truncated: true } : {}) };
+  return { services: catalogServices(), plugins, app: catalogAppPlugins(), ...(truncated ? { truncated: true } : {}) };
 }

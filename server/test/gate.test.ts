@@ -12,7 +12,6 @@ import { startHttpServer, type VaultScope } from "../http";
 import { configureSettings, readSettings } from "../settings";
 import { versionOf } from "../../src/pluginDrafts";
 import { gateDecision, gateLineOf, partKind, type PartKind } from "../../src/gateResult";
-import { DAILY_PRESET } from "../../src/appPreset";
 import { SETTING_DRAFT, draftVersion } from "../../src/settingsRecords";
 
 vi.mock("../../src-tauri/assets/phone.html", () => ({ default: "" }));

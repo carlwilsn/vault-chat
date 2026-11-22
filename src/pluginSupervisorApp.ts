@@ -13,7 +13,6 @@ import { useStore } from "./store";
 import { PLUGIN_STOPPED_EVENT } from "./liveBridge";
 import { pluginIdOf, Reconciler, Supervisor, type Desired, type SupervisorRecord } from "./pluginSupervisor";
 import type { ChangeRecord } from "./pluginDrafts";
-import { DAILY_IN_EFFECT, type PresetInEffect } from "./appPreset";
 
 let vault: string | null = null;
 let sup = new Supervisor();
@@ -233,12 +232,4 @@ export async function postPluginChange(body: { plugin: string; change: "keep" | 
   } catch (e) {
     return { ok: false, text: String((e as Error)?.message ?? e) };
   }
-}
-
-// ---------------------------------------------------------------- the app's preset (src/appPreset.ts)
-
-/** The preset the records put in effect (the cached copy at start, then the box's), else the built-in daily one.
- *  What Carl tries on top of it is src/presetApp.ts's. */
-export function recordPresetNow(): PresetInEffect {
-  return known && vault === useStore.getState().vaultPath ? sup.preset() : DAILY_IN_EFFECT;
 }

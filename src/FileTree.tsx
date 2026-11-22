@@ -10,14 +10,14 @@ import { ChevronDown, ChevronRight, FileText } from "lucide-react";
 import { useStore } from "./store";
 import { FILETREE_PLUGIN } from "./appPlugins";
 import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
-import { placeModule } from "./presetApp";
+import { placeModule } from "./places";
 import { PluginOff } from "./PluginOff";
 import { cn } from "./lib/utils";
 import * as fileTreePlugin from "./plugins/filetree";
 import { Tree } from "./plugins/filetree/Tree";
 import { clickRow, useTree, visibleItems } from "./plugins/filetree/model";
 
-// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+// The built-in module(s) of the places below (src/places.ts).
 placeModule(FILETREE_PLUGIN, () => fileTreePlugin);
 
 /** The left file tree: always the open folder (Carl, 2026-10-29: no second tab for a project's folder). */

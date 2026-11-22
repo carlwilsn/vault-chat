@@ -1,6 +1,6 @@
 // The ElevenLabs voice plugin (src/plugins/elevenlabs-voice, app/elevenlabs-voice): the voice picker that was Settings'
 // Voice section. Settings has no voice section (the core voice is local: Kokoro, af_heart). The plugin is an app plugin
-// in the daily preset's overlays; it puts "ElevenLabs voice" in the chat's ⋯ menu, which opens its panel (the picker,
+// in the overlay place; it puts "ElevenLabs voice" in the chat's ⋯ menu, which opens its panel (the picker,
 // the library, Test, voice health); its offers read and set the same `voice` setting record the Settings tool's "voice"
 // key sets (Carl's pick is unchanged). Turned off, its panel and menu entry go, and the box speaks locally
 // (server/voiceProvider.ts reads the same plugin id).
@@ -34,8 +34,7 @@ const { mountPlugin } = await import("../../src/mountHost.ts");
 const { appHostBackend } = await import("../../src/hostBackend.ts");
 const { listOffers, readOffers, actOffers, _resetOffers } = (await import("../../src/pluginOffers.ts")) as any;
 const { ELEVENLABS_VOICE_PLUGIN, ELEVENLABS_VOICE_PLUGIN_ID, APP_PLUGINS, appPluginNamed } = await import("../../src/appPlugins.ts");
-const { LIVE_APP_PLUGINS } = await import("../../src/appPluginLive.ts");
-const { DAILY_PRESET } = await import("../../src/appPreset.ts");
+const { PLACES } = await import("../../src/places.ts");
 const { chatMenuItems } = await import("../../src/chatMenuItems.ts");
 const { ELEVENLABS_VOICE_PLUGIN: SERVER_ID } = await import("../../server/voiceProvider.ts");
 const { SETTINGS: SETTING_DEFS } = (await import("../../src/settingsRecords.ts")) as any;
@@ -51,13 +50,12 @@ async function waitFor(what: string, fn: () => boolean, ms = 4000): Promise<void
   }
 }
 
-test("ElevenLabs voice is a registered app plugin, in the daily preset's overlays, the id the box decides by", () => {
+test("ElevenLabs voice is a registered app plugin, in the overlay place, the id the box decides by", () => {
   assert.equal(ELEVENLABS_VOICE_PLUGIN_ID, "app/elevenlabs-voice");
   assert.equal(SERVER_ID, ELEVENLABS_VOICE_PLUGIN_ID, "server/voiceProvider.ts reads the same plugin's record");
   assert.ok(APP_PLUGINS.includes(ELEVENLABS_VOICE_PLUGIN));
-  assert.ok(LIVE_APP_PLUGINS.includes(ELEVENLABS_VOICE_PLUGIN_ID));
   for (const w of ["elevenlabs", "ElevenLabs voice", "app/elevenlabs-voice", "voice library"]) assert.equal(appPluginNamed(w), ELEVENLABS_VOICE_PLUGIN, w);
-  assert.ok(DAILY_PRESET.mounts.some((m) => m.place === "overlay" && m.plugin === ELEVENLABS_VOICE_PLUGIN_ID));
+  assert.ok(PLACES.overlay!.some((m) => m.plugin === ELEVENLABS_VOICE_PLUGIN_ID));
   if (SETTING_DEFS?.voice) assert.match(SETTING_DEFS.voice.description, /ElevenLabs voice plugin/);
   // The Settings pane has no voice UI left.
   const pane = fs.readFileSync("src/plugins/settings/Pane.tsx", "utf8");

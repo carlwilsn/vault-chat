@@ -11,11 +11,11 @@ import { openThread } from "./projects";
 import { panelModel } from "./threads";
 import { CHATS_PLUGIN } from "./appPlugins";
 import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
-import { placeModule } from "./presetApp";
+import { placeModule } from "./places";
 import { PluginOff } from "./PluginOff";
 import * as chatsPlugin from "./plugins/chats";
 
-// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+// The built-in module(s) of the places below (src/places.ts).
 placeModule(CHATS_PLUGIN, () => chatsPlugin);
 placeModule(CHATS_PLUGIN, () => chatsPlugin.sidebar, "sidebar");
 

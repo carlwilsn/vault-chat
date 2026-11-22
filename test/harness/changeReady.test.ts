@@ -14,7 +14,6 @@ import { parseHTML } from "linkedom";
 import { installFakeTauri, makeTempVault } from "./fakes.ts";
 import { fsCommands } from "../../server/commands/fs.ts";
 import { BUILT_IN, KEEP_WATCH_MS, chooseCopy, decision, draftPending, draftWhat, slotFileOf, slowMedian, versionOf, watchedKeep, TRY_SLOW_MS, type ChangeRecord } from "../../src/pluginDrafts.ts";
-import { liveHeaderLine } from "../../src/appPluginLive.ts";
 import { isVaultPluginFile } from "../../src/vaultPlugins.ts";
 
 const vault = makeTempVault("vc-change-");
@@ -71,7 +70,6 @@ const gateKeep = async (plugin: string, version: string) => {
 };
 const { AppPluginMount } = await import("../../src/PluginMount.tsx");
 const { loadSupervisor, _appReconciler } = await import("../../src/pluginSupervisorApp.ts");
-const { refreshLiveCopies, _resetLiveCopies, _setLiveLoad } = await import("../../src/appPluginLiveHost.ts");
 const CR = await import("../../src/changeReady.ts");
 const { scanVaultPlugins } = await import("../../src/VaultPluginHost.tsx");
 const { pluginReach } = await import("../../src/pluginOffers.ts");
@@ -109,7 +107,7 @@ test("which copy runs: a draft only while tried or once kept; the newest keep / 
   assert.equal(decision([rec(1, "discard", d), rec(2, "keep", d)], d), "keep");
   assert.equal(draftPending({ live: "L" }, []), null);
   // What a draft says it is.
-  assert.equal(draftWhat(`${liveHeaderLine({ plugin: "app/composer", shared: [], what: "a bigger Send button" })}\nx`), "a bigger Send button");
+  assert.equal(draftWhat(`// @vc-app-plugin {"plugin":"app/composer","shared":[],"what":"a bigger Send button"}\nx`), "a bigger Send button");
   assert.equal(draftWhat("// @vc-change pen cursor follows the stylus\nexport function mount(){}"), "pen cursor follows the stylus");
   assert.equal(draftWhat('export const meta = { name: "Pen", change: "thinner pen" };'), "thinner pen");
   assert.equal(draftWhat("export function mount(){}"), "");
@@ -126,29 +124,6 @@ test("which copy runs: a draft only while tried or once kept; the newest keep / 
   assert.ok(slowMedian(Array(12).fill(TRY_SLOW_MS + 5))! > TRY_SLOW_MS);
 });
 
-const DIR = path.join(vault, ".vault-chat/app-plugins");
-const write = (file: string, body: string | null, what?: string) => {
-  const f = path.join(DIR, file);
-  if (body === null) return fs.rmSync(f, { force: true });
-  fs.mkdirSync(DIR, { recursive: true });
-  const code = `${liveHeaderLine({ plugin: "app/context", shared: [], ...(what ? { what } : {}) })}\n${body}`;
-  fs.writeFileSync(f, code);
-  return versionOf(code);
-};
-const fakeLoad = async (code: string) => {
-  const body = code.split("\n").slice(1).join("\n");
-  return { module: { mount(el: HTMLElement) { if (body === "throw") throw new Error("draft broke"); el.textContent = body; } }, url: "", dispose() {} };
-};
-_setLiveLoad(fakeLoad);
-const builtIn = { mount(el: HTMLElement) { el.textContent = "built-in"; } };
-const text = (c: any) => String(c.textContent ?? "");
-const click = async (c: any, el: string) => {
-  const b = c.querySelector(`[data-el="${el}"]`);
-  assert.ok(b, `${el} is there`);
-  await act(async () => {
-    b.dispatchEvent(new (lw as any).Event("click", { bubbles: true }));
-  });
-};
 
 test("vault plugins: a draft next to a plugin (or alone) is a slot, never a plugin of its own", async () => {
   const dir = path.join(vault, ".vault-chat/plugins");
@@ -163,8 +138,6 @@ test("vault plugins: a draft next to a plugin (or alone) is a slot, never a plug
 });
 
 test("the draft check's verdict: pass, borderline (text or timing), fail (did not run, new errors, over the typing limit)", () => {
-  assert.deepEqual(slotFor("composer").draft, "composer.draft.js");
-  assert.equal(slotFor("app/filetree").plugin, "app/filetree");
   assert.equal(slotFor("pen-cursor").plugin, ".vault-chat/plugins/pen-cursor.js");
   assert.equal(slotFor(".vault-chat/plugins/pen.draft.js").draft, "pen.draft.js");
   const side = (o: Partial<{ errors: string[]; text: string[]; ran: boolean; typingMs: number[] }> = {}) => ({ errors: [], text: ["Chats", "Send"], ran: true, typingMs: Array(12).fill(10), ...o });
@@ -198,116 +171,3 @@ test("after Keep: the keep is watched for a while, then left alone; the gate lan
   assert.equal(gateDecision(v("fail"), true).change, "discard");
 });
 
-test("a kept copy that breaks or slows typing within the watch switches back by itself (one record by auto, with why), and the notice says so in every window", async () => {
-  _resetLiveCopies();
-  _setLiveLoad(fakeLoad);
-  CR._resetChangeReady();
-  G.requestAnimationFrame = (fn: () => void) => setTimeout(fn, 0);
-  await loadSupervisor(true);
-  _appReconciler(true);
-  for (const f of ["context.draft.js", "context.prev.js"]) write(f, null);
-  const live = write("context.js", "live");
-  const plugin = document.createElement("div") as unknown as HTMLElement;
-  const r2 = createRoot(plugin);
-  CR.startChangeReady();
-  await act(async () => {
-    r2.render(createElement(AppPluginMount, { plugin: { id: "app/context", name: "Context" }, module: builtIn }));
-  });
-  await refreshLiveCopies();
-  await waitFor("the live copy", () => text(plugin) === "live");
-
-  // Kept by the gate, and it throws: it switches back by itself.
-  const v = write("context.draft.js", "throw", "a broken fix");
-  await act(async () => void (await refreshLiveCopies()));
-  await act(async () => void (await gateKeep("app/context", v)));
-  await waitFor("switched back by itself", () => posts.at(-1)?.change === "switch", 6000);
-  assert.deepEqual(posts.at(-1), { plugin: "app/context", change: "switch", version: v, by: "auto", reason: posts.at(-1).reason });
-  assert.match(posts.at(-1).reason, /it stopped: .*draft broke/);
-  await waitFor("the old copy is live again", () => fs.readFileSync(path.join(DIR, "context.js"), "utf8").endsWith("\nlive"));
-  await act(async () => void (await refreshLiveCopies()));
-  await waitFor("it runs, the outcome says why", () => text(plugin) === "live" && /Switched back by itself: it stopped: .*draft broke/.test(String(CR.lastOutcome()?.text)));
-  const n = posts.length;
-  assert.equal(CR.autoRevert("app/context", null, "again"), false, "switched: nothing left to switch back on its own");
-  assert.equal(posts.length, n);
-  // Another window (or after a restart) learns it from the record; dismissed once, it stays dismissed.
-  CR._resetChangeReady();
-  CR.noticeAutoSwitch();
-  assert.match(CR.lastOutcome()?.text ?? "", /^Switched back by itself: it stopped: .*draft broke/);
-  CR.clearOutcome();
-  CR.noticeAutoSwitch();
-  assert.equal(CR.lastOutcome(), null);
-
-  // Kept and fine, then typing gets slow within the watch: it switches back by itself too.
-  const v2 = write("context.draft.js", "slow", "a slow fix");
-  await act(async () => void (await refreshLiveCopies()));
-  await act(async () => void (await gateKeep("app/context", v2)));
-  await act(async () => void (await refreshLiveCopies()));
-  await waitFor("the kept copy runs", () => text(plugin) === "slow");
-  assert.deepEqual(CR.keepsUnderWatch().map((k) => [k.plugin, k.version]), [["app/context", v2]]);
-  CR.watchTyping();
-  G.requestAnimationFrame = (fn: () => void) => setTimeout(fn, TRY_SLOW_MS);
-  G.document.hidden = false;
-  const composer = document.createElement("textarea");
-  composer.setAttribute("data-perf-target", "composer");
-  for (let i = 0; i < 9; i++) fire("input", { target: composer });
-  await waitFor("slow typing switches it back", () => posts.at(-1)?.change === "switch" && posts.at(-1)?.version === v2, 6000);
-  assert.match(posts.at(-1).reason, /typing got slow after it was kept/);
-  await waitFor("the old copy is live again", () => fs.readFileSync(path.join(DIR, "context.js"), "utf8").endsWith("\nlive"));
-  void live;
-  // Nothing under watch and nothing tried: nobody listens to typing.
-  G.requestAnimationFrame = (fn: () => void) => setTimeout(fn, 0);
-  CR.watchTyping();
-  assert.deepEqual(CR.keepsUnderWatch(), []);
-  assert.equal(winListeners.input?.size ?? 0, 0, "no input listener");
-  await act(async () => {
-    r2.unmount();
-  });
-  write("context.draft.js", null);
-  _setLiveLoad(null);
-});
-
-test("the scripts write the same records through the box (app-plugin-live --keep / --back, draft-check's gate), never moving files themselves", async () => {
-  const http = await import("node:http");
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  const seen: any[] = [];
-  const srv = http.createServer(async (req, res) => {
-    let b = "";
-    for await (const c of req) b += c;
-    const u = new URL(req.url!, "http://x");
-    seen.push({ vault: u.searchParams.get("vault"), body: JSON.parse(b || "null") });
-    const out = await supervisorRoute(vault, req.method!, u.searchParams, JSON.parse(b || "null"));
-    res.writeHead(out.status, { "content-type": "application/json" });
-    res.end(JSON.stringify(out.body));
-  });
-  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
-  const box = `http://127.0.0.1:${(srv.address() as any).port}`;
-  try {
-    write("context.js", "live");
-    const v = write("context.draft.js", "cli");
-    // Async: the box answering is this process.
-    const cli = async (...a: string[]) => (await promisify(execFile)(process.execPath, ["--import", "tsx", "scripts/app-plugin-live.ts", "context", "--vault", vault, ...a, "--box", box], { encoding: "utf8" })).stdout;
-    assert.match(await cli("--keep", "--reason", "the agent's own"), /kept: .* \(record \d+\)/);
-    assert.deepEqual(seen.at(-1), { vault: path.basename(vault), body: { by: "agent", plugin: "app/context", change: "keep", version: v, reason: "the agent's own" } });
-    assert.ok(fs.readFileSync(path.join(DIR, "context.js"), "utf8").endsWith("\ncli"), "the box moved the files");
-    assert.match(await cli("--back"), /switched app\/context back/);
-    assert.deepEqual(seen.at(-1).body, { by: "agent", plugin: "app/context", change: "switch" });
-    // No box: nothing moves.
-    const v2 = write("context.draft.js", "nobox");
-    await assert.rejects(postBoxChange(vault, { plugin: "app/context", change: "keep", version: v2 }, "http://127.0.0.1:9"), /did not answer.*nothing was moved/);
-    assert.ok(fs.existsSync(path.join(DIR, "context.draft.js")));
-    // The gate: anything but a fail lands (by gate), asked for or not; a fail drops it.
-    const verdict = (verdict: "pass" | "borderline" | "fail") => ({ ...judge("app/context", v2, { errors: [], text: [], ran: true, typingMs: [] }, { errors: [], text: [], ran: true, typingMs: [] }), verdict });
-    assert.match((await landVerdict(vault, verdict("borderline"), false, box, { what: "a new look", conv: "c1" })).text, /^applied: kept/);
-    assert.deepEqual([seen.at(-1).body.change, seen.at(-1).body.by, seen.at(-1).body.version, seen.at(-1).body.what, seen.at(-1).body.conv], ["keep", "gate", v2, "a new look", "c1"]);
-    assert.ok(!fs.existsSync(path.join(DIR, "context.draft.js")), "kept: the draft became the live copy");
-    const v3 = write("context.draft.js", "bad");
-    assert.match((await landVerdict(vault, { ...verdict("fail"), version: v3, reasons: ["errors only with the draft: x"] }, false, box)).text, /^dropped/);
-    assert.match(seen.at(-1).body.reason, /gate failed: errors only with the draft: x/);
-    assert.ok(!fs.existsSync(path.join(DIR, "context.draft.js")));
-    // Real data by default: without the installed capture helper it says so (and how to opt out), never touching data.
-    await assert.rejects(captureRealData(vault, fs.mkdtempSync(path.join(fs.realpathSync(path.dirname(vault)), "vc-cap-")), { error: "no helper" }), /no helper: no real data.*--synthetic/);
-  } finally {
-    srv.close();
-  }
-});

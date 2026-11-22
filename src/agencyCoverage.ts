@@ -100,8 +100,8 @@ export const COVERAGE: Record<string, Coverage> = {
   "phone/src/main.tsx": { none: "the entry point" },
 };
 
-/** State ids that are not app plugins: the change lines, the preset, vault pages' records, the box's own offers. */
-export const OTHER_STATE = ["app/changes", "app/preset", "page", "box:settings", "box:notes", "box:jobs", "box:links", "box:logs", "box:history", "box:queue"];
+/** State ids that are not app plugins: the change lines, vault pages' records, the box's own offers. */
+export const OTHER_STATE = ["app/changes", "page", "box:settings", "box:notes", "box:jobs", "box:links", "box:logs", "box:history", "box:queue"];
 
 /** The share of rows whose thing on screen is state (a row with a gap counts half), of the rows that draw something. */
 export function coveragePercent(rows: Record<string, Coverage> = COVERAGE, prefix = ""): number {

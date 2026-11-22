@@ -609,7 +609,7 @@ test("catalog is a registered service: declared, described, granted under its na
 });
 
 test("the catalog lists every registered service, and reads a page's manifest as a plugin (name, mount, needs)", async () => {
-  const { catalogServices, catalogPlugin, catalogText } = await import("../../src/pluginCatalog.ts");
+  const { catalogServices, catalogPlugin } = await import("../../src/pluginCatalog.ts");
   const { LIVE_SERVICES } = await import("../../src/liveServices.ts");
   const services = catalogServices();
   assert.deepEqual(services.map((s) => s.name), LIVE_SERVICES.map((s) => s.name));
@@ -630,14 +630,8 @@ test("the catalog lists every registered service, and reads a page's manifest as
   // Not plugins: no manifest, or another meta.
   assert.equal(catalogPlugin("a.html", "<title>a</title><p>plain</p>"), null);
   assert.equal(catalogPlugin("a.html", '<meta name="viewport" content="ask">'), null);
-  const text = catalogText({ services, plugins: [catalogPlugin("apps/lab.html", '<title>Lab</title><meta name="vc-capabilities" content="ask, fs">')!] });
-  assert.match(text, /^Services a page can name/);
-  assert.match(text, /- ask \(the box; Carl allows it once per page; vc\.ask\): /);
-  assert.match(text, /- theme \(the app\/phone; every page has it, no grant; vc\.onTheme\)/);
-  assert.match(text, /- persist \(the box; declared, opens nothing\)/);
-  assert.match(text, /Plugins in this vault \(1\)/);
-  assert.match(text, /- apps\/lab\.html "Lab": iframe; needs ask; unknown: fs/);
-  assert.match(catalogText({ services, plugins: [], truncated: true }), /\(0, list cut short\)[^\n]*\n- none$/);
+  const lab = catalogPlugin("apps/lab.html", '<title>Lab</title><meta name="vc-capabilities" content="ask, fs">')!;
+  assert.deepEqual([lab.name, lab.mount, lab.needs, lab.refused], ["Lab", "iframe", ["ask"], ["fs"]]);
   const { catalogReads } = await import("../../src/pluginCatalog.ts");
   for (const p of ["a.html", "A/b.HTM", ".vault-chat/visuals/x.html", ".vault-chat/visuals/sub/x.html", "notes/vault-chat/a.html"]) assert.ok(catalogReads(p), p);
   for (const p of ["a.md", ".vault-chat/x.html", ".vault-chat/conversations/x.html", ".git/x.html", "a/.hidden/x.html", "a/node_modules/x.html", "build/x.html"]) assert.ok(!catalogReads(p), p);

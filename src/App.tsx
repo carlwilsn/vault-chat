@@ -13,7 +13,7 @@ import { FullscreenChat } from "./FullscreenChat";
 import { NotePopup } from "./NotePopup";
 import { VoiceSlot } from "./VoiceSlot";
 import { PlaceMount } from "./PluginMount";
-import { placeModule } from "./presetApp";
+import { placeModule } from "./places";
 import { VaultPlugins } from "./VaultPluginHost";
 import { ASK_PLUGIN, CONTEXT_PLUGIN, ELEVENLABS_VOICE_PLUGIN, NOTES_PLUGIN } from "./appPlugins";
 import * as notesPlugin from "./plugins/notes";
@@ -46,7 +46,7 @@ import { clearSavedLayouts } from "./paneLayout";
 import { afterVaultReady, bootMark } from "./bootTiming";
 import "./App.css";
 
-// The built-in modules the preset can mount over either layout (src/appPreset.ts place "overlay").
+// The built-in modules mounted over either layout (src/places.ts place "overlay").
 placeModule(NOTES_PLUGIN, () => notesPlugin);
 placeModule(CONTEXT_PLUGIN, () => contextPlugin);
 placeModule(ASK_PLUGIN, () => askPlugin);
@@ -467,7 +467,7 @@ export default function App() {
         initialTurns={noteComposer.initialTurns}
         onClose={closeNoteComposer}
       />
-      {/* What the app's preset (src/appPreset.ts) mounts over either layout: in the daily one, the Notes panel
+      {/* What src/places.ts mounts over either layout: the Notes panel
           (src/plugins/notes), the shared context (src/plugins/context: draws nothing) and the Ctrl+K / Ctrl+L box's
           offers (src/plugins/ask: draws nothing; each box is its `prompt` part, src/InlineEditPrompt.tsx). */}
       <PlaceMount place="overlay" />

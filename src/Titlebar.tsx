@@ -11,7 +11,7 @@ import { PanelLeft, PanelRight, Settings } from "lucide-react";
 import { useStore } from "./store";
 import { TITLEBAR_PLUGIN } from "./appPlugins";
 import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
-import { placeModule } from "./presetApp";
+import { placeModule } from "./places";
 import { PluginOff } from "./PluginOff";
 import { VaultPicker } from "./VaultPicker";
 import { WindowControls } from "./WindowControls";
@@ -19,7 +19,7 @@ import * as titlebarPlugin from "./plugins/titlebar";
 import { Bar } from "./plugins/titlebar/Bar";
 import { shortcutHint } from "./shortcuts";
 
-// The built-in module(s) the preset can mount (src/appPreset.ts; the daily preset puts them in the places below).
+// The built-in module(s) of the places below (src/places.ts).
 placeModule(TITLEBAR_PLUGIN, () => titlebarPlugin);
 
 /** The bar across the top of the main window. */

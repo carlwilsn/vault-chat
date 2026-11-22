@@ -1,8 +1,7 @@
 // The supervisor (base spec change 1.6, section 4): a plugin's desired state is records in the one log, every host runs a
 // reconciler that makes what it shows match them, and what a plugin did to a host is undone, in reverse order, when it
 // stops. Shared by the box (server/supervisor.ts), the app (src/pluginSupervisorApp.ts), the phone, a page's own link
-// (src/pageLinkHost.ts) and the preview harness's fake box: no imports but src/pluginDrafts.ts and src/appPreset.ts
-// (none either).
+// (src/pageLinkHost.ts) and the preview harness's fake box: no imports but src/pluginDrafts.ts (which has none).
 //
 // Records (vault-level signals in the box's feed, as plugin.state is: src/pluginRecords.ts):
 //
@@ -17,16 +16,12 @@
 //   {type: "plugin.change", plugin, change: "keep" | "discard" | "switch", version, from?, at, by?, reason?}
 //       The word on a draft (the gate's, the agent's, Carl's Undo; change by asking: src/pluginDrafts.ts): which copy of the plugin is in effect.
 //
-//   {type: "app.preset", preset, at, by?}
-//       Which plugins mount where, plus their settings (src/appPreset.ts): the newest valid one is in effect.
-//
 // No record: running. The core holds no policy of its own: disable, an end date and a budget are each only records,
 // and whatever writes them (Carl, the agent's Plugins tool, the budget check) is named in `by`.
 //
 // Plugin id: the page's vault path, "/"-separated (the id its state is kept under).
 
 import { PLUGIN_CHANGE, changeOf, type ChangeRecord } from "./pluginDrafts";
-import { APP_PRESET, DAILY_IN_EFFECT, presetOf, type PresetInEffect } from "./appPreset";
 
 export const PLUGIN_DESIRED = "plugin.desired";
 export const PLUGIN_BUDGET = "plugin.budget";
@@ -95,23 +90,12 @@ export class Supervisor {
   private budgets = new Map<string, { seq: number; callsPerMinute: number | null }>();
   private changeList = new Map<string, ChangeRecord[]>();
   private raw = new Map<number, SupervisorRecord>();
-  private presets: PresetInEffect[] = [];
   /** The highest seq folded. */
   seq = 0;
 
   /** Fold one record of the log (anything else is ignored): whether it was a supervisor record not seen before. */
   fold(rec: SupervisorRecord): boolean {
     const s = rec.type === "signal" ? (rec.signal as Record<string, unknown> | undefined) : undefined;
-    if (s?.type === APP_PRESET && Number.isFinite(rec.seq) && !this.raw.has(rec.seq)) {
-      // A bad preset is passed over: the one before it (or the built-in) stays.
-      const p = presetOf(rec);
-      if (!p) return false;
-      this.presets.push(p);
-      this.presets.sort((a, b) => a.seq - b.seq);
-      this.raw.set(rec.seq, { seq: rec.seq, at: rec.at, type: "signal", signal: s });
-      this.seq = Math.max(this.seq, rec.seq);
-      return true;
-    }
     if (!s || (s.type !== PLUGIN_DESIRED && s.type !== PLUGIN_BUDGET && s.type !== PLUGIN_CHANGE) || typeof s.plugin !== "string" || !Number.isFinite(rec.seq)) return false;
     if (this.raw.has(rec.seq)) return false;
     const plugin = pluginIdOf(s.plugin);
@@ -160,16 +144,6 @@ export class Supervisor {
   /** The plugin's change records (keep / discard / switch), oldest first. */
   changes(plugin: string): readonly ChangeRecord[] {
     return this.changeList.get(pluginIdOf(plugin)) ?? NO_CHANGES;
-  }
-
-  /** The preset in effect (src/appPreset.ts): the newest valid app.preset record's, else the built-in daily one. */
-  preset(): PresetInEffect {
-    return this.presets[this.presets.length - 1] ?? DAILY_IN_EFFECT;
-  }
-
-  /** The preset the newest record replaced (Switch back's target), or the built-in one. */
-  presetBefore(): PresetInEffect {
-    return this.presets[this.presets.length - 2] ?? DAILY_IN_EFFECT;
   }
 
   /** Every plugin a record names. */

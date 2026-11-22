@@ -3,7 +3,6 @@
 // one record in the log, so the copy in effect is a fold of records, and undo is the switch back.
 //
 // A plugin with drafts has a slot of three files in one folder:
-//   app plugins (src/appPluginLive.ts)   .vault-chat/app-plugins/<name>.js, <name>.draft.js, <name>.prev.js
 //   vault plugins (src/vaultPlugins.ts)  .vault-chat/plugins/<name>.js, <name>.draft.js, <name>.prev.js
 //   box plugins (server/boxPlugins.ts)   .vault-chat/box-plugins/<name>.js, <name>.draft.js, <name>.prev.js
 // The live file runs; the draft waits for the gate; prev is what the last Keep replaced (absent: the built-in one, or for a
@@ -45,14 +44,11 @@ export const VERSION_RE = /^(?:[0-9a-f]{8}|built-in)$/;
 
 // ---------------------------------------------------------------- slots
 
-const APP_DIR = ".vault-chat/app-plugins";
 const VAULT_DIR = ".vault-chat/plugins";
 
 /** Where a plugin's three files are (vault-relative), or null when the plugin has no slot. */
 export type DraftSlot = { plugin: string; dir: string; live: string; draft: string; prev: string };
 
-/** The slot of an app plugin's folder name (composer, filetree …). */
-export const appSlot = (folder: string): DraftSlot => ({ plugin: `app/${folder}`, dir: APP_DIR, live: `${folder}.js`, draft: `${folder}.draft.js`, prev: `${folder}.prev.js` });
 
 /** The slot of a vault plugin by its base name (pen-cursor for .vault-chat/plugins/pen-cursor.js). */
 export const vaultSlot = (base: string, ext = ".js"): DraftSlot => ({ plugin: `${VAULT_DIR}/${base}${ext}`, dir: VAULT_DIR, live: `${base}${ext}`, draft: `${base}.draft${ext}`, prev: `${base}.prev${ext}` });

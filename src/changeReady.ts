@@ -13,10 +13,8 @@
 // - app/changes (PluginRead / PluginAct): what happened last, and switchBack.
 import { useSyncExternalStore } from "react";
 import { useStore } from "./store";
-import { LIVE_APP_PLUGINS } from "./appPluginLive";
 import { postPluginChange, supervisorChangedNow, supervisorChangesNow } from "./pluginSupervisorApp";
 import { APP_PLUGINS } from "./appPlugins";
-import { PRESET_PLUGIN_ID } from "./appPreset";
 import { SETTINGS_DRAFT_ID, SETTINGS_DRAFT_NAME, pendingSettingsDraft, windowValues } from "./settingsRecords";
 import { onSettingsDrafts, refreshBoxSettings, setSettingsTry, settingsDraftsNow } from "./settings";
 import { isMigrationId } from "./migrations";
@@ -25,8 +23,6 @@ import { UNDO_CHORD, plainWhy } from "./changeFlow";
 import { BUILT_IN, KEEP_TYPING_MS, KEEP_WATCH_MS, TRY_SLOW_MS, landing, slowMedian, watchedKeep, type ChangeRecord, type SlotCode } from "./pluginDrafts";
 
 export const CHANGES_PLUGIN = { id: "app/changes", name: "Changes" } as const;
-/** What Carl calls the app's preset. */
-export const PRESET_NAME = "App preset";
 
 // ---------------------------------------------------------------- what a gate run tries in this window
 
@@ -114,7 +110,7 @@ export const clearOutcome = () => {
 export const lastOutcome = () => outcome;
 
 const appName = (id: string) => APP_PLUGINS.find((p) => p.id === id)?.name ?? id.replace(/^app\//, "");
-const nameOf = (plugin: string) => (plugin === CORE_PART ? CORE_NAME : plugin === SETTINGS_DRAFT_ID ? SETTINGS_DRAFT_NAME : plugin === PRESET_PLUGIN_ID ? PRESET_NAME : plugin.startsWith("app/") ? appName(plugin) : isMigrationId(plugin) ? `Data: ${plugin.slice(8)}` : plugin.startsWith("box/") ? `Box: ${plugin.slice(4)}` : vaultSlots.find((s) => s.id === plugin)?.name ?? plugin.split("/").pop() ?? plugin);
+const nameOf = (plugin: string) => (plugin === CORE_PART ? CORE_NAME : plugin === SETTINGS_DRAFT_ID ? SETTINGS_DRAFT_NAME : plugin.startsWith("app/") ? appName(plugin) : isMigrationId(plugin) ? `Data: ${plugin.slice(8)}` : plugin.startsWith("box/") ? `Box: ${plugin.slice(4)}` : vaultSlots.find((s) => s.id === plugin)?.name ?? plugin.split("/").pop() ?? plugin);
 
 // ---------------------------------------------------------------- the undo
 
@@ -143,7 +139,7 @@ export function canSwitchBack(plugin: string): boolean {
 // ---------------------------------------------------------------- after a keep: switching back by itself
 
 /** Every plugin that can have drafts here: the app plugins with live copies and the vault plugins' slots. */
-const slotIds = (): string[] => [...LIVE_APP_PLUGINS, ...vaultSlots.map((s) => s.id), SETTINGS_DRAFT_ID, CORE_PART];
+const slotIds = (): string[] => [...vaultSlots.map((s) => s.id), SETTINGS_DRAFT_ID, CORE_PART];
 /** Every plugin a change can apply to here (the slots, the box's own plugins with records): the dead-man's switch
  *  watches them. */
 export const changeablePlugins = (): string[] => [...new Set([...slotIds(), ...supervisorChangedNow().filter((p) => p.startsWith("box/"))])];

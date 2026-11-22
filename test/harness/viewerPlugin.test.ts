@@ -312,37 +312,6 @@ test("find: the lines holding a phrase, then there; zoom: a viewer that zooms is
   assert.equal((await read("open"))[0].zoom, undefined);
 });
 
-test("its live copy (.vault-chat/app-plugins/viewer.js) runs on the app's own registry, viewers, scroll and zoom", async () => {
-  const { buildLiveCopy } = await import("../../scripts/app-plugin-live.ts");
-  const { liveLoader } = await import("../../src/appPluginLiveHost.ts");
-  const { LIVE_APP_PLUGINS, appPluginFolder } = await import("../../src/appPluginLive.ts");
-  assert.ok(LIVE_APP_PLUGINS.includes("app/viewer"));
-  assert.equal(appPluginFolder("app/viewer"), "viewer");
-  // An edit to the offers (what a live copy changes): a new state, built with no app build.
-  const { code } = await buildLiveCopy("viewer");
-  const edited = code.replace('kept: {', 'edited: { description: "A live copy\'s own state.", read: () => "live" }, kept: {');
-  assert.notEqual(edited, code, "the copy holds the offers' source");
-  const copy = mountPlugin(el(), { name: "Viewer", code: edited }, { path: VIEWER_PLUGIN_ID, theme: () => THEME, host: appHostBackend, load: liveLoader(VIEWER_PLUGIN_ID, dataLoad) });
-  await copy.ready;
-  assert.equal(copy.error, null);
-  assert.equal(await read("edited"), "live", "the copy answers");
-  open("notes/hello.md");
-  const o = await read("open");
-  assert.deepEqual([o[0].path, o[0].viewer], ["notes/hello.md", "builtin:markdown"], "the app's own viewers, through one registry");
-  assert.equal((await read("viewers")).find((k: any) => k.key === "pdf").active, "builtin:pdf");
-  await ok("setMode", { mode: "edit" });
-  assert.equal(S().mode, "edit", "the app's store");
-  await waitFor("the editor", () => pane()?.getAttribute("data-viewer") === "editor");
-  await ok("setMode", { mode: "view" });
-  await waitFor("the note again", () => pane()?.getAttribute("data-viewer") === "builtin:markdown");
-  await fails("zoom", { zoom: 2 }, /does not zoom/);
-  copy.unmount();
-  await tick();
-  const r = await readOffers("viewer");
-  assert.equal(r.ok, true, r.error);
-  assert.ok(!("edited" in (r.state ?? {})), "gone: the built-in one answers again");
-});
-
 test("stopped, the agent cannot reach it; files still draw", async () => {
   handle!.unmount();
   assert.equal(listOffers().find((p) => p.id === "app/viewer"), undefined);

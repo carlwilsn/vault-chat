@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { pluginCatalog } from "../pluginCatalog";
 import { resolvePlugin } from "../supervisorTools";
-import { catalogText } from "../../src/pluginCatalog";
 
 let dir = "";
 afterEach(() => dir && rmSync(dir, { recursive: true, force: true }));
@@ -23,7 +22,6 @@ test("the catalog lists plugin code files and a word names one", () => {
     [".vault-chat/plugins/pen-cursor.js", "Pen cursor", "A navy pen."],
     [".vault-chat/plugins/plain.mjs", "plain", undefined],
   ]);
-  expect(catalogText(c)).toContain("code file, mounted in the app; A navy pen.");
   for (const w of ["pen-cursor", "Pen Cursor", "pen-cursor.js", ".vault-chat/plugins/pen-cursor.js"]) expect(resolvePlugin(dir, w)).toEqual({ id: ".vault-chat/plugins/pen-cursor.js" });
   expect(resolvePlugin(dir, "plain")).toEqual({ id: ".vault-chat/plugins/plain.mjs" });
   expect("error" in resolvePlugin(dir, "nothing")).toBe(true);

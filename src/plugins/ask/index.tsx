@@ -5,8 +5,7 @@
 //    with its request, editable, onAccept and onCancel as props (api.props, src/pluginProps.ts). Its own React root, so
 //    a keystroke in it redraws only the box.
 // Turned off, the box is still drawn (in the app's tree) and the agent cannot reach it; failing, a plain box says so
-// with Reload and Close. A live copy of app/ask runs this folder (the box, its request to the agent: ./request.ts) instead
-// of the built-in one; ./view.ts (the open boxes) is the app's, shared.
+// with Reload and Close. ./view.ts holds the open boxes.
 //
 // Offers: state open (each box on screen: its file, selection, what is typed, the question asked and the answer so
 // far, the edit proposed), actions type, submit, accept, close, sendToChat, saveAsNote, focus (each on the box named,

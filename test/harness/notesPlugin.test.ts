@@ -12,7 +12,7 @@ import { parseHTML } from "linkedom";
 import { installFakeTauri, makeTempVault } from "./fakes.ts";
 import { mountPlugin } from "../../src/mountHost.ts";
 import { APP_PLUGINS, NOTES_PLUGIN, NOTES_PLUGIN_ID, appPluginNamed } from "../../src/appPlugins.ts";
-import { catalogAppPlugins, catalogText } from "../../src/pluginCatalog.ts";
+import { catalogAppPlugins } from "../../src/pluginCatalog.ts";
 
 const vault = makeTempVault("vc-notesplugin-");
 installFakeTauri(vault);
@@ -48,7 +48,7 @@ test("the Notes panel is a registered app plugin: one id, named by 'notes', list
   for (const w of ["notes", "Notes", "app/notes", "notes panel", " NOTES "]) assert.equal(appPluginNamed(w)?.id, "app/notes", w);
   for (const w of ["", "notes.html", "html-lab", "app/note"]) assert.equal(appPluginNamed(w), null, w);
   assert.deepEqual(catalogAppPlugins()[0], { id: "app/notes", name: "Notes", mount: "panel", description: NOTES_PLUGIN.description });
-  assert.match(catalogText({ services: [], plugins: [], app: catalogAppPlugins() }), /- app\/notes "Notes" \(panel\)/);
+  assert.ok(catalogAppPlugins().some((p) => p.id === "app/notes" && p.name === "Notes" && p.mount === "panel"));
 });
 
 test("an app plugin mounts from its module through the host: light DOM (no shadow root), a box-less root, the widget contract; api.error is its error card", async () => {

@@ -1,6 +1,6 @@
 // The viewer's panes on screen (src/plugins/viewer ./Pane.tsx): each registers what its header's buttons do (Reload,
-// Keep mine) under its file while it shows it, so the offers (./index.ts) do what a click does. Shared with the app (a
-// live copy of app/viewer takes this module from the running app), so the copies and the fallback see the same panes.
+// Keep mine) under its file while it shows it, so the offers (./index.ts) do what a click does. Shared with the app, so
+// the plugin and the fallback see the same panes.
 
 export type PaneHandle = {
   /** The pane (its id in a split), or null for the one viewer. */

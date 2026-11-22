@@ -5,8 +5,7 @@
 // tail, and above the composer the background-task strip, the plan, the ongoing-work line and the composer slot.
 // The rows themselves are app/chat-rows' renderers; the composer is app/composer; the header is this plugin's own.
 //
-// src/ChatPane.tsx mounts it (./index.tsx `transcript`) through the plugin host, so a live copy of app/chat runs this
-// file instead of the built-in one; while the records are not known yet, or the plugin is off, this same component is
+// src/ChatPane.tsx mounts it (./index.tsx `transcript`) through the plugin host; while the records are not known yet, or the plugin is off, this same component is
 // drawn in the app's own tree. Speed: it reads the store per field, and the history is a memoized list, so a keystroke
 // in the composer (its own root) or a streaming reply never re-walks the history.
 import { useShallow } from "zustand/react/shallow";

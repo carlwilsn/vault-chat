@@ -6,16 +6,14 @@
 //   - GET /api/v2/supervisor answers the records (a host folds them itself) and waits for the next (?after=seq&wait=ms);
 //     POST /api/v2/supervisor writes Carl's word ({plugin, state, from?, reason?}) or a budget ({plugin, callsPerMinute}),
 //     or his word on a draft ({plugin, change: keep | discard | switch, version, reason?}: the record, and the files moved
-//     to match, server/pluginDrafts.ts), for app/preset: the app.preset record a kept draft preset becomes, src/appPreset.ts;
-//     for app/settings-values: the settings draft's word, written with the settings, server/settings.ts; for
+//     to match, server/pluginDrafts.ts), for app/settings-values: the settings draft's word, written with the settings, server/settings.ts; for
 //     migrate/<name>: a migration draft's word, server/migrations.ts).
 // What is policy (a disable, an end date, a budget) is only ever a record; the hosts reconcile from the same records.
 import { signal, signalLog, type ConvLog } from "./convlog/log";
 import { budgetSignal, desiredSignal, offLine, pluginIdOf, Supervisor, type Desired, type SupervisorRecord } from "../src/pluginSupervisor";
 import type { LogRecord } from "../src/convlog/protocol";
 import { changeSignal } from "../src/pluginDrafts";
-import { landChange, landPreset, slotOf } from "./pluginDrafts";
-import { PRESET_PLUGIN_ID, presetSignal, type PresetInEffect } from "../src/appPreset";
+import { landChange, slotOf } from "./pluginDrafts";
 import { SETTINGS_DRAFT_ID } from "../src/settingsRecords";
 import { readSetting, settingsChange } from "./settings";
 import { isMigrationId } from "../src/migrations";
@@ -74,11 +72,6 @@ export function setPluginBudget(vault: string, b: Record<string, unknown> | null
   return write(vault, budgetSignal(b, by, Date.now()));
 }
 
-/** The app's preset in effect (src/appPreset.ts): which plugins mount where, plus their settings. */
-export function presetInEffect(vault: string): PresetInEffect {
-  return supervisorOf(vault).preset();
-}
-
 /** Who may be named on a change record: Carl (the app's own Keep), the agent (offers, the scripts, the Plugins tool), an
  *  auto-discard or auto-revert, the draft gate (scripts/draft-check.ts --unasked: a clear pass or fail). */
 const CHANGE_BY = new Set(["carl", "agent", "auto", "gate"]);
@@ -98,16 +91,6 @@ export function setPluginChange(vault: string, b: Record<string, unknown> | null
     const c = settingsChange(sig.change, sig.version, who, sig.reason);
     return c.ok ? { status: 200, seq: c.seq, text: c.text } : { status: c.status, error: c.error };
   }
-  if (plugin === PRESET_PLUGIN_ID) {
-    // The app's preset: its draft file is checked and removed, and the preset it lands is its own record.
-    const sup = supervisorOf(vault);
-    const landed = landPreset(vault, sig.change, sig.version, sup.preset(), sup.presetBefore());
-    if (!landed.ok) return { status: landed.status, error: landed.error };
-    followed(signalLog(vault));
-    if (landed.preset !== undefined && !signal(vault, presetSignal(landed.preset, landed.version, who, Date.now()))) return { status: 500, error: "the log could not be written" };
-    const rec = signal(vault, { ...sig, plugin, version: landed.version, ...(landed.from ? { from: landed.from } : {}) });
-    return rec ? { status: 200, seq: rec.seq, text: landed.text } : { status: 500, error: "the log could not be written" };
-  }
   if (plugin === CORE_PART) {
     // The app's core bundle (server/coreBundles.ts): nothing moves, the record is the switch; the loaders follow it.
     // Whatever vault the request names, the records are the main vault's (one core for the box).
@@ -124,7 +107,7 @@ export function setPluginChange(vault: string, b: Record<string, unknown> | null
     return rec ? { status: 200, seq: rec.seq, text: landed.text } : { status: 500, error: "the log could not be written" };
   }
   const slot = slotOf(plugin);
-  if (!slot) return { status: 400, error: `${plugin} has no drafts (an app plugin with live copies, or a vault plugin's .js)` };
+  if (!slot) return { status: 400, error: `${plugin} has no drafts (a vault plugin's .js)` };
   const landed = landChange(vault, slot, sig.change, sig.version);
   if (!landed.ok) return { status: landed.status, error: landed.error };
   followed(signalLog(vault));

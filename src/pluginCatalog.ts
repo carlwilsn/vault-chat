@@ -7,8 +7,6 @@
 import { LIVE_SERVICES, serviceOfCap } from "./liveServices";
 import { parseLiveMount, parseLiveNeeds, type LiveMount } from "./liveBridge";
 import { APP_PLUGINS, SURFACE_PLUGINS } from "./appPlugins";
-import { APP_PLUGIN_LIVE_DIR } from "./appPluginLive";
-import { VAULT_PLUGIN_DIR } from "./vaultPlugins";
 
 export type CatalogService = {
   name: string;
@@ -46,15 +44,13 @@ export type CatalogAppPlugin = {
   name: string;
   mount: string;
   description: string;
-  /** Its copies in the vault that run instead of the built-in one (src/appPluginLive.ts), by id; absent: none. */
-  copies?: string[];
 };
 
 export type Catalog = { services: CatalogService[]; plugins: CatalogPlugin[]; app?: CatalogAppPlugin[]; truncated?: boolean };
 
 /** The app's own plugins, in registry order, then the surfaces (the phone app). */
-export function catalogAppPlugins(copies: Readonly<Record<string, string[]>> = {}): CatalogAppPlugin[] {
-  return [...APP_PLUGINS, ...SURFACE_PLUGINS].map((p) => ({ id: p.id, name: p.name, mount: p.mount, description: p.description, ...(copies[p.id]?.length ? { copies: copies[p.id] } : {}) }));
+export function catalogAppPlugins(): CatalogAppPlugin[] {
+  return [...APP_PLUGINS, ...SURFACE_PLUGINS].map((p) => ({ id: p.id, name: p.name, mount: p.mount, description: p.description }));
 }
 
 export const CATALOG_LIMITS = {
@@ -123,25 +119,4 @@ export function catalogPlugin(path: string, html: string): CatalogPlugin | null 
     if (s && !needs.includes(s)) needs.push(s);
   }
   return { id, name: title || id.split("/").pop() || id, mount: parseLiveMount(html), needs, refused };
-}
-
-/** The catalog as text, for the agent. */
-export function catalogText(c: Catalog): string {
-  const lines = [`Services a page can name in <meta name="vc-capabilities" content="..."> (${c.services.length}, src/liveServices.ts):`];
-  for (const s of c.services) {
-    const how = [s.supplier === "box" ? "the box" : "the app/phone", s.always ? "every page has it, no grant" : s.grantable ? "Carl allows it once per page" : "declared, opens nothing", s.call].filter(Boolean).join("; ");
-    lines.push(`- ${s.name} (${how}): ${s.description}`);
-  }
-  lines.push("", `Plugins in this vault (${c.plugins.length}${c.truncated ? ", list cut short" : ""}): .html pages with a vc-capabilities or vc-mount manifest, and code files in ${VAULT_PLUGIN_DIR}/ (live, no app update)`);
-  if (!c.plugins.length) lines.push("- none");
-  for (const p of c.plugins) {
-    lines.push(p.mount === "module" ? `- ${p.id}${p.name !== p.id.split("/").pop() ? ` "${p.name}"` : ""}: code file, mounted in the app${p.description ? `; ${p.description}` : ""}` : `- ${p.id}${p.name !== p.id.split("/").pop() ? ` "${p.name}"` : ""}: ${p.mount}; needs ${p.needs.length ? p.needs.join(", ") : "nothing"}${p.refused.length ? `; unknown: ${p.refused.join(", ")}` : ""}`);
-  }
-  if (c.app?.length) {
-    lines.push("", `Parts of the app that are plugins (${c.app.length}; the Plugins tool turns them off and on by id or name):`);
-    for (const p of c.app) lines.push(`- ${p.id} "${p.name}" (${p.mount}): ${p.description}${p.copies?.length ? ` Runs its copy in the vault: ${p.copies.join(", then ")}.` : ""}`);
-    lines.push(`Their code is live too: \`node --import tsx scripts/app-plugin-live.ts <name> --vault <vault> --draft --what "<one line>"\` in a vault-chat checkout builds src/plugins/<name> into ${APP_PLUGIN_LIVE_DIR}/<name>.draft.js (a vault plugin's draft: ${VAULT_PLUGIN_DIR}/<name>.draft.js, first line \`// @vc-change <one line>\`). A draft runs nowhere by itself: Plugins submit hands it to the gate, which applies it live when it passes (a plugin.change record; Plugins back undoes it) and drops it when it fails. Before raising one, check it in a hidden copy: \`node --import tsx scripts/gate.ts <name> --vault <vault> [--synthetic | --data <copy of real data>]\` (the one gate: also preset and box/<name>) runs the live copy and the draft side by side on a copy of real data and answers pass / borderline / fail; the Plugins tool's submit runs it and lands the verdict. The app's offers (app/changes: PluginRead) say whether Carl is trying one. --keep / --discard / --back move the files without a record; --remove goes back to the built-in copy. The Plugins tool turns a copy off by its path.`);
-    lines.push(`Which of them mount where, plus their settings, is the app's preset (the built-in "daily" one unless changed): PluginRead app/preset reads it and its places; PluginAct app/preset set / edit / reset switches or edits it live in every window, no release.`);
-  }
-  return lines.join("\n");
 }

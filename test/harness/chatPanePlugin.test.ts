@@ -37,7 +37,6 @@ const { mountPlugin } = await import("../../src/mountHost.ts");
 const { appHostBackend } = await import("../../src/hostBackend.ts");
 const { listOffers, readOffers, actOffers, _resetOffers } = (await import("../../src/pluginOffers.ts")) as any;
 const { CHAT_PLUGIN, CHAT_PLUGIN_ID, appPluginNamed, APP_PLUGINS } = await import("../../src/appPlugins.ts");
-const { LIVE_APP_PLUGINS } = await import("../../src/appPluginLive.ts");
 const { AppPluginMount } = await import("../../src/PluginMount.tsx");
 const { _appReconciler } = await import("../../src/pluginSupervisorApp.ts");
 const { chatMenuItems, _resetChatMenuItems } = await import("../../src/chatMenuItems.ts");
@@ -68,7 +67,6 @@ test("the chat pane is a registered app plugin that loads live, mounted only thr
   assert.equal(CHAT_PLUGIN.id, CHAT_PLUGIN_ID);
   assert.equal(CHAT_PLUGIN_ID, "app/chat");
   assert.ok(APP_PLUGINS.includes(CHAT_PLUGIN));
-  assert.ok(LIVE_APP_PLUGINS.includes("app/chat"), "its live copy runs instead of the built-in one");
   for (const w of ["chat pane", "app/chat", "Chat pane", "chat menu", "chat header"]) assert.equal(appPluginNamed(w)?.id, "app/chat", w);
   assert.equal(appPluginNamed("chats")?.id, "app/chats", "the chat list keeps its words");
   const slot = fs.readFileSync("src/ChatHeader.tsx", "utf8");
