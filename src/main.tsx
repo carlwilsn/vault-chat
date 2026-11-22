@@ -1,5 +1,3 @@
-// First: the agent's Drive window gets its own storage before any module reads Carl's (src/driveGuard.ts).
-import "./driveGuard";
 import { Buffer } from "buffer";
 // gray-matter (used by skills/tools loaders) expects Node's Buffer global.
 // Polyfill it for the renderer before any module that imports gray-matter
@@ -32,8 +30,6 @@ import { installAppLiveBridge } from "./liveBridgeApp";
 import { installAppShip } from "./appShip";
 import { installDiagShortcut } from "./diag";
 import { installLaptopPerf } from "./laptopPerf";
-import { isDriveWindow } from "./windowKind";
-import { installUserActivity } from "./userActivity";
 
 // Install the freeze diagnostic logger before anything else runs, so a
 // crash during boot still leaves a trail.
@@ -65,16 +61,10 @@ applyHljsTheme(savedTheme === "light" ? "light" : "graphite");
 
 const view = new URLSearchParams(window.location.search).get("view");
 const isPopout = view === "chat";
-// Every native webview has its own document, listeners and delivery queue. The Drive window's synthetic input is never
-// a laptop speed sample.
-if (!isDriveWindow) installLaptopPerf({ popout: isPopout });
+// Every native webview has its own document, listeners and delivery queue.
+installLaptopPerf({ popout: isPopout });
 
-if (isDriveWindow) {
-  // The agent's Drive window (src/driveRunner.ts): a read-only copy of the app, none of the main window's background
-  // work (autosave, sync, logs, background mode, release health, build report), keys from the keychain to read with.
-  hydrateKeychain().catch((e) => console.warn("[keys] hydrate failed:", e));
-  void import("./driveRunner").then((m) => m.installDriveRunner());
-} else if (isPopout) {
+if (isPopout) {
   installPopoutSync();
   // Popouts need their own copy of API keys — the main-window snapshot
   // broadcast doesn't include them, and without hydrate the chat
@@ -96,7 +86,6 @@ if (isDriveWindow) {
   installAppShip();
   installDiagShortcut();
   // When Carl last touched the app: the gate's Drive-copy runs wait for him to be idle and stop when he starts.
-  installUserActivity();
   // Which build this launch runs, told to the box once the first screen is interactive (src/hostBuild.ts): a chat
   // waiting for a new laptop build is woken by it.
   void import("./hostBuild").then((m) => m.reportBuildAtLaunch()).catch(() => {});
@@ -149,7 +138,7 @@ vlog("pre-render", { isPopout });
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <Root />
-    {!isPopout && !isDriveWindow && <LaptopReleaseHealthMount />}
+    {!isPopout && <LaptopReleaseHealthMount />}
   </React.StrictMode>,
 );
 vlog("post-render");
@@ -170,14 +159,11 @@ function reveal(via: string) {
   revealed = true;
   vlog("reveal", { via });
   bootMark("first paint", { via });
-  // The Drive window never shows or focuses anything (app_ready brings the main window forward).
-  if (!isDriveWindow) invoke("app_ready").catch((e) => console.warn("[boot] app_ready:", e));
+  invoke("app_ready").catch((e) => console.warn("[boot] app_ready:", e));
   // The core loader's ready handshake (src-tauri/src/core_loader.rs, src/coreFollow.ts): this bundle came up. A box-built
   // bundle that never says it within 30 s is replaced by the previous one, then the installed app's own.
-  if (!isDriveWindow) {
-    (window as { __vcCoreReady?: boolean }).__vcCoreReady = true;
-    invoke("core_ready").catch(() => {});
-  }
+  (window as { __vcCoreReady?: boolean }).__vcCoreReady = true;
+  invoke("core_ready").catch(() => {});
   setTimeout(() => {
     const splash = document.getElementById("vault-splash");
     if (splash) {

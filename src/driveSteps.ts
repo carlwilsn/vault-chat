@@ -1,5 +1,5 @@
 // Scripted steps run against a document: the in-app half of the gate's UI runner (server/gate.ts) and the self-test, the way
-// RecordUI drives a page, but inside the real laptop app (its Drive window, src/driveRunner.ts). Pure DOM: the events
+// RecordUI drives a page, but inside the real laptop app (src/selfTest.ts). Pure DOM: the events
 // it dispatches are synthetic (isTrusted false), so the app's own perf probe never counts them and Carl's input
 // detector (src/userActivity.ts) never mistakes them for him.
 //

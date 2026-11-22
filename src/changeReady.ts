@@ -2,8 +2,8 @@
 // There is no Try step: a change lands when the one gate passes it (a keep record) and runs here from the record. Not a
 // plugin itself, so a change can never break what undoes it.
 //
-// - Tried drafts exist only in a gate run: the drafts the Drive copy was handed (src/driveGuard.ts driveTries) or the
-//   preview harness's (?try=, preview/runtime/boot.ts, for scripts/draft-check.ts). Carl's windows never try anything.
+// - Tried drafts exist only in the preview harness (?try=, preview/runtime/boot.ts, for scripts/draft-check.ts). Carl's
+//   windows never try anything.
 // - After a keep, the kept copy is watched for KEEP_WATCH_MS: when it throws, fails to load or makes typing slow (within
 //   KEEP_TYPING_MS of the keep), it switches back by itself (a switch record by "auto" naming the kept version, so two
 //   windows switch once); the chat says why (server/changeNotices.ts autoUndone). Nothing listens to typing unless a
@@ -22,7 +22,6 @@ import { onSettingsDrafts, refreshBoxSettings, setSettingsTry, settingsDraftsNow
 import { isMigrationId } from "./migrations";
 import { CORE_NAME, CORE_PART } from "./coreBundle";
 import { UNDO_CHORD, plainWhy } from "./changeFlow";
-import { driveTries } from "./driveGuard";
 import { BUILT_IN, KEEP_TYPING_MS, KEEP_WATCH_MS, TRY_SLOW_MS, landing, slowMedian, watchedKeep, type ChangeRecord, type SlotCode } from "./pluginDrafts";
 
 export const CHANGES_PLUGIN = { id: "app/changes", name: "Changes" } as const;
@@ -37,8 +36,6 @@ const NONE: Tries = Object.freeze({});
 export const HARNESS_TRIES = "__vcHarnessTries";
 
 function readTries(): Tries {
-  // A gate run in the Drive window (src/driveGuard.ts): the drafts it was handed.
-  if (driveTries) return driveTries;
   const h = (globalThis as Record<string, unknown>)[HARNESS_TRIES];
   if (!h || typeof h !== "object") return NONE;
   const out: Record<string, string> = {};

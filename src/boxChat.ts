@@ -43,7 +43,6 @@ import { RETRY_TEXT, makeChatView, type ChatView } from "./convlog/view";
 import { subscribeTranslators } from "./convlog/translators";
 import { MAIN_ID, threadKindOf } from "./threads";
 import { startOfferHistory } from "./offerHistory";
-import { isDriveWindow } from "./windowKind";
 import { probeLaptopReleaseHealth } from "./laptopReleaseHealth";
 
 export const BOX_UNREACHABLE = "Box unreachable";
@@ -332,7 +331,7 @@ class BoxChatSession {
   /** Says to the box whether Carl is looking at the laptop (server/pushGate.ts: the phone stays quiet while he is). */
   private beat: AttentionBeat | null = null;
   private unsubTranslators: (() => void) | null = null;
-  /** Offer events to the box's log (src/offerHistory.ts); never from the Drive window (its runs are not Carl's). */
+  /** Offer events to the box's log (src/offerHistory.ts). */
   private unsubHistory: (() => void) | null = null;
 
   constructor(
@@ -351,7 +350,7 @@ class BoxChatSession {
 
   start(): void {
     this.applyCache();
-    if (!isDriveWindow && !headless()) this.unsubHistory = startOfferHistory((events) => httpPost(this.link, "/api/v2/offer-events", { events, client: "laptop" }, []));
+    if (!headless()) this.unsubHistory = startOfferHistory((events) => httpPost(this.link, "/api/v2/offer-events", { events, client: "laptop" }, []));
     let lastActive = useStore.getState().activeConversationId;
     this.unsub = useStore.subscribe((s) => {
       if (s.activeConversationId !== lastActive) {
@@ -431,7 +430,7 @@ class BoxChatSession {
         if (this.cursor === null || this.reconcile) await this.resync();
         if (!this.live()) return;
         const pollLink = this.link;
-        const r = (await httpGet(pollLink, `/poll?after=${this.cursor}${this.epoch ? `&epoch=${encodeURIComponent(this.epoch)}` : ""}&client=${isDriveWindow ? "drive" : "laptop"}`, POLL_TIMEOUT_MS)) as PollAnswer & { epoch?: string };
+        const r = (await httpGet(pollLink, `/poll?after=${this.cursor}${this.epoch ? `&epoch=${encodeURIComponent(this.epoch)}` : ""}&client=laptop`, POLL_TIMEOUT_MS)) as PollAnswer & { epoch?: string };
         if (!this.live()) return;
         if (pollLink !== this.link) continue; // old workspace file signals must not reach the new viewer
         if (this.down !== false) vlog("box.feed", { state: "connected", cursor: this.cursor, epoch: this.epoch, ...(this.down ? { downMs: Date.now() - this.down } : {}) });
@@ -592,9 +591,6 @@ class BoxChatSession {
   }
 
   private signal(e: Record<string, unknown>, seq?: number): void {
-    // The agent's Drive window (a sandboxed copy of the app) answers nothing: Carl's main window does. It only follows
-    // his settings, so it looks like his window.
-    if (isDriveWindow && e.type !== "setting") return;
     switch (e.type) {
       case "setting":
         // One of Carl's settings changed (the agent's Settings tool, the phone, another window): shown here now.
@@ -652,18 +648,6 @@ class BoxChatSession {
           .then((m) => m.captureOnLaptop(e as unknown as import("./captureOnLaptop").CaptureSignal))
           .then((ack) => httpPost(link, `/api/v1/show/${encodeURIComponent(id)}/ack`, ack))
           .catch((err) => console.warn("[box-chat] capture failed:", err));
-        return;
-      }
-      case "drive": {
-        // The gate's UI runner (server/gate.ts): run in the hidden Drive copy of the app,
-        // never while Carl is using it; acked with what happened.
-        const id = typeof e.id === "string" ? e.id : "";
-        if (e.to !== "laptop" || !id) return;
-        const link = this.link;
-        void import("./driveOnLaptop")
-          .then((m) => m.driveOnLaptop(e as unknown as import("./driveOnLaptop").DriveSignal))
-          .then((ack) => httpPost(link, `/api/v1/show/${encodeURIComponent(id)}/ack`, ack as unknown as Record<string, unknown>))
-          .catch((err) => console.warn("[box-chat] drive failed:", err));
         return;
       }
       case "build": {

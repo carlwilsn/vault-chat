@@ -2,15 +2,6 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
-// Every `@tauri-apps/api/core` the app bundles (its own and the Tauri plugins') goes through src/tauriCoreGuarded.ts,
-// so the agent's Drive window can run only read-only native commands (src/driveGuard.ts). Build only: the dev server's
-// dependency pre-bundling is left alone, and a Drive window without the guard refuses to run (src/driveRunner.ts).
-const tauriCoreReal = join(dirname(createRequire(import.meta.url).resolve("@tauri-apps/api/package.json")), "core.js");
-const tauriCoreGuarded = fileURLToPath(new URL("./src/tauriCoreGuarded.ts", import.meta.url));
 
 const host = process.env.TAURI_DEV_HOST;
 // Pin the actual built checkout, including CI's version commit. Never infer it
@@ -32,14 +23,8 @@ const pkgVersion: string = JSON.parse(readFileSync(new URL("./package.json", imp
 const appVersion = /^\d+\.\d+\.\d+\+core\.[0-9a-f]{8}$/.test(process.env.VC_APP_VERSION ?? "") ? process.env.VC_APP_VERSION! : pkgVersion;
 
 // https://vite.dev/config/
-export default defineConfig(async ({ command }) => ({
+export default defineConfig(async () => ({
   plugins: [react()],
-  resolve: {
-    alias: command === "build" ? [
-      { find: /^@tauri-apps\/api\/core$/, replacement: tauriCoreGuarded },
-      { find: /^vc-tauri-core-real$/, replacement: tauriCoreReal },
-    ] : [],
-  },
   // The app's version on every app-log line (src/debugLog.ts).
   define: { __APP_REVISION__: JSON.stringify(appRevision), __APP_VERSION__: JSON.stringify(appVersion) },
 

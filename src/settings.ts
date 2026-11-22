@@ -11,8 +11,8 @@
 // (the theme, the fullscreen chat's sidebar), the laptop sends its value (POST {migrate}: set only where no record is).
 //
 // The agent's settings drafts and Carl's word on them (setting.draft / setting.change) are followed here the same way
-// (settingsDraftsNow). A gate run in the hidden Drive copy (src/changeReady.ts, src/driveGuard.ts) lays a draft's window
-// settings over the records in that copy only (setSettingsTry): nothing is written.
+// (settingsDraftsNow). A preview-harness run (src/changeReady.ts) lays a draft's window settings over the
+// records in that frame only (setSettingsTry): nothing is written.
 import { useEffect, useState } from "react";
 import { useStore } from "./store";
 import { boxGet, boxLinkFor, boxPost, type Link } from "./boxChat";

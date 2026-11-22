@@ -8,7 +8,7 @@
 //   node --import tsx scripts/app-plugin-live.ts <name> --vault <vault> --back      live and the copy the last keep replaced swap
 //   node --import tsx scripts/app-plugin-live.ts <name> --vault <vault> --remove    the live copy is dropped (built-in runs)
 //
-// A draft runs nowhere by itself: the gate (Plugins submit, scripts/gate.ts) keeps or discards it (records on the box,
+// A draft runs nowhere by itself: the gate (scripts/draft-check.ts) keeps or discards it (records on the box,
 // which moves the files: server/pluginDrafts.ts). Check it first in a hidden copy: scripts/draft-check.ts.
 // --keep / --discard / --back here write the same plugin.change record the gate does, through the box
 // (scripts/boxChange.ts; [--reason <line>] [--box <url>]): the box moves the files, never this script.

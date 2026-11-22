@@ -24,7 +24,6 @@ import { bindContextSource } from "./contextSource";
 import { ChatsPanel } from "./ChatsPanel";
 import { Notices } from "./UpdateBanner";
 import { ChangeKeeper } from "./ChangeKeeper";
-import { isDriveWindow } from "./windowKind";
 import { ShortcutSheet } from "./ShortcutSheet";
 import { hit, isMod } from "./shortcuts";
 import { fileKind } from "./fileKind";
@@ -476,9 +475,9 @@ export default function App() {
       <VaultPlugins />
       {/* Voice: a plugin (src/plugins/voice): its text box here, its controls in the title bar and the composer. */}
       <VoiceSlot />
-      {!isDriveWindow && <Notices />}
+      <Notices />
       {/* Changes reach Carl as lines in a chat (src/changeFlow.ts); this keeps what they stand on. Core, never a plugin. */}
-      {!isDriveWindow && <ChangeKeeper />}
+      <ChangeKeeper />
       <ShortcutSheet />
       {/* The chat list's overlay: a plugin (src/plugins/chats), with a built-in fallback (src/ChatsPanel.tsx). */}
       <ChatsPanel />

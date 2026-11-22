@@ -146,8 +146,7 @@ export function draftPending(slot: SlotCode, changes: readonly ChangeRecord[]): 
 }
 
 /**
- * Which copy of a slot runs. The draft only when tried (`tried`: the version a gate run hands this window, src/driveGuard.ts
- * or the preview harness) or kept by a
+ * Which copy of a slot runs. The draft only when tried (`tried`: the version the preview harness hands this window) or kept by a
  * record whose files have not moved yet; the version the newest keep/switch names when its file is here; else the live
  * copy (a live copy written since the switch, outside the records, runs too); else none.
  */

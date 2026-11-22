@@ -2,7 +2,7 @@
 // machine can check the artifact that ships. Only the launch environment turns it on (VC_SELFTEST=<steps.json>):
 // the main window asks the native side for the steps (`selftest_config`, null in every normal launch), opens the
 // vault they name (or a fresh temp one: as any vault with no box, that starts the app's own local server), runs the
-// steps with the Drive step engine (src/driveSteps.ts) in this window — writable, unlike the Drive copy — and hands
+// steps with the step engine (src/driveSteps.ts) in this window and hands
 // the outcome to `selftest_finish`, which writes the results JSON and exits 0 or 1.
 //
 // Steps file: `{"vault"?: "/path", "pace"?: ms, "steps": [...]}` or just the list. `pace`: a pause after every step,

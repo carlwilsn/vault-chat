@@ -15,9 +15,8 @@
 //       record per key (the settings themselves never live anywhere else) and names what it replaced (`was`, null:
 //       the default), so Switch back writes those back; another switch writes the kept ones again.
 //
-// The gate draws a draft's window settings (SettingDef.applies "window": the theme, the sidebar) in the laptop app's
-// hidden Drive copy before it lands; a setting the box applies (the model, the voice …) is checked by its values. Both
-// kinds ride every feed with the settings.
+// A draft is checked by its values (SettingDef.applies "window": the theme, the sidebar; or a setting the box applies:
+// the model, the voice …). Both kinds ride every feed with the settings.
 //
 // Secrets (API keys, tokens) are never settings: they stay in the key store. Machine-local things (the laptop's
 // folder, the box it connects to) are not settings either. Shared by the box (server/settings.ts), the laptop

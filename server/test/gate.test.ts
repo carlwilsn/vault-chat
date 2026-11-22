@@ -1,4 +1,4 @@
-// One gate for every swappable part (src/gateResult.ts, server/gate.ts, scripts/gate.ts): each kind has a runner, a bad
+// One gate for every swappable part (src/gateResult.ts, server/gate.ts): each kind has a runner, a bad
 // candidate of each kind is refused, anything else lands live at once (there is no Try step), and every end is one
 // gate.result record read in one place (GET /api/v2/gate).
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -12,7 +12,6 @@ import { startHttpServer, type VaultScope } from "../http";
 import { configureSettings, readSettings } from "../settings";
 import { versionOf } from "../../src/pluginDrafts";
 import { gateDecision, gateLineOf, partKind, type PartKind } from "../../src/gateResult";
-import { presetGate } from "../../src/gateChecks";
 import { DAILY_PRESET } from "../../src/appPreset";
 import { SETTING_DRAFT, draftVersion } from "../../src/settingsRecords";
 
@@ -80,15 +79,5 @@ describe("the one gate", () => {
     expect(gateLineOf("no line")).toBeNull();
   });
 
-  it("the preset: not a preset, or a mount naming no app plugin, is refused before the app runs it; a real change is what Carl sees", () => {
-    expect(presetGate("{not json").fail[0]).toMatch(/not a preset: not JSON/);
-    expect(presetGate(JSON.stringify({ name: "x", mounts: [{ place: "moon", plugin: "app/notes" }] })).fail.join(" ")).toMatch(/mounts\[0\]\.place/);
-    expect(presetGate(JSON.stringify({ name: "x", mounts: [{ place: "overlay", plugin: "app/nope" }] })).fail.join(" ")).toMatch(/app\/nope is no app plugin/);
-    const daily = presetGate(JSON.stringify(DAILY_PRESET));
-    expect([daily.fail, daily.seen]).toEqual([[], []]);
-    const noComposer = presetGate(JSON.stringify({ ...DAILY_PRESET, name: "lean", mounts: DAILY_PRESET.mounts.filter((m) => m.place !== "chat.composer") }));
-    expect(noComposer.fail).toEqual([]);
-    expect(noComposer.seen.join(" ")).toMatch(/left empty .*chat\.composer/);
-  });
 
 });

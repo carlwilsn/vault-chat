@@ -2,7 +2,7 @@
 // a candidate on a safe copy of real data with a runner suited to the part, gives one verdict, and lands it by one rule.
 // This module is the shared vocabulary: which kind a part is, the verdict -> decision rule, and the one result record.
 //
-//   kind           parts                                       runner (scripts/gate.ts, server/gate.ts)
+//   kind           parts                                       runner (server/gate.ts, scripts/draft-check.ts)
 //   ui-plugin      app/<name> live copies, vault plugins       the live copy and the draft side by side in the app
 //                                                              (scripts/draft-check.ts): errors, visible text, typing
 //   preset         app/preset (preset.draft.json)              a preset at all, every mount an app plugin this app has,
@@ -81,7 +81,7 @@ export function gateDecision(_kind: PartKind, v: { verdict: GateVerdict; reasons
   return { change: "keep", reason: `${asked ? "asked for" : "not asked for"}; the gate passed it: ${why}` };
 }
 
-/** The machine-readable last line a gate run prints (scripts/gate.ts): `VC-GATE {GateResult}`. */
+/** The machine-readable last line a gate run prints (scripts/draft-check.ts): `VC-GATE {GateResult}`. */
 export const GATE_LINE = "VC-GATE ";
 
 const VERDICTS = new Set(["pass", "borderline", "fail"]);

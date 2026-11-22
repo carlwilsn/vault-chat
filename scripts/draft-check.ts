@@ -21,7 +21,7 @@
 //   pass        no new errors, the same visible text, typing as fast
 // Exit code: 0 pass, 3 borderline, 1 fail, 2 could not run.
 //
-// Landing it is the one gate's (scripts/gate.ts; src/gateResult.ts): --asked / --unasked hand the run to it, which uses
+// Landing it is the one gate's (src/gateResult.ts): --asked / --unasked hand the run to it, which uses
 // this runner (draftCheck) for plugins and the preset, lands the verdict by one rule and prints `VC-GATE {GateResult}`.
 // A real-data capture that fails (the data changed while it copied) is tried again for up to VC_DRAFT_CHECK_CAPTURE_MS
 // (default 20 min), a minute apart: the draft is never dropped for it.
@@ -291,7 +291,7 @@ export async function landVerdict(vault: string, v: Verdict, asked: boolean, box
 /** The machine-readable last line the box reads (src/gateResult.ts gateLineOf). */
 export { GATE_LINE };
 
-/** The UI runner of the gate (scripts/gate.ts, kind ui-plugin and preset). `slot`: a part's files other than a plugin's
+/** The UI runner of the gate (kind ui-plugin and preset). `slot`: a part's files other than a plugin's
  *  (the preset's draft); `ranBy` "page": it ran when the app started with it (no plugin mount to find). */
 export async function draftCheck(o: { plugin: string; vault: string; data?: string; synthetic?: boolean; scenario?: string; steps?: Step[]; keys?: number; runs?: number; port?: number; slot?: DraftSlot; ranBy?: "plugin" | "page" | "app"; failText?: RegExp; core?: { files: string; version: string } }): Promise<Verdict> {
   // A core bundle (o.core): no slot; the draft's side boots the built bundle in place of the source (preview ?core=1).
@@ -386,7 +386,7 @@ async function main(argv: string[]): Promise<number> {
     console.log(`${r.text} (record ${r.seq})`);
     return 0;
   }
-  // Landing a verdict is the one gate's (scripts/gate.ts): the same runner, the one rule, the one result line.
+  // Landing a verdict is the one gate's: the same runner, the one rule, the one result line.
   if (argv.includes("--unasked") || argv.includes("--asked")) return (await import("./gate.ts")).gateMain(argv);
   const steps = value("--steps") ? (JSON.parse(readFileSync(value("--steps")!, "utf8")) as Step[]) : undefined;
   const num = (f: string) => (value(f) !== undefined ? Number(value(f)) : undefined);
