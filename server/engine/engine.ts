@@ -3162,9 +3162,11 @@ export class Engine {
       }
       switch (name) {
         case "SubmitChange": {
-          const r = await submitChangeJob({ vault, convId, slug: this.projectSlugOf(conv), byCarl: !!this.live.get(convId)?.byCarl, jobs: this.d.jobEnv }, a);
+          const r = await submitChangeJob({ vault, convId, slug: this.projectSlugOf(conv), byCarl: !!this.live.get(convId)?.byCarl, jobs: this.d.jobEnv, results: this.shipResultsDir() }, a);
           if (r.job) this.updateSubagent(convId, r.job.id, { kind: "job", title: r.job.name, task: r.job.command.slice(0, 300), status: "running", state: "running", startedAt: r.job.startedAt, background: true, activity: "checking published branch" });
-          return text(r.text);
+          // The job writes its outcome as a ship result naming the branch (it retries a live-data capture race itself):
+          // wait on the branch, never on a ship name (there is no .req for it).
+          return text(r.job ? `${r.text}\nTo wait for its outcome: WaitFor {branch: "${a.branch}", ask, brief}, then end your turn.` : r.text);
         }
         case "AskUser": {
           // A work session never waits on Carl: its question goes in the work list, and his answer starts a new session.

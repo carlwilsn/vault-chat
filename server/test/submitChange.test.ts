@@ -1,7 +1,7 @@
 /** Thin adapter contracts only: host execution/gates are tested separately, never mocked as release proof. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 const state = vi.hoisted(() => ({ spawn: vi.fn(), installed: true }));
@@ -9,7 +9,8 @@ vi.mock("node:child_process", async original => ({ ...await original<typeof impo
 vi.mock("node:fs", async original => { const real = await original<typeof import("node:fs")>(); return { ...real, existsSync: (p: string) => String(p).includes("/.local/lib/vault-chat/simple-ship/") ? state.installed : real.existsSync(p) }; });
 vi.mock("../projectFolders", () => ({ projectFolderOf: () => ({ abs: "/registered/project" }) }));
 vi.mock("../projectChanges", () => ({ isGatedProject: () => true }));
-import { runInstalledShip, SUBMIT_CHANGE_SCHEMA, submitChangeJob } from "../submitChange";
+import { runInstalledShip, shipRetryingCapture, SUBMIT_CHANGE_SCHEMA, submitChangeJob } from "../submitChange";
+import { waitKind } from "../engine/waiters";
 import { readJobs, probeJob } from "../engine/jobs";
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); vi.clearAllMocks(); state.installed = true; });
@@ -45,5 +46,34 @@ describe("pushed branch to one installed box script", () => {
   it.each(["--rollback", "--failed-release", "recover-published-release"])("rejects retired %s dispatch even from an untyped caller", mode => {
     expect(() => runInstalledShip("/registered/project", mode as "--branch", "id", "Title", "app", "project-app", new AbortController().signal, () => {})).toThrow("Only proven branch");
     expect(state.spawn).not.toHaveBeenCalled();
+  });
+  it("tries the live-data capture race again by itself, then writes a result WaitFor {branch} wakes on", async () => {
+    const o = setup(), results = join(o.vault, "ship-results"), kids: any[] = [];
+    state.spawn.mockImplementation(() => { const c = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() }); kids.push(c); return c; });
+    const since = Date.now();
+    const r = await submitChangeJob({ ...o, results, retry: { delayMs: 1, sleep: async () => {} } }, { title: "Change", branch: "agent/change" });
+    await turn(); kids[0].stderr.emit("data", "Error: Fresh stable real-data capture failed; see x\n"); kids[0].emit("close", 1);
+    for (let i = 0; i < 5 && kids.length < 2; i++) await turn();
+    expect(kids).toHaveLength(2);
+    kids[1].stdout.emit("data", "Accepted abc. not Shipped\n"); kids[1].emit("close", 0);
+    for (let i = 0; i < 5 && probeJob(o.jobs, r.job!).state === "running"; i++) await turn();
+    expect(probeJob(o.jobs, r.job!).exit).toBe(0);
+    const ev = await waitKind("branch")!.check({ kind: "branch", args: { branch: "agent/change" }, since } as any, { shipResults: results } as any);
+    expect(ev?.text).toMatch(/exit=0[\s\S]*branch=agent\/change[\s\S]*Accepted abc/);
+  });
+  it("does not retry other failures; their result says exit=1", async () => {
+    const o = setup(), results = join(o.vault, "ship-results"), c = child();
+    const r = await submitChangeJob({ ...o, results, retry: { sleep: async () => {} } }, { title: "Change", branch: "agent/change" });
+    await turn(); c.stderr.emit("data", "new named failure\n"); c.emit("close", 1);
+    for (let i = 0; i < 5 && probeJob(o.jobs, r.job!).state === "running"; i++) await turn();
+    expect(state.spawn).toHaveBeenCalledTimes(1);
+    const files = readdirSync(results);
+    expect(files).toHaveLength(1);
+    expect(readFileSync(join(results, files[0]!), "utf8")).toMatch(/^exit=1\nbranch=agent\/change\n/);
+  });
+  it("gives up on the capture race after its tries", async () => {
+    let n = 0;
+    await expect(shipRetryingCapture(async () => { n++; throw new Error("Fresh stable real-data capture failed"); }, { signal: new AbortController().signal, log: () => {}, tries: 3, sleep: async () => {} })).rejects.toThrow("capture failed");
+    expect(n).toBe(3);
   });
 });
