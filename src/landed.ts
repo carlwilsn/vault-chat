@@ -56,10 +56,21 @@ const store = (): Storage | null => {
   }
 };
 
+/** Saves what is acknowledged; a full or denied storage only loses the acknowledgement (never throws). */
+export function saveLandedAck(value: string | null): void {
+  try {
+    const ls = store();
+    if (value) ls?.setItem(LANDED_ACK_KEY, value);
+    else ls?.removeItem(LANDED_ACK_KEY);
+  } catch (e) {
+    console.warn("[landed] could not save the acknowledgement:", e);
+  }
+}
+
 /** OK: this core is acknowledged, the card goes and does not come back for it. */
 export function dismissLanded(): void {
   const r = landedNow().revision;
-  if (r) store()?.setItem(LANDED_ACK_KEY, r);
+  if (r) saveLandedAck(r);
   publishLanded({ shown: false });
 }
 
@@ -76,12 +87,12 @@ export async function checkLanded(d: LandedDeps): Promise<LandedSummary> {
     const running = await d.running();
     const ack = store()?.getItem(LANDED_ACK_KEY) ?? null;
     const step = landedStep(ack, running);
-    if (step === "seed") store()?.setItem(LANDED_ACK_KEY, running!);
+    if (step === "seed") saveLandedAck(running);
     if (step !== "show") return landedNow();
     const subjects = await d.subjects(ack!, running!).catch(() => null);
     // A switch back to an older core brings nothing new: acknowledged without a card.
     if (subjects && !subjects.length) {
-      store()?.setItem(LANDED_ACK_KEY, running!);
+      saveLandedAck(running);
       return landedNow();
     }
     publishLanded({ shown: true, revision: running!, what: landedLines(subjects) });

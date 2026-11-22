@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { encodeBoxCache, CACHE_MAX_BYTES, type CacheFile } from "../../src/boxCache.ts";
+import { encodeBoxCache, CACHE_MAX_BYTES, CACHE_PREFIX, pruneBoxCaches, type CacheFile } from "../../src/boxCache.ts";
 import { emptyPicture, emptyRow } from "../../src/convlog/reduce.ts";
 
 function fixture(): CacheFile {
@@ -75,4 +75,17 @@ test("3819-item / 1329-message cache: legacy retries encode the same large histo
   assert.equal(active.items.filter(x => x.kind === "user" || x.kind === "assistant").length, 1329);
   assert.equal(active.items[1329]!.args.context.length, 4320);
   assert.equal(file.cursor, 123456);
+});
+
+test("one box-log replica at most: older addresses and per-vault copies are dropped, other keys stay", () => {
+  const m = new Map<string, string>();
+  const ls = { get length() { return m.size; }, key: (i: number) => [...m.keys()][i] ?? null, getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v), removeItem: (k: string) => void m.delete(k), clear: () => m.clear() } as Storage;
+  ls.setItem(CACHE_PREFIX + "box:https://old", "x");
+  ls.setItem(CACHE_PREFIX + "C:/vault", "x");
+  ls.setItem(CACHE_PREFIX + "box:https://now", "x");
+  ls.setItem("vc.landedAck", "a");
+  assert.equal(pruneBoxCaches(CACHE_PREFIX + "box:https://now", ls), 2);
+  assert.deepEqual([...m.keys()].sort(), [CACHE_PREFIX + "box:https://now", "vc.landedAck"].sort());
+  // Small enough that the app's own keys still fit beside it in a ~5 MB (UTF-16) origin.
+  assert.ok(CACHE_MAX_BYTES * 2 < 5_000_000 * 0.6);
 });

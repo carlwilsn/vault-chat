@@ -1,4 +1,4 @@
-import { encodeBoxCache, type CacheFile } from "./boxCache";
+import { CACHE_PREFIX, encodeBoxCache, pruneBoxCaches, type CacheFile } from "./boxCache";
 import { saveBeforeSend } from "./saveBeforeSend";
 import { INTENT_BACKOFF_MS, ONE_RETRY_MS, withRetry } from "./boxRetry";
 // Box-mode chat. When a vault's `.vault-chat/sync.json` names a box, every
@@ -84,7 +84,6 @@ export type Link = { url: string; token: string | null; vault?: string | null };
 type HttpResult = { status: number; body: string };
 
 const POLL_TIMEOUT_MS = 35_000;
-const CACHE_PREFIX = "vault-chat:box-log:";
 const CACHE_MAX_PICTURES = 12;
 
 function headless(): boolean {
@@ -1006,6 +1005,7 @@ class BoxChatSession {
       const body = encodeBoxCache(file);
       if (body === null) return; // Keep the last complete offline picture and its exact cursor.
       try {
+        pruneBoxCaches(cacheKey(this.cacheHome));
         localStorage.setItem(cacheKey(this.cacheHome), body);
       } catch {
         // Storage is optional. A full/denied origin must not repeatedly encode

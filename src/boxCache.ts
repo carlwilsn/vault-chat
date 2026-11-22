@@ -1,7 +1,22 @@
 import type { Picture, RowState } from "./convlog/reduce";
 
 export type CacheFile = { epoch: string; cursor: number; rows: RowState[]; pictures: Picture[] };
-export const CACHE_MAX_BYTES = 3_000_000;
+// localStorage is ~5 MB per origin (UTF-16 in WebView2: a 3 MB string alone nearly fills it). The replica stays well
+// under that, and only one replica is kept (pruneBoxCaches), so the app's small keys always fit.
+export const CACHE_MAX_BYTES = 1_200_000;
+export const CACHE_PREFIX = "vault-chat:box-log:";
+
+/** Removes every box-log replica but `keepKey` (older box addresses, the old per-vault keys): one replica at most. */
+export function pruneBoxCaches(keepKey: string, ls: Storage | null = globalThis.localStorage ?? null): number {
+  if (!ls) return 0;
+  const drop: string[] = [];
+  for (let i = 0; i < ls.length; i++) {
+    const k = ls.key(i);
+    if (k && k.startsWith(CACHE_PREFIX) && k !== keepKey) drop.push(k);
+  }
+  for (const k of drop) ls.removeItem(k);
+  return drop.length;
+}
 
 // JSON's native replacer runs BEFORE encoding a string. Refuse an oversized
 // optional replica before copying/escaping megabytes of tool results. The node

@@ -80,6 +80,41 @@ test("a swap that did not start: the old acknowledgement is back and the card sa
   assert.equal(R.readyNow().shown, false);
 });
 
+test("a full localStorage (QuotaExceededError) never stops OK: the swap still runs (11-22 'Switching…' forever)", async () => {
+  R._resetReady();
+  await R.offerReady(install(), null, deps().d);
+  const ls = globalThis.localStorage as Storage;
+  const real = ls.setItem;
+  const quota = () => {
+    const e = new Error("Failed to execute 'setItem' on 'Storage': exceeded the quota.");
+    e.name = "QuotaExceededError";
+    throw e;
+  };
+  Object.defineProperty(ls, "setItem", { value: quota, configurable: true, writable: true });
+  let swapped = false;
+  try {
+    await R.acceptReady(async () => ((swapped = true), { did: "swapped" }));
+    assert.equal(swapped, true);
+    // A failed swap with storage still full: the card says why, no throw.
+    R._resetReady();
+    await R.offerReady(install("dddd0000"), null, deps().d);
+    const s = await R.acceptReady(async () => ({ did: "failed", error: "hash mismatch" }));
+    assert.equal(s.phase, "failed");
+    assert.equal(s.error, "hash mismatch");
+  } finally {
+    Object.defineProperty(ls, "setItem", { value: real, configurable: true, writable: true });
+  }
+});
+
+test("a swap that never answers: after the timeout the card leaves 'Switching…' for 'failed' with the reason", async () => {
+  R._resetReady();
+  await R.offerReady(install(), null, deps().d);
+  const s = await R.acceptReady(() => new Promise(() => {}), 30);
+  assert.equal(s.phase, "failed");
+  assert.match(s.error ?? "", /did not finish within/);
+  assert.equal(R.SWITCH_TIMEOUT_MS, 30_000);
+});
+
 test("agent parity: app/titlebar reads the Ready card and presses Later", async () => {
   R._resetReady();
   await R.offerReady(install(), null, deps().d);

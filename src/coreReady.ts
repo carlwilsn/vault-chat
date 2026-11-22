@@ -7,7 +7,7 @@
 // readyChanged.
 import { BUILT_IN } from "./pluginDrafts";
 import type { CoreStep } from "./coreBundle";
-import { LANDED_ACK_KEY, LANDED_FALLBACK, landedLines } from "./landed";
+import { LANDED_ACK_KEY, LANDED_FALLBACK, landedLines, saveLandedAck } from "./landed";
 
 export type ReadySummary = {
   shown: boolean;
@@ -89,25 +89,41 @@ const store = (): Storage | null => {
   }
 };
 
+/** How long OK may say "Switching…" before the card says the swap did not happen. */
+export const SWITCH_TIMEOUT_MS = 30_000;
+
 /** OK: swap in now. `swap` runs the loader (src/coreFollow.ts followCoreOnce with swap); on success the window
  *  reloads. What landed is acknowledged first, so the new page shows no Landed card; a swap that did not start puts the
- *  old acknowledgement back and the card says why. */
-export async function acceptReady(swap: () => Promise<{ did: string; error?: string }>): Promise<ReadySummary> {
+ *  old acknowledgement back and the card says why. Storage is optional: a full localStorage (QuotaExceededError) only
+ *  loses the acknowledgement, the swap still runs. A swap that neither reloads nor answers within SWITCH_TIMEOUT_MS
+ *  leaves "Switching…" for "failed" with the reason. */
+export async function acceptReady(swap: () => Promise<{ did: string; error?: string }>, timeoutMs = SWITCH_TIMEOUT_MS): Promise<ReadySummary> {
   const r = readyNow();
   if (!r.shown || r.phase === "switching") return r;
   publishReady({ ...r, phase: "switching", error: undefined });
-  const ls = store();
-  const prevAck = ls?.getItem(LANDED_ACK_KEY) ?? null;
-  if (r.commit) ls?.setItem(LANDED_ACK_KEY, r.commit);
-  let res: { did: string; error?: string };
+  let prevAck: string | null = null;
   try {
-    res = await swap();
+    prevAck = store()?.getItem(LANDED_ACK_KEY) ?? null;
+  } catch {
+    prevAck = null;
+  }
+  if (r.commit) saveLandedAck(r.commit);
+  let res: { did: string; error?: string };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    res = await Promise.race([
+      swap(),
+      new Promise<{ did: string; error: string }>((ok) => {
+        timer = setTimeout(() => ok({ did: "failed", error: `the switch did not finish within ${Math.round(timeoutMs / 1000)} s` }), timeoutMs);
+      }),
+    ]);
   } catch (e) {
     res = { did: "failed", error: String((e as Error)?.message ?? e) };
+  } finally {
+    if (timer) clearTimeout(timer);
   }
   if (res.did === "swapped") return readyNow();
-  if (prevAck) ls?.setItem(LANDED_ACK_KEY, prevAck);
-  else ls?.removeItem(LANDED_ACK_KEY);
+  saveLandedAck(prevAck);
   // Nothing to swap to any more (the box switched back meanwhile): the card goes.
   if (res.did === "nothing") publishReady({ shown: false });
   else publishReady({ ...r, phase: "failed", error: res.error ?? "the loader did not take it" });
