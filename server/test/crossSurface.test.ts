@@ -333,7 +333,7 @@ describe("i. Notes made on one surface, visible to the agent on another", () => 
     appendFileSync(join(vault, ".vault-chat", "notes.jsonl"), JSON.stringify(note) + "\n");
     afterLaptopNote = await turn({ text: "what notes did I leave myself?", client: "phone" }, "Let me check.");
     await turn({ text: "and the newest note?", convId: afterLaptopNote.convId, client: "phone" }, "Exercise 4.2.", async (tid) => {
-      piListed = (await backend.handlers!.toolCall(tid, "ListNotes", {})).text;
+      piListed = (await backend.handlers!.toolCall(tid, "PluginRead", { plugin: "box:notes" })).text;
     });
   });
   pass("i", "phone chat (pi turn)", "a note from the laptop's popup (or the phone's notes page) is in the you layer", () => {
@@ -342,7 +342,7 @@ describe("i. Notes made on one surface, visible to the agent on another", () => 
   pass("i", "any pi turn (instructions)", "the agent is told where notes live (.vault-chat/notes.jsonl)", () => {
     expect(backend.threads.map((x) => x.instructions).join("\n")).toContain("notes.jsonl");
   });
-  pass("i", "phone chat (pull: pi's ListNotes)", "pi reads a laptop note itself (one notes tool set)", () => {
+  pass("i", "phone chat (pull: pi's PluginRead box:notes)", "pi reads a laptop note itself (box:notes)", () => {
     expect(piListed).toContain("uniform convergence");
   });
 });

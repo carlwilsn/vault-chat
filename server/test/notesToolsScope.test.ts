@@ -6,8 +6,8 @@
 // never came back on the ship host (the reporter there drops a test's own
 // output, so three runs said nothing), so those two lines were taken out with
 // pi rather than left guessing. This is the same contract without a turn:
-// server/notesTools.ts is the code the engine and the voice both call
-// (engine.ts onToolCall → noteTool), so calling it per viewer IS the per-viewer
+// server/model/notes.ts is the code box:notes, the app's and the phone's routes all call,
+// so calling it per viewer IS the per-viewer
 // scope. What a turn adds — that the model can reach them — is covered by the
 // routes and by the /mcp catalogue.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -17,8 +17,7 @@ import { tmp, cleanup, makeVault } from "./helpers";
 
 const root = tmp("vcnotes-");
 let home = "", a = "", b = "";
-let noteTool: typeof import("../notesTools").noteTool;
-let isNoteTool: typeof import("../notesTools").isNoteTool;
+let notesNoun: typeof import("../model/notes").notesNoun;
 
 /** A note as the app writes one (src/notes.ts buildNote): the reader dedupes on
  *  its turns and anchors, so a hand-made stub without them is not a note. */
@@ -52,12 +51,16 @@ beforeAll(async () => {
   // read-only compatibility sources (server/context/config.ts).
   const { configureContext } = await import("../context");
   configureContext({ vault: home, conversationRoot: home, vaults: () => [a, b] });
-  ({ noteTool, isNoteTool } = await import("../notesTools"));
+  ({ notesNoun } = await import("../model/notes"));
 });
 
 afterAll(() => cleanup(root));
 
-const list = async (viewer: string, status = "all") => (await noteTool(viewer, "ListNotes", { status })).text;
+const list = async (viewer: string, status = "all") => {
+  const st = notesNoun(viewer).state;
+  const rows = status === "open" ? await st.open!.read() : status === "resolved" ? await st.resolved!.read() : [...((await st.open!.read()) as any[]), ...((await st.resolved!.read()) as any[])];
+  return JSON.stringify(rows);
+};
 
 describe("the notes tools, per viewer scope", () => {
 
@@ -82,9 +85,8 @@ describe("the notes tools, per viewer scope", () => {
   });
 
   it("a note the agent writes under one viewer lands in the registry, and every viewer sees it", async () => {
-    const made = await noteTool(a, "CreateNote", { text: "WRITTEN UNDER VIEWER A" });
+    const made = await notesNoun(a).actions.add!.run({ text: "WRITTEN UNDER VIEWER A" }, "test");
     expect(made.ok, made.text).toBe(true);
-    expect(made.wrote).toBe(true);
     // The registry's own file, not the viewer's: notes are global, and the
     // conversation root is the authority (never the viewer).
     expect(readFileSync(join(home, ".vault-chat", "notes.jsonl"), "utf8")).toContain("WRITTEN UNDER VIEWER A");
@@ -92,7 +94,7 @@ describe("the notes tools, per viewer scope", () => {
   });
 
   it("resolving under one viewer resolves it for every viewer, and leaves every other note's line alone", async () => {
-    const done = await noteTool(home, "ResolveNote", { id: seed.id });
+    const done = await notesNoun(home).actions.resolve!.run({ id: seed.id }, "test");
     expect(done.ok, done.text).toBe(true);
     for (const viewer of [home, a, b]) {
       expect(await list(viewer, "open"), `viewer ${viewer}`).not.toContain(seed.id);
@@ -107,8 +109,4 @@ describe("the notes tools, per viewer scope", () => {
     expect(lines).toContain(JSON.stringify(untouched));
   });
 
-  it("every notes tool the engine routes is one of these, and nothing else is taken for one", () => {
-    for (const n of ["ListNotes", "CreateNote", "UpdateNote", "ResolveNote", "ReopenNote", "DeleteNote"]) expect(isNoteTool(n), n).toBe(true);
-    for (const n of ["ListProjects", "notes", "", "CreateNotes", "Note"]) expect(isNoteTool(n), n).toBe(false);
-  });
 });

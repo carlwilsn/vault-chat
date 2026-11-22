@@ -1,6 +1,6 @@
 import { serverBuildRoute } from "./serverBuild";
 import { globalNotes, appendGlobalNote, writeGlobalNotes, noteSourceOwner } from "./notesStorage";
-import { noteTool } from "./notesTools";
+import { notesNoun } from "./model/notes";
 import { dedupeIntent } from "./intentDedupe";
 // The box's HTTP surface: the phone routes ported from voice_server.rs (same
 // paths, methods, JSON shapes), git smart HTTP, and /api/v1/*. Mutations are
@@ -766,7 +766,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
         appendGlobalNote(vault, b.note);
         return json(res, 200, { ok: true, id: b.note.id });
       }
-      const r = await noteTool(vault, "CreateNote", b);
+      // The notes noun's actions (server/model/notes.ts): the panel's and the phone's controls are the agent's box:notes.
+      const r = await notesNoun(vault).actions.add!.run({ text: b.text, source_path: b.source_path }, "app");
       return json(res, r.ok ? 200 : 400, { ...r, error: r.ok ? undefined : r.text });
     }
     case "POST /notes/write": {
@@ -780,15 +781,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     case "POST /notes/delete": {
       const b = await jsonBody(req);
       if (path.endsWith("/status") && b.status !== "open" && b.status !== "resolved") return json(res, 400, { error: "invalid status" });
-      const r = await noteTool(vault, path.endsWith("/edit") ? "UpdateNote" : path.endsWith("/delete") ? "DeleteNote" : b.status === "open" ? "ReopenNote" : "ResolveNote", b);
+      const action = path.endsWith("/edit") ? "edit" : path.endsWith("/delete") ? "delete" : b.status === "open" ? "reopen" : "resolve";
+      const r = await notesNoun(vault).actions[action]!.run(action === "edit" ? { id: b.id, text: b.text } : { id: b.id }, "app");
       return json(res, r.ok ? 200 : 400, { ...r, error: r.ok ? undefined : r.text });
     }
     case "POST /notes/clear-resolved": {
-      const notes = globalNotes(vault);
-      const resolved = notes.filter(n => n.status === "resolved");
-      const now = new Date().toISOString();
-      writeGlobalNotes(vault, resolved.map(n => ({ ...n, status: "cleared", last_updated: now })));
-      return json(res, 200, { ok: true, cleared: resolved.length });
+      const r = await notesNoun(vault).actions.clearResolved!.run({}, "app");
+      return json(res, r.ok ? 200 : 400, { ...r, error: r.ok ? undefined : r.text });
     }
     case "POST /notifications/read":
     case "POST /notifications/hide": {

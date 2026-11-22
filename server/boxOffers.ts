@@ -11,7 +11,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type { OffersDescription } from "../src/pluginOffers";
 import { linkStates } from "./deviceLink";
-import { NOUNS, noun, type Noun } from "./model";
+import { noun, nouns, type Noun } from "./model";
 
 export type JsonSchema = Record<string, unknown>;
 type State = { description: string; read: () => unknown | Promise<unknown> };
@@ -57,39 +57,9 @@ const str = (description: string) => ({ type: "string", description });
 
 /** The box's offers, now. */
 export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
-  const note = async (name: string, a: Record<string, unknown>) => {
-    const { noteTool } = await import("./notesTools");
-    const r = await noteTool(d.vault, name as never, a);
-    return { ok: r.ok, text: r.text };
-  };
   const out: BoxOffer[] = [
     // The nouns moved into the model (server/model/): each is a box offer of the same name.
-    ...NOUNS.map(nounOffer),
-    {
-      id: "box:notes",
-      name: "Notes",
-      state: {
-        open: {
-          description: "Carl's open notes (the Notes panel), newest first",
-          read: async () => {
-            const { readNotes } = await import("../src/notes");
-            const { noteText } = await import("./notesTools");
-            return ((await readNotes(d.vault)) as any[])
-              .filter((n) => n.status === "open")
-              .sort((x, y) => (x.timestamp < y.timestamp ? 1 : -1))
-              .slice(0, 50)
-              .map((n) => ({ id: n.id, at: String(n.timestamp ?? "").slice(0, 16), text: noteText(n).slice(0, 400) }));
-          },
-        },
-      },
-      actions: {
-        add: { description: "add a note", args: obj({ text: str("the note"), source_path: str("a vault file it points at") }, ["text"]), run: (a) => note("CreateNote", a) },
-        edit: { description: "replace a note's text", args: obj({ id: str("the note's id"), text: str("its new text") }, ["id", "text"]), run: (a) => note("UpdateNote", a) },
-        resolve: { description: "mark a note done", args: obj({ id: str("the note's id") }, ["id"]), run: (a) => note("ResolveNote", a) },
-        reopen: { description: "open a resolved note again", args: obj({ id: str("the note's id") }, ["id"]), run: (a) => note("ReopenNote", a) },
-        delete: { description: "delete a note (git history keeps it)", args: obj({ id: str("the note's id") }, ["id"]), run: (a) => note("DeleteNote", a) },
-      },
-    },
+    ...nouns({ vault: d.vault }).map(nounOffer),
     {
       id: "box:links",
       name: "Devices",
@@ -215,7 +185,7 @@ export async function readBoxOffer(d: BoxOfferDeps, word: string, only?: string)
 export async function watchBoxOffer(d: BoxOfferDeps, word: string, ms: number, only?: string, everyMs = 500): Promise<{ ok: boolean; id?: string; state?: Record<string, unknown>; error?: string; changed?: boolean }> {
   // A model noun says when it changes (listened to before the first read, so no change is missed): no re-reading.
   const o = find(d, word);
-  const n = o ? noun(o.id.slice(BOX_PREFIX.length)) : null;
+  const n = o ? noun(o.id.slice(BOX_PREFIX.length), { vault: d.vault }) : null;
   let hits = 0;
   let wake: (() => void) | null = null;
   const off = n ? n.watch(() => (hits++, wake?.())) : () => {};

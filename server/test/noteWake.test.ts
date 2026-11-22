@@ -6,7 +6,9 @@ import { cleanup } from "./helpers";
 import { makeRig, until, type Rig } from "./longRig";
 import { addressedAsk, newNotesForAgent } from "../noteWake";
 import { readLedger } from "../engine/ledger";
-import { noteTool } from "../notesTools";
+import { notesNoun } from "../model/notes";
+
+const addNote = (vault: string, text: string) => notesNoun(vault).actions.add!.run({ text }, "test");
 
 let rig: Rig;
 beforeAll(async () => {
@@ -30,14 +32,14 @@ describe("a note to the agent", () => {
   });
 
   it("the first look only marks; a new addressed note starts one fresh session, once", async () => {
-    await noteTool(rig.vault, "CreateNote", { text: "@agent an old ask from before" });
+    await addNote(rig.vault, "@agent an old ask from before");
     const other = `${rig.root}/other-vault`;
     expect(newNotesForAgent(other, [{ id: "pre", status: "open", user_draft: "@agent x" }])).toEqual([]);
     expect(newNotesForAgent(other, [{ id: "pre", status: "open", user_draft: "@agent x" }, { id: "new", status: "open", user_draft: "@agent y" }])).toEqual([{ id: "new", ask: "y" }]);
     await rig.engine.tickLedger(); // marks what exists
     const turns = rig.backend.turns.length;
-    await noteTool(rig.vault, "CreateNote", { text: "buy chalk" });
-    await noteTool(rig.vault, "CreateNote", { text: "@agent put hw4.md in the left pane" });
+    await addNote(rig.vault, "buy chalk");
+    await addNote(rig.vault, "@agent put hw4.md in the left pane");
     await rig.engine.tickLedger();
     await until(() => rig.backend.turns.length > turns);
     expect(rig.backend.turns.length).toBe(turns + 1);

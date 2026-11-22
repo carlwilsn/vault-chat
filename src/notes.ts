@@ -172,6 +172,17 @@ export async function writeAllNotes(vault: string, notes: Note[]): Promise<void>
   await invoke("notes_write_all", { vault, lines });
 }
 
+/** One of the Notes panel's controls as the box's notes action (server/model/notes.ts, the agent's box:notes): edit,
+ *  resolve / reopen (status), delete, clear-resolved. False when this vault has no box: the caller writes the file. */
+export async function noteAction(vault: string, action: "edit" | "status" | "delete" | "clear-resolved", body: Record<string, unknown>): Promise<boolean> {
+  const { boxLinkFor, boxPost } = await import("./boxChat");
+  const link = await boxLinkFor(vault);
+  if (!link) return false;
+  const r = await boxPost(link, `/notes/${action}`, body);
+  if (!r.ok) throw new Error(r.error);
+  return true;
+}
+
 /** Factory — create a Note from a capture payload. Call appendNote
  *  separately to persist. */
 export function buildNote(payload: {

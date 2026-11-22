@@ -25,6 +25,15 @@ export function globalNotes(fallback: string): Note[] {
   }
   return [...byId.values()];
 }
+// Every write to the registry, said to whoever watches the notes (server/model/notes.ts: box:notes watches without re-reading).
+const changed = new Set<() => void>();
+export function onNotesChanged(fn: () => void): () => void {
+  changed.add(fn);
+  return () => changed.delete(fn);
+}
+function notify(): void {
+  for (const fn of [...changed]) try { fn(); } catch { /* a watcher's failure is its own */ }
+}
 function persistEdits(root: string, edits: Map<string, Note>): void {
   const p = file(root);
   const emitted = new Set<string>();
@@ -51,6 +60,7 @@ export function appendGlobalNote(fallback: string, note: Note): void {
   let prefix = '';
   try { const text = readFileSync(p, 'utf8'); if (text && !text.endsWith('\n')) prefix = '\n'; } catch (e: any) { if (e.code !== 'ENOENT') throw e; }
   appendFileSync(p, prefix + JSON.stringify(body) + '\n');
+  notify();
 }
 export function writeGlobalNotes(fallback: string, incoming: Note[]): void {
   const current = globalNotes(fallback);
@@ -72,6 +82,7 @@ export function writeGlobalNotes(fallback: string, incoming: Note[]): void {
   // Synchronous read/modify/rename in this one server owner: no async gap in
   // which another API/tool write can be lost. No startup writes or migration.
   for (const [owner, edits] of changes) persistEdits(owner, edits);
+  if (changes.size) notify();
 }
 
 /** Resolve a file link against the original note, not a same-name viewer file. */

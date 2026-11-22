@@ -66,7 +66,6 @@ import { recordUITool, RECORD_DESCRIPTION, RECORD_SCHEMA } from "../recordUI";
 import { externalRecordUI } from "../mcp/recordUI";
 import { loadConfig } from "../config";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
-import { isNoteTool, noteTool } from "../notesTools";
 import { proposeEditSpec } from "./proposeEdit";
 import { PLUGIN_WRITE_TOOL, pluginWrite, pluginWriteSpec } from "../pluginWriteTool";
 import { PLUGIN_TOOL, pluginToolAsync, pluginToolSpecs } from "../supervisorTools";
@@ -3066,11 +3065,6 @@ export class Engine {
       p.signal?.throwIfAborted();
       // ListProjects only reads. A project is made only by Carl: in the app, or by asking for it (OpenProject below).
       if (isContextTool(name)) return await handleContextTool(name, a, { conv: conv as any, convs: (await this.convsEverywhere(vault)) as any });
-      // The notes tools: the same code voice runs (server/notesTools.ts), every result read back from the file.
-      if (isNoteTool(name)) {
-        const r = await noteTool(vault, name, a);
-        return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
-      }
       // A plugin turned off or on (server/supervisorTools.ts): a record in the log every view follows.
       if (name === PLUGIN_TOOL) {
         const r = await pluginToolAsync(vault, a);

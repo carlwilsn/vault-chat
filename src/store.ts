@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import type { Skill } from "./skills";
 import type { Note } from "./notes";
-import { readNotes, appendNote, writeAllNotes } from "./notes";
+import { readNotes, appendNote, writeAllNotes, noteAction } from "./notes";
 import {
   type Conversation,
   deriveConversationTitle,
@@ -1201,7 +1201,7 @@ export const useStore = create<State>((set) => ({
       ? { ...n, status: "cleared" as const, last_updated: new Date().toISOString() } : n);
     set({ notes: next });
     try {
-      await writeAllNotes(vault, next);
+      if (!(await noteAction(vault, "delete", { id }))) await writeAllNotes(vault, next);
     } catch (e) {
       console.error("[notes] delete failed:", e);
     }
@@ -1215,7 +1215,7 @@ export const useStore = create<State>((set) => ({
     );
     set({ notes: next });
     try {
-      await writeAllNotes(vault, next);
+      if (!(await noteAction(vault, "status", { id, status }))) await writeAllNotes(vault, next);
     } catch (e) {
       console.error("[notes] status-update failed:", e);
     }
@@ -1234,7 +1234,7 @@ export const useStore = create<State>((set) => ({
     );
     set({ notes: next });
     try {
-      await writeAllNotes(vault, next);
+      if (!(await noteAction(vault, "clear-resolved", {}))) await writeAllNotes(vault, next);
     } catch (e) {
       console.error("[notes] clear-resolved failed:", e);
     }

@@ -89,7 +89,7 @@ describe("the box's own state, with no device online", () => {
     await rig.backend.h.toolCall(tid, "PluginAct", { plugin: "box:notes", action: "resolve", args: { id } });
     const w = await watching;
     expect(w.text).toMatch(/watched on the box: it changed within 5 s/);
-    expect(w.text).not.toMatch(/buy chalk/);
+    expect(w.text).toMatch(/"open": \[\],\s*"resolved": \[[\s\S]*buy chalk/);
     const links = await rig.backend.h.toolCall(tid, "PluginRead", { plugin: "box:links" });
     expect(links.text).toMatch(/"laptop": \{[\s\S]*"control": "down"/);
     const bad = await rig.backend.h.toolCall(tid, "PluginAct", { plugin: "box:notes", action: "add", args: {} });

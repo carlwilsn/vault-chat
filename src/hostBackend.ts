@@ -1,7 +1,7 @@
 // The app's HostBackend (src/hostApi.ts) bound to the store: the one place a plugin's host calls reach it.
 import { useStore } from "./store";
 import { readTextAt, boxPathOf } from "./boxFiles";
-import { buildNote, writeAllNotes } from "./notes";
+import { buildNote, noteAction, writeAllNotes } from "./notes";
 import { isUnreadableAsText } from "./fileKind";
 import { hostTheme } from "./mountHost";
 import { applyLayoutOps, readLayout, type LayoutIO } from "./layoutOps";
@@ -124,7 +124,8 @@ export const appHostBackend: HostBackend = {
   async saveNoteDraft(id, draft) {
     const s = useStore.getState();
     if (!s.vaultPath || !draft.trim()) return;
-    await writeAllNotes(s.vaultPath, s.notes.map((n) => (n.id === id ? { ...n, user_draft: draft.trim(), turns: [], formatted: null, title: null, last_updated: new Date().toISOString() } : n)));
+    if (!(await noteAction(s.vaultPath, "edit", { id, text: draft.trim() })))
+      await writeAllNotes(s.vaultPath, s.notes.map((n) => (n.id === id ? { ...n, user_draft: draft.trim(), turns: [], formatted: null, title: null, last_updated: new Date().toISOString() } : n)));
     await s.loadNotes();
   },
   layout: () => readLayout(),

@@ -297,6 +297,20 @@ export class FakeBox {
             this.notes = (raw ? JSON.parse(raw) : {}).notes ?? [];
             return send(200, { ok: true });
           }
+          // The notes noun's actions (server/model/notes.ts), as the box's routes answer them.
+          if (route === "POST /notes/edit" || route === "POST /notes/status" || route === "POST /notes/delete" || route === "POST /notes/clear-resolved") {
+            const b = raw ? JSON.parse(raw) : {};
+            const now = new Date().toISOString();
+            if (route === "POST /notes/clear-resolved") {
+              this.notes = this.notes.map((n: any) => (n.status === "resolved" ? { ...n, status: "cleared", last_updated: now } : n));
+              return send(200, { ok: true });
+            }
+            const n = this.notes.find((x: any) => x.id === b.id && x.status !== "cleared");
+            if (!n) return send(400, { ok: false, error: `no note with id "${b.id}"` });
+            const patch = route === "POST /notes/edit" ? { user_draft: b.text, turns: [], formatted: null, title: null } : { status: route === "POST /notes/delete" ? "cleared" : b.status };
+            this.notes = this.notes.map((x: any) => (x.id === b.id ? { ...x, ...patch, last_updated: now } : x));
+            return send(200, { ok: true });
+          }
           if (route === "POST /api/v1/host/build" && this.hostBuildState) {
             const r = recordHostBuild(this.hostBuildState, raw ? JSON.parse(raw) : {});
             return send(r.status, r.body);

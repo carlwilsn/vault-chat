@@ -158,34 +158,31 @@ describe("notes: one thing, editable in place, on pi and on voice", () => {
     await settle(s);
   });
 
-  // The old note tool names still answer for one release (a session that listed them before), then they go.
-  it("pi: create, list, update in place (no second note), resolve, reopen, delete — each read back from the file", async () => {
+  // The notes noun (server/model/notes.ts): the old note tool names are gone; box:notes is the one way.
+  it("pi: add, edit in place (no second note), resolve, reopen, delete through box:notes — each read back from the file", async () => {
     const s = await rig.start("Make me a list note of what to bring.");
-    let r = await rig.backend.call(s.tid, "CreateNote", { text: "Bring: chalk" });
+    const act = (action: string, args: Record<string, unknown>) => rig.backend.call(s.tid, "PluginAct", { plugin: "box:notes", action, args });
+    expect((await rig.backend.call(s.tid, "CreateNote", { text: "x" })).ok).toBe(false);
+    let r = await act("add", { text: "Bring: chalk" });
     expect(r.ok).toBe(true);
     const id = /Saved note (\S+) /.exec(out(r))![1]!;
     expect(out(r)).toContain(".vault-chat/notes.jsonl");
-    r = await rig.backend.call(s.tid, "ListNotes", {});
-    expect(out(r)).toContain(`[${id}] open`);
-    expect(out(r)).toContain("Bring: chalk");
+    expect(out(await rig.backend.call(s.tid, "PluginRead", { plugin: "box:notes" }))).toContain("Bring: chalk");
     // "NO! The LIST THE LIST YOU MADE": the fix goes into the same note.
-    r = await rig.backend.call(s.tid, "UpdateNote", { id, text: "Bring: chalk, eraser, laptop charger" });
+    r = await act("edit", { id, text: "Bring: chalk, eraser, laptop charger" });
     expect(r.ok).toBe(true);
     expect(out(r)).toContain(`Updated note ${id} in place`);
     let all = await notes();
     expect(all.filter((n) => n.status !== "cleared")).toHaveLength(1);
     expect(all.find((n) => n.id === id)!.user_draft).toBe("Bring: chalk, eraser, laptop charger");
-    r = await rig.backend.call(s.tid, "ResolveNote", { id });
-    expect(out(r)).toBe(`Resolved note ${id} in .vault-chat/notes.jsonl.`);
-    r = await rig.backend.call(s.tid, "ReopenNote", { id });
-    expect(out(r)).toBe(`Reopened note ${id} in .vault-chat/notes.jsonl.`);
-    r = await rig.backend.call(s.tid, "DeleteNote", { id });
-    expect(out(r)).toMatch(new RegExp(`^Deleted note ${id} in \\.vault-chat/notes\\.jsonl\\. It is gone from the Notes panel`));
-    expect(out(await rig.backend.call(s.tid, "ListNotes", { status: "all" }))).not.toContain(id);
+    expect(out(await act("resolve", { id }))).toContain(`Resolved note ${id} in .vault-chat/notes.jsonl.`);
+    expect(out(await act("reopen", { id }))).toContain(`Reopened note ${id} in .vault-chat/notes.jsonl.`);
+    expect(out(await act("delete", { id }))).toMatch(new RegExp(`Deleted note ${id} in \\.vault-chat/notes\\.jsonl\\. It is gone from the Notes panel`));
+    expect(out(await rig.backend.call(s.tid, "PluginRead", { plugin: "box:notes" }))).not.toContain(id);
     // Errors say nothing changed.
-    r = await rig.backend.call(s.tid, "UpdateNote", { id: "nope", text: "x" });
+    r = await act("edit", { id: "nope", text: "x" });
     expect(r.ok).toBe(false);
-    expect(out(r)).toMatch(/^Error: no note with id "nope".*nothing changed/);
+    expect(out(r)).toMatch(/Error: no note with id "nope".*nothing changed/);
     all = await notes();
     expect(all.find((n) => n.id === id)!.status).toBe("cleared");
     expect(readFileSync(file(), "utf8")).toContain(id);
