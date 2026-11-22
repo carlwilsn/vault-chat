@@ -24,7 +24,6 @@
     "test:harness": "node --import tsx --import ./test/harness/register.mjs --test \"test/harness/*.test.ts\"",
     "context:audit": "node server/build.mjs && vitest run --config server/vitest.config.ts server/test/contextAudit.test.ts",
     "preview:test": "node preview/test.mjs",
-    "preview:record": "node preview/record.mjs",
     "vite:preview": "vite preview"
   },
   "dependencies": {

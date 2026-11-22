@@ -13,7 +13,7 @@
 //                           no subagents, wakes or Done verifier: those are the box's
 //   C  phone              — the phone's scripted mock box (__vcPhoneNext)
 //
-// `drive` stages are what preview/conv-check.mjs plays one at a time, asserting
+// `drive` stages are what a checker plays one at a time, asserting
 // between them; `open` plays them all for a person looking at the scenario.
 // The presentation choices still open (src/uiChoices.ts) each get a scenario
 // per option: conv-a-<choice>-<option>, phone conv-c-<choice>-<option>.
@@ -563,7 +563,7 @@ function phoneDbC(db: any, now: number, ls: Record<string, string> = {}): void {
 }
 
 /** C's narrated beats: the same conversation played on the phone by its mock
- *  box (one __vcPhoneNext() per box step), the way preview/conv-check.mjs
+ *  box (one __vcPhoneNext() per box step), the way a checker
  *  plays it. Plain data — the phone page gets it as JSON. */
 function beatsC(o: Opts): Beat<PhoneStep>[] {
   const sa = second(o, "subagents"), co = second(o, "cost"), td = second(o, "todos"), vd = second(o, "verdict");
@@ -696,7 +696,7 @@ export const convFullScenarios: Scenario[] = [
       title: `Full conversation — phone (${which} options)`,
       group: "Full conversation",
       notes:
-        "The phone, on the same conversation as conv-a, played by its mock box (__vcPhoneNext). Opened directly it plays narrated (a caption per step; Space pauses, ←/→ step, −/+ speed); &narrate=0 opens on the conversation as it stands before Carl's ask, which is where the check (preview/conv-check.mjs) plays it step by step.",
+        "The phone, on the same conversation as conv-a, played by its mock box (__vcPhoneNext). Opened directly it plays narrated (a caption per step; Space pauses, ←/→ step, −/+ speed); &narrate=0 opens on the conversation as it stands before Carl's ask, which is where the check plays it step by step.",
       clock: "2026-10-13T10:00:00",
       build: buildA,
       phone: { db: (db, now) => phoneDbC(db, now, lsFor(opts as Record<string, string>)), narrate: beatsC(opts as Opts) },
@@ -711,7 +711,7 @@ export const convFullScenarios: Scenario[] = [
           id: `conv-c-${choice}-${opt}`,
           title: `Phone choice: ${choice} — ${opt}`,
           group: "Full conversation",
-          notes: `Carl's call, on the phone. ${choice}: ${CHOICE_TEXT[choice]![opt]}. Play it with __vcPhoneNext() in the console, or see preview/conv-check.mjs.`,
+          notes: `Carl's call, on the phone. ${choice}: ${CHOICE_TEXT[choice]![opt]}. Play it with __vcPhoneNext() in the console.`,
           clock: "2026-10-13T10:00:00",
           build: buildA,
           phone: { db: (db, now) => phoneDbC(db, now, lsFor({ ...DEFAULTS, [choice]: opt })) },

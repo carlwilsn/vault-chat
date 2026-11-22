@@ -138,7 +138,7 @@ export function longChat(now: number, ctx: number, id = "c-long", turns = 18): C
 }
 
 /** A very long chat with every kind of row (tool calls, notices, voice lines, a failed job): the chat
- *  transcript's render speed is measured on it (preview/tools/chat-rows-perf.mjs). */
+ *  transcript's render speed is measured on it. */
 export function perfChat(now: number, turns = 600, id = "c-perf"): Conv {
   const msgs: Msg[] = [];
   for (let i = 0; i < turns; i++) {

@@ -1,6 +1,6 @@
 // The phone page's narrated play (preview/phone.mjs adds this module when the
 // scenario has phone beats). The beats come as JSON (window.__VC_NARRATE__);
-// the steps press what conv-check.mjs presses: the composer and send button,
+// the steps press what the full test conversation presses: the composer and send button,
 // the mock box's __vcPhoneNext(), option cards, the photo input.
 import type { Beat, PhoneStep } from "../scenarios/types";
 import { narrate, narrateWanted } from "./narrate";

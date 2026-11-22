@@ -11,7 +11,7 @@ import HW3_RAW from "../../test/harness/fixtures/markdown/hw3-problem4.md?raw";
 // Carl's hw3 Problem 4 (test/harness/fixtures/markdown/hw3-problem4.md) closes
 // the corpus: display math right under the prose, with lone `=`, `+` and `-`
 // lines inside it — the live editor once read them as setext headings and
-// showed whole sentences as H1 (preview/tools/md-check.mjs checks it).
+// showed whole sentences as H1.
 const HW3_HEADING = "From the vaults: hw3 Problem 4, display math under prose";
 const CORPUS = `${CORPUS_RAW.replace(/\r\n/g, "\n").trimEnd()}\n\n<!-- case: vault-hw3-problem4 -->\n## ${HW3_HEADING}\n\n${HW3_RAW.replace(/\r\n/g, "\n")}`;
 const NOTE = "markdown-corpus.md";
@@ -87,7 +87,7 @@ export const markdownScenarios: Scenario[] = [
     title: "Markdown — the corpus in the live editor",
     group: "Markdown",
     notes:
-      "The same corpus in edit mode: math, tables and HTML blocks render in place (tables and HTML through the viewer's own pipeline, sanitised); click into a formula or a table to see its source. Nothing inside code renders as math, and currency stays text. The last case is Carl's hw3 Problem 4: display math right under the prose, with lone = and - lines in it — none of it a heading (preview/tools/md-check.mjs).",
+      "The same corpus in edit mode: math, tables and HTML blocks render in place (tables and HTML through the viewer's own pipeline, sanitised); click into a formula or a table to see its source. Nothing inside code renders as math, and currency stays text. The last case is Carl's hw3 Problem 4: display math right under the prose, with lone = and - lines in it — none of it a heading.",
     build,
     open: [{ file: NOTE, mode: "edit" }, { sleep: 800 }],
     surfaces: ["desktop"],

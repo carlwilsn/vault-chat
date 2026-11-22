@@ -20,7 +20,6 @@ import { scenarios } from "../scenarios/index";
 import { runSteps } from "./steps";
 import { narrate, narrateWanted } from "./narrate";
 import { namespaceLocalStorage } from "./storage";
-import { playTour, ctl as tourCtl, type TourStep } from "./tour";
 import type { BuildCtx, Scenario } from "../scenarios/types";
 
 export type Base = {
@@ -130,11 +129,9 @@ export function boot(base: Base): void {
   const side = q.get("side") ?? "before";
   const id = q.get("scenario") ?? "home";
   const isPopout = q.get("view") === "chat";
-  // ?ns= lets two frames of one side (tour preloading) keep separate storage;
-  // the chat popout passes its main frame's.
+  // ?ns= lets two frames of one side keep separate storage; the chat popout
+  // passes its main frame's.
   namespaceLocalStorage(q.get("ns") ?? side);
-  // ?tour=1: the shell's Tour plays the steps itself (paced), not on load.
-  const tourMode = q.get("tour") === "1";
   setOverlayHidden(q.get("overlay") === "0");
   const sc = scenarios.find((s) => s.id === id) ?? scenarios[0];
   if (sc.id !== id) report("error", `unknown scenario "${id}" — showing "${sc.id}"`);
@@ -193,18 +190,6 @@ export function boot(base: Base): void {
     readFile: (p: string) => fs.readText(p.startsWith("/") ? p : `${vault}/${p}`),
     ready: false,
     stepsDone: false,
-    /** Tour: play the scenario's own open steps ("open": paced or "fast") and
-     *  then `steps`, at a human pace. */
-    tour: async (steps: TourStep[], o: { open?: "paced" | "fast" | "skip"; pace?: number } = {}) => {
-      const open = (o.open ?? "paced") === "skip" ? [] : (sc.open ?? []);
-      if ((o.open ?? "paced") === "fast" && open.length) {
-        await runSteps(open, vault);
-        return playTour(steps, { side, vault, pace: o.pace });
-      }
-      return playTour([...(open as TourStep[]), ...steps], { side, vault, pace: o.pace });
-    },
-    tourPause: (p: boolean) => void (tourCtl.paused = p),
-    tourAbort: () => void (tourCtl.aborted = true),
     stepError: null as string | null,
     /** Console errors this scenario provokes on purpose (regex sources). */
     expectedErrors: () => sc.expectedErrors ?? [],
@@ -221,7 +206,7 @@ export function boot(base: Base): void {
   // Steps run once the app has mounted (the splash is gone).
   const startSteps = () => {
     api.ready = true;
-    if (isPopout || tourMode || coreSwap || !sc.open?.length || q.get("steps") === "0") {
+    if (isPopout || coreSwap || !sc.open?.length || q.get("steps") === "0") {
       api.stepsDone = true;
       return;
     }

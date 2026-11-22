@@ -457,7 +457,7 @@ export const scenarios: Scenario[] = [
     id: "chat-long",
     title: "Chat — a very long chat (1 200+ rows of every kind)",
     group: "Chat",
-    notes: "A 600-turn chat with tool calls, notices, voice lines and a failed job: scroll up to load older rows. The transcript's render speed is measured on it (node preview/tools/chat-rows-perf.mjs).",
+    notes: "A 600-turn chat with tool calls, notices, voice lines and a failed job: scroll up to load older rows.",
     build: (c) => world(c, { extraConvs: (now) => [W.perfChat(now)] }),
     activeConversation: "c-perf",
     open: [...deskOpen(NOTE, "c-perf")],

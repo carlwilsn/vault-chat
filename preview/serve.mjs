@@ -156,9 +156,9 @@ const server = createServer(async (req, res) => {
       return void res.end(readFileSync(file));
     }
     let p = url.pathname === "/" ? "/index.html" : url.pathname;
-    // /tour/* is the Tour's data (preview/tour/); everything else is the shell.
-    const dir = p.startsWith("/tour/") ? resolve(HERE, "tour") : resolve(HERE, "shell");
-    const file = resolve(dir, "." + (p.startsWith("/tour/") ? p.slice(5) : p));
+    // Everything else is the shell.
+    const dir = resolve(HERE, "shell");
+    const file = resolve(dir, "." + p);
     if (!file.startsWith(dir) || !existsSync(file) || !statSync(file).isFile()) {
       res.statusCode = 404;
       return void res.end("not found");

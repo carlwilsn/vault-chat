@@ -124,7 +124,7 @@ async function measure(cdp, url, { keys, warmup }) {
     }
     if (!ready) throw new Error(`${url}: no composer within 60 s`);
     if (!(await evalIn(cdp, sid, `__bench.visible()`))) {
-      // Same as preview/tools/typing-check.mjs: the chat panel may be collapsed.
+      // The chat panel may be collapsed.
       await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "b", code: "KeyB", modifiers: 2 | 8, windowsVirtualKeyCode: 66 }, sid);
       await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "b", code: "KeyB", modifiers: 2 | 8, windowsVirtualKeyCode: 66 }, sid);
       await new Promise(r => setTimeout(r, 500));

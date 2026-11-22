@@ -1,6 +1,6 @@
 // Live widgets inside notes (src/noteWidgets.ts): a long note with ```widget blocks in it (the sample widget,
 // test/harness/fixtures/note-widgets/section-outline.js, twice; one that throws; one that is not there), and the same
-// note without them (long-plain.md) to time opening a long note (preview/tools/note-widgets-check.mjs).
+// note without them (long-plain.md) to time opening a long note.
 import type { BuildCtx, Scenario } from "./types";
 import CORPUS_RAW from "../../test/harness/fixtures/markdown/corpus.md?raw";
 import OUTLINE_JS from "../../test/harness/fixtures/note-widgets/section-outline.js?raw";
