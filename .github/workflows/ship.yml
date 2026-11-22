@@ -24,16 +24,13 @@ name: ship
 on:
   push:
     branches: [main]
+    # Installers only when the native shell changes. The interface (src/)
+    # arrives live as a core bundle the box builds from main, and the box
+    # builds and swaps its own server, so neither needs a reinstall.
+    # (11-22: 57 installers in 3.5 days, only 8 of 64 changes were native.)
+    # A one-off release: run this workflow by hand (workflow_dispatch).
     paths:
-      - "src/**"
       - "src-tauri/**"
-      - "index.html"
-      - "package.json"
-      - "package-lock.json"
-      - "tailwind.config.js"
-      - "vite.config.ts"
-      - "tsconfig.json"
-      - "server/**"
       # What the release build itself fetches and runs: a fix to these must
       # ship (a scripts-only fix to the Tectonic download once started no run).
       - "scripts/download-*.mjs"
