@@ -1,7 +1,7 @@
 // Carl's settings as records, end to end on the laptop (src/settings.ts) against a fake box with the box's REAL
 // settings route and feed (server/settings.ts on its log):
 //  1. Connecting moves what this laptop kept itself (its theme) into a record, once; the box's records then apply.
-//  2. The agent's Settings tool (server/settingsTool.ts) writes a record: the open app's theme and fullscreen-chat
+//  2. The agent's set on the model's settings noun (server/model/settings.ts, box:settings) writes a record: the open app's theme and fullscreen-chat
 //     sidebar change from the feed, with no reload; an unknown key is refused and nothing changes.
 //  3. Carl's own pick in the app becomes a record by carl, which the agent then reads.
 import { test, before, after } from "node:test";
@@ -37,7 +37,8 @@ localStorage.removeItem("vc_settings_moved");
 const { useStore } = await import("../../src/store.ts");
 const bc = await import("../../src/boxChat.ts");
 const { configureSettings, readSettings } = await import("../../server/settings.ts");
-const { settingsTool } = await import("../../server/settingsTool.ts");
+const { settingsNoun } = await import("../../server/model/settings.ts");
+const agentSet = (args: Record<string, unknown>) => settingsNoun.actions.set!.run(args, "agent") as { ok: boolean; text: string };
 const S = () => useStore.getState();
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(what: string, fn: () => boolean, ms = 8000): Promise<void> {
@@ -72,18 +73,18 @@ test("connecting moves the laptop's own theme into a record, once", async () => 
 });
 
 test("the agent sets a setting: the open app follows from the feed; an unknown key changes nothing", async () => {
-  let r = settingsTool({ key: "theme", value: "graphite" });
+  let r = agentSet({ key: "theme", value: "graphite" });
   assert.equal(r.ok, true, r.text);
   await waitFor("the app's theme follows the agent", () => S().theme === "graphite");
   assert.equal(localStorage.getItem("vault_chat_theme"), "graphite", "the first-paint copy follows the record");
 
   useStore.setState({ chatSidebarOpen: true });
-  r = settingsTool({ key: "chatSidebar", value: false });
+  r = agentSet({ key: "chatSidebar", value: false });
   assert.equal(r.ok, true, r.text);
   await waitFor("the fullscreen chat's sidebar closes", () => S().chatSidebarOpen === false);
 
   const seq = readSettings().seq;
-  r = settingsTool({ key: "openaiKey", value: "sk-nope" });
+  r = agentSet({ key: "openaiKey", value: "sk-nope" });
   assert.equal(r.ok, false);
   assert.match(r.text, /No setting "openaiKey"; nothing changed/);
   assert.equal(readSettings().seq, seq);
@@ -95,7 +96,7 @@ test("Carl's pick in the app is a record by carl, which the agent reads", async 
   assert.equal(S().theme, "light", "shown at once");
   await waitFor("the pick reached the box", () => readSettings().values.theme === "light");
   assert.equal(readSettings().set.theme!.by, "carl");
-  assert.match(settingsTool({}).text, /^theme = "light" \(set by carl\)/m);
+  assert.deepEqual(((await settingsNoun.state.values!.read()) as any).theme.set, "carl");
   S().toggleChatSidebar();
   await waitFor("the sidebar toggle reached the box", () => readSettings().values.chatSidebar === true);
 });

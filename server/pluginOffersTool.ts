@@ -62,7 +62,7 @@ export const pluginOfferToolSpecs = [
     type: "function" as const,
     name: PLUGIN_ACT,
     description:
-      "Run an action a live plugin offers (see PluginRead for its actions and their args), e.g. {plugin: \"app/notes\", action: \"view\", args: {filter: \"resolved\"}}. " +
+      "Run an action a live plugin offers (see PluginRead for its actions and their args), e.g. {plugin: \"app/notes\", action: \"view\", args: {filter: \"resolved\"}}. Carl's settings (theme, model, effort, voice, pushAutomatic, chatSidebar, corePublish): {plugin: \"box:settings\", action: \"set\", args: {key, value}} (value null: its default). " +
       "Returns the action's result and the plugin's state read back afterwards: tell Carl only what that says. A failing action is an error result; the plugin keeps running.",
     inputSchema: {
       type: "object",

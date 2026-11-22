@@ -2,7 +2,7 @@
 // call (the account's voices, the ElevenLabs voice library, Test) and the box's voice health. It was Settings' Voice
 // section; Settings has no voice section now (the core voice is local: Kokoro, af_heart, nothing to pick).
 //
-// Carl's pick is unchanged: the `voice` setting record (src/settingsRecords.ts; the Settings tool's "voice" key), which
+// Carl's pick is unchanged: the `voice` setting record (src/settingsRecords.ts; box:settings' "voice" key), which
 // the box's calls speak with (server/main.ts voiceId), and the laptop's first-paint copy in localStorage
 // (VOICE_STORAGE). The key is an ordinary key, asked for by name (ELEVENLABS_API_KEY in Settings → Keys).
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";

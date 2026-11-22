@@ -4,7 +4,7 @@
 // never just disappears:
 //  - while the records are not known yet, the pane itself is drawn here in the app's own tree (nothing flashes);
 //  - turned off, or failing to mount or render, a plain pane stands in (SettingsFallback): back to the chat, the
-//    keyboard shortcuts, and one line that says what happened with Turn on / Reload. The agent's Settings tool still
+//    keyboard shortcuts, and one line that says what happened with Turn on / Reload. The agent's box:settings still
 //    changes every setting meanwhile.
 import { ArrowLeft } from "lucide-react";
 import { useStore } from "./store";

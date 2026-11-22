@@ -593,7 +593,7 @@ class BoxChatSession {
   private signal(e: Record<string, unknown>, seq?: number): void {
     switch (e.type) {
       case "setting":
-        // One of Carl's settings changed (the agent's Settings tool, the phone, another window): shown here now.
+        // One of Carl's settings changed (the agent's box:settings, the phone, another window): shown here now.
         void import("./settings").then((m) => m.settingSignal(e, seq)).catch(() => {});
         return;
       case "file_changed":

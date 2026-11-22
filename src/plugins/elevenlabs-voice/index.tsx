@@ -7,7 +7,7 @@
 //
 // What Carl sees: an "ElevenLabs voice" entry in the chat's ⋯ menu (api.host.chat.menuItem) that opens the panel
 // (./Panel.tsx: the account's voices, the voice library, Test, the box's voice health), mounted in the app's overlays
-// (the daily preset's "overlay" place). The voice it picks is the `voice` setting record (the Settings tool's "voice"
+// (the daily preset's "overlay" place). The voice it picks is the `voice` setting record (box:settings' "voice"
 // key), unchanged from when the picker was in Settings.
 //
 // It declares what it offers (api.offer, src/pluginOffers.ts): the panel and the voice as state; open, close and

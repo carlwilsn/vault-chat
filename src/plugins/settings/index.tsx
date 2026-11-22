@@ -6,7 +6,7 @@
 // app's tree.
 //
 // It declares what it offers (api.offer, src/pluginOffers.ts): whether Settings is open, its sections and the app's
-// settings (the same records the Settings tool reads) as state; open (at a section), close, go to a section, change a
+// settings (the same records box:settings reads) as state; open (at a section), close, go to a section, change a
 // setting and open the shortcut sheet as actions; what happened as events.
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";

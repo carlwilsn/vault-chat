@@ -1,6 +1,5 @@
-// Carl's settings as records in the one log (src/settingsRecords.ts, server/settings.ts, server/settingsTool.ts):
-// the fold, the once-only move out of the box's old localStorage file (backed up first), the agent's Settings tool
-// (read, set, unknown keys and bad values refused), the route the app and phone use, and the engine reading its model
+// Carl's settings as records in the one log (src/settingsRecords.ts, server/settings.ts, server/model/settings.ts):
+// the fold, the once-only move out of the box's old localStorage file (backed up first), the route the app and phone use, and the engine reading its model
 // and effort from the records.
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
@@ -9,8 +8,6 @@ import { join } from "node:path";
 import { ConvLog } from "../convlog/log";
 import { SETTING, emptySettings, foldSettings, settingProblem } from "../../src/settingsRecords";
 import { configureSettings, migrateSettings, readSetting, readSettings, setSetting, settingsRoute } from "../settings";
-import { settingsTool, settingsToolSpecs } from "../settingsTool";
-import { agentToolSpecs } from "../engine/engine";
 
 const root = mkdtempSync(join(tmpdir(), "vc-settings-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -116,47 +113,7 @@ describe("the move out of the box's old settings file", () => {
   });
 });
 
-describe("the agent's Settings tool", () => {
-  it("is one of the agent's tools", () => {
-    expect(agentToolSpecs().map((t) => t.name)).toContain("Settings");
-    expect(settingsToolSpecs[0]!.inputSchema.properties.key.enum).toContain("theme");
-  });
-
-  it("lists, sets (a record by the agent, on the feed), refuses unknown keys and bad values with nothing changed", () => {
-    let r = settingsTool({});
-    expect(r.ok).toBe(true);
-    expect(r.text).toMatch(/^theme = "graphite" \(default\)/m);
-    expect(r.text).toMatch(/^pushAutomatic = false \(default\)/m);
-    r = settingsTool({ key: "theme", value: "light" });
-    expect(r).toEqual({ ok: true, text: 'theme is now "light" (was "graphite"). Every open app and the phone follow it.' });
-    const rec = log.after(0).events.at(-1) as any;
-    expect(rec.conv).toBeNull();
-    expect(rec.signal).toEqual({ type: "setting", key: "theme", value: "light", by: "agent" });
-    expect(settingsTool({ key: "theme" }).text).toMatch(/theme = "light" \(set by agent\)/);
-    const seq = readSettings().seq;
-    r = settingsTool({ key: "apiKey", value: "sk-x" });
-    expect(r.ok).toBe(false);
-    expect(r.text).toMatch(/No setting "apiKey"; nothing changed/);
-    r = settingsTool({ key: "theme", value: "purple" });
-    expect(r.ok).toBe(false);
-    expect(r.text).toMatch(/theme takes .*nothing changed/);
-    expect(readSettings().seq).toBe(seq);
-    r = settingsTool({ key: "effort", value: null });
-    expect(r.ok).toBe(true);
-    expect(settingsTool({ key: "theme", value: null }).text).toMatch(/theme is now "graphite" \(was "light"\)/);
-  });
-
-  it("the engine's model and effort follow the records", async () => {
-    const { engineModel, engineEffort } = await import("../engine");
-    const before = engineModel();
-    settingsTool({ key: "model", value: "sonnet" });
-    settingsTool({ key: "effort", value: "high" });
-    expect(engineModel()).toBe("sonnet");
-    expect(engineEffort()).toBe("high");
-    settingsTool({ key: "model", value: null });
-    expect(engineModel()).toBe(before);
-  });
-
+describe("settings the box reads", () => {
   it("push preference reads and writes the pushAutomatic setting", async () => {
     const { legacyPushEnabled, setLegacyPushEnabled } = await import("../pushPreferences");
     expect(legacyPushEnabled()).toBe(false);

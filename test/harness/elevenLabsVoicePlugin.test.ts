@@ -1,7 +1,7 @@
 // The ElevenLabs voice plugin (src/plugins/elevenlabs-voice, app/elevenlabs-voice): the voice picker that was Settings'
 // Voice section. Settings has no voice section (the core voice is local: Kokoro, af_heart). The plugin is an app plugin
 // in the overlay place; it puts "ElevenLabs voice" in the chat's ⋯ menu, which opens its panel (the picker,
-// the library, Test, voice health); its offers read and set the same `voice` setting record the Settings tool's "voice"
+// the library, Test, voice health); its offers read and set the same `voice` setting record box:settings' "voice"
 // key sets (Carl's pick is unchanged). Turned off, its panel and menu entry go, and the box speaks locally
 // (server/voiceProvider.ts reads the same plugin id).
 import { test, after } from "node:test";

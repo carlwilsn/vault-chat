@@ -11,6 +11,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type { OffersDescription } from "../src/pluginOffers";
 import { linkStates } from "./deviceLink";
+import { NOUNS, noun, type Noun } from "./model";
 
 export type JsonSchema = Record<string, unknown>;
 type State = { description: string; read: () => unknown | Promise<unknown> };
@@ -62,27 +63,8 @@ export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
     return { ok: r.ok, text: r.text };
   };
   const out: BoxOffer[] = [
-    {
-      id: "box:settings",
-      name: "Settings",
-      state: {
-        values: {
-          description: "every setting's value and who set it (theme, model, effort, voice, pushAutomatic, chatSidebar, corePublish)",
-          read: async () => {
-            const { readSettings } = await import("./settings");
-            const s = readSettings();
-            return Object.fromEntries(Object.entries(s.values).map(([k, v]) => [k, { value: v, set: s.set[k as keyof typeof s.set]?.by ?? "default" }]));
-          },
-        },
-      },
-      actions: {
-        set: {
-          description: "set one setting (value null: its default); shows at once in every open app",
-          args: obj({ key: str("the setting"), value: { type: ["string", "boolean", "null"] } }, ["key", "value"]),
-          run: async (a) => (await import("./settingsTool")).settingsTool({ key: a.key, value: a.value }),
-        },
-      },
-    },
+    // The nouns moved into the model (server/model/): each is a box offer of the same name.
+    ...NOUNS.map(nounOffer),
     {
       id: "box:notes",
       name: "Notes",
@@ -185,6 +167,11 @@ export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
 
 const noArgs = obj({});
 
+/** A model noun as a box offer: its state, and its actions run by the agent. */
+function nounOffer(n: Noun): BoxOffer {
+  return { id: `${BOX_PREFIX}${n.id}`, name: n.name, state: n.state, actions: Object.fromEntries(Object.entries(n.actions).map(([k, a]) => [k, { description: a.description, args: a.args, run: (args: Record<string, unknown>) => a.run(args, "agent") }])) };
+}
+
 /** One history record as a line Carl could read. */
 function line(r: { at: number; device: string; plugin: string; event: string; payload?: string; before?: string }): string {
   return `${new Date(r.at).toISOString().slice(0, 16).replace("T", " ")} ${r.device} ${r.plugin} ${r.event}${r.payload ? ` ${r.payload}` : ""}${r.before ? ` (before: ${r.before})` : ""}`;
@@ -226,16 +213,31 @@ export async function readBoxOffer(d: BoxOfferDeps, word: string, only?: string)
 
 /** Wait (at most `ms`) for a box offer's state to differ from what it is now; then its state. */
 export async function watchBoxOffer(d: BoxOfferDeps, word: string, ms: number, only?: string, everyMs = 500): Promise<{ ok: boolean; id?: string; state?: Record<string, unknown>; error?: string; changed?: boolean }> {
-  const first = await readBoxOffer(d, word, only);
-  if (!first.ok) return first;
-  const was = JSON.stringify(first.state);
-  const end = Date.now() + Math.max(0, Math.min(ms, 25_000));
-  while (Date.now() < end) {
-    await new Promise((r) => setTimeout(r, Math.min(everyMs, Math.max(1, end - Date.now()))));
-    const now = await readBoxOffer(d, word, only);
-    if (now.ok && JSON.stringify(now.state) !== was) return { ...now, changed: true };
+  // A model noun says when it changes (listened to before the first read, so no change is missed): no re-reading.
+  const o = find(d, word);
+  const n = o ? noun(o.id.slice(BOX_PREFIX.length)) : null;
+  let hits = 0;
+  let wake: (() => void) | null = null;
+  const off = n ? n.watch(() => (hits++, wake?.())) : () => {};
+  try {
+    const first = await readBoxOffer(d, word, only);
+    if (!first.ok) return first;
+    const was = JSON.stringify(first.state);
+    const end = Date.now() + Math.max(0, Math.min(ms, 25_000));
+    while (Date.now() < end) {
+      if (n) {
+        if (!hits) await new Promise<void>((r) => ((wake = r), setTimeout(r, Math.max(1, end - Date.now()))));
+        wake = null;
+        if (!hits) break;
+        hits = 0;
+      } else await new Promise((r) => setTimeout(r, Math.min(everyMs, Math.max(1, end - Date.now()))));
+      const now = await readBoxOffer(d, word, only);
+      if (now.ok && JSON.stringify(now.state) !== was) return { ...now, changed: true };
+    }
+    return { ...first, changed: false };
+  } finally {
+    off();
   }
-  return { ...first, changed: false };
 }
 
 /** Run a box offer's action. */

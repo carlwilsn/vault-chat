@@ -58,7 +58,7 @@ describe("Ctrl+L can change the app", () => {
     script = async () => "ok";
     await ask("what tools?");
     const names = sides.at(-1).hostTools.map((t: any) => t.name);
-    for (const n of ["PluginWrite", "Plugins", "Settings", "Handoff", "ProposeEdit"]) expect(names).toContain(n);
+    for (const n of ["PluginWrite", "Plugins", "PluginAct", "Handoff", "ProposeEdit"]) expect(names).toContain(n);
   });
 
   it("\"make my cursor show the text 'hi'\": the plugin file is written, live and on; no \"go to Main\"", async () => {

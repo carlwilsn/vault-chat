@@ -1,7 +1,7 @@
 // Carl's app settings as records in the one log (reports/08 "settings as records"): every setting the app's
 // Settings, the composer's picker and the phone's drawer change is a `setting` signal in the box's main vault log,
-// and the settings are the fold of those records, newest last. The laptop, the phone and the agent (its Settings
-// tool, server/settingsTool.ts) all read and write the same records, so a change made anywhere shows everywhere.
+// and the settings are the fold of those records, newest last. The laptop, the phone and the agent (the model's settings
+// noun, server/model/settings.ts) all read and write the same records, so a change made anywhere shows everywhere.
 //
 //   {type: "setting", key, value, by}   one setting set (value null: back to its default)
 //
