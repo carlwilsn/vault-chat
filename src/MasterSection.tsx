@@ -1,7 +1,6 @@
 // Settings → "vault-chat folder": the laptop's one folder (src/master.ts), vaults/ and projects/ in it, everything in
 // it synced with the box. The box's folder is its own (VC_MASTER, set at install) and is only shown here. Everything
-// lives in the folder (Carl, 2026-10-28): no copy-in from elsewhere in the app (the record is the box's CLI,
-// server/masterCli.ts).
+// lives in the folder (Carl, 2026-10-28): no copy-in from elsewhere in the app.
 import { useEffect, useState } from "react";
 import { useStore } from "./store";
 import { Button, Input } from "./ui";

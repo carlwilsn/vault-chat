@@ -3,7 +3,6 @@
 //     Main the main vault's, one sequence, a vault's file signals only on that vault's view;
 //   - a project is a folder with its own conversation (server/context/projects.ts): made from any folder, named after
 //     it, renamed with it, deleted as a conversation (the folder stays) or with the folder (recoverable through git);
-//   - the migration (server/projectsMigrate.ts) on a copy of a live-shaped layout, and back, byte for byte.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -13,7 +12,6 @@ import { configureContext, resetContextConfig, withVault } from "../context/conf
 import { allProjects, createProject, deleteProjectFiles, listProjects, makeProject, readProject, renameProject, restoreProjectFiles } from "../context/projects";
 import { registeredFolder } from "../projectFolders";
 import { deleteFolder, renameFolder } from "../folderOps";
-import { migrateBack, migrateProjects } from "../projectsMigrate";
 import { projectsList } from "../projectRoutes";
 
 const fwd = (p: string) => p.split("\\").join("/");
@@ -182,130 +180,5 @@ describe("a project is a folder with its own conversation", () => {
     expect(moved).toMatchObject({ ok: true, how: "moved" });
     expect(existsSync(join((moved as any).where, ".git"))).toBe(true);
     expect(renameFolder(join(projectHome, "Build Log"), "Build Book", w)).toMatchObject({ ok: true });
-  });
-});
-
-describe("the migration on a copy of a live-shaped layout, and back", () => {
-  const root = tmp("vcfm-mig-");
-  const school2 = makeVault(join(root, "vc", "vaults", "school2"));
-  const vc = makeVault(join(root, "vc", "vaults", "vault-chat"));
-  const code = makeVault(join(root, "vc", "projects", "vault-chat"));
-  const state = join(root, "state");
-  const snap = (dir: string): Record<string, string> => {
-    const out: Record<string, string> = {};
-    const walk = (d: string, rel: string) => {
-      for (const n of readdirSync(d)) {
-        if (n === ".git" && rel === "") continue;
-        const p = join(d, n);
-        const r = rel ? `${rel}/${n}` : n;
-        try {
-          out[r] = readFileSync(p, "utf8");
-        } catch {
-          walk(p, r);
-        }
-      }
-    };
-    walk(dir, "");
-    return out;
-  };
-  let before: Record<string, Record<string, string>> = {};
-  beforeAll(() => {
-    mkdirSync(state, { recursive: true });
-    // school2: the IEMS project (no folder of its own), three deleted ones, its Main, the hide lists.
-    const iems = join(school2, "agent-projects", "iems-469-course-notes-visuals");
-    mkdirSync(iems, { recursive: true });
-    writeFileSync(join(iems, "project.md"), "# IEMS 469 Course Notes Visuals\n\n## What\n\n(not written yet)\n\n## Why\n\n(not written yet)\n\n## Status\n\nstarted 2026-10-18\n");
-    writeFileSync(join(iems, "memory.md"), "# Memory: IEMS 469 Course Notes Visuals\n\n## Decisions\n\nPatched only `IEMS 469/course-notes-copy.html`.\n");
-    writeFileSync(join(iems, "plan.md"), "# Plan: IEMS 469 Course Notes Visuals\n\n(no plan yet)\n");
-    writeFileSync(join(iems, "progress.md"), "# Progress: IEMS 469 Course Notes Visuals\n- 2026-10-18 03:58 Created section 7 sandbox visual\n");
-    mkdirSync(join(school2, "agent-projects", ".deleted", "psych-221-20261026-002750"), { recursive: true });
-    writeFileSync(join(school2, "agent-projects", ".deleted", "psych-221-20261026-002750", "project.md"), "# Psych 221\n");
-    mkdirSync(join(school2, "IEMS 469"), { recursive: true });
-    writeFileSync(join(school2, "IEMS 469", "course-notes.html"), "<html></html>\n");
-    writeFileSync(join(school2, ".vaultchatignore"), "agent-projects\nboards\nvault-chat-guide.html\n");
-    mkdirSync(join(school2, "boards"), { recursive: true });
-    writeFileSync(join(school2, "vault-chat-guide.html"), "<html>guide</html>\n");
-    mkdirSync(join(school2, ".vault-chat"), { recursive: true });
-    writeFileSync(join(school2, ".vault-chat", "hidden-by-default"), "# Hidden by default once by vault-chat; unhiding one keeps it shown.\nagent-projects\nboards\n");
-    const schoolLog = new ConvLog(school2);
-    schoolLog.emit("main", meta("Main", "main"));
-    schoolLog.close();
-    // vault-chat: its project (registered to the code repo), an empty old Main, stale hide entries.
-    mkdirSync(join(vc, "agent-projects", "vault-chat"), { recursive: true });
-    writeFileSync(join(vc, "agent-projects", "vault-chat", "project.md"), "# vault-chat\n\n## Memory\n- 2026-10-29: Carl authorized one final handover\n");
-    writeFileSync(join(vc, "agent-projects", "vault-chat", "rules.md"), "# Rules\n\n- 2026-10-29: This agent never merges or pushes main\n");
-    mkdirSync(join(vc, ".vault-chat", "local"), { recursive: true });
-    writeFileSync(join(vc, ".vault-chat", "local", "project-folders.json"), JSON.stringify({ folders: { "vault-chat": { path: code, at: "2026-10-28T04:39:01.497Z" } }, deleted: {} }, null, 2) + "\n");
-    writeFileSync(join(vc, ".vaultchatignore"), "vault-chat-guide.html\nboards\nagent-projects\n");
-    const l = new ConvLog(vc);
-    l.emit("main", meta("Main", "main"));
-    l.emit("project-vault-chat", meta("vault-chat", "project"));
-    l.close();
-    before = { school2: snap(school2), vc: snap(vc), code: snap(code) };
-  });
-  afterAll(() => cleanup(root));
-
-  const vaults = () => [
-    { name: "school2", path: school2, main: true },
-    { name: "vault-chat", path: vc, main: false },
-  ];
-
-  it("a dry run reports and changes nothing", () => {
-    const man = migrateProjects({ vaults: vaults(), stateDir: state, map: { "iems-469-course-notes-visuals": "IEMS 469" }, dryRun: true });
-    expect(man.report.join("\n")).toMatch(/iems-469-course-notes-visuals → .*IEMS 469 \(as mapped\)/);
-    expect(snap(school2)).toEqual(before.school2);
-    expect(snap(vc)).toEqual(before.vc);
-  });
-
-  it("migrates: IEMS 469 is its folder with its memory, vault-chat keeps its repo with memory and rules, agent-projects leaves the tree, stale hide entries go", () => {
-    const man = migrateProjects({ vaults: vaults(), stateDir: state, map: { "iems-469-course-notes-visuals": "IEMS 469" } });
-    expect(man.dryRun).toBe(false);
-    // IEMS 469: registered under its old slug (its thread stays project-iems-469-course-notes-visuals), memory carried.
-    expect(fwd(JSON.parse(readFileSync(join(school2, ".vault-chat", "local", "project-folders.json"), "utf8")).folders["iems-469-course-notes-visuals"].path)).toBe(fwd(join(school2, "IEMS 469")));
-    const mem = readFileSync(join(school2, "IEMS 469", ".vault-chat", "project-memory.md"), "utf8");
-    expect(mem).toContain("Patched only `IEMS 469/course-notes-copy.html`.");
-    expect(mem).toContain("2026-10-18 03:58 Created section 7 sandbox visual");
-    expect(mem).not.toContain("(no plan yet)");
-    // The only instruction-like section (Status) became its AGENTS.md; the placeholders did not.
-    expect(readFileSync(join(school2, "IEMS 469", "AGENTS.md"), "utf8")).toBe("# IEMS 469\n\n## Status\n\nstarted 2026-10-18\n");
-    // vault-chat: its repo untouched but .vault-chat/ (kept out of its git), memory and rules there.
-    expect(readFileSync(join(code, ".vault-chat", "project-memory.md"), "utf8")).toContain("- 2026-10-29: Carl authorized one final handover");
-    expect(readFileSync(join(code, ".vault-chat", "rules.md"), "utf8")).toContain("This agent never merges or pushes main");
-    expect(readFileSync(join(code, ".git", "info", "exclude"), "utf8")).toMatch(/^\/\.vault-chat\/$/m);
-    expect(git(code, "status", "--porcelain")).toBe("");
-    // agent-projects is gone from both trees (kept in the backup; git keeps it once the autosave commits).
-    expect(existsSync(join(school2, "agent-projects"))).toBe(false);
-    expect(existsSync(join(vc, "agent-projects"))).toBe(false);
-    // The hide lists: no agent-projects, nothing that is not there.
-    expect(readFileSync(join(school2, ".vaultchatignore"), "utf8")).toBe("boards\nvault-chat-guide.html\n");
-    expect(readFileSync(join(school2, ".vault-chat", "hidden-by-default"), "utf8")).toBe("# Hidden by default once by vault-chat; unhiding one keeps it shown.\nboards\n");
-    expect(readFileSync(join(vc, ".vaultchatignore"), "utf8")).toBe("");
-    // vault-chat's old Main was empty: moved to the backup; school2's Main is untouched.
-    expect(existsSync(join(vc, ".vault-chat", "events", "main.jsonl"))).toBe(false);
-    expect(existsSync(join(school2, ".vault-chat", "events", "main.jsonl"))).toBe(true);
-    expect(man.report.join("\n")).toMatch(/vault-chat: its old Main was empty/);
-    // The vault-chat-guide.html stays (Carl is asked first).
-    expect(existsSync(join(school2, "vault-chat-guide.html"))).toBe(true);
-    // What the server lists now.
-    process.env.VC_MASTER = join(root, "vc");
-    try {
-      expect(projectsList(vaults()).projects.map((p) => [p.slug, p.name, p.folder, p.rel])).toEqual([
-        ["iems-469-course-notes-visuals", "IEMS 469", fwd(join(school2, "IEMS 469")), "vaults/school2/IEMS 469"],
-        ["vault-chat", "vault-chat", fwd(code), "projects/vault-chat"],
-      ]);
-    } finally {
-      delete process.env.VC_MASTER;
-    }
-  });
-
-  it("back puts every file where it was, byte for byte; what it made is moved aside, never deleted", () => {
-    const r = migrateBack({ stateDir: state });
-    expect(r.restored).toBeGreaterThan(0);
-    expect(snap(school2)).toEqual(before.school2);
-    expect(snap(vc)).toEqual(before.vc);
-    // The code repo: what the migration added is undone (its exclude line back as it was).
-    const now = snap(code);
-    expect(now).toEqual(before.code);
-    expect(readdirSync(join(state, "migrations")).length).toBe(1);
   });
 });

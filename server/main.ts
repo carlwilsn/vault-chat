@@ -562,10 +562,7 @@ process.on("unhandledRejection", (e) => {
 });
 
 // `vault-chat-server.mjs record-ui`: the RecordUI tool's recorder, run by the tool inside the agent's sandbox (server/recordUI.ts).
-// `vault-chat-server.mjs master …`: the vault-chat folder's CLI (server/masterCli.ts), never the server.
 if (process.argv[2] === "record-ui") void import("./recordUI").then((m) => m.recordCli());
-else if (process.argv[2] === "master") void import("./masterCli").then(async (m) => process.exit(await m.runMasterCli(process.argv.slice(3))));
-else if (process.argv[2] === "projects") void import("./projectsCli").then(async (m) => process.exit(await m.runProjectsCli(process.argv.slice(3))));
 // `vault-chat-server.mjs install-claude-cli <path> [stateDir]`: put the pinned
 // Claude Code CLI where this box reads it from (server/engine/claude/cliInstall.ts).
 // The box updater calls it with the CLI a release carries, so a fresh install has
