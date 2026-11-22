@@ -1,7 +1,7 @@
 // The model on the box (server/model/, report 24 §4) and its parity check: every way the app changes a moved noun is an
 // action of that noun on the box, and every action the box has is one the app has. Listed from the app's own source,
 // so a new control that bypasses the model fails here. Settings (noun 1), notes (noun 2), pages (noun 3), workspace (noun 4),
-// history (noun 5, read-only), jobs (noun 6).
+// history (noun 5, read-only), jobs (noun 6), chats (noun 7).
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -332,5 +332,76 @@ describe("the model's jobs noun", () => {
     expect(r.ok).toBe(false);
     expect(r.text).toMatch(/needs an owning turn/);
     expect(calls).toHaveLength(2);
+  });
+});
+
+describe("the model's chats noun", () => {
+  /** The chat list's own actions (app/chats, src/plugins/chats/index.tsx chatsOffers), read from its source. */
+  function uiChatActions(): string[] {
+    const s = source.find(([f]) => f === "plugins/chats/index.tsx")![1];
+    const body = s.slice(s.indexOf("actions: {"));
+    return [...body.matchAll(/^ {6}(\w+): \{$/gm)].map((m) => m[1]!);
+  }
+  /** Where the list is on screen: the laptop's view, not a change to a chat (each named, with why). */
+  const VIEW: Record<string, string> = {
+    open: "which chat the pane shows (box:workspace openChat)",
+    expand: "a place's chats shown on screen",
+    collapse: "a place's chats hidden on screen",
+    showMore: "how many rows the list shows",
+    showLess: "how many rows the list shows",
+    openPanel: "the list's panel on screen",
+    closePanel: "the list's panel on screen",
+  };
+  /** The app's name for a control where the model's differs. */
+  const AS: Record<string, string> = { newChat: "start" };
+  /** What only the agent does, on Carl's ask (each named, with why). */
+  const AGENT_ONLY: Record<string, string> = {
+    restoreProject: "the app's Undo toast after a project delete, a transient control",
+    openProject: "Carl's spoken / typed ask to move his screens and call to a project",
+    post: "handing work to the chat that owns it",
+  };
+  const calls: string[] = [];
+  const ok = (t: string) => async () => (calls.push(t), { ok: true, text: t });
+  const ctl = {
+    self: "c-self",
+    list: async (n?: number) => `- c-1 — "Week 3" (${n ?? 25})`,
+    read: async (id: string) => ({ ok: true, text: `read ${id}` }),
+    projects: async (p?: string) => ({ ok: true, text: `projects ${p ?? "all"}` }),
+    deleted: () => "No chat is deleted.",
+    start: async (t: string, place?: string) => (calls.push(`start:${t}:${place ?? "main"}`), { ok: true, text: "started" }),
+    rename: async (id: string, title?: string) => (calls.push(`rename:${id}:${title ?? "(summary)"}`), { ok: true, text: "renamed" }),
+    renameProject: ok("renameProject"),
+    delete: async (ids: string[]) => (calls.push(`delete:${ids.join(",")}`), { ok: true, text: "deleted" }),
+    restore: ok("restore"),
+    restoreProject: ok("restoreProject"),
+    openProject: ok("openProject"),
+    post: ok("post"),
+  };
+
+  it("parity: every chat-list control that changes a chat is a model action; the old tools are gone", () => {
+    const c = noun("chats", { ...deps, chats: ctl })!;
+    const changing = Object.entries(c.actions).filter(([, a]) => !a.readOnly).map(([k]) => k);
+    const ui = uiChatActions();
+    expect(ui.length).toBeGreaterThan(5);
+    const want = ui.filter((k) => !(k in VIEW)).map((k) => AS[k] ?? k);
+    expect(changing.filter((k) => !(k in AGENT_ONLY)).sort()).toEqual(want.sort());
+    for (const k of Object.keys(VIEW)) expect(ui, `${k} is no longer a chat-list control: drop it from VIEW`).toContain(k);
+    const names = agentToolSpecs().map((t) => t.name);
+    for (const old of ["ListConversations", "ReadConversation", "ListProjects", "RenameConversation", "DeleteConversation", "RestoreConversation", "RestoreProject", "OpenProject", "PostToConversation"]) expect(names).not.toContain(old);
+    expect(noun("chats", deps), "no chats noun without the engine").toBeNull();
+  });
+
+  it("is box:chats: read, reads change nothing, changes reach the engine with this chat as the default", async () => {
+    calls.length = 0;
+    const d = { ...deps, chats: ctl };
+    expect((await readBoxOffer(d, "box:chats")).state).toEqual({ recent: '- c-1 — "Week 3" (25)', projects: "projects all" });
+    const r = await actBoxOffer(d, "box:chats", "read", { id: "c-1" });
+    expect(r.text).toBe("read c-1");
+    expect(r.state).toBeUndefined();
+    await actBoxOffer(d, "box:chats", "rename", { title: "Bench" });
+    await actBoxOffer(d, "box:chats", "start", { text: "do X", place: "Physics" });
+    await actBoxOffer(d, "box:chats", "delete", { ids: ["c-1"] });
+    expect(calls).toEqual(["rename:c-self:Bench", "start:do X:Physics", "delete:c-1"]);
+    expect((await actBoxOffer(d, "box:chats", "post", { id: "c-1" })).text).toMatch(/needs text\. Nothing was run/);
   });
 });

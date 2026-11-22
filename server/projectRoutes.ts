@@ -8,7 +8,7 @@
 //                                          → {ok, project: slug|null}
 //   POST /api/v1/folders {op: rename|delete, path, name?}
 //                                          → Carl's ⋯ on a folder that is not a project (server/folderOps.ts)
-// and the agent's OpenProject (openProject below): Carl asked, in so many words, to start a project or to work on
+// and box:chats openProject (openProject below): Carl asked, in so many words, to start a project or to work on
 // one — the same create-or-attach, then his screens and a live call follow to its thread.
 import { existsSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
@@ -150,7 +150,7 @@ export async function createProjectWithThread(
     });
     if ("error" in out) return { error: out.error };
     const { project, created } = out;
-    // A new project: a new thread even where a deleted project of that slug had one (RestoreProject brings that back).
+    // A new project: a new thread even where a deleted project of that slug had one (box:chats restoreProject brings that back).
     const conv = await ensureProjectThread(owner.path, project.slug, project.name, { fresh: created });
     return { ok: true, slug: project.slug, name: project.name, convId: conv.id, created, folder: fwd(project.folder), vault: owner.name };
   } catch (e) {
@@ -200,26 +200,10 @@ export function setConversationRouter(fn: Send, vaults: () => VaultRef[]): void 
   vaultsNow = vaults;
 }
 
-export const OPEN_PROJECT_DESCRIPTION =
-  `Only when Carl asks, in so many words, spoken or typed: "start a project for HW4" (create: true) or "let's work on project Physics" / "back to Main" (project: "main"). Never on your own initiative and never as a suggestion you then act on. ` +
-  "There is one of you: a project's thread is a place you work, and Main is home. This makes the project when he asked to start one (create-or-attach by name: a folder of that name in the vault, and its one thread), finds it otherwise, and takes his screens and a live voice call to its thread: what he says or types next arrives there. " +
-  "request: what he asked to be done there, in his words; it goes to that thread, which does the work (do not also do it here). Without request, say in a few words that you are there.";
-
-export const OPEN_PROJECT_SCHEMA = {
-  type: "object",
-  properties: {
-    project: { type: "string", description: "The project's name as Carl said it (or its slug); main for Main." },
-    create: { type: "boolean", description: "He asked to start (make) a project. Without it, only an existing project is opened." },
-    request: { type: "string", description: "What he asked to be done there, in his words (optional)." },
-  },
-  required: ["project"],
-  additionalProperties: false,
-};
-
-/** OpenProject: Carl's explicit ask to start or work on a project (or go back to Main). Never throws. */
+/** box:chats openProject: Carl's explicit ask to start or work on a project (or go back to Main). Never throws. */
 export async function openProject(vault: string, args: Record<string, unknown>, d: OpenProjectDeps = {}): Promise<{ ok: boolean; text: string; convId?: string }> {
   const want = typeof args.project === "string" ? args.project.trim() : "";
-  if (!want) return { ok: false, text: "OpenProject needs project: the name Carl said (or \"main\")." };
+  if (!want) return { ok: false, text: "openProject needs project: the name Carl said (or \"main\")." };
   const request = typeof args.request === "string" ? args.request.trim() : "";
   const vaults = vaultsNow?.() ?? [{ name: "main", path: vault, main: true }];
   let convId: string;
@@ -249,11 +233,11 @@ export async function openProject(vault: string, args: Record<string, unknown>, 
       const names = withVault(vault, () => allProjects()).map((p) => p.name);
       return {
         ok: false,
-        text: `Carl has no project "${want}" (${names.length ? `his projects: ${names.join(", ")}` : "he has none yet"}). Nothing changed. If he asked to start it, call OpenProject again with create: true; otherwise ask him which one he means.`,
+        text: `Carl has no project "${want}" (${names.length ? `his projects: ${names.join(", ")}` : "he has none yet"}). Nothing changed. If he asked to start it, call box:chats openProject again with create: true; otherwise ask him which one he means.`,
       };
     }
   } catch (e) {
-    return { ok: false, text: `OpenProject failed: ${(e as Error)?.message ?? String(e)}. Nothing changed.` };
+    return { ok: false, text: `openProject failed: ${(e as Error)?.message ?? String(e)}. Nothing changed.` };
   }
   // The surfaces follow: the laptop and the phone open the thread; a live call's lines, tools and updates go there.
   d.emit?.({ type: "follow", convId, title, ...(slug ? { project: slug } : {}), ...(created ? { created: true } : {}) });
@@ -261,7 +245,7 @@ export async function openProject(vault: string, args: Record<string, unknown>, 
   let handed = "";
   const send = route ?? d.message;
   if (request && send) {
-    const out = await send({ convId, text: request, queue: true, context: `[Carl asked for this and you moved to ${slug ? `the thread of his project "${title}"` : "Main"} to do it (OpenProject). Do it here.]` }).catch((e) => ({ error: (e as Error)?.message ?? String(e) }));
+    const out = await send({ convId, text: request, queue: true, context: `[Carl asked for this and you moved to ${slug ? `the thread of his project "${title}"` : "Main"} to do it (box:chats openProject). Do it here.]` }).catch((e) => ({ error: (e as Error)?.message ?? String(e) }));
     handed = out && !out.error ? " His request went to that thread, which is doing it now: don't do it here too." : ` His request did not reach that thread (${String(out?.error ?? "no answer")}): do it there with him.`;
   }
   const where = slug ? `${created ? "Started" : "Opened"} project ${title} (the folder ${folder}); its thread is ${convId}` : "Back in Main";

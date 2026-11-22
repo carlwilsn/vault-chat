@@ -487,7 +487,7 @@ export class MemoryBox {
         return { ok: true, slug: b.slug, convId: id, to: "main" };
       }
       case "restoreProject": {
-        // Engine.restoreProject (the agent's RestoreProject): the thread back as it was, the clients told.
+        // Engine.restoreProject (box:chats restoreProject): the thread back as it was, the clients told.
         const id = `project-${String(b.slug ?? "")}`;
         if (!this.picture(id)?.meta.deleted) return { ok: false, error: `nothing deleted under "${b.slug}"` };
         this.meta(id, { deleted: null, deletedProject: null });

@@ -29,32 +29,31 @@ const settle = async (s: { convId: string; tid: string }) => {
 const said = async (convId: string) => ((await rig.readConv(convId))?.messages ?? []).map((m: any) => String(m.content ?? ""));
 
 describe("the rule: Carl makes projects in the app or by asking, never the agent on its own", () => {
-  it("every thread is told so, and pi has OpenProject (ListProjects still only reads)", async () => {
+  it("every thread is told so, and box:chats openProject is how (PluginAct)", async () => {
     const { PROJECTS_RULE } = await import("../context");
     expect(PROJECTS_RULE).not.toContain("you never do");
-    expect(PROJECTS_RULE).toContain('Only Carl makes projects: in the app ("Make this a project", "+ New project"), or by asking you in so many words, spoken or typed ("start a project for HW4"); then OpenProject makes it. Never make one on your own initiative.');
+    expect(PROJECTS_RULE).toContain('Only Carl makes projects: in the app ("Make this a project", "+ New project"), or by asking you in so many words, spoken or typed ("start a project for HW4"); then box:chats openProject (create: true) makes it. Never make one on your own initiative.');
     const s = await rig.start("Fix the typo in notes/a.md.");
     const th = rig.backend.threads.at(-1);
-    const tool = (th.tools as any[]).find((t) => t.name === "OpenProject");
-    expect(tool).toBeTruthy();
-    expect(String(tool.description)).toMatch(/^Only when Carl asks, in so many words, spoken or typed/);
-    expect(String(tool.description)).toContain("Never on your own initiative");
+    const act = (th.tools as any[]).find((t) => t.name === "PluginAct");
+    expect(String(act.description)).toContain('box:chats');
+    expect(String(act.description)).toContain("openProject only when Carl asks in so many words");
     expect(String(th.instructions)).toContain(PROJECTS_RULE);
     // Voice's Ask (a side thread with the action tools) has it too: that is how a spoken ask reaches it.
     const { voiceSideToolSpecs } = await import("../engine/engine");
-    expect(voiceSideToolSpecs(true).some((t) => t.name === "OpenProject")).toBe(true);
+    expect(voiceSideToolSpecs(true).some((t) => t.name === "PluginAct")).toBe(true);
     await settle(s);
   });
 });
 
-describe("OpenProject", () => {
+describe("box:chats openProject", () => {
   it('typed in Main, "start a project for HW4, make me practice problems": the project, its thread, the screens follow, the work runs there', async () => {
     const s = await rig.start("Start a project for HW4 and make me practice problems.", { convId: "main" });
     const n = signals.length;
-    const r = await rig.backend.call(s.tid, "OpenProject", { project: "HW4", create: true, request: "Make me practice problems for HW4." });
+    const r = await rig.backend.call(s.tid, "PluginAct", { plugin: "box:chats", action: "openProject", args: { project: "HW4", create: true, request: "Make me practice problems for HW4." } });
     expect(r.ok).toBe(true);
     // A project is a folder with its own conversation: a new folder HW4 in the vault.
-    expect(out(r)).toMatch(/^Started project HW4 \(the folder \S.*HW4\); its thread is project-hw4\. His screens are there now/);
+    expect(out(r)).toMatch(/Started project HW4 \(the folder \S.*HW4\); its thread is project-hw4\. His screens are there now/);
     expect(out(r)).toContain("His request went to that thread, which is doing it now: don't do it here too.");
     expect(existsSync(join(rig.vault, "HW4", ".vault-chat", "project-memory.md"))).toBe(true);
     expect(signals.slice(n)).toContainEqual({ type: "follow", convId: "project-hw4", title: "HW4", project: "hw4", created: true });
@@ -67,17 +66,17 @@ describe("OpenProject", () => {
   it('"let\'s work on project X": an existing project opens (nothing new made); an unknown one is a question, not a project', async () => {
     const s = await rig.start("Let's work on project hw4.", { convId: "main" });
     const n = signals.length;
-    const r = await rig.backend.call(s.tid, "OpenProject", { project: "hw4" });
+    const r = await rig.backend.call(s.tid, "PluginAct", { plugin: "box:chats", action: "openProject", args: { project: "hw4" } });
     expect(r.ok).toBe(true);
-    expect(out(r)).toMatch(/^Opened project HW4 /);
+    expect(out(r)).toMatch(/Opened project HW4 /);
     expect(signals.slice(n)).toEqual([{ type: "follow", convId: "project-hw4", title: "HW4", project: "hw4" }]);
-    const miss = await rig.backend.call(s.tid, "OpenProject", { project: "Physics" });
+    const miss = await rig.backend.call(s.tid, "PluginAct", { plugin: "box:chats", action: "openProject", args: { project: "Physics" } });
     expect(miss.ok).toBe(false);
-    expect(out(miss)).toBe('Carl has no project "Physics" (his projects: HW4). Nothing changed. If he asked to start it, call OpenProject again with create: true; otherwise ask him which one he means.');
+    expect(out(miss)).toContain('Carl has no project "Physics" (his projects: HW4). Nothing changed. If he asked to start it, call box:chats openProject again with create: true; otherwise ask him which one he means.');
     expect(existsSync(join(rig.vault, "Physics"))).toBe(false);
     // Back home.
-    const home = await rig.backend.call(s.tid, "OpenProject", { project: "main" });
-    expect(out(home)).toBe("Back in Main. His screens are there now; what he says next arrives there.");
+    const home = await rig.backend.call(s.tid, "PluginAct", { plugin: "box:chats", action: "openProject", args: { project: "main" } });
+    expect(out(home)).toContain("Back in Main. His screens are there now; what he says next arrives there.");
     expect(signals.at(-1)).toEqual({ type: "follow", convId: "main", title: "Main" });
     await settle(s);
   });
@@ -91,11 +90,11 @@ it("OpenProject moves the New call's pi tap and its next spoken turn, without a 
       { convId: "main", device: "laptop" });
     expect(c.status).toBe(200);
     const n = signals.length;
-    const opened = await rig.backend.h.sideTool("main", "OpenProject", { project: "Coconut", create: true });
-    expect(out(opened)).toMatch(/^Started project Coconut .*His screens and the live call are there now/);
+    const opened = await rig.backend.h.sideTool("main", "PluginAct", { plugin: "box:chats", action: "openProject", args: { project: "Coconut", create: true } });
+    expect(out(opened)).toMatch(/Started project Coconut .*His screens and the live call are there now/);
     expect(signals.slice(n)).toContainEqual({ type: "follow", convId: "project-coconut", title: "Coconut", project: "coconut", created: true });
     expect(voice.liveCalls()).toContainEqual(expect.objectContaining({ id: c.body.callId, convId: "project-coconut" }));
-    const home = await rig.backend.h.sideTool("project-coconut", "OpenProject", { project: "main" });
+    const home = await rig.backend.h.sideTool("project-coconut", "PluginAct", { plugin: "box:chats", action: "openProject", args: { project: "main" } });
     expect(out(home)).toContain("Back in Main");
     expect(voice.liveCalls()).toContainEqual(expect.objectContaining({ id: c.body.callId, convId: "main" }));
   } finally {

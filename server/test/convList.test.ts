@@ -40,21 +40,21 @@ afterAll(() => {
   cleanup(rig?.root);
 });
 
-describe("ListConversations", () => {
+describe("box:chats list", () => {
   it("every vault's chats, each with what it is, who named it and its vault", async () => {
     await turn("first chat about pendulums", "loose-a");
     await until(async () => String((await rig.readConv("loose-a"))?.title) === "Summary name");
     await turn("second chat", "loose-b");
     expect((await rig.engine.intent({ type: "renameConversation", convId: "loose-b", title: "My name" })).ok).toBe(true);
     const tid = await turn("what chats do I have?", "asker-chat");
-    const out = lines(await rig.backend.call(tid, "ListConversations", { limit: 100 }));
-    const row = (id: string) => out.find((l) => l.startsWith(`${id} — `)) ?? "";
+    const out = lines(await rig.backend.call(tid, "PluginAct", { plugin: "box:chats", action: "list", args: { limit: 100 } }));
+    const row = (id: string) => out.find((l) => l.replace(/^box:chats list: done: /, "").startsWith(`${id} — `)) ?? "";
     expect(row("main")).toContain("· Main · named by its place");
     expect(row("loose-a")).toContain('"Summary name" · loose chat · summary title');
     expect(row("loose-b")).toContain('"My name" · loose chat · named by Carl');
     expect(row("far-1")).toContain("· loose chat · his first message, vault vault-two");
     expect(row("asker-chat")).toBe("");
     // Read across vaults too.
-    expect(JSON.stringify(await rig.backend.call(tid, "ReadConversation", { conversation_id: "far-1" }))).toContain("A chat in the other vault");
+    expect(JSON.stringify(await rig.backend.call(tid, "PluginAct", { plugin: "box:chats", action: "read", args: { id: "far-1" } }))).toContain("A chat in the other vault");
   });
 });

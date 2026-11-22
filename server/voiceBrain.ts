@@ -332,7 +332,7 @@ export function activeVoiceSessions(now = Date.now()): number {
   return n;
 }
 
-/** Carl asked to work in another thread (OpenProject, server/projectRoutes.ts): the live call in `vault` follows him —
+/** Carl asked to work in another thread (box:chats openProject, server/projectRoutes.ts): the live call in `vault` follows him —
  *  its turns, its lines and its results are that thread's from now on (the call's rules go in front of its first turn
  *  there). `from`: only a call on that thread (a deleted project's call goes on in Main). False: no such live call. */
 export function followCall(vault: string, convId: string, from?: string): boolean {

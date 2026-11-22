@@ -200,15 +200,15 @@ describe("Restore a project (the inverse of Delete; Carl asks the agent, it uses
     await turn("Make the lecture 7 figure.", "project-iems-469-course-notes-visuals");
     expect((await rig.engine.intent({ type: "deleteProject", slug: "iems-469-course-notes-visuals" })).ok).toBe(true);
     const m = await turn("Bring 469 back.");
-    const list = await rig.backend.call(m.tid, "RestoreProject", {});
+    const list = await rig.backend.call(m.tid, "PluginAct", { plugin: "box:chats", action: "deleted", args: {} });
     expect(JSON.stringify(list)).toContain("IEMS 469 course notes visuals (slug iems-469-course-notes-visuals");
     signals.length = 0;
-    const r = await rig.backend.call(m.tid, "RestoreProject", { project: "IEMS 469 course notes visuals" });
+    const r = await rig.backend.call(m.tid, "PluginAct", { plugin: "box:chats", action: "restoreProject", args: { project: "IEMS 469 course notes visuals" } });
     expect(JSON.stringify(r)).toContain("Restored project IEMS 469 course notes visuals");
     expect(signals).toContainEqual(expect.objectContaining({ type: "project", restored: true, convId: "project-iems-469-course-notes-visuals" }));
     expect((await import("../context")).listProjects().map((p) => p.slug)).toContain("iems-469-course-notes-visuals");
     expect(items("project-iems-469-course-notes-visuals")).toBeGreaterThan(0);
-    const miss = await rig.backend.call(m.tid, "RestoreProject", { project: "Nothing like it" });
+    const miss = await rig.backend.call(m.tid, "PluginAct", { plugin: "box:chats", action: "restoreProject", args: { project: "Nothing like it" } });
     expect(JSON.stringify(miss)).toContain("Not restored");
   });
 

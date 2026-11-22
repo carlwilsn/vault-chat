@@ -59,16 +59,14 @@ type ThreadTokenUsage = { total?: TokenUsageBreakdown; last: TokenUsageBreakdown
                                      // = the last model call's usage, from the engine
 type DynamicToolSpec = { type: "function"; name: string; description: string; inputSchema: object };
 type DynamicToolCallResponse = { success: boolean; contentItems: { type: "inputText"; text: string }[] };
-type ToolContext = { conv: ContextConv; convs?: ContextConv[] };   // convs: every conversation (ListProjects)
+type ToolContext = { conv: ContextConv; convs?: ContextConv[] };   // convs: every conversation (box:chats)
 ```
 
 ## Interface
 
 | Function | Use |
 |---|---|
-| `contextToolSpecs: DynamicToolSpec[]` | Add to `thread/start` `dynamicTools`: **ListProjects** (read-only). |
-| `isContextTool(name)` / `handleContextTool(name, args, ctx): Promise<DynamicToolCallResponse>` | Answer `item/tool/call` for those names; reply with the result as is. Never throws. |
-| `listProjectsText(project?, current?, convs?)` | ListProjects' answer, shared with voice (server/voice.ts). |
+| `listProjectsText(project?, current?, convs?)`, `chatListText(convs, self, limit?)`, `readChatText(convs, self, id, lastN?)` | What box:chats reads (server/model/chats.ts): the projects, the chats newest first, one chat's recent messages. |
 | `buildDeveloperInstructions(conv, {rolePrompt?}): string` | `developerInstructions` for a new thread (an older conversation that rolled over gets its recap in them). |
 | `rulesPrefixForTurn(conv?): string` | Put in front of a turn's input text when the rules changed. `""` when there are no rules files. Read fresh each call. |
 | `projectCost(nameOrSlug, convs?): ProjectCost \| null` | `Cost{project}`: `{slug, name, totalUsd, missingCalls, parts[{id,title,costUsd,missingCalls}]}` over conversations whose meta `project` is the slug. `convs` defaults to every conversation on disk. |
@@ -77,8 +75,8 @@ type ToolContext = { conv: ContextConv; convs?: ContextConv[] };   // convs: eve
 
 ### Tools (what the agent sees)
 
-- `ListProjects {project?}` — Carl's projects with their chats' titles; with `project`, its notes file (path and
-  text) and all its chats. Read-only. The agent edits project.md, like any file, with its file tools.
+- None of its own: the agent reads projects and chats through box:chats (server/model/chats.ts, PluginRead /
+  PluginAct). The agent edits project.md, like any file, with its file tools.
 
 The notes tools (ListNotes, CreateNote, UpdateNote, ResolveNote, ReopenNote, DeleteNote) are not CONTEXT's: they
 are server/notesTools.ts, the same code for pi and voice.
@@ -88,6 +86,5 @@ are server/notesTools.ts, the same code for pi and voice.
 1. **New conversation / new thread:** `developerInstructions = buildDeveloperInstructions(conv)` (ENGINE may prepend
    its adapted system prompt, or pass it as `rolePrompt` to replace `ROLE_PROMPT`).
 2. **Every turn:** `text = rulesPrefixForTurn(conv) + userText`.
-3. **Tools:** `dynamicTools: [...engineTools, ...noteToolSpecs, ...contextToolSpecs]`; on `item/tool/call` with
-   `isContextTool(tool)`, reply `await handleContextTool(tool, arguments, {conv, convs})`.
+3. **Tools:** none here; box:chats (Engine.chatsCtl) calls the readers above.
 4. **Cost{project}:** `projectCost(project, convsInMemory?)`.

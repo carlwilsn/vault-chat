@@ -54,7 +54,7 @@ describe("Deleting chats", () => {
   it("the agent's DeleteConversation, never its own chat; RestoreConversation lists and restores", async () => {
     await turn("Old chat.", "sep-old");
     const m = await turn("Delete my old chats.", "sep-agent");
-    const r = await rig.backend.call(m.tid, "DeleteConversation", { ids: ["sep-old", "sep-agent"] });
+    const r = await rig.backend.call(m.tid, "PluginAct", { plugin: "box:chats", action: "delete", args: { ids: ["sep-old", "sep-agent"] } });
     const out = JSON.stringify(r);
     expect(out).toContain("Deleted 1");
     expect(out).toContain("sep-agent: not deleted (this is the chat you are in)");
@@ -62,12 +62,12 @@ describe("Deleting chats", () => {
     expect(listed()).toContain("sep-agent");
     // Gone from the agent's own lists too.
     const other = await turn("What else is there?", "sep-other");
-    expect(JSON.stringify(await rig.backend.call(other.tid, "ListConversations", { limit: 100 }))).not.toContain("sep-old");
-    expect(JSON.stringify(await rig.backend.call(other.tid, "ListConversations", { limit: 100 }))).toContain("sep-agent");
-    expect(JSON.stringify(await rig.backend.call(other.tid, "ReadConversation", { conversation_id: "sep-old" }))).toContain("No other chat");
-    const list = JSON.stringify(await rig.backend.call(m.tid, "RestoreConversation", {}));
+    expect(JSON.stringify(await rig.backend.call(other.tid, "PluginAct", { plugin: "box:chats", action: "list", args: { limit: 100 } }))).not.toContain("sep-old");
+    expect(JSON.stringify(await rig.backend.call(other.tid, "PluginAct", { plugin: "box:chats", action: "list", args: { limit: 100 } }))).toContain("sep-agent");
+    expect(JSON.stringify(await rig.backend.call(other.tid, "PluginAct", { plugin: "box:chats", action: "read", args: { id: "sep-old" } }))).toContain("No other chat");
+    const list = JSON.stringify(await rig.backend.call(m.tid, "PluginAct", { plugin: "box:chats", action: "deleted", args: {} }));
     expect(list).toContain("id sep-old");
-    expect(JSON.stringify(await rig.backend.call(m.tid, "RestoreConversation", { id: "sep-old" }))).toContain("Restored chat sep-old");
+    expect(JSON.stringify(await rig.backend.call(m.tid, "PluginAct", { plugin: "box:chats", action: "restore", args: { id: "sep-old" } }))).toContain("Restored chat sep-old");
     expect(listed()).toContain("sep-old");
   });
 });

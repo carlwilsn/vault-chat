@@ -77,14 +77,14 @@ describe("Chat titles", () => {
     const tid = await turn("a chat about pendulums", "sep-title3");
     await until(async () => (await title("sep-title3")) === "First summary");
     // A name he asked for: written, and kept over later summaries.
-    const out = JSON.stringify(await rig.backend.call(tid, "RenameConversation", { title: "  Pendulum lab  " }));
+    const out = JSON.stringify(await rig.backend.call(tid, "PluginAct", { plugin: "box:chats", action: "rename", args: { title: "  Pendulum lab  " } }));
     expect(out).toContain('now named \\"Pendulum lab\\"');
     expect(await title("sep-title3")).toBe("Pendulum lab");
     expect((await rig.readConv("sep-title3"))?.titleBy).toBe("carl");
     // No title: a fresh summary now, even over his own name (he asked for it), and by id from another chat.
     next = "Pendulum period vs length";
     const other = await turn("another chat", "sep-title4");
-    expect(JSON.stringify(await rig.backend.call(other, "RenameConversation", { id: "sep-title3" }))).toContain("Pendulum period vs length");
+    expect(JSON.stringify(await rig.backend.call(other, "PluginAct", { plugin: "box:chats", action: "rename", args: { id: "sep-title3" } }))).toContain("Pendulum period vs length");
     expect(await title("sep-title3")).toBe("Pendulum period vs length");
     // Then no automatic refresh replaces it.
     next = "Should not appear";
@@ -92,8 +92,8 @@ describe("Chat titles", () => {
     await new Promise((r) => setTimeout(r, 200));
     expect(await title("sep-title3")).toBe("Pendulum period vs length");
     // Main and an unknown chat are refused.
-    const main = JSON.stringify(await rig.backend.call(tid, "RenameConversation", { id: "main", title: "Home" }));
+    const main = JSON.stringify(await rig.backend.call(tid, "PluginAct", { plugin: "box:chats", action: "rename", args: { id: "main", title: "Home" } }));
     expect(main).toContain("Not renamed");
-    expect(JSON.stringify(await rig.backend.call(tid, "RenameConversation", { id: "nope", title: "X" }))).toContain("Not renamed: no chat nope");
+    expect(JSON.stringify(await rig.backend.call(tid, "PluginAct", { plugin: "box:chats", action: "rename", args: { id: "nope", title: "X" } }))).toContain("Not renamed: no chat nope");
   });
 });

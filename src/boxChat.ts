@@ -657,7 +657,7 @@ class BoxChatSession {
         return;
       }
       case "follow": {
-        // Carl asked to work in another thread (the agent's OpenProject, server/projectRoutes.ts): this screen follows.
+        // Carl asked to work in another thread (box:chats openProject, server/projectRoutes.ts): this screen follows.
         if (typeof e.convId !== "string" || !e.convId) return;
         const to = e.convId;
         const title = typeof e.title === "string" && e.title ? e.title : undefined;
@@ -1373,7 +1373,7 @@ export async function boxDeleteMany(convIds: string[]): Promise<{ ok: boolean; e
   return { ok: false, error: other.length ? other.map((x) => String(x.why)).join("; ") : r.error, localOnly };
 }
 
-/** Bring back a deleted chat (the chat list plugin's restore; the agent's RestoreConversation does the same on the box). */
+/** Bring back a deleted chat (the chat list plugin's restore; box:chats restore does the same on the box). */
 export async function boxRestore(convId: string): Promise<{ ok: boolean; error?: string }> {
   if (!boxChatOn() || !session) return { ok: false, error: "the box isn't connected" };
   const r = await intent(session, { type: "restoreConversation", convId });

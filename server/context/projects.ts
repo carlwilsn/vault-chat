@@ -8,7 +8,7 @@
 //   <folder>/.vault-chat/rules.md   the project's rules, binding on every turn of its thread
 //
 // The name is the folder's name. Carl makes projects (the app's "Make this a project" or "+ New project", or by asking
-// in so many words: OpenProject); the agent never makes one on its own initiative. Delete takes the conversation
+// in so many words: box:chats openProject); the agent never makes one on its own initiative. Delete takes the conversation
 // away (the registry keeps the choice under `deleted`, and the log keeps the thread: Restore brings both back); the
 // folder stays unless Carl also deleted it (server/folderOps.ts, recoverable through git).
 import { existsSync, statSync } from "node:fs";
@@ -149,7 +149,7 @@ export function excludeOwnFiles(folder: string): void {
 }
 
 /**
- * A new project by name (OpenProject with create, "+ New project"): a new folder of that name in this vault (an
+ * A new project by name (box:chats openProject with create, "+ New project"): a new folder of that name in this vault (an
  * existing folder of that name is used as it is), made a project.
  */
 export function createProject(name: string, taken?: (slug: string) => boolean): ProjectInfo {
@@ -164,7 +164,7 @@ export function createProject(name: string, taken?: (slug: string) => boolean): 
   return r;
 }
 
-/** Create-or-attach by name (OpenProject). */
+/** Create-or-attach by name (box:chats openProject). */
 export function ensureProject(name: string, taken?: (slug: string) => boolean): { project: ProjectInfo; created: boolean } {
   const found = findProject(name);
   if (found) return { project: found, created: false };

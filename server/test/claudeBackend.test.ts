@@ -500,8 +500,8 @@ describe("a conversation on Claude Code", () => {
     const to = await engine.message({ text: "I own the physics work", convId: "cc-conv-target" });
     await answered(to.convId, "I own the physics work");
 
-    const r = await engine.message({ text: 'CALL mcp__vault_chat__PostToConversation {"conversation_id":"cc-conv-target","text":"Finish the physics set"}', convId: "cc-conv-from" });
-    await answered(r.convId, 'CALL mcp__vault_chat__PostToConversation {"conversation_id":"cc-conv-target","text":"Finish the physics set"}');
+    const r = await engine.message({ text: 'CALL mcp__vault_chat__PluginAct {"plugin":"box:chats","action":"post","args":{"id":"cc-conv-target","text":"Finish the physics set"}}', convId: "cc-conv-from" });
+    await answered(r.convId, 'CALL mcp__vault_chat__PluginAct {"plugin":"box:chats","action":"post","args":{"id":"cc-conv-target","text":"Finish the physics set"}}');
 
     // The target took its own turn on the handed-over words. Wait on the feed's
     // own item, not on readConv's messages: those are already rendered, and a
@@ -521,17 +521,17 @@ describe("a conversation on Claude Code", () => {
 
     // The chat that posted was told it does not wait, and its own turn ended.
     const tools = engine.picture(r.convId).items.filter((i: any) => i.kind === "tool");
-    expect(tools.map((t: any) => t.name)).toEqual(["PostToConversation"]);
+    expect(tools.map((t: any) => t.name)).toEqual(["PluginAct"]);
     expect(String(tools[0].result ?? "")).toMatch(/taking its own turn|take it when its current turn ends/);
   }, 240_000);
 
   it("a handoff refuses this chat itself and a chat that is not there", async () => {
-    const r = await engine.message({ text: 'CALL mcp__vault_chat__PostToConversation {"conversation_id":"cc-conv-self","text":"loop"}', convId: "cc-conv-self" });
-    await answered(r.convId, 'CALL mcp__vault_chat__PostToConversation {"conversation_id":"cc-conv-self","text":"loop"}');
+    const r = await engine.message({ text: 'CALL mcp__vault_chat__PluginAct {"plugin":"box:chats","action":"post","args":{"id":"cc-conv-self","text":"loop"}}', convId: "cc-conv-self" });
+    await answered(r.convId, 'CALL mcp__vault_chat__PluginAct {"plugin":"box:chats","action":"post","args":{"id":"cc-conv-self","text":"loop"}}');
     expect(String(engine.picture(r.convId).items.filter((i: any) => i.kind === "tool")[0]?.result ?? "")).toContain("posting to yourself");
 
-    const r2 = await engine.message({ text: 'CALL mcp__vault_chat__PostToConversation {"conversation_id":"no-such-chat","text":"hello"}', convId: "cc-conv-missing" });
-    await answered(r2.convId, 'CALL mcp__vault_chat__PostToConversation {"conversation_id":"no-such-chat","text":"hello"}');
+    const r2 = await engine.message({ text: 'CALL mcp__vault_chat__PluginAct {"plugin":"box:chats","action":"post","args":{"id":"no-such-chat","text":"hello"}}', convId: "cc-conv-missing" });
+    await answered(r2.convId, 'CALL mcp__vault_chat__PluginAct {"plugin":"box:chats","action":"post","args":{"id":"no-such-chat","text":"hello"}}');
     expect(String(engine.picture(r2.convId).items.filter((i: any) => i.kind === "tool")[0]?.result ?? "")).toContain("No chat with id");
   }, 240_000);
 

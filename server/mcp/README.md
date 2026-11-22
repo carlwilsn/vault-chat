@@ -225,10 +225,9 @@ as a URL parameter or cookie. Both still require the Serve-vouched Tailscale log
 Show, Screen, LaptopBuild, PluginRead/PluginAct
 (every live plugin's offers: file tree, notes panel, vault plugins; the box's
 own nouns: box:settings, box:notes, box:pages, box:workspace, box:history,
-box:jobs read-only),
+box:jobs, box:chats: Carl's chats and projects, read, start, post, rename,
+delete / restore, openProject),
 Lookup/PdfRead/PdfPages,
-ListConversations/ReadConversation/PostToConversation (hand work to a chat),
-Rename/Delete/RestoreConversation, ListProjects/OpenProject/RestoreProject,
 Notify,
 WebFetch, Cost, RecordUI (browser-only), and the `vault-chat://context/you`
 resource. Not listed (they need an owning

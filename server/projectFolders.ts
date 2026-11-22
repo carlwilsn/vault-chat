@@ -6,7 +6,7 @@
 // Who may name such a folder matters: the sandbox makes it writable. So the choice is recorded
 // where the agent cannot write — `.vault-chat/local/project-folders.json`, the server's own state
 // (read-only in the sandbox, out of git) — and only Carl's own action writes it (the app's
-// "Make this a project" and "+ New project", or his explicit ask through OpenProject).
+// "Make this a project" and "+ New project", or his explicit ask through box:chats openProject).
 //
 // Never a project folder: the root, the system's folders, the home itself or anything holding it,
 // and every path the agent never sees (the key store, ~/.ssh and the other credentials,

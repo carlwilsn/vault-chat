@@ -2,7 +2,7 @@
 // same in the chat pane's list and the fullscreen sidebar (src/plugins/chats).
 // On the box a delete is recoverable: a mark in each chat's log, its history
 // kept (server/engine/engine.ts deleteConversations; the agent's
-// RestoreConversation brings one back). Main and a project's own thread are
+// box:chats restore brings one back). Main and a project's own thread are
 // never deleted.
 import { useStore } from "./store";
 import { MAIN_ID, projectOfThread } from "./threads";

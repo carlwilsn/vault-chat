@@ -20,9 +20,9 @@ import { holdRun, registerRun, unregisterRun } from "../../src/runRegistry";
 import type { BackendEvent, CutWork, EngineBackend, ToolSpec, HostLoadout, Interaction } from "./backend";
 import {
   withVault,
-  contextToolSpecs,
-  handleContextTool,
-  isContextTool,
+  chatListText,
+  listProjectsText,
+  readChatText,
   buildDeveloperInstructions,
   rulesPrefixForTurn,
   turnSections,
@@ -30,6 +30,7 @@ import {
   deleteProjectFiles,
   restoreProjectFiles,
   listDeletedProjects,
+  findProject,
   renameProject,
   listProjects,
   projectCost,
@@ -57,7 +58,8 @@ import { coreRepo, coreVault } from "../coreBundles";
 import { CORE_PART } from "../../src/coreBundle";
 import { SERVER_REV as BOX_SERVER_REV } from "../config";
 import { surfaceOff } from "../surfaces";
-import { openProject, OPEN_PROJECT_DESCRIPTION, OPEN_PROJECT_SCHEMA } from "../projectRoutes";
+import { openProject } from "../projectRoutes";
+import type { ChatsCtl } from "../model/chats";
 import { startJobWith, jobStatus, jobList, jobStop, reapJobs, readJobs, type JobEnv } from "./jobs";
 import { formatWorker, formatWorkers } from "./claude/workers";
 import { devProxies, exposedNote, jobPorts } from "../devProxy";
@@ -379,21 +381,6 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
-    name: "PostToConversation",
-    description:
-      "Hand work to one of Carl's other chats: post a message into it, which starts its own turn there. It does not wait for the answer — the chat you posted to does the work and tells Carl itself. Use it to pass something to the chat that already owns that work (ListConversations, ReadConversation name them); never to post into this chat, and never for something Carl should simply be told (that is Notify). It is shown in that chat as a message from outside it, not as Carl's words.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        conversation_id: { type: "string", description: "The chat to post into (from ListConversations)." },
-        text: { type: "string", description: "What that chat should do, in full: it has none of this chat's context." },
-      },
-      required: ["conversation_id", "text"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
     name: "Notify",
     description:
       "Tell Carl that something he asked for finished, or that something needs him (a failure he must act on). It always lands in his in-app alerts. Phone push is OFF by default. Set push:true ONLY when Carl explicitly asked to be pinged for THIS work (e.g. 'Ping me when it is done', 'notify me if it fails'), and only on that requested finish/failure, not progress or unrelated later work. One invocation requests one event push, not future alerts. A worker must use only the request passed into its original task, never a later parent request. Omit push otherwise. Push still respects away/seen/dedup rules; an optional user Settings preference restores legacy automatic pushes. The title says plainly what finished or what is needed (\"Done: …\", \"Needs you: …\"). Not for progress, not for background work he did not ask about, not for questions (AskUser).",
@@ -453,56 +440,6 @@ export const ENGINE_TOOL_SPECS = [
     name: "RecordUI",
     description: RECORD_DESCRIPTION,
     inputSchema: RECORD_SCHEMA as unknown as Record<string, unknown>,
-  },
-  {
-    type: "function",
-    name: "OpenProject",
-    description: OPEN_PROJECT_DESCRIPTION,
-    inputSchema: OPEN_PROJECT_SCHEMA as unknown as Record<string, unknown>,
-  },
-  {
-    type: "function",
-    name: "RestoreProject",
-    description:
-      "Bring back a project Carl deleted, only when he asks for it back. Without project: lists what is deleted (name, slug, when). With project (its name, slug, or a listed entry): the project comes back whole — its folder, notes and memory, its thread with its whole conversation — on every one of his screens. " +
-      "This is the only way back: never move or copy anything in agent-projects/.deleted/ yourself (a project put back by hand shows up half-way).",
-    inputSchema: {
-      type: "object",
-      properties: { project: { type: "string", description: "The deleted project's name, slug or .deleted entry; omit to list them." } },
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "DeleteConversation",
-    description:
-      "Delete Carl's chats by id (from ListConversations), only when he asks for them gone. Recoverable: each leaves every list but its whole history is kept, and RestoreConversation brings it back. Main, a project's thread and this chat itself can't be deleted. Returns what was deleted and what wasn't, with why.",
-    inputSchema: {
-      type: "object",
-      properties: { ids: { type: "array", items: { type: "string" }, description: "The chats' ids." } },
-      required: ["ids"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "RenameConversation",
-    description:
-      "Name one of Carl's chats, only when he asks (\"rename this chat\", \"give it a better name\"). id: the chat (from ListConversations); left out, this chat. title: the name he wants; left out, a fresh short summary of what the chat is about is written now. Either way it shows at once on every surface and a later automatic summary never replaces it. Main and a project's thread are named by their place (a project is renamed in the app). Returns the name written, or why not.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        id: { type: "string", description: "The chat's id; omit for this chat." },
-        title: { type: "string", description: "The new name; omit for a fresh summary." },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "RestoreConversation",
-    description: "Bring back a chat Carl deleted, only when he asks for it back. Without id: lists the deleted chats (id, title, when). With id: it is back in his lists as it was.",
-    inputSchema: { type: "object", properties: { id: { type: "string" } }, additionalProperties: false },
   },
   {
     type: "function",
@@ -567,7 +504,7 @@ export const ENGINE_TOOL_SPECS = [
 export function agentToolSpecs(): ToolSpec[] {
   // The notes tools are no longer listed: box:notes (PluginRead / PluginAct, server/boxOffers.ts) is the one way. Their
   // names still answer (below) for a session that listed them before, one release, then they go.
-  return [...ENGINE_TOOL_SPECS, pdfPagesSpec, ...contextToolSpecs, ...pluginOfferToolSpecs] as ToolSpec[];
+  return [...ENGINE_TOOL_SPECS, pdfPagesSpec, ...pluginOfferToolSpecs] as ToolSpec[];
 }
 /** The model Ctrl+K / Ctrl+L runs on unless Carl picks another: small interactions want speed. */
 export const INLINE_DEFAULT_MODEL = "claude-haiku-5-5";
@@ -1522,6 +1459,76 @@ export class Engine {
     };
   }
 
+  /** box:chats for one asking conversation (server/model/chats.ts): Carl's chats and projects in every vault, read and
+   *  changed through the same paths as the app's own intents. `self`: the asking chat ("" for an outside client). */
+  private chatsCtl(vault: string, self: string, conv: { project?: unknown }): ChatsCtl {
+    const convs = async () => (await this.convsEverywhere(vault)) as any[];
+    const when = (t: number) => (t ? new Date(t).toISOString().slice(0, 16).replace("T", " ") + " UTC" : "earlier");
+    const said = (r: { ok?: boolean; text: string }) => ({ ok: r.ok !== false, text: r.text });
+    return {
+      self,
+      list: async (limit) => chatListText(await convs(), self, limit),
+      read: async (id, lastN) => readChatText(await convs(), self, id, lastN),
+      projects: async (project) => listProjectsText(project ?? null, typeof conv.project === "string" ? conv.project : null, await convs()),
+      deleted: () => {
+        const chats = this.deletedConversations();
+        const projects = listDeletedProjects();
+        return [
+          chats.length ? `Deleted chats (newest first; restore {id}):\n${chats.slice(0, 200).map((d) => `- ${d.title} (id ${d.id}, deleted ${when(d.at)})`).join("\n")}` : "No chat is deleted.",
+          projects.length ? `Deleted projects (newest first; restoreProject {project}):\n${projects.map((d) => `- ${d.name} (slug ${d.slug}, entry ${d.entry}, deleted ${when(d.deletedAt)})`).join("\n")}` : "No project is deleted.",
+        ].join("\n\n");
+      },
+      start: async (text, place) => {
+        if (!text) return { ok: false, text: "start needs text: the whole message (the new chat has none of this context). Nothing was made." };
+        const main = !place || place.toLowerCase() === "main";
+        const p = main ? null : findProject(place);
+        if (!main && !p) return { ok: false, text: `No project "${place}" (only Carl makes projects). Nothing was made.` };
+        const id = `chat-${randomUUID().slice(0, 12)}`;
+        const r = await this.message({ convId: id, text, via: "handoff", ...(p ? { project: p.slug } : {}) });
+        if (!r || r.error) return { ok: false, text: `Not started: ${String(r?.error ?? "no answer")}.` };
+        return { ok: true, text: `Started a new chat (${id})${p ? ` in ${p.name}` : ""}; it takes its own turn and tells Carl itself, so do not wait or report for it.` };
+      },
+      rename: async (id, title) => {
+        const r = await this.renameAcrossVaults(id, title);
+        const which = id === self ? "This chat" : `Chat ${id}`;
+        return r.ok ? { ok: true, text: `${which} is now named "${r.title}" on every surface.` } : { ok: false, text: `Not renamed: ${r.error}.` };
+      },
+      renameProject: async (place, name) => {
+        const p = findProject(place);
+        if (!p) return { ok: false, text: `No project "${place}". Nothing was renamed.` };
+        const r = await this.intent({ type: "renameProject", slug: p.slug, name, client: "agent" });
+        return r.ok ? { ok: true, text: `Project ${p.slug} is now named "${String(r.name)}" (its folder and chats stay).` } : { ok: false, text: `Not renamed: ${String(r.error)}.` };
+      },
+      delete: async (ids) => {
+        if (!ids.length) return { ok: false, text: "delete needs ids (from list). Nothing was deleted." };
+        const r = await this.deleteAcrossVaults(ids, self);
+        const lines = [r.deleted.length ? `Deleted ${r.deleted.length} (recoverable with restore): ${r.deleted.join(", ")}` : "Nothing deleted.", ...r.refused.map((x) => `- ${x.id}: not deleted (${x.why})`)];
+        return { ok: r.deleted.length > 0, text: lines.join("\n") };
+      },
+      restore: async (id) => {
+        const r = await this.restoreAcrossVaults(id);
+        return r.ok ? { ok: true, text: `Restored chat ${id}: it is back in Carl's lists.` } : { ok: false, text: `Not restored: ${r.error}.` };
+      },
+      restoreProject: async (want) => {
+        const r = await this.restoreProject(want);
+        return r.ok ? { ok: true, text: `Restored project ${r.name}: its notes and its thread (${r.convId}) are back on his screens.` } : { ok: false, text: `Not restored: ${r.error}.` };
+      },
+      openProject: async (args) => said(await openProject(vault, args, { emit: (ev) => this.d.broadcast?.(ev), message: (b) => this.message(b) })),
+      post: async (target, body) => {
+        if (!target || !body) return { ok: false, text: "post needs id and text. Nothing was posted." };
+        if (target === self) return { ok: false, text: "That is this chat. Answer here instead of posting to yourself." };
+        const to = await readConv(vault, target);
+        if (!to) return { ok: false, text: `No chat with id "${target}". box:chats list lists them.` };
+        if (LEGACY_SOURCES.has(to.source)) return { ok: false, text: `"${to.title}" is an archived mission thread: it is readable, never run.` };
+        // It starts a turn there the way any message does, so that chat's own engine, tools and rules apply.
+        const r = await this.message({ convId: target, text: body, via: "handoff" });
+        if (r?.error) return { ok: false, text: `Not posted: ${String(r.error)}` };
+        const waiting = r?.queued === true || r?.steered === true;
+        return { ok: true, text: `Posted to "${to.title}" (${target}); it ${waiting ? "has it waiting and will take it when its current turn ends" : "is taking its own turn"}. It will tell Carl itself, so do not wait or report for it.` };
+      },
+    };
+  }
+
   // ---------------------------------------------------------------- side threads (pi/side.ts)
 
   /**
@@ -1626,7 +1633,7 @@ export class Engine {
   }
 
   /**
-   * Carl's Delete on chats (a row's Delete, his multi-select, or the agent's DeleteConversation): each is
+   * Carl's Delete on chats (a row's Delete, his multi-select, or box:chats delete): each is
    * tombstoned in its log (meta.deleted), so it leaves every list on every surface while its records and its
    * transcript stay on disk; restoreConversation clears the mark and it is back as it was. Nothing is ever
    * removed from .vault-chat. Main and a project's thread are refused (Clear gives a fresh view); `except`
@@ -1680,7 +1687,7 @@ export class Engine {
     return out;
   }
 
-  /** Every vault's conversations (one list, the agent's ListConversations / ReadConversation / ListProjects), each with the vault it lives in. */
+  /** Every vault's conversations (one list, box:chats), each with the vault it lives in. */
   private async convsEverywhere(vault: string): Promise<Array<EngineConv & { vault: string }>> {
     const seen = new Set<string>();
     const out: Array<EngineConv & { vault: string }> = [];
@@ -1696,7 +1703,7 @@ export class Engine {
     return out;
   }
 
-  /** The agent's rename (RenameConversation): the engine of the vault that holds the chat names it; no title: a fresh summary. */
+  /** The agent's rename (box:chats rename): the engine of the vault that holds the chat names it; no title: a fresh summary. */
   async renameAcrossVaults(id: string, title?: string): Promise<{ ok: true; title: string } | { ok: false; error: string }> {
     const e = await this.ownerOf(id);
     if (title && title.trim()) {
@@ -1713,7 +1720,7 @@ export class Engine {
     return (await this.ownerOf(id)).restoreConversation(id);
   }
 
-  /** The chats Carl deleted, newest first: what RestoreConversation can bring back. */
+  /** The chats Carl deleted, newest first: what box:chats restore can bring back. */
   deletedConversations(): { id: string; title: string; at: number }[] {
     const out: { id: string; title: string; at: number }[] = [];
     for (const id of logOf(this.d.vault).ids()) {
@@ -1729,7 +1736,7 @@ export class Engine {
     const p = id ? this.picture(id) : null;
     if (!p) return { ok: false, error: `no chat ${id}` };
     if (p.meta.deleted !== true) return { ok: false, error: "it is not deleted" };
-    if (p.meta.deletedProject) return { ok: false, error: "it is a deleted project's thread: RestoreProject brings it back" };
+    if (p.meta.deletedProject) return { ok: false, error: "it is a deleted project's thread: restoreProject brings it back" };
     this.emit(id, { type: "meta", patch: { deleted: null, deletedAt: null, deletedBy: null } });
     this.log(`chat ${id} restored`);
     return { ok: true, id };
@@ -1767,7 +1774,7 @@ export class Engine {
     }
     if (this.picture(id)) this.emit(id, { type: "meta", patch: { deleted: true, deletedProject: { name: moved.name, at: Date.now(), movedTo: moved.movedTo, ...(folderGone ? { folder: moved.folder, folderGone } : {}) } } });
     const main = await ensureMain(this.d.vault);
-    const tell = [...((this.picture(main.id)?.meta.tellAgent as string[] | undefined) ?? []), `Carl deleted the project "${moved.name}" (its thread is gone from his screens${o.folder ? ", and its folder" : "; its folder stays, a plain folder"}). Don't bring it up or treat it as a project any more unless he does. If he wants it back, RestoreProject brings it back whole; never move its files yourself.`];
+    const tell = [...((this.picture(main.id)?.meta.tellAgent as string[] | undefined) ?? []), `Carl deleted the project "${moved.name}" (its thread is gone from his screens${o.folder ? ", and its folder" : "; its folder stays, a plain folder"}). Don't bring it up or treat it as a project any more unless he does. If he wants it back, box:chats restoreProject brings it back whole; never move its files yourself.`];
     this.emit(main.id, { type: "meta", patch: { tellAgent: tell } });
     this.d.broadcast?.({ type: "project", slug, deleted: true, convId: id, to: MAIN_ID });
     // A call in it goes on in Main (server/voiceBrain.ts).
@@ -1777,7 +1784,7 @@ export class Engine {
   }
 
   /**
-   * The inverse of deleteProject (Carl's Undo, or the agent's RestoreProject when he asks): the project's
+   * The inverse of deleteProject (Carl's Undo, or box:chats restoreProject when he asks): the project's
    * folder back from agent-projects/.deleted/, its thread back with its transcript and pi session, every
    * surface's list showing it again (the signal), and Main's agent told unless it never heard of the delete.
    */
@@ -1999,7 +2006,7 @@ export class Engine {
    */
   private titling = new Set<string>();
   /**
-   * `force` (Carl asked the agent for a fresh summary name: RenameConversation without a title): made now, whatever
+   * `force` (Carl asked the agent for a fresh summary name: box:chats rename without a title): made now, whatever
    * the turn counts, and it replaces a name he gave by hand. Returns the title written, or why none was.
    */
   private async autoTitle(convId: string, force = false): Promise<{ title: string } | { error: string }> {
@@ -3029,8 +3036,6 @@ export class Engine {
     const interaction: Interaction = p.interaction ?? p.notifyScope?.interaction ?? this.interaction(convId);
     try {
       p.signal?.throwIfAborted();
-      // ListProjects only reads. A project is made only by Carl: in the app, or by asking for it (OpenProject below).
-      if (isContextTool(name)) return await handleContextTool(name, a, { conv: conv as any, convs: (await this.convsEverywhere(vault)) as any });
       // Ctrl+K / Ctrl+L changing the app (server/pluginWriteTool.ts): the plugin folders only, a live plugin through its
       // slot's keep (Switch back undoes it). Only a side thread lists it; a turn writes with its own file tools.
       if (name === PLUGIN_WRITE_TOOL && side) {
@@ -3125,25 +3130,6 @@ export class Engine {
           await patchMeta(vault, convId, { nextWakeAt: nextWakeFor(vault, convId) });
           return text(`Wake set for ${new Date(at).toISOString()} ("${reason}"). Wake id: ${wake.id}. Stop now. Do not schedule another wake.`);
         }
-        case "PostToConversation": {
-          const target = String(a.conversation_id ?? "").trim();
-          const body = String(a.text ?? "").trim();
-          if (!target || !body) return text("Give conversation_id and text.");
-          if (target === convId) return text("That is this chat. Answer here instead of posting to yourself.");
-          const to = await readConv(vault, target);
-          if (!to) return text(`No chat with id "${target}". ListConversations lists them.`);
-          if (LEGACY_SOURCES.has(to.source)) return text(`"${to.title}" is an archived mission thread: it is readable, never run.`);
-          // It starts a turn there the way any message does, so that chat's own
-          // engine, tools and rules apply — this chat lends it nothing.
-          const r = await this.message({ convId: target, text: body, via: "handoff" });
-          if (r?.error) return text(`Not posted: ${String(r.error)}`);
-          // A chat that is mid-turn takes it when that turn ends, as any message does.
-          const waiting = r?.queued === true || r?.steered === true;
-          return text(
-            `Posted to "${to.title}" (${target}); it ${waiting ? "has it waiting and will take it when its current turn ends" : "is taking its own turn"}. ` +
-              `It will tell Carl itself, so do not wait or report for it.`,
-          );
-        }
         case "Notify": {
           // At most 4 pings an hour per conversation; past that they go to the
           // feed only (a run "still training normally" 50 times a day is noise).
@@ -3176,7 +3162,7 @@ export class Engine {
         }
         case "PluginRead":
         case "PluginAct": {
-          const r = await pluginOfferTool({ vault, emit: (ev) => this.d.broadcast?.(ev), vaults: this.d.vaultList, stateDir: loadConfig().stateDir, jobs: this.jobsCtl(conv.threadId, convId, !side), conv: convId }, name, a);
+          const r = await pluginOfferTool({ vault, emit: (ev) => this.d.broadcast?.(ev), vaults: this.d.vaultList, stateDir: loadConfig().stateDir, jobs: this.jobsCtl(conv.threadId, convId, !side), chats: this.chatsCtl(vault, convId, conv), conv: convId }, name, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "Screen": {
@@ -3188,48 +3174,6 @@ export class Engine {
             const c = supervisorOf(coreVault() ?? vault).changes(CORE_PART).at(-1);
             return c ? { change: c.change, version: c.version, by: c.by ?? "?", at: c.at, ...(c.reason ? { reason: c.reason } : {}) } : null;
           } }, a);
-          return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
-        }
-        case "DeleteConversation": {
-          const ids = Array.isArray(a.ids) ? a.ids.map(String) : typeof a.ids === "string" ? [a.ids] : [];
-          if (!ids.length) return text("DeleteConversation needs ids (from ListConversations).");
-          const r = await this.deleteAcrossVaults(ids, convId);
-          const lines = [
-            r.deleted.length ? `Deleted ${r.deleted.length} (recoverable with RestoreConversation): ${r.deleted.join(", ")}` : "Nothing deleted.",
-            ...r.refused.map((x) => `- ${x.id}: not deleted (${x.why})`),
-          ];
-          return { success: r.deleted.length > 0, contentItems: [{ type: "inputText", text: lines.join("\n") }] };
-        }
-        case "RenameConversation": {
-          const id = typeof a.id === "string" && a.id.trim() ? a.id.trim() : convId;
-          const want = typeof a.title === "string" ? a.title : undefined;
-          const r = await this.renameAcrossVaults(id, want);
-          const which = id === convId ? "This chat" : `Chat ${id}`;
-          return { success: r.ok, contentItems: [{ type: "inputText", text: r.ok ? `${which} is now named "${r.title}" on every surface.` : `Not renamed: ${r.error}.` }] };
-        }
-        case "RestoreConversation": {
-          const want = typeof a.id === "string" ? a.id.trim() : "";
-          if (!want) {
-            const all = this.deletedConversations();
-            const when = (t: number) => (t ? new Date(t).toISOString().slice(0, 16).replace("T", " ") + " UTC" : "earlier");
-            return text(all.length ? `Deleted chats (newest first):\n${all.slice(0, 200).map((d) => `- ${d.title} (id ${d.id}, deleted ${when(d.at)})`).join("\n")}` : "No chat is deleted.");
-          }
-          const r = await this.restoreAcrossVaults(want);
-          return { success: r.ok, contentItems: [{ type: "inputText", text: r.ok ? `Restored chat ${want}: it is back in Carl's lists.` : `Not restored: ${r.error}.` }] };
-        }
-        case "RestoreProject": {
-          const want = typeof a.project === "string" ? a.project.trim() : "";
-          if (!want) {
-            const all = listDeletedProjects();
-            const when = (t: number) => new Date(t).toISOString().slice(0, 16).replace("T", " ") + " UTC";
-            return text(all.length ? `Deleted projects (newest first):\n${all.map((d) => `- ${d.name} (slug ${d.slug}, entry ${d.entry}, deleted ${when(d.deletedAt)})`).join("\n")}` : "Nothing is deleted.");
-          }
-          const r = await this.restoreProject(want);
-          return { success: !!r.ok, contentItems: [{ type: "inputText", text: r.ok ? `Restored project ${r.name}: its notes and its thread (${r.convId}) are back on his screens.` : `Not restored: ${r.error}.` }] };
-        }
-        case "OpenProject": {
-          // Carl asked to start or work on a project: made (or found), and his screens and a live call follow to its thread.
-          const r = await openProject(vault, a, { emit: (ev) => this.d.broadcast?.(ev), message: (b) => this.message(b) });
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "PdfRead": {

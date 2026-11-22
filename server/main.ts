@@ -218,7 +218,7 @@ async function main(): Promise<void> {
     return v.main || !engine.open ? main : await engine.open(v);
   };
   // Conversations are the box's, not a vault's: a message to one goes to the engine of the vault whose log holds it
-  // (Main: the main vault's; OpenProject's hand-over to a project of another vault).
+  // (Main: the main vault's; box:chats openProject's hand-over to a project of another vault).
   const { setConversationRouter } = await import("./projectRoutes");
   const { ownerVault } = await import("./convlog/log");
   setConversationRouter(async (b) => {

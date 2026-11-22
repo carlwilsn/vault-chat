@@ -92,7 +92,7 @@ export function panelModel(convs: PanelConv[], projects: PanelProject[], activeI
   const chatsOf = (slug: string | null): PanelChat[] =>
     live
       // A place's own thread (Main's, a project's) is not one of its chats in the list (Carl, 2026-11-08/09): it
-      // stays, and opens when something takes him there (the app's start, OpenProject, a call moving to the
+      // stays, and opens when something takes him there (the app's start, box:chats openProject, a call moving to the
       // project), but the list shows only the chats he started there — no row he cannot delete.
       .filter((c) => threadKindOf(c) !== "older" && c.id !== MAIN_ID && !projectOfThread(c.id) && placeOf(c) === slug)
       .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))

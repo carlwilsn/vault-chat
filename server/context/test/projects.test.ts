@@ -1,38 +1,30 @@
 // Projects are plain groupings (Carl, 2026-10-18): a folder of chats plus an
 // optional shared notes file, project.md. Only Carl makes a project or moves a
-// chat (the app); the agent's one project tool, ListProjects, only reads.
+// chat (the app); the agent reads them through box:chats (server/model/chats.ts).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { handleContextTool, listProjects, readProject, contextToolSpecs, createProject, ensureProject } from "../index";
-import type { ContextConv, ToolContext } from "../types";
+import { listProjects, listProjectsText, readProject, createProject, ensureProject } from "../index";
+import { agentToolSpecs } from "../../engine/engine";
+import type { ContextConv } from "../types";
 import { tempVault, writeConv } from "./helpers";
 
 let vault: string;
 let cleanup: () => void;
 let conv: ContextConv;
-let ctx: ToolContext;
 
 beforeEach(() => {
   ({ vault, cleanup } = tempVault());
   conv = { id: "c1", title: "t", messages: [] };
-  ctx = { conv };
 });
 afterEach(() => cleanup());
 
-const text = (r: { contentItems: { text: string }[] }) => r.contentItems.map((c) => c.text).join("");
 const pdir = (slug: string) => join(vault, "agent-projects", slug);
 
 describe("projects are plain groupings", () => {
-  it("the agent's only project tool is ListProjects: none creates a project or moves a chat", async () => {
-    expect(contextToolSpecs.map((t) => t.name)).toEqual(["ListProjects"]);
-    for (const t of contextToolSpecs) expect(t).toMatchObject({ type: "function", inputSchema: { type: "object" } });
-    expect(Object.keys((contextToolSpecs[0]!.inputSchema as any).properties)).toEqual(["project"]);
-    // The old tools are gone: a call is refused and nothing is written.
-    for (const name of ["SetProject", "ProjectMemory", "Plan", "ProjectCost"]) {
-      const r = await handleContextTool(name, { name: "Coconut", action: "append", text: "x" }, ctx);
-      expect(r.success).toBe(false);
-    }
+  it("the agent has no project tool: box:chats reads them, none creates a project or moves a chat", async () => {
+    const names = agentToolSpecs().map((t) => t.name);
+    for (const name of ["ListProjects", "SetProject", "ProjectMemory", "Plan", "ProjectCost", "OpenProject"]) expect(names).not.toContain(name);
     expect(existsSync(join(vault, "agent-projects"))).toBe(false);
     expect(conv.project).toBeUndefined();
   });
@@ -78,24 +70,23 @@ describe("projects are plain groupings", () => {
     for (const c of convs) writeConv(vault, c);
     const snapshot = () => readdirSync(join(vault, ".vault-chat", "conversations")).map((f) => readFileSync(join(vault, ".vault-chat", "conversations", f), "utf8"));
     const before = snapshot();
-    let r = await handleContextTool("ListProjects", {}, { conv: { id: "a", project: "psych-221" }, convs });
-    expect(r.success).toBe(true);
-    expect(text(r)).toContain('- Psych 221 (psych-221) — this chat: 2 chat(s): "Essay outline", "Week 3 reading"');
-    expect(text(r)).toContain("- Whiteboard (whiteboard): 0 chat(s)");
-    expect(text(r)).toMatch(/only he makes them and moves chats into them/);
-    expect(text(r)).not.toContain("Unfiled chat");
-    r = await handleContextTool("ListProjects", { project: "psych 221" }, { conv, convs });
-    expect(text(r)).toContain("Notes file: agent-projects/psych-221/project.md");
-    expect(text(r)).toContain("Readings and essays.");
-    expect(text(r)).toContain('- "Essay outline" (b)\n- "Week 3 reading" (a)');
-    r = await handleContextTool("ListProjects", { project: "nope" }, ctx);
-    expect(r.success).toBe(false);
+    let r = listProjectsText(null, "psych-221", convs);
+    expect(r.ok).toBe(true);
+    expect(r.text).toContain('- Psych 221 (psych-221) — this chat: 2 chat(s): "Essay outline", "Week 3 reading"');
+    expect(r.text).toContain("- Whiteboard (whiteboard): 0 chat(s)");
+    expect(r.text).toMatch(/only he makes them and moves chats into them/);
+    expect(r.text).not.toContain("Unfiled chat");
+    r = listProjectsText("psych 221", (conv as any).project ?? null, convs);
+    expect(r.text).toContain("Notes file: agent-projects/psych-221/project.md");
+    expect(r.text).toContain("Readings and essays.");
+    expect(r.text).toContain('- "Essay outline" (b)\n- "Week 3 reading" (a)');
+    r = listProjectsText("nope", null);
+    expect(r.ok).toBe(false);
     expect(snapshot()).toEqual(before);
     expect(listProjects()).toHaveLength(2);
   });
 
-  it("bad input never throws", async () => {
-    expect((await handleContextTool("ListProjects", null, ctx)).success).toBe(true);
-    expect((await handleContextTool("Bogus", {}, ctx)).success).toBe(false);
+  it("bad input never throws", () => {
+    expect(listProjectsText(null, null).ok).toBe(true);
   });
 });

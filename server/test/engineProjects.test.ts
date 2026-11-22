@@ -33,11 +33,11 @@ const settle = async (s: { convId: string; tid: string }) => {
 const sideCall = (convId: string, name: string, args: any) => rig.backend.h.sideTool(convId, name, args);
 
 describe("projects: only Carl decides what is a project", () => {
-  it("pi has no tool that makes a project or moves a chat; ListProjects only reads", async () => {
+  it("pi has no tool that makes a project or moves a chat; box:chats reads them", async () => {
     const s = await rig.start("Fix the typo in notes/a.md.");
     const names = toolNames(rig.backend.threads.length - 1);
     for (const t of ["SetProject", "ProjectMemory", "Plan", "ProjectCost"]) expect(names).not.toContain(t);
-    expect(names).toContain("ListProjects");
+    expect(names).not.toContain("ListProjects");
     // A model that calls one anyway: refused, nothing made, the chat untouched.
     const r = await rig.backend.call(s.tid, "SetProject", { name: "Typos" });
     expect(r.ok).toBe(false);
@@ -64,10 +64,10 @@ describe("projects: only Carl decides what is a project", () => {
     expect(existsSync(join(rig.vault, "Coconut", ".vault-chat", "project-memory.md"))).toBe(true);
     for (const f of ["plan.md", "progress.md", "project.md"]) expect(existsSync(join(rig.vault, "Coconut", ".vault-chat", f))).toBe(false);
     expect(existsSync(join(rig.vault, "agent-projects"))).toBe(false);
-    // ListProjects (pi) now shows it with this chat.
+    // box:chats (pi) now shows it with this chat.
     const t = await rig.start("Which projects do I have?");
-    const r = await rig.backend.call(t.tid, "ListProjects", {});
-    expect(out(r)).toMatch(/- Coconut \(coconut\), the folder \S.*Coconut: 1 chat\(s\): "A chat with no project."/);
+    const r = await rig.backend.call(t.tid, "PluginRead", { plugin: "box:chats", state: "projects" });
+    expect(out(r).replace(/\\"/g, '"')).toMatch(/- Coconut \(coconut\), the folder \S.*Coconut: 1 chat\(s\): "A chat with no project."/);
     await settle(t);
   });
 

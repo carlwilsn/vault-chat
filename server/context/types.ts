@@ -68,7 +68,7 @@ export type DynamicToolCallResponse = {
 /** What a tool handler gets besides its arguments. */
 export type ToolContext = {
   conv: ContextConv;
-  /** Every conversation, as ENGINE holds them (ListProjects); default: read from the vault. */
+  /** Every conversation, as ENGINE holds them (box:chats); default: read from the vault. */
   convs?: ContextConv[];
 };
 

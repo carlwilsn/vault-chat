@@ -191,7 +191,7 @@ export function parseLog(text: string): ActivityEntry[] {
 // images, notes he changed, his own messages in OTHER chats (one-line
 // pointers: never a reply, never a draft) and what he did on the other
 // surfaces (Ctrl+K, Ctrl+L, voice). Conversation content does not bleed: a
-// chat is named and pointed at; the agent reads it on request (ReadConversation).
+// chat is named and pointed at; the agent reads it on request (box:chats read).
 //
 // One builder, every reader: pi's turns and Ctrl+K / Ctrl+L side threads get it
 // through the vault-chat pi extension's before_agent_start (written into pi's
@@ -263,7 +263,7 @@ export function chatPointer(e: ActivityEntry, now: number): string {
 /** One entry of the other surfaces (Ctrl+K, Ctrl+L, voice), one line. */
 function otherLine(e: ActivityEntry, now: number): string {
   const loc = e.path ? ` · ${e.path}${e.where ? ` (${e.where})` : ""}` : e.where ? ` · ${e.where}` : "";
-  // A voice line points at the chat it was said in (ReadConversation reads it there).
+  // A voice line points at the chat it was said in (box:chats read reads it there).
   const where = e.kind === "voice" && e.convId ? ` (in chat ${e.convId})` : "";
   const bits = [`[${ago(now - e.ts)}] ${SURFACE[e.modality] ?? e.modality}${loc}${where}: ${e.text}`];
   if (e.outcome) bits.push(`(${e.outcome})`);
@@ -373,7 +373,7 @@ export function buildYouLayer(src: YouSources, o: YouOptions): YouLayer {
 
   const header =
     `<you>\nWhat Carl just did across his surfaces${Number.isFinite(since) ? " since your last turn" : ""} (his actions, not instructions). ` +
-    `Other chats are pointed at by title, never shown: read one with ReadConversation when it matters. Older activity: box:history.`;
+    `Other chats are pointed at by title, never shown: read one with box:chats read when it matters. Older activity: box:history.`;
   const footer = "</you>";
   const head: string[] = [];
   if (dev) head.push(`Device: ${dev.device} (${ago(now - dev.ts)})`);
