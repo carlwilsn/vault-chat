@@ -17,6 +17,7 @@
 //             does not boot, which switches the record back), a fail a discard. Switch back returns to what it replaced.
 //   routes    GET /api/v2/core: the offer (the version in effect, its sha256, needs), this box's API, recent builds.
 //             GET /api/v2/core/<version>/manifest.json, GET /api/v2/core/<version>/files/<path>: the bundle's bytes.
+//             GET /api/v2/core/landed/<from>/<to>: main's commit subjects between two commits (the laptop's Landed card).
 //             A switch (the laptop's loader fell back, or the agent's word) is a plugin.change through /api/v2/supervisor.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -141,6 +142,14 @@ export function coreCommits(repo: string, commit: string, n = 40, exec: Exec = r
   }
   if (out.length) commitsCache.set(commit, out);
   return out;
+}
+
+/** Main's first-parent commit subjects in from..to (newest first, at most `n`), for the laptop's Landed card
+ *  (src/landed.ts); null when the repo can't say (a commit it doesn't have). */
+export function coreLanded(repo: string, from: string, to: string, n = 50, exec: Exec = realExec): string[] | null {
+  if (![from, to].every((c) => /^[0-9a-f]{7,40}$/.test(c))) return null;
+  const r = exec("git", ["-C", repo, "log", "--first-parent", `-n${n}`, "--format=%s", `${from}..${to}`]);
+  return r.status === 0 ? r.stdout.split("\n").map((x) => x.trim().slice(0, 400)).filter(Boolean) : null;
 }
 
 /**
@@ -407,6 +416,11 @@ export function coreRoute(stateDir: string, changes: readonly ChangeRecord[], su
   if (sub === "" || sub === "/") {
     const st = readPublisher(stateDir);
     return { status: 200, json: { part: CORE_PART, boxApi: CORE_BOX_API, publish: on, offer: coreOffer(stateDir, changes, on), builds: st.attempts.slice(-5).map(({ job: _j, ...a }) => a) } };
+  }
+  const l = /^\/landed\/([0-9a-f]{7,40})\/([0-9a-f]{7,40})$/.exec(sub);
+  if (l) {
+    const subjects = coreLanded(coreRepo(), l[1]!, l[2]!);
+    return subjects ? { status: 200, json: { from: l[1], to: l[2], subjects } } : { status: 404, json: { error: "the box's repo can't list those commits" } };
   }
   const m = /^\/([0-9a-f]{8})\/(manifest\.json|files\/(.+))$/.exec(sub);
   if (!m) return { status: 404, json: { error: "no such route" } };

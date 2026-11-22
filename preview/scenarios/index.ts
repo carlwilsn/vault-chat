@@ -226,6 +226,32 @@ function boxConnectScenarios(): Scenario[] {
       },
       open: [{ click: "[title='Settings']" }, { sleep: 600 }, showBox],
     },
+    ...(["graphite", "light"] as const).map((theme) => ({
+      id: theme === "light" ? "core-landed-light" : "core-landed",
+      theme,
+      title: "Landed — what a new core brought",
+      group: "Settings",
+      notes:
+        "The window runs a newer core than the one Carl last pressed OK for (localStorage vc.landedAck): the bottom-right card lists main's subjects between the two (the box's GET /api/v2/core/landed/<from>/<to>), first sentence each, 5 lines at most. OK dismisses it for good (app/titlebar dismissLanded).",
+      build: (c: BuildCtx) => world(c),
+      host: {
+        sync: { box: { box: THINKBOX, vault: "summer-demo", name: "thinkbox" }, boxes: { [THINKBOX]: { ...thinkbox, vaults: ["summer-demo"] } } },
+        core: {
+          bundles: [],
+          landed: [
+            "Landed card: after a core swap the bottom-right card says what landed, with one OK. No install, no restart.",
+            "Composer keeps pasted images across a swap.",
+            "Chat list: projects fold by default; the open one stays open.",
+            "PDF viewer remembers the page per file.",
+            "Settings: the voice picker shows each voice's language.",
+            "Ctrl+K edits keep the cursor where it was.",
+            "Tree refresh no longer flickers on large vaults.",
+          ],
+        },
+      },
+      localStorage: { "vc.landedAck": "a".repeat(40) },
+      open: [{ sleep: 1500 }],
+    })),
     {
       id: "box-connected",
       title: "Settings → Box — connected, disconnect",

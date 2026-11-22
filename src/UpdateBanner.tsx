@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { publishUpdate } from "./updateState";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { Sparkles, X, RefreshCcw } from "lucide-react";
+import { Sparkles, X, RefreshCcw, Check } from "lucide-react";
+import { dismissLanded, landedNow, onLandedChanged } from "./landed";
 import { Button } from "./ui";
 import { isRunInBackground } from "./background";
 import { activeRuns } from "./runRegistry";
@@ -147,30 +148,11 @@ export function UpdateBanner() {
   installRef.current = install;
 
   return (
-    <div className="fixed bottom-4 right-4 w-80 z-50 rounded-lg border border-border bg-card shadow-xl overflow-hidden">
-      <div className="flex items-start gap-2.5 p-3 border-b border-border bg-gradient-to-br from-accent/40 to-transparent">
-        <div className="h-7 w-7 rounded-md bg-accent/60 text-foreground flex items-center justify-center shrink-0">
-          <Sparkles className="h-3.5 w-3.5" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-[12px] font-semibold text-foreground/95">
-            Claude shipped an update
-          </div>
-          {phase.kind === "available" && (
-            <div className="text-[11px] text-muted-foreground mt-0.5 font-mono">
-              v{phase.update.version}
-            </div>
-          )}
-        </div>
-        <button
-          data-offer="app/titlebar.dismissUpdate"
-          onClick={dismiss}
-          className="text-muted-foreground hover:text-foreground"
-          title="Dismiss"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
-      </div>
+    <NoticeCard
+      title="Claude shipped an update"
+      sub={phase.kind === "available" ? `v${phase.update.version}` : undefined}
+      close={<button data-offer="app/titlebar.dismissUpdate" onClick={dismiss} className="text-muted-foreground hover:text-foreground" title="Dismiss"><X className="h-3.5 w-3.5" /></button>}
+    >
 
       {phase.kind === "available" && (
         <div className="p-3 space-y-2.5">
@@ -219,6 +201,56 @@ export function UpdateBanner() {
           Installing — the app will restart momentarily…
         </div>
       )}
+    </NoticeCard>
+  );
+}
+
+/** The bottom-right card both notices use: a header (icon, title, a mono line under it, an optional close) and a body. */
+function NoticeCard({ title, sub, close, children, offer }: { title: string; sub?: string; close?: ReactNode; children: ReactNode; offer?: string }) {
+  return (
+    <div data-el={offer} className="rounded-lg border border-border bg-card shadow-xl overflow-hidden">
+      <div className="flex items-start gap-2.5 p-3 border-b border-border bg-gradient-to-br from-accent/40 to-transparent">
+        <div className="h-7 w-7 rounded-md bg-accent/60 text-foreground flex items-center justify-center shrink-0">
+          <Sparkles className="h-3.5 w-3.5" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[12px] font-semibold text-foreground/95">{title}</div>
+          {sub && <div className="text-[11px] text-muted-foreground mt-0.5 font-mono">{sub}</div>}
+        </div>
+        {close}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** After a newer core loaded (src/landed.ts): what landed, and OK. No install, no restart. */
+function LandedCard() {
+  const s = useSyncExternalStore(onLandedChanged, landedNow);
+  if (!s.shown) return null;
+  return (
+    <NoticeCard title="Landed" offer="landed-card">
+      <div className="p-3 space-y-2.5">
+        <ul className="text-[11.5px] text-muted-foreground/90 leading-relaxed max-h-64 overflow-auto space-y-1 list-disc pl-4">
+          {(s.what ?? []).map((w, i) => (
+            <li key={i}>{w}</li>
+          ))}
+        </ul>
+        <Button data-offer="app/titlebar.dismissLanded" size="sm" onClick={dismissLanded} className="bg-primary text-primary-foreground hover:bg-primary/90 w-full">
+          <Check className="h-3 w-3 mr-1.5" />
+          OK
+        </Button>
+      </div>
+    </NoticeCard>
+  );
+}
+
+/** The bottom-right notices, stacked: what landed (a new core) above a native update's Install card. */
+export function Notices() {
+  return (
+    <div className="fixed bottom-4 right-4 w-80 z-50 flex flex-col gap-2">
+      <LandedCard />
+      <UpdateBanner />
     </div>
   );
 }

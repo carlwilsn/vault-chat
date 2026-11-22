@@ -13,7 +13,7 @@ import { BUILT_IN, landing, type ChangeRecord } from "../../../src/pluginDrafts"
 import { CORE_BOX_API, CORE_PART, type CoreCommit } from "../../../src/coreBundle";
 
 export type CoreBundle = { version: string; sha256?: string; commit?: string; commitTime: number; what: string; css?: string; /** main's commits up to it, newest first (the box's git log) */ commits?: CoreCommit[] };
-export type CoreConfig = { bundles: CoreBundle[]; bakedCommitTime?: number };
+export type CoreConfig = { bundles: CoreBundle[]; bakedCommitTime?: number; /** what the box's git lists for any GET /api/v2/core/landed/<from>/<to> (the Landed card) */ landed?: string[] };
 
 type Loader = { active: string | null; current: string | null; previous: string | null; bad: string[] };
 type Sig = { type: "plugin.change"; plugin: string; change: "keep" | "switch" | "discard"; version: string; from?: string; at: number; by?: string; reason?: string };
@@ -115,6 +115,7 @@ export const coreCommands: Record<string, (a: Record<string, any>) => unknown> =
 export function coreBoxGet(u: URL): { status: number; body: string } | null {
   if (!cfg) return null;
   const ok = (v: unknown) => ({ status: 200, body: JSON.stringify(v) });
+  if (u.pathname.includes("/api/v2/core/landed/")) return cfg.landed ? ok({ subjects: cfg.landed }) : { status: 404, body: JSON.stringify({ error: "no such route" }) };
   if (u.pathname.endsWith("/api/v2/core")) {
     const l = landing(changes());
     const b = l && l.version !== BUILT_IN ? byVersion(l.version) : null;

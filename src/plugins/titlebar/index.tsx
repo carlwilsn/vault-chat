@@ -12,6 +12,7 @@
 // pop out the chat, the tree's refresh, Hidden files, the terminal, a plugin item's click, minimize
 // and maximize / restore as actions (no close: closing the window is Carl's); what it did as events.
 import { onUpdateChanged, updateActions, updateNow } from "../../updateState";
+import { dismissLanded, landedNow, onLandedChanged } from "../../landed";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -66,6 +67,10 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
       update: {
         description: "The update banner (src/UpdateBanner.tsx): state idle | available (version, notes) | downloading (downloaded, total) | installing | error (message). The app checks for updates by itself.",
         read: () => updateNow(),
+      },
+      landed: {
+        description: "The Landed card (src/landed.ts), shown once after a newer core loaded: shown, revision (the core's main commit), what (the lines it lists). OK (dismissLanded) acknowledges it.",
+        read: () => landedNow(),
       },
       items: {
         description: "The items vault plugins put in the title bar (api.host.titlebar.item): key, id, by (the plugin), side, label, title, clickable, drawn.",
@@ -210,6 +215,13 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
           return { update: updateNow() };
         },
       },
+      dismissLanded: {
+        description: "Press OK on the Landed card: it goes and does not come back for this core.",
+        run: async () => {
+          dismissLanded();
+          return { landed: landedNow() };
+        },
+      },
       minimize: {
         description: "Minimize the app window (the – button). Only when Carl asks.",
         run: async () => {
@@ -227,6 +239,7 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
     },
     events: {
       updateChanged: { description: "The update banner changed: its new state (available, downloading, installing, checked, error, idle)." },
+      landedChanged: { description: "The Landed card showed or was dismissed: shown, revision, what." },
       itemAdded: { description: "A plugin put an item in the bar: key, by, side." },
       itemRemoved: { description: "An item left the bar (its plugin stopped or removed it): key, by." },
       itemClicked: { description: "The agent clicked a plugin's item: key, by." },
@@ -244,6 +257,7 @@ export function mount(el: HTMLElement, api: PluginApi): () => void {
   const offers = api.offer(titlebarOffers(api, () => sync));
   api.effect(onBarEvent((name, data) => offers.emit(name, data)));
   api.effect(onUpdateChanged((u) => offers.emit("updateChanged", u)));
+  api.effect(onLandedChanged((l) => offers.emit("landedChanged", l)));
   // Items coming and going, as events.
   let known = new Map(titlebarItems().map((i) => [i.key, i] as const));
   api.effect(

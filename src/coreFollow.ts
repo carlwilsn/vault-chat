@@ -233,6 +233,8 @@ export function startCoreFollow(): void {
     }
   };
   void look();
+  // A newer core than the one Carl last acknowledged (a swap just loaded it, or a new installer's own): say what landed.
+  void import("./landed").then((m) => m.startLanded()).catch(() => {});
   // Every 5 minutes: a new offer, or a bundle installed but not yet taken now that Carl has been away long enough.
   window.setInterval(() => void look(), QUIET_MS);
   window.addEventListener("vc-core-changed", () => void look());

@@ -22,7 +22,7 @@ import * as contextPlugin from "./plugins/context";
 import * as askPlugin from "./plugins/ask";
 import { bindContextSource } from "./contextSource";
 import { ChatsPanel } from "./ChatsPanel";
-import { UpdateBanner } from "./UpdateBanner";
+import { Notices } from "./UpdateBanner";
 import { ChangeKeeper } from "./ChangeKeeper";
 import { isDriveWindow } from "./windowKind";
 import { ShortcutSheet } from "./ShortcutSheet";
@@ -476,7 +476,7 @@ export default function App() {
       <VaultPlugins />
       {/* Voice: a plugin (src/plugins/voice): its text box here, its controls in the title bar and the composer. */}
       <VoiceSlot />
-      {!isDriveWindow && <UpdateBanner />}
+      {!isDriveWindow && <Notices />}
       {/* Changes reach Carl as lines in a chat (src/changeFlow.ts); this keeps what they stand on. Core, never a plugin. */}
       {!isDriveWindow && <ChangeKeeper />}
       <ShortcutSheet />
