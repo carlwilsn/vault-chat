@@ -28,9 +28,15 @@ describe("pushed branch to one installed box script", () => {
     const result = runInstalledShip("/registered/project", "--branch", "agent/change", "A title; not shell text", "app", "project-app", signal, () => {});
     const [command, args, options] = state.spawn.mock.calls[0];
     expect(command).toBe("flock"); expect(args.slice(-6)).toEqual(["/registered/project", "--branch", "agent/change", "A title; not shell text", "app", "project-app"]);
-    expect(args).not.toContain("-c"); expect(Object.keys(options.env).some(k => /KEY|TOKEN|SECRET/.test(k))).toBe(false);
+    expect(args).not.toContain("-c"); expect(args).not.toContain("-n"); expect(args.slice(0, 4)).toEqual(["-E", "75", "-w", "21600"]); expect(Object.keys(options.env).some(k => /KEY|TOKEN|SECRET/.test(k))).toBe(false);
     c.stdout.emit("data", "Accepted; not Shipped\n"); c.emit("close", 0);
     expect(await result).toContain("not Shipped");
+  });
+  it("waits for another lane's ship instead of failing; a lock still held after the wait says so", async () => {
+    const c = child();
+    const result = runInstalledShip("/registered/project", "--branch", "agent/change", "Title", "app", "project-app", new AbortController().signal, () => {});
+    c.emit("close", 75);
+    await expect(result).rejects.toThrow("Another ship held the ship lock");
   });
   it("fails visibly before launch if Claude has not installed the script; no old acceptance fallback", async () => {
     state.installed = false;

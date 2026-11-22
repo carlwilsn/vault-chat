@@ -15,6 +15,8 @@ export const SUBMIT_CHANGE_SCHEMA = { type: "object", additionalProperties: fals
   branch: { type: "string", description: "The agent/<name> branch you have already pushed to the configured remote." },
 } } as const;
 
+const LOCK_BUSY = 75, LOCK_WAIT_S = 6 * 3600;
+export const SHIP_LOCK_BUSY = 75, SHIP_LOCK_WAIT_S = 6 * 3600;
 /** The path is fixed in installed source, not tool input or agent-writable project config. */
 export function runInstalledShip(repo: string, mode: "--branch", value: string, title: string, slug: string, convId: string, signal: AbortSignal, log: (text: string) => void): Promise<string> {
   if (mode !== "--branch") throw new Error("Only proven branch submission is supported");
@@ -23,9 +25,12 @@ export function runInstalledShip(repo: string, mode: "--branch", value: string, 
   if (!existsSync(entry) || !existsSync(config)) throw new Error("Simple shipping is not installed. Claude must perform the one-time host installation and configure branch publishing; no old proof fallback was attempted.");
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
-    // flock is native host exclusion, not a permit. This child never inherits provider credentials.
+    // flock is native host exclusion, not a permit: like ship-request.sh, wait for a ship already running
+    // (another lane's) instead of failing at once; 75 = still held after 6 h. No provider credentials inherited.
+    // It WAITS for the lock (up to 6 h): another lane or the old watcher shipping is a queue, not a failure
+    // (with -n every SubmitChange made while another ship ran failed at once with no output).
     const env = { HOME: homedir(), PATH: process.env.PATH, LANG: "C.UTF-8", GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" };
-    const child = spawn("flock", ["-n", join(root, "ship.lock"), process.execPath, entry, config, repo, mode, value, title, slug, convId], { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("flock", ["-E", String(LOCK_BUSY), "-w", String(LOCK_WAIT_S), join(root, "ship.lock"), process.execPath, entry, config, repo, mode, value, title, slug, convId], { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     let forceStop: ReturnType<typeof setTimeout> | undefined;
     const stop = () => {
@@ -39,7 +44,7 @@ export function runInstalledShip(repo: string, mode: "--branch", value: string, 
     for (const stream of [child.stdout, child.stderr]) stream.on("data", data => { const text = String(data); output += text; log(text); });
     const cleanup = () => { signal.removeEventListener("abort", stop); if (forceStop) clearTimeout(forceStop); };
     child.on("error", e => { cleanup(); reject(e); });
-    child.on("close", code => { cleanup(); if (signal.aborted) reject(new Error("Shipping cancelled")); else if (code !== 0) reject(new Error(`Host shipping failed (${code}); inspect the job log. ${output.slice(-1200)}`)); else resolve(output.trim()); });
+    child.on("close", code => { cleanup(); if (signal.aborted) reject(new Error("Shipping cancelled")); else if (code === LOCK_BUSY) reject(new Error(`Another ship held the ship lock for ${LOCK_WAIT_S / 3600} h; nothing was checked.`)); else if (code === SHIP_LOCK_BUSY) reject(new Error(`Another ship held the ship lock for ${SHIP_LOCK_WAIT_S / 3600} h; submit again.`)); else if (code !== 0) reject(new Error(`Host shipping failed (${code}); inspect the job log. ${output.slice(-1200)}`)); else resolve(output.trim()); });
   });
 }
 function running(o: { jobs: JobEnv; convId: string }): void {
