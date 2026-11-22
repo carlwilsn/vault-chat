@@ -133,6 +133,37 @@ describe("box sync loop", () => {
     expect(git(box, "status", "--porcelain").trim()).toBe("");
   });
 
+  it("a machine-wide git-lfs (filter.lfs.process) and a leftover pre-push hook: the box's own filter still runs and box still reaches the hub", async () => {
+    // What `git lfs install --system` leaves behind: git prefers filter.lfs.process over the repo's clean/smudge, and
+    // git-lfs then adds a pre-push hook that tries to upload to the local hub ("missing protocol") and refuses the push.
+    const cfg = join(root, "machine.gitconfig");
+    writeFileSync(cfg, '[filter "lfs"]\n\tprocess = sh -c \'echo machine-wide git-lfs ran >&2; exit 1\'\n\trequired = true\n');
+    mkdirSync(join(box, ".git", "hooks"), { recursive: true });
+    writeFileSync(join(box, ".git", "hooks", "pre-push"), "#!/bin/sh\necho 'batch request: missing protocol' >&2\nexit 1\n", { mode: 0o755 });
+    const was = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = cfg;
+    try {
+      const big = join(box, "data", "huge.bin");
+      mkdirSync(join(box, "data"), { recursive: true });
+      const body = Buffer.alloc(50 * 1024 * 1024 + 7, 0x61);
+      body.write("head", 0);
+      body.write("tail", body.length - 4);
+      writeFileSync(big, body);
+      await sync.runOnce();
+      expect(sync.status.ok, JSON.stringify(sync.status.steps)).toBe(true);
+      expect(bareRef("refs/heads/box")).toBe(head(box));
+      expect(sh(bare, "git", ["show", "box:data/huge.bin"])).toMatch(/^version https:\/\/git-lfs\.github\.com\/spec\/v1\noid sha256:[0-9a-f]{64}\nsize 52428807\n$/);
+      // Back out of git through the same filter (smudge, long-running form): the bytes, not the pointer.
+      git(box, "rm", "-q", "--cached", "data/huge.bin");
+      git(box, "checkout", "-q", "HEAD", "--", "data/huge.bin");
+      expect(readFileSync(big).equals(body)).toBe(true);
+      expect(git(box, "status", "--porcelain").trim()).toBe("");
+    } finally {
+      if (was === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+      else process.env.GIT_CONFIG_GLOBAL = was;
+    }
+  });
+
   it("never commits a new archive: excluded for good, reported, one alert naming the work area", async () => {
     // What filled the backup on 2026-10-22: a job wrote a .tar.gz of a board every 10 s into the vault.
     const dir = join(box, "Whiteboard Backups", "checkpoints-1");

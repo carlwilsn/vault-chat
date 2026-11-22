@@ -400,7 +400,8 @@ describe("box sync (TypeScript cycle) on real repos", { concurrent: true }, () =
     expect(parseState(read(r.laptop, ".git/vault-chat-box-sync.json")).lfs_owed).toEqual([]);
     expect(git(r.laptop, ["status", "--porcelain"])).toBe("");
     git(r.boxwc, ["fetch", "-q", "origin"]);
-    git(r.boxwc, ["merge", "-q", "--no-edit", "origin/master"]);
+    // git-lfs's own download on checkout, whatever this machine's config says (some set `smudge --skip`).
+    git(r.boxwc, ["-c", "filter.lfs.process=git-lfs filter-process", "-c", "filter.lfs.smudge=git-lfs smudge -- %f", "merge", "-q", "--no-edit", "origin/master"]);
     expect(readFileSync(join(r.boxwc, "Rec/screen 1.mp4")).equals(body)).toBe(true);
     const body2 = bigBody(9, size + 5);
     writeFileSync(join(r.boxwc, "made-on-box.bin"), body2);
