@@ -36,13 +36,13 @@
 
     --focus-border: hsl(0, 0%, 92%);
 
-    /* The window's title bar (src/plugins/titlebar): blue in both themes. Only the bar and its own controls use
-       these; menus and popovers opened from it keep the normal theme. --titlebar-hover carries its own alpha. */
-    --titlebar: 224 76% 48%;
-    --titlebar-foreground: 214 100% 97%;
-    --titlebar-muted: 213 97% 87%;
-    --titlebar-hover: 0 0% 100% / 0.14;
-    --titlebar-border: 226 71% 40%;
+    /* The window's title bar (src/plugins/titlebar): the normal card look. Only the bar and its own controls use
+       these; --titlebar-hover carries its own alpha (accent/60). */
+    --titlebar: var(--card);
+    --titlebar-foreground: var(--foreground);
+    --titlebar-muted: var(--muted-foreground);
+    --titlebar-hover: var(--accent) / 0.6;
+    --titlebar-border: var(--border);
 
     --tex-body: 185 75% 65%;
     --tex-cmd: 320 70% 72%;
@@ -83,11 +83,13 @@
 
     --focus-border: hsl(0, 0%, 20%);
 
-    --titlebar: 224 76% 48%;
-    --titlebar-foreground: 214 100% 97%;
-    --titlebar-muted: 213 97% 87%;
-    --titlebar-hover: 0 0% 100% / 0.14;
-    --titlebar-border: 226 71% 40%;
+    /* The window's title bar (src/plugins/titlebar): the normal card look. Only the bar and its own controls use
+       these; --titlebar-hover carries its own alpha (accent/60). */
+    --titlebar: var(--card);
+    --titlebar-foreground: var(--foreground);
+    --titlebar-muted: var(--muted-foreground);
+    --titlebar-hover: var(--accent) / 0.6;
+    --titlebar-border: var(--border);
 
     --tex-body: 200 85% 30%;
     --tex-cmd: 330 70% 38%;

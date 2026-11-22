@@ -80,8 +80,8 @@ export function VoiceCockpit() {
 /** The bars, and under them the waiting line (src/voiceWaitLine.ts): one element, the same on every surface. */
 function VoiceWaves() {
   return (
-    <div className="flex flex-col items-stretch text-titlebar-foreground">
-      <VoiceBars colorClass="bg-titlebar-foreground" />
+    <div className="flex flex-col items-stretch text-primary">
+      <VoiceBars />
       <WaitLine />
     </div>
   );

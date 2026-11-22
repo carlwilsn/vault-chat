@@ -52,7 +52,7 @@ export function TitlebarFallback({ info }: { info: PluginFallbackInfo }) {
       ) : (
         <div data-el="titlebar-fallback-error" className="flex items-center gap-2 px-3 min-w-0 text-[11.5px] text-titlebar-muted">
           <span className="truncate" title={info.error ?? ""}>The title bar stopped; a plain one until it is back.</span>
-          <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-titlebar-foreground/30 px-2 py-0.5 text-[11.5px] hover:text-titlebar-foreground">
+          <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-titlebar-foreground">
             Reload
           </button>
         </div>

@@ -25,10 +25,10 @@ function TasksRunning({ hidden, onOpen }: { hidden: boolean; onOpen: () => void 
   const n = useStore((s) => runningTaskCount(s.conversations));
   if (hidden || !n) return null;
   return (
-    <button onClick={onOpen} data-el="titlebar-tasks" title="Background tasks running — open the chat" className="h-6 mr-2 px-2 flex items-center gap-1.5 rounded-full border border-titlebar-foreground/30 text-[11px] text-titlebar-muted hover:text-titlebar-foreground hover:bg-titlebar-hover">
+    <button onClick={onOpen} data-el="titlebar-tasks" title="Background tasks running — open the chat" className="h-6 mr-2 px-2 flex items-center gap-1.5 rounded-full border border-border/60 text-[11px] text-titlebar-muted hover:text-titlebar-foreground hover:bg-titlebar-hover">
       <span className="relative inline-flex h-1.5 w-1.5">
-        <span className="absolute inset-0 rounded-full bg-titlebar-foreground opacity-60 animate-ping" />
-        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-titlebar-foreground" />
+        <span className="absolute inset-0 rounded-full bg-primary opacity-60 animate-ping" />
+        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
       </span>
       <span className="tabular-nums">{n} running</span>
     </button>
@@ -113,7 +113,7 @@ export function Bar() {
             >
               <StickyNote className="h-3.5 w-3.5" />
               {openNotes && (
-                <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-titlebar-foreground" />
+                <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-primary" />
               )}
             </button>}
             <VoiceMicGroup />
@@ -269,8 +269,6 @@ function SyncChip() {
   const kind = att.kind;
   const Icon = kind === "conflict" ? GitMerge : kind === "tailscale" ? WifiOff : kind === "offline" ? CloudOff : kind === "big" ? FileWarning : AlertTriangle;
   const color = att.level === "red" ? "text-destructive" : "text-amber-500";
-  // On the blue bar itself: lighter shades that read there.
-  const barColor = att.level === "red" ? "text-red-200" : "text-amber-200";
   const since = new Date(att.since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const hint =
     kind === "conflict"
@@ -288,7 +286,7 @@ function SyncChip() {
     <div ref={ref} className="relative mr-1 flex items-center">
       <button
         onClick={() => setOpen((o) => !o)}
-        className={`h-7 flex items-center gap-1.5 px-2 rounded hover:bg-titlebar-hover text-[11.5px] ${barColor}`}
+        className={`h-7 flex items-center gap-1.5 px-2 rounded hover:bg-titlebar-hover text-[11.5px] ${color}`}
         title="Vault sync needs attention"
       >
         <Icon className="h-3.5 w-3.5" />
