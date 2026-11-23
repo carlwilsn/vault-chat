@@ -110,7 +110,7 @@ export function turnSections(conv: ContextConv, o: { folder?: { rel: string; out
     out.push({
       key: "projects",
       text: all.length
-        ? `<projects>\nCarl's projects (each a folder with its own thread; read its AGENTS.md and .vault-chat/project-memory.md before you touch its files):\n${all
+        ? `<projects>\nCarl's projects in this vault only (each a folder with its own thread; read its AGENTS.md and .vault-chat/project-memory.md before you touch its files). His other vaults' projects and every chat: PluginRead box:chats; read it before you answer what projects or chats he has:\n${all
             .slice(0, 40)
             .map((x) => `- ${x.name}: ${x.folder.split("\\").join("/")}`)
             .join("\n")}\n</projects>`
