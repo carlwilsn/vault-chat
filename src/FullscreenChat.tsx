@@ -38,7 +38,7 @@ export function FrameFallback({ info }: { info: PluginFallbackInfo }) {
     <div className="flex-1 min-h-0 flex flex-col bg-card" data-el="chat-frame-fallback">
       <div data-tauri-drag-region className="h-9 shrink-0 flex items-center gap-2 px-3 select-none text-[11.5px] text-muted-foreground">
         <span className="truncate" title={info.error ?? ""}>The chat window stopped; a plain frame until it is back.</span>
-        <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
+        <button data-offer="app/titlebar.reloadPart" type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
           Reload
         </button>
         <div data-tauri-drag-region className="flex-1 h-full" />

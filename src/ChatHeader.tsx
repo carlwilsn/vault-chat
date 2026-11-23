@@ -32,7 +32,7 @@ export const ChatBarSlot = memo(function ChatBarSlot() {
 
 function MemoryButton() {
   return (
-    <button
+    <button data-offer="app/chat.openMemory"
       type="button"
       data-el="chat-memory-fallback"
       onClick={() => void openChatMemory()}
@@ -52,7 +52,7 @@ export function ChatHeaderFallback({ info, bar = false }: { info: PluginFallback
   ) : (
     <span data-el="chat-header-fallback-error" className="pointer-events-auto flex items-center gap-2 px-1 min-w-0 text-[11.5px] text-muted-foreground">
       <span className="truncate" title={info.error ?? ""}>The chat header stopped.</span>
-      <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
+      <button data-offer="app/titlebar.reloadPart" type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
         Reload
       </button>
     </span>

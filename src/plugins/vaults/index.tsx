@@ -45,10 +45,19 @@ const NAME = { type: "object", properties: { name: { type: "string", description
 /** The plugin's offers (exported for tests). */
 export function vaultsOffers() {
   return {
+    watch: (fn: () => void) => {
+      const offs = [usePicker.subscribe(fn), useStore.subscribe(fn), onPickerEvent(() => fn())];
+      return () => offs.forEach((f) => f());
+    },
     state: {
       vaults: {
-        description: "The vault folders the picker lists (vaults only; Main and projects' chats are app/chats'): name, path, open (the workspace now), project (slug, name) when the vault is itself a project. Read afresh.",
-        read: async () => (await loadRows()).map(shown),
+        description: "The vault folders the picker lists (vaults only; Main and projects' chats are app/chats'): name, path, open (the workspace now), project (slug, name) when the vault is itself a project. As the picker last listed them (it lists them again when it opens).",
+        // As last listed (the picker lists them again when it opens, and each change here does): read on every change,
+        // so not re-listed per read.
+        read: async () => {
+          const rows = usePicker.getState().rows;
+          return (rows.length ? rows : await loadRows()).map(shown);
+        },
       },
       current: {
         description: "The vault open now as the workspace (its name and path), or null.",
@@ -137,9 +146,15 @@ export function vaultsOffers() {
   };
 }
 
+/** The offers, headless: mounted in every layout (src/places.ts "offers"), drawn or not. */
+export const offers = {
+  mount: (_el: HTMLElement, api: PluginApi) => {
+    const o = api.offer(vaultsOffers());
+    api.effect(onPickerEvent((name, data) => o.emit(name, data)));
+  },
+};
+
 export function mount(el: HTMLElement, api: PluginApi): () => void {
-  const offers = api.offer(vaultsOffers());
-  api.effect(onPickerEvent((name, data) => offers.emit(name, data)));
   // A render error the picker does not catch is the plugin's failure (src/VaultPicker.tsx then shows its fallback).
   const root = createRoot(el, { onUncaughtError: (e) => api.error(e) });
   // Drawn right after the app's commit (before the browser paints: the title bar never lacks it), unmounted outside it.

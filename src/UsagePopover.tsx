@@ -2,12 +2,26 @@
 // popover with what this chat's context holds, and Carl's Claude plan usage
 // (the 5-hour window and the weekly limit: % used and when each resets), read
 // from the box (server/planUsage.ts). The same in the docked pane and fullscreen.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
+import { create } from "zustand";
 import { useStore } from "./store";
 import { boxGet, boxLinkFor } from "./boxChat";
 
 type Window = { percent: number; resetsAt: number | null };
 type Usage = { fiveHour: Window | null; weekly: Window | null; error?: string };
+
+/** The popover's state: open, and the plan usage it read (app/composer's usage state; its openUsage action). */
+export const useUsage = create<{ open: boolean; usage: Usage | null; loading: boolean; context: { used: number; limit: number; known: boolean } | null }>(() => ({ open: false, usage: null, loading: false, context: null }));
+export const setUsageOpen = (open: boolean) => useUsage.setState({ open });
+/** Read the plan usage from the box (server/planUsage.ts), as the popover does when it opens. */
+export async function loadUsage(): Promise<Usage> {
+  useUsage.setState({ loading: true });
+  const vault = useStore.getState().vaultPath;
+  const l = await boxLinkFor(vault).catch(() => null);
+  const r: Usage = l ? await boxGet(l, "/api/v1/usage", 25_000).catch((e: unknown) => ({ fiveHour: null, weekly: null, error: String((e as Error)?.message ?? e).slice(0, 120) })) : { fiveHour: null, weekly: null, error: "no box is connected" };
+  useUsage.setState({ usage: r, loading: false });
+  return r;
+}
 
 /** "resets 3:40 pm" today; "resets Thu 9:00 am" on another day. */
 export function resetsAt(at: number | null, now = Date.now()): string {
@@ -42,10 +56,12 @@ const Heading = ({ children }: { children: ReactNode }) => <div className="text-
  * `ring`: what the button shows (the ring and the count).
  */
 export function UsagePopover({ ring, used, limit, known, title }: { ring: ReactNode; used: number; limit: number; known: boolean; title: string }) {
-  const [open, setOpen] = useState(false);
-  const [usage, setUsage] = useState<Usage | null>(null);
-  const [loading, setLoading] = useState(false);
+  const open = useUsage((s) => s.open);
+  const usage = useUsage((s) => s.usage);
+  const loading = useUsage((s) => s.loading);
+  const setOpen = setUsageOpen;
   const vault = useStore((s) => s.vaultPath);
+  useEffect(() => useUsage.setState({ context: { used, limit, known } }), [used, limit, known]);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -59,26 +75,13 @@ export function UsagePopover({ ring, used, limit, known, title }: { ring: ReactN
     };
   }, [open]);
   useEffect(() => {
-    if (!open) return;
-    let alive = true;
-    setLoading(true);
-    void (async () => {
-      const l = await boxLinkFor(vault).catch(() => null);
-      const r: Usage | null = l ? await boxGet(l, "/api/v1/usage", 25_000).catch((e: unknown) => ({ fiveHour: null, weekly: null, error: String((e as Error)?.message ?? e).slice(0, 120) })) : { fiveHour: null, weekly: null, error: "no box is connected" };
-      if (alive) {
-        setUsage(r);
-        setLoading(false);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
+    if (open) void loadUsage();
   }, [open, vault]);
   const pct = limit > 0 ? Math.round((used / limit) * 100) : 0;
   const win = (w: Window | null) => (w ? `${Math.round(w.percent)}%${w.resetsAt ? ` · ${resetsAt(w.resetsAt)}` : ""}` : "—");
   return (
     <div className="relative" ref={ref}>
-      <button
+      <button data-offer="app/composer.openUsage"
         onClick={() => setOpen(!open)}
         data-el="context-ring"
         title={title}

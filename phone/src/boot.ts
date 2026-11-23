@@ -72,6 +72,8 @@ export function boot(): void {
     if (page === "alerts") void loadAlerts();
     else void loadNotes();
     setHeader();
+    // What it shows, for the box (box:links phone view).
+    if (!MOCK) void api("/api/v1/phone/view", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ page }) }).catch(() => {});
   }
   document.querySelectorAll<HTMLElement>(".mrow[data-page]").forEach((r) => (r.onclick = () => { closeMenu(); closeDrawer(); setPage(r.dataset.page); }));
   function setHeader() {
@@ -954,6 +956,24 @@ export function boot(): void {
   const bytesToB64u = (buf) => { const b = new Uint8Array(buf); let s = ""; for (const c of b) s += String.fromCharCode(c); return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); };
   const subKey = (sub) => { try { const k = sub.options && sub.options.applicationServerKey; return k ? bytesToB64u(k) : ""; } catch { return ""; } };
   const subBody = (sub) => { const k = subKey(sub); return k ? { ...sub.toJSON(), key: k } : sub.toJSON(); };
+  // The switch's own flip (box:alerts pushOnPhone runs the same, when Carl asks the agent): on needs this device's
+  // notification permission already granted (a first grant is only Carl's tap).
+  async function setPush(on) {
+    try {
+      const sub = await currentSub();
+      if (!on && sub) {
+        try { localStorage.setItem("vc_push_optout", "1"); } catch {}
+        await api("/push/unsubscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint: sub.endpoint }) }).catch(() => {});
+        await sub.unsubscribe().catch(() => {});
+        toast("Notifications off.");
+      } else if (on && !sub) {
+        if (!pushSupported() || Notification.permission !== "granted") { toast("Turning notifications on needs your tap on the switch here."); return; }
+        try { localStorage.removeItem("vc_push_optout"); } catch {}
+        if (await pushSubscribe()) toast("Notifications on.");
+      }
+    } catch (e) { toast("Push setup failed: " + (e.message || e)); }
+    refreshPushUi();
+  }
   $("pushSw").onclick = async () => {
     try {
       const sub = await currentSub();
@@ -1004,6 +1024,9 @@ export function boot(): void {
       if (s.type === "notif") { void refreshBadge(); if (page === "alerts") softReload(loadAlerts); }
       else if (s.type === "file_changed" && typeof s.path === "string" && /(^|\/)\.vault-chat\/notes\.jsonl$/.test(s.path)) { if (page === "notes") softReload(loadNotes); }
       else if (s.type === "setting" && s.key === "pushAutomatic") showPushPreference(s.value === true);
+      // box:links showOnPhone: the agent switched the page, as the menu does.
+      else if (s.type === "phone.page" && (s.page === "alerts" || s.page === "notes")) setPage(s.page);
+      else if (s.type === "phone.push" && typeof s.on === "boolean") void setPush(s.on);
       // The phone app itself switched off (server/surfaces.ts): the box's /phone now says so; go there.
       else if (s.type === "plugin.desired" && s.plugin === "app/phone" && s.state === "stopped" && !MOCK) {
         fetch("/phone", { cache: "no-store" }).then((r) => r.text()).then((t) => { if (t.includes('data-el="surface-off"')) location.reload(); }).catch(() => {});

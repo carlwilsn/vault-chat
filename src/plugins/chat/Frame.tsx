@@ -30,7 +30,7 @@ export function Frame() {
         >
           <div className="px-2 flex items-center relative z-10">
             {!chatSidebarOpen && (
-              <button
+              <button data-offer="box:workspace.chatSidebar"
                 onClick={toggleChatSidebar}
                 data-el="chats-sidebar-open"
                 className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"

@@ -257,11 +257,11 @@ function FallbackViewer({ props, chain, error, retry }: { props: ViewerProps; ch
           {builtinOff ? `The ${props.type} viewer is turned off; ${name} as plain text.` : `The viewer stopped on ${name}${error ? `: ${error}` : ""}.`}
         </span>
         {builtinOff ? (
-          <button type="button" data-el="viewer-turn-on" onClick={() => void enableViewer(`builtin:${props.type}`)} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 hover:text-foreground">
+          <button data-offer="app/viewer.enable" type="button" data-el="viewer-turn-on" onClick={() => void enableViewer(`builtin:${props.type}`)} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 hover:text-foreground">
             Turn on
           </button>
         ) : (
-          <button type="button" data-el="viewer-reload" onClick={retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 hover:text-foreground">
+          <button data-offer="app/titlebar.reloadPart" type="button" data-el="viewer-reload" onClick={retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 hover:text-foreground">
             Reload
           </button>
         )}

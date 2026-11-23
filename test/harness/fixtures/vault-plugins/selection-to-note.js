@@ -1,7 +1,7 @@
 // An example vault plugin (put it in <vault>/.vault-chat/plugins/): plugins composing through the shared context and
-// each other's offers. Each new selection Carl makes (a file's text, a chat message, a note) becomes a note through
-// the Notes plugin's own `add` action (app/notes), with no change to either: the shared context in, app/notes out.
-export const meta = { name: "Selection to note", description: "Keeps each new selection as a note, through app/notes' add." };
+// the notes model. Each new selection Carl makes (a file's text, a chat message, a note) becomes a note through the
+// notes noun's add (api.host.notes.add: the box's box:notes add, what the Notes panel uses), with no change to either.
+export const meta = { name: "Selection to note", description: "Keeps each new selection as a note, through the notes noun's add." };
 
 export function mount(_el, api) {
   let kept = 0;
@@ -20,13 +20,10 @@ export function mount(_el, api) {
       s.kind === "file" ? `${s.path}${s.lineStart ? `:${s.lineStart}` : ""}` :
       s.kind === "message" ? `chat message ${s.messageId}` :
       s.kind === "note" ? `note ${s.noteId}` : s.path || "";
-    const r = await api.plugins.act("app/notes", "add", {
-      text: `"${text.slice(0, 200)}"${where ? ` (${where})` : ""}`,
-      ...(s.kind === "file" ? { source_path: s.path } : {}),
-    });
+    const r = await api.host.notes.add(`"${text.slice(0, 200)}"${where ? ` (${where})` : ""}`, s.kind === "file" ? s.path : undefined);
     if (r.ok) {
       kept++;
-      offers.emit("kept", { id: r.result && r.result.added, from: s.kind });
+      offers.emit("kept", { id: r.id, from: s.kind });
     } else {
       api.host.notify(`Selection to note: ${r.error}`, "error");
     }

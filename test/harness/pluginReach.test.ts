@@ -93,7 +93,7 @@ test("declare → list → act → read back; unmounted, it offers nothing and a
   assert.deepEqual(d!.state.map((s) => s.name), ["count", "bad"]);
   assert.deepEqual(d!.actions.map((a) => a.name), ["add", "boom", "reject", "slow"]);
   assert.deepEqual(d!.actions[0]!.args, { type: "object", properties: { by: { type: "number" } }, required: ["by"], additionalProperties: false });
-  assert.deepEqual(d!.events, [{ name: "changed", description: "the count changed" }]);
+  assert.deepEqual(d!.events.map((e) => e.name), ["changed", "stateChanged"], "its own event, and the generic one every part with state has");
 
   const r = await actOffers("counter", "add", { by: 2 });
   assert.equal(r.ok, true, r.error);
@@ -208,9 +208,9 @@ test("the Notes plugin, mounted for real through the host, declares its offers",
   assert.equal(notesHandle.error, null);
   const d = listOffers().find((p) => p.id === "app/notes")!;
   assert.ok(d, "listed while it runs");
-  assert.deepEqual(d.state.map((s) => s.name), ["notes", "panel"]);
-  assert.deepEqual(d.actions.map((a) => a.name), ["add", "edit", "resolve", "reopen", "delete", "open", "close", "view"]);
-  assert.deepEqual(d.events.map((e) => e.name), ["changed"]);
+  assert.deepEqual(d.state.map((s) => s.name), ["panel", "composer"]);
+  assert.deepEqual(d.actions.map((a) => a.name), ["open", "close", "view", "expand", "viewRaw", "reformat", "discuss", "openSource", "editInPlace", "openComposer", "setComposerText", "addComposerFile", "removeComposerFile", "removeComposerImage", "captureForComposer", "saveComposer", "closeComposer"]);
+  assert.deepEqual(d.events.map((e) => e.name), ["changed", "stateChanged"]);
 });
 
 test("the agent, through the box's generic tools: lists the live plugins, reads Notes, acts, and the result is read back from the app", async () => {
@@ -219,37 +219,30 @@ test("the agent, through the box's generic tools: lists the live plugins, reads 
   assert.equal(r.ok, true, r.text);
   assert.match(r.text, /^1 live plugin\(s\) on the laptop/);
   assert.match(r.text, /^- app\/notes "Notes"$/m);
-  assert.match(r.text, /^ {2}action add \{text: string, source_path\?: string\}: Add a note/m);
   assert.match(r.text, /^ {2}action view \{filter\?: "active"\|"resolved", query\?: string, open\?: boolean\}/m);
   assert.equal(sent.at(-1)!.type, "plugin");
   assert.equal(sent.at(-1)!.op, "list");
 
-  // Add: written to the notes file, the store has it, and the read-back shows it.
-  r = await Act({ plugin: "notes", action: "add", args: { text: "check the sign in eq 3", source_path: "Physics/hw4.md" } });
-  assert.equal(r.ok, true, r.text);
-  const id = /"added": "([^"]+)"/.exec(r.text)?.[1] ?? "";
-  assert.ok(id, r.text);
+  // A note made and resolved through the notes model (the panel's own path: the host's notes → the box's box:notes).
+  const made = await appHostBackend.addNote("check the sign in eq 3", "Physics/hw4.md");
+  assert.equal(made.ok, true, made.error);
+  const id = made.id!;
   assert.ok(box.notes.some((n) => n.id === id), "written to the box's notes (the app in box mode)");
-  assert.ok(S().notes.some((n) => n.id === id), "in the app's store");
-  let st = stateOf(r.text);
-  assert.deepEqual(st.notes.open.map((n: any) => [n.id, n.text, n.source]), [[id, "check the sign in eq 3", "Physics/hw4.md"]]);
-
-  // Resolve, and the panel's own view state (which no tool could reach before): set, opened, read back.
-  r = await Act({ plugin: "app/notes", action: "resolve", args: { id } });
-  assert.equal(r.ok, true, r.text);
-  st = stateOf(r.text);
-  assert.equal(st.notes.open.length, 0);
-  assert.deepEqual(st.notes.resolved.map((n: any) => n.id), [id]);
-  assert.equal(S().notes.find((n) => n.id === id)?.status, "resolved");
+  await appHostBackend.setNoteStatus(id, "resolved");
   assert.equal(box.notes.find((n) => n.id === id)?.status, "resolved");
+
+  // The panel's own view state: set, opened, read back.
   r = await Act({ plugin: "Notes", action: "view", args: { filter: "resolved", query: "sign", open: true } });
   assert.equal(r.ok, true, r.text);
   assert.equal(notesHandle!.error, null);
-  assert.deepEqual(stateOf(r.text).panel, { open: true, filter: "resolved", query: "sign" });
+  assert.deepEqual(stateOf(r.text).panel, { open: true, filter: "resolved", query: "sign", expanded: null, raw: null, editing: null });
   assert.equal(S().showNotesPanel, true, "the panel opened in the app");
-  // What the panel renders follows: the resolved list, searched for "sign", shows the note.
   await waitFor("the panel shows the resolved note", () => (notesEl!.innerHTML.includes(`data-note-id="${id}"`)));
   assert.match(notesEl!.innerHTML, /value="sign"/);
+  // A card expanded, as Carl's click: read back.
+  r = await Act({ plugin: "notes", action: "expand", args: { id } });
+  assert.equal(r.ok, true, r.text);
+  assert.equal(stateOf(r.text).panel.expanded, id);
 
   // Read: one selector, and the events it emitted on the way.
   r = await Read({ plugin: "notes", state: "panel" });
@@ -259,17 +252,11 @@ test("the agent, through the box's generic tools: lists the live plugins, reads 
   assert.match(r.text, /recent events: [\s\S]*"event": "changed"[\s\S]*"resolved": 1/);
 
   // A failing action is an error result, with the state still read back; the plugin keeps running.
-  r = await Act({ plugin: "notes", action: "resolve", args: { id } });
+  r = await Act({ plugin: "notes", action: "expand", args: { id: "nope" } });
   assert.equal(r.ok, false);
-  assert.match(r.text, /app\/notes resolve: Error: app\/notes action "resolve" threw: note .* is resolved\. The plugin is still running\./);
-  assert.match(r.text, /state read back:/);
-  r = await Act({ plugin: "notes", action: "resolve", args: { id: "nope" } });
   assert.match(r.text, /no note with id "nope"/);
+  assert.match(r.text, /state read back:/);
   assert.equal(notesHandle!.error, null);
-
-  r = await Act({ plugin: "notes", action: "delete", args: { id } });
-  assert.equal(r.ok, true, r.text);
-  assert.deepEqual(stateOf(r.text).notes, { open: [], resolved: [] });
   await Act({ plugin: "notes", action: "close" });
   assert.equal(S().showNotesPanel, false);
 });

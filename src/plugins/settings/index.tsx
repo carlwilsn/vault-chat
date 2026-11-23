@@ -12,9 +12,8 @@ import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import type { PluginApi } from "../../mountHost";
 import { useStore } from "../../store";
-import { saveSetting, setting } from "../../settings";
-import { SETTING_KEYS, isSettingKey, settingTakes, type SettingValue } from "../../settingsRecords";
-import { openShortcutSheet } from "../../ShortcutSheet";
+import { closeShortcutSheet, openShortcutSheet, useShortcutSheet } from "../../ShortcutSheet";
+import { boxStatusNow, checkBox, disconnectFromBox, findBoxes, folderNow, onSettingsBoxChanged, refreshFolder, setFolder, syncBoxNow, syncWithBox } from "../../settingsBox";
 import { Pane, SETTINGS_SECTIONS } from "./Pane";
 
 const sectionOf = (w: unknown) => {
@@ -29,6 +28,16 @@ function scrollToSection(root: () => ParentNode | null, id: string): boolean {
   if (!el) return false;
   el.scrollIntoView?.({ block: "start" });
   return true;
+}
+
+/** The section at the top of the pane as it is scrolled (null when the pane is not drawn). */
+function sectionInView(root: () => ParentNode | null): string | null {
+  const els = [...(root()?.querySelectorAll<HTMLElement>("[data-settings]") ?? [])];
+  if (!els.length) return null;
+  const top = els[0]!.parentElement?.getBoundingClientRect().top ?? 0;
+  let cur = els[0]!.dataset.settings ?? null;
+  for (const el of els) if (el.getBoundingClientRect().top - top <= 24) cur = el.dataset.settings ?? cur;
+  return cur;
 }
 
 /** Wait a few frames for the section to be drawn, then scroll to it. */
@@ -50,20 +59,40 @@ export function settingsOffers(emit: (event: string, data?: unknown) => void = (
   return {
     state: {
       open: {
-        description: "Settings is open: open, and where (chat: in the chat pane's place; viewer: in the viewer's, when the chat is hidden).",
+        description: "Settings is open: open, where (chat: in the chat pane's place; viewer: in the viewer's, when the chat is hidden) and section (the one at the top of the pane as it is scrolled).",
         read: () => {
           const s = S();
-          return { open: s.showSettings, where: s.showSettings ? (s.rightCollapsed && !s.popoutOpen && !s.chatFullscreen ? "viewer" : "chat") : null };
+          return { open: s.showSettings, where: s.showSettings ? (s.rightCollapsed && !s.popoutOpen && !s.chatFullscreen ? "viewer" : "chat") : null, section: s.showSettings ? sectionInView(root) : null };
         },
       },
       sections: {
         description: "The pane's sections, top to bottom: id, title.",
         read: () => SETTINGS_SECTIONS.map((s) => ({ ...s })),
       },
-      values: {
-        description: "The app's settings as this app knows them now (the box's setting records): theme, model, effort, voice, pushAutomatic, chatSidebar, ...; each with what it takes.",
-        read: () => Object.fromEntries(SETTING_KEYS.map((k) => [k, { value: setting(k), takes: settingTakes(k) }])),
+      shortcuts: {
+        description: "The keyboard shortcut sheet (Ctrl+/): open.",
+        read: () => ({ open: useShortcutSheet.getState().open }),
       },
+      box: {
+        description: "Settings → Box for the open vault: connected (name, box, vault) or null; syncing, lastSyncOk, error, waitingForBox (commits), mergeGate (open, or closedSince + files), notOnBoxYet (files over 50 MB not sent), github (the backup), keysDidNotReach.",
+        read: () => boxStatusNow(),
+      },
+      folder: {
+        description: "Settings → vault-chat folder: path (the laptop's), boxFolder, repos (kind vault | project, name, onBox).",
+        read: () => folderNow(),
+      },
+    },
+    // The settings' values and their change are box:settings (one route, the pane's controls call it).
+    watch: (fn: () => void) => {
+      void refreshFolder().catch(() => {});
+      // Carl scrolling the pane moves its section (a scroll inside it, heard on the document).
+      const onScroll = (e: Event) => {
+        if ((e.target as Element | null)?.querySelector?.("[data-settings]")) fn();
+      };
+      const doc = typeof document !== "undefined" && typeof document.addEventListener === "function" ? document : null;
+      doc?.addEventListener("scroll", onScroll, true);
+      const offs = [useStore.subscribe(fn), useShortcutSheet.subscribe(fn), onSettingsBoxChanged(fn), () => doc?.removeEventListener("scroll", onScroll, true)];
+      return () => offs.forEach((f) => f());
     },
     actions: {
       open: {
@@ -72,10 +101,8 @@ export function settingsOffers(emit: (event: string, data?: unknown) => void = (
         run: async (a: Record<string, unknown>) => {
           const sec = a.section === undefined ? null : sectionOf(a.section);
           if (a.section !== undefined && !sec) throw new Error(`no section "${String(a.section)}" (sections: ${SETTINGS_SECTIONS.map((s) => s.id).join(", ")})`);
-          if (!S().showSettings) {
-            S().setShowSettings(true);
-            emit("opened", sec ? { section: sec.id } : undefined);
-          }
+          if (!S().showSettings) S().setShowSettings(true);
+          emit("opened", sec ? { section: sec.id } : undefined);
           const shown = sec ? await goTo(root, sec.id) : true;
           return { open: true, ...(sec ? { section: sec.id, shown } : {}) };
         },
@@ -83,10 +110,7 @@ export function settingsOffers(emit: (event: string, data?: unknown) => void = (
       close: {
         description: "Close Settings (back to the chat, or the viewer).",
         run: () => {
-          if (S().showSettings) {
-            S().setShowSettings(false);
-            emit("closed");
-          }
+          if (S().showSettings) S().setShowSettings(false);
           return { open: false };
         },
       },
@@ -102,15 +126,42 @@ export function settingsOffers(emit: (event: string, data?: unknown) => void = (
           return { section: sec.id };
         },
       },
-      set: {
-        description: "Change one of the app's settings (a setting record on the box, as Carl's pick in the pane; value null: its default). Only when Carl asks.",
-        args: { type: "object", properties: { key: { type: "string", enum: SETTING_KEYS as unknown as string[] }, value: { type: ["string", "boolean", "null"] } }, required: ["key", "value"], additionalProperties: false },
+      findBoxes: {
+        description: "Connect a box, step 1 (its Connect a box): the boxes on Carl's tailnet (name, url, online, version), or why none answered.",
+        run: async () => findBoxes(),
+      },
+      connectBox: {
+        description: "Connect the open vault to a box (its pick or address, then Sync this vault with it): checks it answers as a vault-chat server, makes the vault there, gives it this laptop's keys; the chat then runs on it. Only when Carl asks.",
+        args: { type: "object", properties: { url: { type: "string", description: "A box's url from findBoxes, or its address." } }, required: ["url"], additionalProperties: false },
         run: async (a: Record<string, unknown>) => {
-          if (!isSettingKey(a.key)) throw new Error(`no setting "${String(a.key)}" (settings: ${SETTING_KEYS.join(", ")})`);
-          const why = await saveSetting(a.key, a.value as SettingValue);
-          if (why) throw new Error(why);
-          emit("changed", { key: a.key, value: setting(a.key) });
-          return { key: a.key, value: setting(a.key) };
+          const vault = S().vaultPath;
+          if (!vault) throw new Error("no vault is open");
+          const c = await checkBox(String(a.url ?? ""));
+          if (!c.ok) throw new Error(c.error);
+          await syncWithBox(vault, String(a.url ?? ""), c.name);
+          return boxStatusNow();
+        },
+      },
+      syncBoxNow: {
+        description: "Settings → Box's sync now: a sync cycle with the box at once.",
+        run: async () => {
+          await syncBoxNow();
+          return boxStatusNow();
+        },
+      },
+      disconnectBox: {
+        description: "Settings → Box's disconnect (after its confirm): the chat goes back to running on this laptop; the box keeps its copy. Only when Carl asks.",
+        run: async () => {
+          await disconnectFromBox();
+          return boxStatusNow();
+        },
+      },
+      setFolder: {
+        description: "Set the laptop's vault-chat folder (its Set / Change): what the box has that the laptop doesn't is brought over. Only when Carl asks.",
+        args: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false },
+        run: async (a: Record<string, unknown>) => {
+          const msg = await setFolder(String(a.path ?? ""));
+          return { ...folderNow(), ...(msg ? { note: msg } : {}) };
         },
       },
       openShortcuts: {
@@ -120,18 +171,30 @@ export function settingsOffers(emit: (event: string, data?: unknown) => void = (
           return { opened: true };
         },
       },
+      closeShortcuts: {
+        description: "Close the keyboard shortcut sheet (Esc).",
+        run: () => {
+          closeShortcutSheet();
+          return { open: false };
+        },
+      },
     },
     events: {
-      opened: { description: "Settings opened: section (when the agent named one)." },
-      closed: { description: "Settings closed." },
-      changed: { description: "The agent changed a setting: key, value." },
+      opened: { description: "The agent opened Settings (or went to a section): section. Carl's own opening and closing: stateChanged." },
     },
   };
 }
 
+/** The offers, headless: mounted in every layout (src/places.ts "offers"), whether Settings is open or not. */
+export const offers = {
+  mount: (el: HTMLElement, api: PluginApi) => {
+    // The pane is wherever Settings draws (the document); a detached host (a test's) holds it itself.
+    const o = api.offer(settingsOffers((name, data) => o.emit(name, data), () => (el.isConnected ? el.ownerDocument : el)));
+  },
+};
+
 export function mount(el: HTMLElement, api: PluginApi): () => void {
   let alive = true;
-  const offers = api.offer(settingsOffers((name, data) => offers.emit(name, data), () => el));
   // A render error the pane does not catch is the plugin's failure (src/SettingsPane.tsx then shows its fallback).
   const root = createRoot(el, { onUncaughtError: (e) => api.error(e) });
   queueMicrotask(() => alive && flushSync(() => root.render(<Pane />)));

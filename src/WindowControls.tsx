@@ -35,7 +35,7 @@ export function WindowControls({ className = "", onBar = false }: { className?: 
   const tone = onBar ? "hover:bg-titlebar-hover text-titlebar-muted" : "hover:bg-accent/60 text-muted-foreground";
   return (
     <div className={`flex items-center ${className}`} data-el="window-controls">
-      <button
+      <button data-offer="app/titlebar.minimize"
         onClick={() => void win.minimize()}
         data-el="window-minimize"
         className={`h-9 w-11 flex items-center justify-center ${tone}`}
@@ -43,7 +43,7 @@ export function WindowControls({ className = "", onBar = false }: { className?: 
       >
         <Minus className="h-3.5 w-3.5" />
       </button>
-      <button
+      <button data-offer="app/titlebar.toggleMaximize"
         onClick={() => void win.toggleMaximize()}
         data-el="window-maximize"
         className={`h-9 w-11 flex items-center justify-center ${tone}`}
@@ -51,7 +51,7 @@ export function WindowControls({ className = "", onBar = false }: { className?: 
       >
         {maximized ? <Copy className="h-3 w-3" /> : <Square className="h-3 w-3" />}
       </button>
-      <button
+      <button data-offer="app/titlebar.closeWindow"
         onClick={() => void win.close()}
         data-el="window-close"
         className={`h-9 w-11 flex items-center justify-center hover:bg-destructive hover:text-destructive-foreground ${onBar ? "text-titlebar-muted" : "text-muted-foreground"}`}

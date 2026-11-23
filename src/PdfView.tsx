@@ -7,7 +7,7 @@ import { useStore } from "./store";
 import { readShownBytes } from "./liveReload";
 import { reportScroll } from "./scrollTarget";
 import { decodeTarget, landPdf } from "./viewTarget";
-import { registerZoom } from "./plugins/viewer/zoom";
+import { registerZoom, setZoomOf, zoomMoved } from "./plugins/viewer/zoom";
 
 
 const MIN_ZOOM = 0.25;
@@ -132,6 +132,7 @@ export function PdfView({
   const zoomNowRef = useRef(1);
   zoomNowRef.current = zoom;
   useEffect(() => registerZoom(path, { get: () => zoomNowRef.current, set: (z) => setZoom(clampZoom(z)), min: MIN_ZOOM, max: MAX_ZOOM }), [path]);
+  useEffect(() => zoomMoved(), [zoom]);
   const [inlineAsk, setInlineAsk] = useState<InlineEditRequest | null>(null);
   const [marqueeOn, setMarqueeOn] = useState(false);
   // Current drag state for the marquee rectangle. Stored as client-space
@@ -996,7 +997,7 @@ export function PdfView({
         )}
         <div className="ml-auto flex items-center gap-1">
           {extraToolbar}
-          <button
+          <button data-offer="app/viewer.capture"
             onClick={() => {
               if (loading) return;
               setMarqueeOn((v) => !v);
@@ -1013,30 +1014,30 @@ export function PdfView({
           >
             <BoxSelect className="h-3 w-3" />
           </button>
-          <button
+          <button data-offer="app/viewer.zoom"
             onClick={() => {
               if (loading) return;
-              setZoom((z) => clampZoom(z / 1.1));
+              setZoomOf(path, "out");
             }}
             className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
             title="Zoom out"
           >
             <ZoomOut className="h-3 w-3" />
           </button>
-          <button
+          <button data-offer="app/viewer.zoom"
             onClick={() => {
               if (loading) return;
-              setZoom(1);
+              setZoomOf(path, "reset");
             }}
             className="h-6 min-w-[48px] px-2 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground font-mono text-[10.5px]"
             title="Reset zoom"
           >
             {Math.round(zoom * 100)}%
           </button>
-          <button
+          <button data-offer="app/viewer.zoom"
             onClick={() => {
               if (loading) return;
-              setZoom((z) => clampZoom(z * 1.1));
+              setZoomOf(path, "in");
             }}
             className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
             title="Zoom in"
@@ -1044,7 +1045,7 @@ export function PdfView({
             <ZoomIn className="h-3 w-3" />
           </button>
           {paneId && (
-            <button
+            <button data-offer="app/viewer.closePane"
               onClick={(e) => {
                 e.stopPropagation();
                 closePane(paneId);

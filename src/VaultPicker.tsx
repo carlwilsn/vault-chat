@@ -43,7 +43,7 @@ export function VaultPickerFallback({ info }: { info: PluginFallbackInfo }) {
   const vaultName = vaultPath ? vaultPath.split("/").filter(Boolean).pop() : null;
   return (
     <div className="relative" ref={ref} data-el="vault-picker-fallback">
-      <button
+      <button data-offer="app/vaults.openMenu"
         onClick={() => setPickerOpen(!open)}
         data-el="vault-picker"
         className="h-7 flex items-center gap-1.5 px-2 rounded hover:bg-titlebar-hover text-[12px] text-titlebar-foreground"
@@ -60,14 +60,14 @@ export function VaultPickerFallback({ info }: { info: PluginFallbackInfo }) {
           ) : (
             <div data-el="vault-picker-fallback-error" className="flex items-center gap-2 px-2.5 py-1.5 text-[11.5px] text-muted-foreground">
               <span className="truncate" title={info.error ?? ""}>The vault picker stopped; a plain one until it is back.</span>
-              <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
+              <button data-offer="app/titlebar.reloadPart" type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
                 Reload
               </button>
             </div>
           )}
           <div className="max-h-[60vh] overflow-auto">
             {rows.map((r) => (
-              <button
+              <button data-offer="app/vaults.open"
                 key={r.rel}
                 data-el="vault-picker-item"
                 data-rel={r.rel}

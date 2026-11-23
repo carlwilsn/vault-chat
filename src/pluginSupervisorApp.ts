@@ -162,6 +162,23 @@ export function usePluginDesired(path: string | null | undefined): Desired | nul
   return ready() ? rec.desired(id) : null;
 }
 
+/** Hear one plugin's desired state change outside React (the title bar's watch: the Notes plugin on or off). */
+export function subscribePluginDesired(path: string, fn: () => void): () => void {
+  const id = pluginIdOf(path);
+  void loadSupervisor();
+  let off = rec.watch(id, () => fn());
+  const again = () => {
+    off();
+    off = rec.watch(id, () => fn());
+    fn();
+  };
+  listeners.add(again);
+  return () => {
+    listeners.delete(again);
+    off();
+  };
+}
+
 /** What usePluginDesired would say now, outside React (null: not known yet). */
 export function pluginDesiredNow(path: string): Desired | null {
   const id = pluginIdOf(path);

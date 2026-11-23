@@ -26,11 +26,24 @@ function read(stateDir: string): File {
     return { pending: [], done: [] };
   }
 }
+const queueFns = new Set<() => void>();
+/** Hear the queue change (kept, run, expired, cancelled): box:queue's watch. */
+export function onQueueChanged(fn: () => void): () => void {
+  queueFns.add(fn);
+  return () => void queueFns.delete(fn);
+}
 function write(stateDir: string, f: File): void {
   const p = fileOf(stateDir);
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p + ".tmp", JSON.stringify({ pending: f.pending, done: f.done.slice(-20) }, null, 1));
   renameSync(p + ".tmp", p);
+  for (const fn of [...queueFns]) queueMicrotask(() => {
+    try {
+      fn();
+    } catch {
+      /* a listener's own error */
+    }
+  });
 }
 
 export function queueAct(stateDir: string, a: Omit<QueuedAct, "id" | "at">, now = Date.now()): QueuedAct {

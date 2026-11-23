@@ -45,6 +45,47 @@ export function onLinkUp(fn: (c: LinkClient) => void): () => void {
 }
 let bootAt = Date.now();
 
+/** What each device app shows now, as it says (the phone: its page, alerts or notes). */
+const views = new Map<LinkClient, Record<string, unknown>>();
+/** A device app says what it shows (POST /api/v1/phone/view). */
+export function setDeviceView(client: string | null | undefined, view: Record<string, unknown>): boolean {
+  const c = asClient(client);
+  if (!c) return false;
+  const { at: _was, ...before } = views.get(c) ?? {};
+  views.set(c, { ...view, at: new Date().toISOString() });
+  if (JSON.stringify(before) !== JSON.stringify(view)) changed();
+  return true;
+}
+
+const changeFns = new Set<() => void>();
+/** Hear any device's link state change (up, down once its grace runs out, the vault it follows, an unanswered
+ *  request, Carl's chat from it): box:links' watch. */
+export function onLinkChanged(fn: () => void): () => void {
+  changeFns.add(fn);
+  return () => void changeFns.delete(fn);
+}
+function changed(): void {
+  for (const f of [...changeFns]) queueMicrotask(() => {
+    try {
+      f();
+    } catch {
+      /* a listener's own error */
+    }
+  });
+}
+/** When a device with no poll open goes down: LIVE_GRACE_MS after its last poll ended (a deadline, not a re-read). */
+const downTimers = new Map<LinkClient, ReturnType<typeof setTimeout>>();
+function watchDown(c: LinkClient, l: Link): void {
+  clearTimeout(downTimers.get(c));
+  if (l.open > 0) return;
+  const t = setTimeout(() => {
+    downTimers.delete(c);
+    if (!isUp(l, Date.now())) changed();
+  }, LIVE_GRACE_MS + 50);
+  (t as { unref?: () => void }).unref?.();
+  downTimers.set(c, t);
+}
+
 const asClient = (c: string | null | undefined): LinkClient | null => (CLIENTS.includes(c as LinkClient) ? (c as LinkClient) : null);
 const linkOf = (c: LinkClient): Link => {
   let l = links.get(c);
@@ -61,6 +102,9 @@ export function linkOpened(vault: string, client: string | null | undefined, now
   const c = asClient(client);
   if (!c) return () => {};
   const l = linkOf(c);
+  const wasUp = isUp(l, now);
+  const wasVault = l.vault;
+  clearTimeout(downTimers.get(c));
   if (!isUp(l, now)) {
     l.upSince = now;
     for (const f of [...upFns]) queueMicrotask(() => {
@@ -79,6 +123,7 @@ export function linkOpened(vault: string, client: string | null | undefined, now
   f.open++;
   f.last = now;
   l.feeds.set(fk, f);
+  if (!wasUp || wasVault !== vault) changed();
   let done = false;
   return () => {
     if (done) return;
@@ -87,13 +132,16 @@ export function linkOpened(vault: string, client: string | null | undefined, now
     l.last = Date.now();
     f.open = Math.max(0, f.open - 1);
     f.last = l.last;
+    watchDown(c, l);
   };
 }
 
 /** Carl sent something from `client` (a chat intent): the chat link is up. */
 export function chatSeen(client: string | null | undefined, now = Date.now()): void {
   const c = asClient(client);
-  if (c) linkOf(c).chatLast = now;
+  if (!c) return;
+  linkOf(c).chatLast = now;
+  changed();
 }
 
 /** A control request to `client` was answered (true) or not answered in time (false). */
@@ -102,14 +150,17 @@ export function noteAnswer(client: string | null | undefined, type: string, answ
   if (!c) return;
   const l = linkOf(c);
   if (answered) {
+    const was = l.missed;
     l.missed = 0;
     l.missedSince = null;
     l.lastAnswer = now;
+    if (was) changed();
     return;
   }
   if (!l.missed) l.missedSince = now;
   l.missed++;
   l.lastMiss = { type, at: now };
+  changed();
 }
 
 /** Is `client`'s control link up (its app follows the feed, whatever vault it has open)? */
@@ -163,6 +214,8 @@ export type LinkState = {
   unansweredSince: string | null;
   lastUnanswered: { type: string; at: string } | null;
   lastAnswer: string | null;
+  /** What the app shows now, as it last said (the phone: page). */
+  view?: Record<string, unknown>;
 };
 
 /** The chat link: up when Carl sent something from that device in the last 30 min (or its feed is up). */
@@ -188,6 +241,7 @@ export function linkState(client: LinkClient, now = Date.now()): LinkState {
     unansweredSince: l?.missedSince ? iso(l.missedSince) : null,
     lastUnanswered: l?.lastMiss ? { type: l.lastMiss.type, at: iso(l.lastMiss.at) } : null,
     lastAnswer: l?.lastAnswer ? iso(l.lastAnswer) : null,
+    ...(views.get(client) ? { view: views.get(client) } : {}),
   };
 }
 
@@ -220,6 +274,8 @@ export function unansweredNote(client: LinkClient, now = Date.now()): string {
 
 /** Tests: forget every device. */
 export function resetLinks(now = Date.now()): void {
+  for (const t of downTimers.values()) clearTimeout(t);
+  downTimers.clear();
   links.clear();
   bootAt = now;
 }

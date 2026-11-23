@@ -65,6 +65,7 @@ export function workspaceNoun(ctx: WorkspaceCtx): Noun {
       focus: action("focus a pane or the chat", "focus", obj({ target: { type: "string", enum: ["left", "right", "chat"] } }, ["target"])),
       fullscreenChat: action("full-screen chat on or off", "fullscreenChat", obj({ on: { type: "boolean" } }, ["on"])),
       chatSidebar: action("the chat list beside full-screen chat, open or closed", "chatSidebar", obj({ open: { type: "boolean" } }, ["open"])),
+      resize: action("set the columns' widths as dragging the sashes does: leftPanel (the file tree) and/or chat, in pixels; the viewer takes the rest", "resize", obj({ leftPanel: { type: "number", minimum: 0 }, chat: { type: "number", minimum: 0 } })),
       openChat: action('switch the chat pane to a chat (its id, "main", or "project-<slug>"), through the chat list\'s own open', "openChat", obj({ id: { type: "string" } }, ["id"])),
       arrange: action("several of these in order: ops [{action, ...its args}]", "arrange", obj({ ops: { type: "array", items: { type: "object" } } }, ["ops"])),
     },

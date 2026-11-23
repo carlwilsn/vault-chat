@@ -47,7 +47,7 @@ export function ChatFooterTools({ ready, archived }: { ready: boolean; archived:
         />
       )}
       {!archived && (
-        <button
+        <button data-offer="app/chats.newChat"
           onClick={() => {
             newChatHere();
             window.dispatchEvent(new CustomEvent("vc-focus-composer"));
@@ -62,7 +62,7 @@ export function ChatFooterTools({ ready, archived }: { ready: boolean; archived:
         </button>
       )}
       {!isPopout && !chatFullscreen && (
-        <button
+        <button data-offer="app/chats.openPanel"
           onClick={toggleChatsPanel}
           className={`relative flex items-center gap-1 text-[11px] hover:text-foreground transition-colors ${chatsShown ? "text-foreground" : "text-muted-foreground"}`}
           data-el="chats-toggle"

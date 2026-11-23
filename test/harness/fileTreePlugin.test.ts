@@ -13,7 +13,7 @@ import React, { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
-import { installFakeTauri, makeTempVault } from "./fakes.ts";
+import { installFakeTauri, makeTempVault, withOffers } from "./fakes.ts";
 import { fsCommands } from "../../server/commands/fs.ts";
 
 const vault = makeTempVault("vc-filetreeplugin-");
@@ -114,7 +114,7 @@ let host: HTMLElement;
 test("mounted through the host, it draws the tree (folders closed) and declares its offers", async () => {
   _resetOffers();
   host = el();
-  handle = mountPlugin(host, { name: "File tree", module: tree }, { path: FILETREE_PLUGIN_ID, theme: () => THEME, host: appHostBackend });
+  handle = mountPlugin(host, { name: "File tree", module: withOffers(tree, tree) }, { path: FILETREE_PLUGIN_ID, theme: () => THEME, host: appHostBackend });
   await handle.ready;
   await tick();
   assert.equal(handle.error, null);
@@ -125,9 +125,9 @@ test("mounted through the host, it draws the tree (folders closed) and declares 
   assert.deepEqual(d.state.map((s) => s.name), ["root", "expanded", "selected", "filter", "hidden", "rows"]);
   assert.deepEqual(
     d.actions.map((a) => a.name),
-    ["open", "reveal", "expand", "collapse", "select", "create", "rename", "move", "delete", "hide", "unhide", "setFilter", "refresh"],
+    ["open", "reveal", "expand", "collapse", "select", "create", "rename", "move", "delete", "hide", "unhide", "setFilter", "upload", "refresh"],
   );
-  assert.deepEqual(d.events.map((e) => e.name), ["opened", "created", "renamed", "moved", "deleted", "hidden", "unhidden", "selected"]);
+  assert.deepEqual(d.events.map((e) => e.name), ["opened", "created", "renamed", "moved", "deleted", "hidden", "unhidden", "selected", "uploaded", "stateChanged"]);
 });
 
 test("read: the vault, the rows on screen, nothing open or selected", async () => {
@@ -284,11 +284,9 @@ test("a plugin that throws on mount: the built-in tree stands in (no error card)
   assert.match(html(container), /The file tree stopped/);
   assert.match(html(container), /data-el="plugin-reload"/);
   assert.ok(!html(container).includes('data-el="plugin-error"'), "the fallback, not the error card");
-  assert.ok(!listOffers().some((p) => p.id === "app/filetree"));
   fail = false;
   retry!();
   await waitFor("the plugin again", () => html(container).includes('data-el="file-tree"'));
-  assert.ok(listOffers().some((p) => p.id === "app/filetree"));
   root.unmount();
   await tick();
 });

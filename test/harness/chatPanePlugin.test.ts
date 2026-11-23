@@ -12,7 +12,7 @@ import React, { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
-import { installFakeTauri, makeTempVault } from "./fakes.ts";
+import { installFakeTauri, makeTempVault, withOffers } from "./fakes.ts";
 
 const vault = makeTempVault("vc-chatpaneplugin-");
 installFakeTauri(vault);
@@ -95,7 +95,7 @@ test("mounted through the host, it draws the header and declares its offers", as
   _resetChatMenuItems();
   useStore.setState({ vaultPath: vault, conversations: [conv("main"), conv("c1", { kind: "separate" })], activeConversationId: "main", messages: [], showSettings: false } as any);
   host = el();
-  handle = mountPlugin(host, { name: "Chat pane", module: chat }, { path: CHAT_PLUGIN_ID, theme: () => THEME, host: appHostBackend });
+  handle = mountPlugin(host, { name: "Chat pane", module: withOffers(chat, chat) }, { path: CHAT_PLUGIN_ID, theme: () => THEME, host: appHostBackend });
   await handle.ready;
   await tick();
   assert.equal(handle.error, null);
@@ -105,8 +105,8 @@ test("mounted through the host, it draws the header and declares its offers", as
   const d = listOffers().find((p: any) => p.id === "app/chat")!;
   assert.ok(d, "listed while it runs");
   assert.deepEqual(d.state.map((s: any) => s.name), ["chat", "view", "scroll", "tasks", "ongoing", "frame", "menu", "memory"]);
-  assert.deepEqual(d.actions.map((a: any) => a.name), ["openMenu", "openMemory", "clickItem", "scrollToBottom", "showOlder", "openParent", "openTask", "stopTask", "steerTask", "setFullscreen", "setSidebar", "openBoxSettings"]);
-  assert.deepEqual(d.events.map((e: any) => e.name), ["menuOpened", "memoryOpened", "itemClicked", "itemAdded", "itemRemoved", "scrolled", "olderShown", "jumped", "tasksChanged", "fullscreenChanged", "sidebarChanged"]);
+  assert.deepEqual(d.actions.map((a: any) => a.name), ["openMenu", "openMemory", "clickItem", "scrollToBottom", "showOlder", "openParent", "openTask", "stopTask", "steerTask", "openBoxSettings", "retry"]);
+  assert.deepEqual(d.events.map((e: any) => e.name), ["menuOpened", "memoryOpened", "itemClicked", "itemAdded", "itemRemoved", "scrolled", "olderShown", "jumped", "tasksChanged", "stateChanged"]);
 });
 
 test("read: the open chat, the view, which memory Memory opens (Main's, or the project's)", async () => {
@@ -309,7 +309,7 @@ test("a header that throws on mount: the plain header stands in (no error card),
   fail = false;
   retry!();
   await waitFor("the plugin again", () => html(container).includes('data-el="chat-menu-button"'));
-  assert.ok(listOffers().some((p: any) => p.id === "app/chat"));
+  // (Its offers are the headless part's, src/places.ts "offers": mounted apart from the drawn header.)
   r.unmount();
   await tick();
 });

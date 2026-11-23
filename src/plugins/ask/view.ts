@@ -75,6 +75,12 @@ export type AskBoxState = {
   proposal: { newText: string; removed: string | null } | null;
   turns: number;
   images: number;
+  /** The vault files @-mentioned in it (name, path), the pictures captured in it (source, anchor), a capture under way. */
+  references?: { name: string; path: string }[];
+  captured?: { source: string | null; anchor: string | null }[];
+  capturing?: boolean;
+  /** Where it sits: moved (dragged off its anchor), its left / top on screen, the answer area's height when resized. */
+  position?: { moved: boolean; left: number; top: number | null; answerHeight: number | null };
 };
 
 /** An open box's handle: what it shows and what its controls do (each the same as the click or key). */
@@ -87,6 +93,8 @@ export type AskBox = {
   sendToChat(): Promise<void> | void;
   saveAsNote(): void;
   focus(): void;
+  /** Its other controls (the @ menu's pick, Capture, a picture's ×, moving and resizing it): by name. */
+  more?: Record<string, (a: Record<string, unknown>) => unknown>;
 };
 
 let seq = 0;
@@ -134,6 +142,27 @@ export function emitAskEvent(event: string, data?: unknown): void {
       /* a listener's own failure */
     }
   }
+}
+
+/** A pane that opens a box without an editor (Ctrl+L on a rendered note, a PDF, a page, an image, a notebook):
+ *  registered by the active pane while it shows `file`, so app/ask's open action does what the key does. */
+const openers = new Map<string, () => void>();
+export function registerAskOpener(file: string, open: () => void): () => void {
+  openers.set(file, open);
+  return () => {
+    if (openers.get(file) === open) openers.delete(file);
+  };
+}
+export const askOpenerOf = (file: string): (() => void) | null => openers.get(file) ?? null;
+
+const changedFns = new Set<() => void>();
+/** Something a box shows changed (each box calls this after it draws): the offers' watch. */
+export function askChanged(): void {
+  for (const f of [...changedFns]) f();
+}
+export function onAskChanged(fn: () => void): () => void {
+  changedFns.add(fn);
+  return () => void changedFns.delete(fn);
 }
 
 /** The proposal as the offers show it. */

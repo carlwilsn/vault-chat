@@ -81,7 +81,7 @@ export function ChatsFallback({ info, onPicked, trailing, onTrailing }: { info: 
           <MessageSquare className="h-3.5 w-3.5 text-muted-foreground" />
           <span className="text-[13px] font-semibold">Chats</span>
         </div>
-        <button onClick={onTrailing} className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground">
+        <button data-offer="app/chats.closePanel" onClick={onTrailing} className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground">
           {trailing}
         </button>
       </div>
@@ -90,7 +90,7 @@ export function ChatsFallback({ info, onPicked, trailing, onTrailing }: { info: 
       ) : (
         <div data-el="chats-fallback-error" className="flex items-center gap-2 px-3 py-2 text-[12px] text-muted-foreground">
           <span className="truncate" title={info.error ?? ""}>The chat list stopped; a plain list until it is back.</span>
-          <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
+          <button data-offer="app/titlebar.reloadPart" type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
             Reload
           </button>
         </div>
@@ -98,14 +98,14 @@ export function ChatsFallback({ info, onPicked, trailing, onTrailing }: { info: 
       <div className="flex-1 overflow-auto py-1" data-el="threads">
         {places.map((p) => (
           <div key={p.id} data-el="fallback-place" data-place={p.id}>
-            <button
+            <button data-offer="app/chats.open"
               onClick={() => open(p.id, p.type === "main" ? "Main" : p.title)}
               className={`w-full text-left px-4 py-1.5 text-[12.5px] ${p.type === "main" ? "font-semibold" : ""} ${p.active ? "bg-accent" : "hover:bg-accent/40"}`}
             >
               {p.type === "main" ? "Main" : p.title}
             </button>
             {p.chats.map((c) => (
-              <button
+              <button data-offer="app/chats.open"
                 key={c.id}
                 data-el="place-chat"
                 data-chat={c.id}

@@ -43,6 +43,8 @@ import { RETRY_TEXT, makeChatView, type ChatView } from "./convlog/view";
 import { subscribeTranslators } from "./convlog/translators";
 import { MAIN_ID, threadKindOf } from "./threads";
 import { startOfferHistory } from "./offerHistory";
+import { pushLayoutChanges } from "./layoutOps";
+import { isPopout } from "./windowKind";
 import { probeLaptopReleaseHealth } from "./laptopReleaseHealth";
 
 export const BOX_UNREACHABLE = "Box unreachable";
@@ -350,7 +352,12 @@ class BoxChatSession {
 
   start(): void {
     this.applyCache();
-    if (!headless()) this.unsubHistory = startOfferHistory((events) => httpPost(this.link, "/api/v2/offer-events", { events, client: "laptop" }, []));
+    if (!headless() && !isPopout) {
+      const offH = startOfferHistory((events) => httpPost(this.link, "/api/v2/offer-events", { events, client: "laptop" }, []));
+      // The layout as it changes by hand: box:workspace's state and watch (src/layoutOps.ts).
+      const offL = pushLayoutChanges((layout) => void httpPost(this.link, "/api/v2/layout", { layout }, []).catch(() => {}));
+      this.unsubHistory = () => (offH(), offL());
+    }
     let lastActive = useStore.getState().activeConversationId;
     this.unsub = useStore.subscribe((s) => {
       if (s.activeConversationId !== lastActive) {

@@ -40,13 +40,13 @@ export function NotesPanel({ host, view: given }: { host: HostApi; view?: NotesV
   const setNoteStatus = host.notes.setStatus;
   const clearResolvedNotes = host.notes.clearResolved;
   const reformatNote = host.notes.reformat;
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [showRawId, setShowRawId] = useState<string | null>(null);
   // Its filter and search live in the plugin's view state (src/plugins/notes/view.ts), which the agent reads and sets
   // through the plugin's offers; the panel shows them.
   const [own] = useState(() => given ?? createNotesView());
   const view = given ?? own;
-  const { filter, query } = useSyncExternalStore(view.subscribe, view.get, view.get);
+  const { filter, query, expanded: expandedId, raw: showRawId } = useSyncExternalStore(view.subscribe, view.get, view.get);
+  const setExpandedId = (id: string | null) => view.set({ expanded: id });
+  const setShowRawId = (id: string | null) => view.set({ raw: id });
   const setFilter = useCallback((f: "active" | "resolved") => view.set({ filter: f }), [view]);
   const setQuery = useCallback((q: string) => view.set({ query: q }), [view]);
 
@@ -90,80 +90,7 @@ export function NotesPanel({ host, view: given }: { host: HostApi; view?: NotesV
   const resolvedCount = notes.filter((n) => n.status === "resolved").length;
 
   const discussInChat = async (note: Note) => {
-    // Prime the chat with the note's context without actually firing
-    // an agent turn. The user asked for "idle, ready" — they don't
-    // want a big response dumped on them; they want to walk in with
-    // everything loaded and drive the conversation from there.
-    //
-    // What lands in the history:
-    //   1. Hidden preamble with the full note context — the agent
-    //      sees it on the next real turn the user sends.
-    //   2. A visible user bubble recapping what the note was about
-    //      (nice-looking markdown — summary, image, quoted draft).
-    //   3. A scripted assistant bubble confirming context is loaded.
-    //      No API call; just a canned acknowledgement.
-    const primary = note.anchors.find((a) => a.primary) ?? note.anchors[0];
-    const anchorLine = primary
-      ? `Primary source: ${primary.source_path}${primary.source_anchor ? ` (${primary.source_anchor})` : ""}`
-      : "No file anchor.";
-    const secondaryLines = note.anchors
-      .filter((a) => a !== primary)
-      .map(
-        (a) =>
-          `Secondary source: ${a.source_path}${a.source_anchor ? ` (${a.source_anchor})` : ""}`,
-      );
-    const draftBlock = note.user_draft ? `The user's note:\n${note.user_draft}` : "";
-    const selectionBlock = primary?.source_selection
-      ? `Highlighted text:\n${primary.source_selection}`
-      : "";
-    const turnsBlock =
-      note.turns.length > 0
-        ? "Prior conversation:\n" +
-          note.turns.map((t) => `${t.role}: ${t.content}`).join("\n---\n")
-        : "";
-    const beforeBlock = primary?.source_before
-      ? `Context before:\n${primary.source_before.slice(-1500)}`
-      : "";
-    const afterBlock = primary?.source_after
-      ? `Context after:\n${primary.source_after.slice(0, 1500)}`
-      : "";
-    const preamble = [
-      `[Note ${note.id} — captured ${prettyTime(note.timestamp)}]`,
-      anchorLine,
-      ...secondaryLines,
-      draftBlock,
-      selectionBlock,
-      beforeBlock,
-      afterBlock,
-      turnsBlock,
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-    const summaryLine = note.formatted ? note.formatted : note.user_draft || "(no note text)";
-    const images = note.anchors.flatMap((a) => anchorImages(a));
-    const imageMarkdown = images
-      .map((u, i) => `![captured region ${i + 1}](${u})`)
-      .join("\n\n");
-    const anchorBadge = primary
-      ? `📎 ${primary.source_path.split("/").pop()}${primary.source_anchor ? ` · ${primary.source_anchor}` : ""}`
-      : "";
-    const userBubble = [
-      `Loading note \`${note.id}\` for discussion.`,
-      anchorBadge,
-      "",
-      `> ${summaryLine}`,
-      imageMarkdown,
-    ]
-      .filter((l) => l !== null && l !== undefined && l !== "")
-      .join("\n");
-    const primaryName = primary?.source_path.split("/").pop();
-    const assistantBubble = `Context loaded${primaryName ? ` from **${primaryName}**` : ""}.`;
-
-    await host.chat.prime([
-      { role: "user", text: preamble, hidden: true },
-      { role: "user", text: userBubble },
-      { role: "assistant", text: assistantBubble },
-    ]);
+    await discussNote(host, note);
     onClose();
   };
 
@@ -196,7 +123,7 @@ export function NotesPanel({ host, view: given }: { host: HostApi; view?: NotesV
               {filtered.length} of {visibleCount}
             </span>
           </div>
-          <button
+          <button data-offer="app/notes.close"
             onClick={onClose}
             className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground"
             title="Close (Esc)"
@@ -206,7 +133,7 @@ export function NotesPanel({ host, view: given }: { host: HostApi; view?: NotesV
         </div>
 
         <div className="flex items-center gap-2 px-4 py-2 border-b border-border/60">
-          <button
+          <button data-offer="app/notes.view"
             onClick={() => setFilter("active")}
             className={cn(
               "h-6 px-2 rounded-full text-[11px] border",
@@ -217,7 +144,7 @@ export function NotesPanel({ host, view: given }: { host: HostApi; view?: NotesV
           >
             Active ●
           </button>
-          <button
+          <button data-offer="app/notes.view"
             onClick={() => setFilter("resolved")}
             className={cn(
               "h-6 px-2 rounded-full text-[11px] border",
@@ -228,7 +155,7 @@ export function NotesPanel({ host, view: given }: { host: HostApi; view?: NotesV
           >
             Resolved ○
           </button>
-          <input
+          <input data-offer="app/notes.view"
             type="search"
             placeholder="Search…"
             value={query}
@@ -270,6 +197,7 @@ export function NotesPanel({ host, view: given }: { host: HostApi; view?: NotesV
                 onDelete={() => deleteNote(n.id)}
                 onChat={() => discussInChat(n)}
                 host={host}
+                view={view}
               />
             ))
           )}
@@ -277,7 +205,7 @@ export function NotesPanel({ host, view: given }: { host: HostApi; view?: NotesV
 
         {filter === "resolved" && resolvedCount > 0 && (
           <div className="p-3 border-t border-border/60 flex justify-end">
-            <button
+            <button data-offer="box:notes.clearResolved"
               onClick={clearResolvedNotes}
               className="h-7 px-3 rounded text-[11.5px] border border-border text-destructive hover:bg-destructive/10"
             >
@@ -303,6 +231,7 @@ function NoteCard({
   onDelete,
   onChat,
   host,
+  view,
 }: {
   note: Note;
   expanded: boolean;
@@ -316,9 +245,14 @@ function NoteCard({
   onDelete: () => void;
   onChat: () => void;
   host: HostApi;
+  view: NotesView;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
+  // Editing in place is the view's (the part's offers read it and run the same edit).
+  const ed = useSyncExternalStore(view.subscribe, view.get, view.get).editing;
+  const editing = ed?.id === note.id;
+  const draft = editing ? ed!.text : "";
+  const setDraft = (text: string) => view.set({ editing: { id: note.id, text } });
+  const setEditing = (on: boolean) => view.set({ editing: on ? { id: note.id, text: note.user_draft ?? note.turns.map((t) => t.content).join("\n") } : null });
   const [error, setError] = useState("");
   const saveEdit = async () => {
     if (!draft.trim()) return;
@@ -344,7 +278,7 @@ function NoteCard({
 
   return (
     <div data-note-id={note.id} className="border-b border-border/40">
-      <div
+      <div data-offer="app/notes.expand"
         className={cn(
           "px-3 py-2.5 hover:bg-accent/20 group cursor-pointer",
           expanded && "bg-accent/10",
@@ -353,7 +287,7 @@ function NoteCard({
       >
         <div className="flex items-start gap-2">
           <ExpandIcon className="h-3.5 w-3.5 mt-[3px] shrink-0 opacity-60" />
-          <button
+          <button data-offer="box:notes.resolve"
             onClick={(e) => {
               e.stopPropagation();
               onToggleStatus();
@@ -370,7 +304,7 @@ function NoteCard({
           </button>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 text-[10.5px] text-muted-foreground mb-0.5 font-mono">
-              <button
+              <button data-offer="app/notes.openSource"
                 onClick={(e) => {
                   e.stopPropagation();
                   onOpen();
@@ -411,7 +345,7 @@ function NoteCard({
             )}
           </div>
           <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-            <button
+            <button data-offer="app/notes.discuss"
               onClick={(e) => {
                 e.stopPropagation();
                 onChat();
@@ -421,7 +355,7 @@ function NoteCard({
             >
               <MessageSquare className="h-3 w-3" />
             </button>
-            <button
+            <button data-offer="box:notes.delete"
               onClick={(e) => {
                 e.stopPropagation();
                 onDelete();
@@ -438,11 +372,11 @@ function NoteCard({
       {expanded && (
         <div className="px-3 pb-3 pl-[34px] space-y-3 bg-accent/5">
           {editing ? <div className="space-y-2">
-            <textarea aria-label="Edit note" className="w-full bg-background border border-border rounded p-2 text-[12.5px]" value={draft} onChange={e => setDraft(e.target.value)} />
-            <button onClick={() => void saveEdit()} className="text-xs mr-3">Save</button>
-            <button onClick={() => setEditing(false)} className="text-xs">Cancel</button>
+            <textarea data-offer="app/notes.editInPlace" aria-label="Edit note" className="w-full bg-background border border-border rounded p-2 text-[12.5px]" value={draft} onChange={e => setDraft(e.target.value)} />
+            <button data-offer="box:notes.edit" onClick={() => void saveEdit()} className="text-xs mr-3">Save</button>
+            <button data-offer="app/notes.editInPlace" onClick={() => setEditing(false)} className="text-xs">Cancel</button>
             {error && <div role="alert">{error}</div>}
-          </div> : <button className="text-xs text-muted-foreground" onClick={() => { setDraft(note.user_draft ?? note.turns.map(t => t.content).join("\n")); setError(""); setEditing(true); }}>Edit</button>}
+          </div> : <button data-offer="app/notes.editInPlace" className="text-xs text-muted-foreground" onClick={() => { setError(""); setEditing(true); }}>Edit</button>}
           {/* AI-formatted summary — only for notes with non-trivial
               context (has turns / image / selection / multi-anchor).
               Pure text dumps are shown verbatim instead. */}
@@ -453,7 +387,7 @@ function NoteCard({
                   <Sparkles className="h-3 w-3" />
                   Summary
                 </span>
-                <button
+                <button data-offer="app/notes.reformat"
                   onClick={onReformat}
                   className="h-5 px-1.5 flex items-center gap-1 rounded hover:bg-accent/60 hover:text-foreground"
                   title="Regenerate"
@@ -497,7 +431,7 @@ function NoteCard({
             {[primary, ...secondaries]
               .filter((a): a is NoteAnchor => !!a)
               .map((a, i) => (
-                <button
+                <button data-offer="app/notes.openSource"
                   key={`${a.source_path}:${i}`}
                   onClick={() => onOpenSpecific(a)}
                   className="w-full flex items-center gap-2 text-[11px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/30 rounded px-1 py-0.5 text-left"
@@ -515,7 +449,7 @@ function NoteCard({
 
           {/* Action row */}
           <div className="flex items-center gap-2 text-[11px]">
-            <button
+            <button data-offer="app/notes.discuss"
               onClick={onChat}
               className="flex items-center gap-1 h-6 px-2 rounded border border-primary/40 bg-primary/10 text-foreground hover:bg-primary/20"
             >
@@ -523,7 +457,7 @@ function NoteCard({
               Discuss with agent
             </button>
             {note.anchors.length === 1 && (
-              <button
+              <button data-offer="app/notes.openSource"
                 onClick={onOpen}
                 className="flex items-center gap-1 h-6 px-2 rounded border border-border/60 text-foreground/80 hover:bg-accent/40"
               >
@@ -531,7 +465,7 @@ function NoteCard({
                 Open anchor
               </button>
             )}
-            <button
+            <button data-offer="app/notes.viewRaw"
               onClick={onToggleRaw}
               className="flex items-center gap-1 h-6 px-2 rounded border border-border/60 text-foreground/80 hover:bg-accent/40"
             >
@@ -595,3 +529,82 @@ function prettyTime(iso: string): string {
   if (diff < 604_800_000) return `${Math.floor(diff / 86_400_000)}d ago`;
   return new Date(iso).toLocaleDateString();
 }
+
+/** Discuss in chat (a card's button, the part's discuss action): the chat is primed with the note, no turn runs. */
+export async function discussNote(host: HostApi, note: Note): Promise<void> {
+  // Prime the chat with the note's context without actually firing
+  // an agent turn. The user asked for "idle, ready" — they don't
+  // want a big response dumped on them; they want to walk in with
+  // everything loaded and drive the conversation from there.
+  //
+  // What lands in the history:
+  //   1. Hidden preamble with the full note context — the agent
+  //      sees it on the next real turn the user sends.
+  //   2. A visible user bubble recapping what the note was about
+  //      (nice-looking markdown — summary, image, quoted draft).
+  //   3. A scripted assistant bubble confirming context is loaded.
+  //      No API call; just a canned acknowledgement.
+  const primary = note.anchors.find((a) => a.primary) ?? note.anchors[0];
+  const anchorLine = primary
+    ? `Primary source: ${primary.source_path}${primary.source_anchor ? ` (${primary.source_anchor})` : ""}`
+    : "No file anchor.";
+  const secondaryLines = note.anchors
+    .filter((a) => a !== primary)
+    .map(
+      (a) =>
+        `Secondary source: ${a.source_path}${a.source_anchor ? ` (${a.source_anchor})` : ""}`,
+    );
+  const draftBlock = note.user_draft ? `The user's note:\n${note.user_draft}` : "";
+  const selectionBlock = primary?.source_selection
+    ? `Highlighted text:\n${primary.source_selection}`
+    : "";
+  const turnsBlock =
+    note.turns.length > 0
+      ? "Prior conversation:\n" +
+        note.turns.map((t) => `${t.role}: ${t.content}`).join("\n---\n")
+      : "";
+  const beforeBlock = primary?.source_before
+    ? `Context before:\n${primary.source_before.slice(-1500)}`
+    : "";
+  const afterBlock = primary?.source_after
+    ? `Context after:\n${primary.source_after.slice(0, 1500)}`
+    : "";
+  const preamble = [
+    `[Note ${note.id} — captured ${prettyTime(note.timestamp)}]`,
+    anchorLine,
+    ...secondaryLines,
+    draftBlock,
+    selectionBlock,
+    beforeBlock,
+    afterBlock,
+    turnsBlock,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const summaryLine = note.formatted ? note.formatted : note.user_draft || "(no note text)";
+  const images = note.anchors.flatMap((a) => anchorImages(a));
+  const imageMarkdown = images
+    .map((u, i) => `![captured region ${i + 1}](${u})`)
+    .join("\n\n");
+  const anchorBadge = primary
+    ? `📎 ${primary.source_path.split("/").pop()}${primary.source_anchor ? ` · ${primary.source_anchor}` : ""}`
+    : "";
+  const userBubble = [
+    `Loading note \`${note.id}\` for discussion.`,
+    anchorBadge,
+    "",
+    `> ${summaryLine}`,
+    imageMarkdown,
+  ]
+    .filter((l) => l !== null && l !== undefined && l !== "")
+    .join("\n");
+  const primaryName = primary?.source_path.split("/").pop();
+  const assistantBubble = `Context loaded${primaryName ? ` from **${primaryName}**` : ""}.`;
+
+  await host.chat.prime([
+    { role: "user", text: preamble, hidden: true },
+    { role: "user", text: userBubble },
+    { role: "assistant", text: assistantBubble },
+  ]);
+}
+

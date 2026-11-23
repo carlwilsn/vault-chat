@@ -29,7 +29,7 @@ import { LiveTail } from "../chat-rows/tail";
 import { CHAT_REVEAL_EVENT, setVisibleRows } from "../../chatRows";
 import { ChatHeaderSlot } from "../../ChatHeader";
 import { isPopout } from "../../windowKind";
-import { emitChatEvent, setPaneScroll } from "./model";
+import { emitChatEvent, paneScrolled, setPaneScroll } from "./model";
 
 const NO_SUBAGENTS: SubagentRec[] = [];
 
@@ -200,6 +200,7 @@ export function Transcript() {
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
+    paneScrolled();
     if (restoreHeldScroll()) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     const atBottom = distanceFromBottom < 40;
@@ -291,7 +292,7 @@ export function Transcript() {
           <div className="max-w-[260px] text-center space-y-3">
             <p className="text-[13px] text-foreground/90">{NO_BOX}</p>
             <p className="text-[11.5px] text-muted-foreground leading-relaxed">The agent runs on your box. Files, notes and history work here without it.</p>
-            <Button variant="secondary" size="sm" onClick={openBoxSettings} className="w-full">
+            <Button data-offer="app/chat.openBoxSettings" variant="secondary" size="sm" onClick={openBoxSettings} className="w-full">
               Settings → Box
             </Button>
           </div>
@@ -333,7 +334,7 @@ export function Transcript() {
           </div>
         )}
 
-        {parentConv && <button type="button" data-el="worker-parent" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => openSubagent(parentConv.id)}>Back to {parentConv.title || "parent chat"}</button>}
+        {parentConv && <button data-offer="app/chat.openParent" type="button" data-el="worker-parent" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => openSubagent(parentConv.id)}>Back to {parentConv.title || "parent chat"}</button>}
 
         <HistoryList
           messages={messages}
@@ -366,7 +367,7 @@ export function Transcript() {
       <div className="relative">
         <div className="pointer-events-none absolute -top-12 left-0 right-0 h-12 bg-gradient-to-t from-card to-transparent" />
         {showJumpToLatest && (
-          <button
+          <button data-offer="app/chat.scrollToBottom"
             onClick={jumpToLatest}
             className="absolute -top-10 left-1/2 -translate-x-1/2 h-7 px-3 flex items-center gap-1.5 rounded-full border border-border bg-card shadow-md text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/60 z-10"
             title="Jump to latest"

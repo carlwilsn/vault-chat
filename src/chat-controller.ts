@@ -73,9 +73,15 @@ export async function interruptAndSend(text: string, contextPreamble?: string, a
  * he was in stays where it is, under the same place, and he can open it again.
  */
 export function newChatHere(): string {
+  return newChatIn(null);
+}
+
+/** Every New chat (the footer's, a place's +, the chat list's newChat offer): one path. `place`: "main", a project's
+ *  slug, or null for where Carl is. Returns the new chat's id. */
+export function newChatIn(place: string | null): string {
   const s = useStore.getState();
   const conv = s.conversations.find((c) => c.id === s.activeConversationId);
-  const slug = placeOf({ id: conv?.id ?? "", project: conv?.project ?? null });
+  const slug = place === null ? placeOf({ id: conv?.id ?? "", project: conv?.project ?? null }) : place === "main" ? null : place;
   return slug ? newChatInProject(slug) : s.newConversation();
 }
 

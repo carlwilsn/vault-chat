@@ -64,12 +64,23 @@ export type PaneScroll = {
   older(n: number | "all", top?: boolean): void;
 };
 let pane: PaneScroll | null = null;
+const scrollFns = new Set<() => void>();
 /** The transcript registers its scroll; the off. */
 export function setPaneScroll(p: PaneScroll): () => void {
   pane = p;
+  paneScrolled();
   return () => {
     if (pane === p) pane = null;
+    paneScrolled();
   };
+}
+/** The transcript's scroll moved (or older messages were drawn, or the jump button showed): the offers' watch. */
+export function paneScrolled(): void {
+  for (const f of [...scrollFns]) f();
+}
+export function onPaneScroll(fn: () => void): () => void {
+  scrollFns.add(fn);
+  return () => void scrollFns.delete(fn);
 }
 export function paneScroll(): PaneScroll | null {
   return pane;

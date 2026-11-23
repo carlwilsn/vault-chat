@@ -34,7 +34,7 @@ function Menu({ label, title, children, el }: { label: string; title: string; ch
   }, [open]);
   return (
     <div className="relative" ref={ref}>
-      <button
+      <button data-offer="app/composer.setModel"
         onClick={() => setOpen(!open)}
         data-el={el}
         title={title}
@@ -51,7 +51,7 @@ function Menu({ label, title, children, el }: { label: string; title: string; ch
 }
 
 const Row = ({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) => (
-  <button onClick={onClick} className={cn("block w-full text-left px-3 py-1.5 text-[11px] hover:bg-accent transition-colors truncate", on ? "text-foreground font-medium" : "text-muted-foreground")}>
+  <button data-offer="app/composer.setModel" onClick={onClick} className={cn("block w-full text-left px-3 py-1.5 text-[11px] hover:bg-accent transition-colors truncate", on ? "text-foreground font-medium" : "text-muted-foreground")}>
     {children}
   </button>
 );
@@ -86,7 +86,7 @@ export function ChatModelPicker({ convId }: { convId: string | null }) {
         {(close) =>
           models.length ? (
             models.map((m) => (
-              <Row
+              <Row data-offer="app/composer.setModel"
                 key={m.id}
                 on={m.id === on}
                 onClick={() => {
@@ -106,7 +106,7 @@ export function ChatModelPicker({ convId }: { convId: string | null }) {
         {(close) =>
           efforts.length ? (
             efforts.map((e) => (
-              <Row
+              <Row data-offer="app/composer.setEffort"
                 key={e}
                 on={e === effort}
                 onClick={() => {

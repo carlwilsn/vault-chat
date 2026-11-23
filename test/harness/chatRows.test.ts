@@ -158,8 +158,8 @@ test("app/chat-rows offers its renderers and rows to the agent: list, read, act 
   const list = await ask({ op: "list" });
   const me = list.plugins.find((p: any) => p.id === "app/chat-rows");
   assert.ok(me, "listed");
-  assert.deepEqual(me.actions.map((a: any) => a.name).sort(), ["disable", "disableTranslator", "enable", "enableTranslator", "scrollTo", "setOption", "toolRows", "use", "useTranslator"]);
-  assert.deepEqual(me.state.map((s: any) => s.name).sort(), ["kept", "live", "options", "renderers", "rows", "translators"]);
+  assert.deepEqual(me.actions.map((a: any) => a.name).sort(), ["disable", "disableTranslator", "enable", "enableTranslator", "inline", "scrollTo", "setOption", "toolRows", "use", "useTranslator"]);
+  assert.deepEqual(me.state.map((s: any) => s.name).sort(), ["inline", "kept", "live", "options", "renderers", "rows", "translators"]);
 
   const read = await ask({ op: "read", plugin: "chat rows" });
   assert.equal(read.ok, true);
@@ -177,10 +177,11 @@ test("app/chat-rows offers its renderers and rows to the agent: list, read, act 
   act = await ask({ op: "act", plugin: "app/chat-rows", action: "toolRows", args: { open: true } });
   assert.equal(act.ok, true);
   assert.equal(act.result.rows, 1);
-  assert.match(html(container), /<details[^>]*open/);
+  await waitFor("the tool row open", () => /<details[^>]*open/.test(html(container)));
+  assert.deepEqual((await ask({ op: "read", plugin: "app/chat-rows", state: "rows" })).state.rows.rows[1].open, ["tools"], "its open state is readable");
   act = await ask({ op: "act", plugin: "app/chat-rows", action: "toolRows", args: { open: false, index: 1 } });
   assert.equal(act.result.rows, 1);
-  assert.ok(!/<details[^>]*open/.test(html(container)));
+  await waitFor("the tool row shut", () => !/<details[^>]*open/.test(html(container)));
 
   let scrolled = "";
   for (const e of (container as any).querySelectorAll("[data-row]")) e.scrollIntoView = () => (scrolled = e.getAttribute("data-row"));

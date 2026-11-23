@@ -4,6 +4,7 @@
 // browser, Close. Anywhere the native view cannot be made (not the desktop app, Linux, a refused address, an error),
 // the label is a plain link that opens the page in the browser.
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { inlineChanged, registerInlineFrame } from "./inlineFrames";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ArrowLeft, ArrowRight, ExternalLink, Maximize2, Minimize2, RotateCw, X } from "lucide-react";
@@ -69,7 +70,7 @@ function measure(el: HTMLElement, zoom: number): Bounds {
 function PlainLink({ src, label, note }: { src: string; label: string; note?: string }) {
   return (
     <span className="block my-1" data-el="chat-web-link">
-      <a href={src} onClick={(e) => { e.preventDefault(); void openUrl(src).catch(() => window.open(src, "_blank", "noopener")); }} className="underline underline-offset-2 hover:text-foreground" title={src}>{label}</a>
+      <a data-offer="app/chat-rows.inline" href={src} onClick={(e) => { e.preventDefault(); void openUrl(src).catch(() => window.open(src, "_blank", "noopener")); }} className="underline underline-offset-2 hover:text-foreground" title={src}>{label}</a>
       {note ? <span className="ml-1.5 text-[11px] text-muted-foreground">{note}</span> : null}
     </span>
   );
@@ -212,34 +213,62 @@ function LiveWebPage({ src, label, sizeHint, onFail, onClose }: { src: string; l
 
   const hint = parseFrameHint(sizeHint);
   const h = drag ?? (hint ? frameHeight({ width, vh: window.innerHeight, hint }) : defaultFrameHeight(width, window.innerHeight));
+
+  // What it shows and its buttons, for app/chat-rows' inline state and action (src/inlineFrames.ts).
+  const liveRef = useRef({ url, title, loading, big, resting, note, h, go, openOutside, close, setBig, setResting, setDrag });
+  liveRef.current = { url, title, loading, big, resting, note, h, go, openOutside, close, setBig, setResting, setDrag };
+  useEffect(
+    () =>
+      registerInlineFrame({
+        id: `web:${id}`,
+        kind: "web",
+        state: () => {
+          const l = liveRef.current;
+          return { url: l.url, title: l.title, loading: l.loading, fullWindow: l.big, resting: l.resting, height: l.h, ...(l.note ? { note: l.note.text, noteUrl: l.note.url } : {}) };
+        },
+        act: {
+          back: () => liveRef.current.go("back"),
+          forward: () => liveRef.current.go("forward"),
+          reload: () => liveRef.current.go("reload"),
+          fullWindow: (a) => liveRef.current.setBig(a.on !== false),
+          browser: () => liveRef.current.openOutside(),
+          close: () => liveRef.current.close(),
+          dismissNote: () => setNote(null),
+          wake: () => liveRef.current.setResting(false),
+          resize: (a) => liveRef.current.setDrag(Math.max(HTML_MIN_FRAME_H, Math.min(HTML_MAX_H, Math.round(Number(a.height))))),
+        },
+      }),
+    [id],
+  );
+  useEffect(() => inlineChanged());
   const shownTitle = title || label;
   return (
     <span className={big ? "fixed inset-3 z-[60] flex flex-col rounded-md border border-border bg-background shadow-2xl overflow-hidden" : "block my-2 rounded-md border border-border/60 overflow-hidden"} data-el="chat-web-wrap" data-big={big ? "" : undefined} data-embed-id={id}>
       <span className="flex items-center gap-2 px-2 py-1 border-b border-border/60 bg-muted/40 text-[11px] text-muted-foreground shrink-0">
-        <button type="button" className={iconBtn} onClick={() => go("back")} title="Back" data-el="chat-web-back" disabled={resting}><ArrowLeft className="h-3 w-3" /></button>
-        <button type="button" className={iconBtn} onClick={() => go("forward")} title="Forward" data-el="chat-web-forward" disabled={resting}><ArrowRight className="h-3 w-3" /></button>
-        <button type="button" className={iconBtn} onClick={() => go("reload")} title="Reload" data-el="chat-web-reload" disabled={resting}><RotateCw className={`h-3 w-3 ${loading && !resting ? "animate-spin" : ""}`} /></button>
+        <button data-offer="app/chat-rows.inline" type="button" className={iconBtn} onClick={() => go("back")} title="Back" data-el="chat-web-back" disabled={resting}><ArrowLeft className="h-3 w-3" /></button>
+        <button data-offer="app/chat-rows.inline" type="button" className={iconBtn} onClick={() => go("forward")} title="Forward" data-el="chat-web-forward" disabled={resting}><ArrowRight className="h-3 w-3" /></button>
+        <button data-offer="app/chat-rows.inline" type="button" className={iconBtn} onClick={() => go("reload")} title="Reload" data-el="chat-web-reload" disabled={resting}><RotateCw className={`h-3 w-3 ${loading && !resting ? "animate-spin" : ""}`} /></button>
         <span className="truncate flex-1 min-w-0" title={url} data-el="chat-web-title">
           <span className="text-foreground/90">{shownTitle}</span> <span className="opacity-70">· {displayHost(url)}</span>
         </span>
-        <button type="button" onClick={() => setBig((v) => !v)} className={iconBtn} data-el="chat-web-big" title={big ? "Back to the chat (Esc)" : "Show the page over the whole window"}>
+        <button data-offer="app/chat-rows.inline" type="button" onClick={() => setBig((v) => !v)} className={iconBtn} data-el="chat-web-big" title={big ? "Back to the chat (Esc)" : "Show the page over the whole window"}>
           {big ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />} {big ? "Smaller" : "Full window"}
         </button>
-        <button type="button" onClick={() => void openOutside()} className={iconBtn} data-el="chat-web-browser" title="Open in the browser"><ExternalLink className="h-3 w-3" /> Browser</button>
-        <button type="button" onClick={close} className={iconBtn} data-el="chat-web-close" title="Close the page (a link stays)"><X className="h-3 w-3" /></button>
+        <button data-offer="app/chat-rows.inline" type="button" onClick={() => void openOutside()} className={iconBtn} data-el="chat-web-browser" title="Open in the browser"><ExternalLink className="h-3 w-3" /> Browser</button>
+        <button data-offer="app/chat-rows.inline" type="button" onClick={close} className={iconBtn} data-el="chat-web-close" title="Close the page (a link stays)"><X className="h-3 w-3" /></button>
       </span>
       {note && (
         <span className="flex items-center gap-2 px-2 py-0.5 border-b border-border/60 text-[11px] text-muted-foreground shrink-0" data-el="chat-web-note">
           <span className="truncate flex-1">{note.text}: {note.url}</span>
-          <button type="button" className={iconBtn} onClick={() => void openUrl(note.url).catch(() => undefined)}>Open in browser</button>
-          <button type="button" className={iconBtn} onClick={() => setNote(null)} title="Dismiss"><X className="h-3 w-3" /></button>
+          <button data-offer="app/chat-rows.inline" type="button" className={iconBtn} onClick={() => void openUrl(note.url).catch(() => undefined)}>Open in browser</button>
+          <button data-offer="app/chat-rows.inline" type="button" className={iconBtn} onClick={() => setNote(null)} title="Dismiss"><X className="h-3 w-3" /></button>
         </span>
       )}
       {/* The native view sits exactly over this element; what shows here is only seen while it loads or rests. */}
       <span ref={body} className={`relative block bg-background ${big ? "flex-1 min-h-0" : ""}`} style={big ? undefined : { height: h }} data-el="chat-web-body">
         {resting ? (
           <span className="absolute inset-0 flex items-center justify-center text-[12px] text-muted-foreground">
-            <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={() => setResting(false)} data-el="chat-web-wake">Show the page again</button>
+            <button data-offer="app/chat-rows.inline" type="button" className="underline underline-offset-2 hover:text-foreground" onClick={() => setResting(false)} data-el="chat-web-wake">Show the page again</button>
           </span>
         ) : (
           <span className="absolute inset-0 flex items-center justify-center text-[12px] text-muted-foreground italic">Loading {displayHost(url)}…</span>
@@ -261,11 +290,24 @@ export const InlineWebPage = memo(function InlineWebPage({ src, alt, sizeHint }:
   if (state === "live") return <LiveWebPage src={src} label={label} sizeHint={sizeHint} onFail={onFail} onClose={onClose} />;
   if (state === "closed") {
     return (
-      <span className="block my-1" data-el="chat-web-closed">
-        <PlainLink src={src} label={label} />
-        <button type="button" className="ml-2 text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-2" onClick={() => setState("live")} data-el="chat-web-reopen">show here</button>
-      </span>
+      <ClosedWebPage src={src} label={label} onReopen={() => setState("live")} />
     );
   }
   return <PlainLink src={src} label={label} />;
 });
+
+/** A page Carl closed: its link, and "show here" (app/chat-rows inline reopen does the same). */
+function ClosedWebPage({ src, label, onReopen }: { src: string; label: string; onReopen: () => void }) {
+  const re = useRef(onReopen);
+  re.current = onReopen;
+  const id = useRef(`web:closed-${newId()}`).current;
+  useEffect(() => registerInlineFrame({ id, kind: "web", state: () => ({ url: src, title: label, closed: true }), act: { reopen: () => re.current() } }), [id, src, label]);
+  {
+    return (
+      <span className="block my-1" data-el="chat-web-closed">
+        <PlainLink src={src} label={label} />
+        <button type="button" className="ml-2 text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-2" onClick={onReopen} data-el="chat-web-reopen" data-offer="app/chat-rows.inline">show here</button>
+      </span>
+    );
+  }
+}

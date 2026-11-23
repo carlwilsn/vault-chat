@@ -5,13 +5,6 @@ import { useStore, type DropSide } from "./store";
 import { MarkdownView } from "./MarkdownView";
 import { VAULT_PANE_MIME, treeDrag } from "./dnd";
 import { isUnreadableAsText } from "./fileKind";
-import { VIEWER_PLUGIN } from "./appPlugins";
-import { PlaceMount } from "./PluginMount";
-import { placeModule } from "./places";
-import * as viewerPlugin from "./plugins/viewer";
-
-// The built-in module(s) of the places below (src/places.ts).
-placeModule(VIEWER_PLUGIN, () => viewerPlugin);
 
 type DropMode = { kind: "edge"; side: DropSide } | { kind: "fill" } | null;
 
@@ -147,8 +140,6 @@ export function MarkdownArea() {
         <MarkdownView />
       )}
       <DropOverlay drop={drop ?? treeDrop} />
-      {/* The viewer's offers to the agent (src/plugins/viewer, app/viewer): it draws nothing; off, files still draw. */}
-      <PlaceMount place="viewer" />
     </div>
   );
 }

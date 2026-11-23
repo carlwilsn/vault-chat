@@ -11,9 +11,54 @@ type BarState = {
   hiddenLines: string[];
   selected: Set<string>;
   refreshing: boolean;
+  /** The sync chip's details open, and the last Open Tailscale error. */
+  syncOpen: boolean;
+  tailscaleError: string | null;
+  /** The app window as last heard from it (its resize / focus events), or null with no native window. */
+  window: WindowState | null;
 };
 
-export const useBar = create<BarState>(() => ({ hiddenOpen: false, hiddenLines: [], selected: new Set(), refreshing: false }));
+export const useBar = create<BarState>(() => ({ hiddenOpen: false, hiddenLines: [], selected: new Set(), refreshing: false, syncOpen: false, tailscaleError: null, window: null }));
+
+/** The sync chip's details, open or closed (its click; Esc or a click outside closes). */
+export const setSyncOpen = (open: boolean) => useBar.setState({ syncOpen: open });
+
+/** The chip's Open Tailscale: opens the Tailscale app here, then nudges a sync once it may be connected. */
+export async function openTailscaleNow(vault: string | null): Promise<void> {
+  useBar.setState({ tailscaleError: null });
+  try {
+    const { openTailscale, boxSyncNow } = await import("../../vaultSync");
+    await openTailscale();
+    if (vault) window.setTimeout(() => void boxSyncNow(vault), 8000);
+  } catch (e) {
+    useBar.setState({ tailscaleError: String(e) });
+    throw e;
+  }
+}
+
+/** Follow the window's own events (resize, focus) into useBar.window: its state readable at once, and watched. */
+export function followWindow(): () => void {
+  let off: (() => void)[] = [];
+  let done = false;
+  const update = () => void windowState().then((w) => !done && useBar.setState({ window: w }));
+  update();
+  void (async () => {
+    try {
+      const w = getCurrentWindow();
+      const a = await w.onResized(update);
+      const b = await w.onFocusChanged(update);
+      const c = await w.onMoved(update);
+      if (done) [a, b, c].forEach((f) => f());
+      else off = [a, b, c];
+    } catch {
+      /* no native window here */
+    }
+  })();
+  return () => {
+    done = true;
+    off.forEach((f) => f());
+  };
+}
 
 type Listener = (event: string, data?: unknown) => void;
 const listeners = new Set<Listener>();

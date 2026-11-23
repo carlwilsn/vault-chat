@@ -4,6 +4,7 @@
 // progress line. Act: stop a worker or a job, steer a worker: the same path the chat's background-task chip takes
 // (Stop / Steer, POST /api/v1/conversations/:id/subagents/:sid/{stop,steer} → Engine.jobControl), so the agent and
 // Carl stop the same thing the same way. Starting one stays the StartJob tool (it owns the turn's wake on its end).
+// Watched on the events its sources give (ctl.watch): no re-reading on a timer.
 // Was the JobList, JobStatus, JobStop and JobSteer tools and the list-only box:jobs offer.
 import type { Noun } from "./index";
 
@@ -14,13 +15,13 @@ export type JobsCtl = {
   status: (id: string, tail?: number) => string;
   control: (id: string, op: "stop" | "steer", text?: string) => Promise<{ ok: boolean; text: string }>;
   turn: boolean;
+  /** Call `fn` when the work may have changed: the conversation's records (a worker's row), its workers' transcripts
+   *  and the StartJob registry and logs being written. Returns the undo. */
+  watch: (fn: () => void) => () => void;
 };
 
 const obj = (props: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties: props, required, additionalProperties: false });
 const str = (description: string) => ({ type: "string", description });
-
-/** How often a watch re-reads the list: workers and jobs report through their own logs, not one event. */
-const WATCH_MS = 2_000;
 
 export function jobsNoun(ctl: JobsCtl): Noun {
   const owned = (op: string) => (ctl.turn ? null : { ok: false, text: `${op} needs an owning turn: this request only reads jobs. Nothing was changed.` });
@@ -57,9 +58,6 @@ export function jobsNoun(ctl: JobsCtl): Noun {
         run: (a) => owned("steer") ?? ctl.control(String(a.id ?? "").trim(), "steer", String(a.message ?? "").trim()),
       },
     },
-    watch: (fn) => {
-      const t = setInterval(fn, WATCH_MS);
-      return () => clearInterval(t);
-    },
+    watch: (fn) => ctl.watch(fn),
   };
 }

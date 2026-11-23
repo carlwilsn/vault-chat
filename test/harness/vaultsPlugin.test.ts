@@ -10,7 +10,7 @@ import React, { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { parseHTML } from "linkedom";
-import { installFakeTauri, makeTempVault } from "./fakes.ts";
+import { installFakeTauri, makeTempVault, withOffers } from "./fakes.ts";
 
 const vault = makeTempVault("vc-vaultsplugin-");
 const fake = installFakeTauri(vault);
@@ -69,7 +69,7 @@ test("mounted through the host, it draws the picker and declares its offers", as
   _resetOffers();
   useStore.setState({ vaultPath: `${M}/vaults/school2` } as any);
   host = el();
-  handle = mountPlugin(host, { name: "Vault picker", module: vaults }, { path: VAULTS_PLUGIN_ID, theme: () => THEME, host: appHostBackend });
+  handle = mountPlugin(host, { name: "Vault picker", module: withOffers(vaults, vaults) }, { path: VAULTS_PLUGIN_ID, theme: () => THEME, host: appHostBackend });
   await handle.ready;
   await tick();
   assert.equal(handle.error, null);
@@ -79,7 +79,7 @@ test("mounted through the host, it draws the picker and declares its offers", as
   assert.ok(d, "listed while it runs");
   assert.deepEqual(d.state.map((s) => s.name), ["vaults", "current", "menu"]);
   assert.deepEqual(d.actions.map((a) => a.name), ["open", "create", "rename", "delete", "makeProject", "openMenu", "closeMenu"]);
-  assert.deepEqual(d.events.map((e) => e.name), ["switched", "created", "renamed", "deleted", "madeProject"]);
+  assert.deepEqual(d.events.map((e) => e.name), ["switched", "created", "renamed", "deleted", "madeProject", "stateChanged"]);
 });
 
 test("read: the vaults with the open one marked, the current vault, the menu", async () => {

@@ -11,7 +11,7 @@ import React, { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
-import { installFakeTauri, makeTempVault } from "./fakes.ts";
+import { installFakeTauri, makeTempVault, withOffers } from "./fakes.ts";
 
 const vault = makeTempVault("vc-chattranscript-");
 installFakeTauri(vault);
@@ -115,7 +115,7 @@ test("mounted through the host: the window of messages, the scroll and the offer
   _appReconciler(false);
   useStore.setState({ vaultPath: vault, boxChat: BOX, conversations: [conv("main")], activeConversationId: "main", messages: msgs(100), busy: false } as any);
   host = el();
-  handle = mountPlugin(host, { name: "Chat pane", module: chat.transcript }, { path: CHAT_PLUGIN_ID, theme: () => THEME, host: appHostBackend });
+  handle = mountPlugin(host, { name: "Chat pane", module: withOffers(chat.transcript, chat) }, { path: CHAT_PLUGIN_ID, theme: () => THEME, host: appHostBackend });
   await handle.ready;
   await waitFor("the transcript", () => html(host).includes('data-el="chat-transcript"'));
   assert.equal(handle.error, null);

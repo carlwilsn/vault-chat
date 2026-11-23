@@ -135,7 +135,7 @@ function ReasoningStream({ text }: { text: string }) {
   }, [text, open]);
   return (
     <div data-el="live-thinking" className="rounded-md border border-border/40 bg-muted/30 text-[11.5px]">
-      <button onClick={() => setOpen((o) => !o)} className="flex items-center gap-1.5 w-full px-2.5 py-1 text-muted-foreground hover:text-foreground">
+      <button data-offer="app/chat-rows.toolRows" onClick={() => setOpen((o) => !o)} className="flex items-center gap-1.5 w-full px-2.5 py-1 text-muted-foreground hover:text-foreground">
         {open ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3 rotate-180" />}
         <span className="italic">Thinking…</span>
       </button>

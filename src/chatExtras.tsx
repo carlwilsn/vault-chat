@@ -3,6 +3,7 @@
 // the Done verifier's verdict and what a reply cost. Quiet, in the chat's own
 // vocabulary (the tool-call summary line, the plan card, the system line).
 // Where Carl has a presentation choice to make, uiChoices.ts picks the option.
+import { OpenRow } from "./rowOpen";
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import type { Conversation } from "./conversations";
@@ -18,16 +19,16 @@ export type Verdict = NonNullable<Conversation["verdict"]>;
 // ---------------------------------------------------------------- thinking
 
 /** The reply's thinking: a collapsed "Thought" line (click to read). */
-export function Thought({ text }: { text: string }) {
+export function Thought({ text, index }: { text: string; index?: number }) {
   if (!text.trim()) return null;
   return (
-    <details className="group" data-el="thinking">
+    <OpenRow index={index} part="thought" className="group" attrs={{ "data-el": "thinking" }}>
       <summary className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer hover:text-foreground list-none select-none">
         <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-0 -rotate-90" />
         <span>Thought</span>
       </summary>
       <div className="mt-1.5 pl-4 border-l border-border text-[11.5px] leading-relaxed text-muted-foreground/80 whitespace-pre-wrap max-h-60 overflow-auto">{text}</div>
-    </details>
+    </OpenRow>
   );
 }
 
@@ -51,7 +52,7 @@ export function AskOptions({ options, live, chosen, onPick }: { options: AskOpti
     return (
       <div className="flex flex-wrap gap-1.5" data-el="ask-options" data-live={open ? "1" : "0"}>
         {shown.map((o) => (
-          <button
+          <button data-offer-exempt="an AskUser answer card (left out of report 28: the agent's own question back to Carl)"
             key={o.answer}
             onClick={() => go(o)}
             disabled={!open}
@@ -74,7 +75,7 @@ export function AskOptions({ options, live, chosen, onPick }: { options: AskOpti
   return (
     <div className="space-y-1.5" data-el="ask-options" data-live={open ? "1" : "0"}>
       {shown.map((o) => (
-        <button
+        <button data-offer-exempt="an AskUser answer card (left out of report 28: the agent's own question back to Carl)"
           key={o.answer}
           onClick={() => go(o)}
           disabled={!open}
@@ -162,7 +163,7 @@ function TaskRow({ s, now, onControl, onOpen }: { onOpen?: (id: string) => void;
       <div className="flex items-center gap-2 text-[12px] leading-relaxed">
         <TaskDot state={st} />
         <span className="min-w-0 flex-1 truncate text-foreground/90" title={s.task ?? s.prompt}>
-          {onOpen && s.kind !== "job" ? <button type="button" data-el="task-open" className="hover:underline" onClick={() => onOpen(s.threadId)}>{taskName(s)}</button> : taskName(s)}
+          {onOpen && s.kind !== "job" ? <button data-offer="app/chat.openTask" type="button" data-el="task-open" className="hover:underline" onClick={() => onOpen(s.threadId)}>{taskName(s)}</button> : taskName(s)}
         </span>
         <span className="shrink-0 text-[10.5px] text-muted-foreground tabular-nums" data-el="task-elapsed">
           {elapsedText(taskElapsed(s, now))}
@@ -170,11 +171,11 @@ function TaskRow({ s, now, onControl, onOpen }: { onOpen?: (id: string) => void;
         {running && onControl && (
           <span className="shrink-0 flex items-center gap-2 text-[10.5px]">
             {s.kind !== "job" && (
-              <button className="text-muted-foreground hover:text-foreground" onClick={() => setSteering((v) => !v)} data-el="task-steer">
+              <button data-offer="app/chat.steerTask" className="text-muted-foreground hover:text-foreground" onClick={() => setSteering((v) => !v)} data-el="task-steer">
                 Steer
               </button>
             )}
-            <button className="text-muted-foreground hover:text-destructive" onClick={() => void control("stop")} data-el="task-stop">
+            <button data-offer="app/chat.stopTask" className="text-muted-foreground hover:text-destructive" onClick={() => void control("stop")} data-el="task-stop">
               Stop
             </button>
           </span>
@@ -191,7 +192,7 @@ function TaskRow({ s, now, onControl, onOpen }: { onOpen?: (id: string) => void;
             if (text.trim()) void control("steer", text.trim());
           }}
         >
-          <input
+          <input data-offer="app/chat.steerTask"
             autoFocus
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -254,7 +255,7 @@ export function Subagents({
   const lead = running[running.length - 1];
   return (
     <div ref={box} data-el="subagents" data-variant={variant} data-open={open ? "1" : "0"} data-running={running.length} className={cn("rounded-md border border-border/60 bg-muted/30", variant === "strip" && "mb-1.5")}>
-      <button type="button" onClick={() => setOpen((v) => !v)} data-el="tasks-chip" className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-muted-foreground hover:text-foreground min-w-0">
+      <button data-offer="app/chat.openTask" type="button" onClick={() => setOpen((v) => !v)} data-el="tasks-chip" className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-muted-foreground hover:text-foreground min-w-0">
         <ChevronDown className={cn("h-3 w-3 shrink-0 transition-transform", open ? "rotate-0" : "-rotate-90")} />
         {lead ? <TaskDot state="running" /> : null}
         <span className="shrink-0" data-el="tasks-summary">

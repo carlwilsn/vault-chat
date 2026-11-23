@@ -14,6 +14,43 @@ function carets(): Map<string, Caret> {
 export function setCaret(path: string | null | undefined, line: number, col: number, selected = 0, now = Date.now()): void {
   if (!path) return;
   carets().set(path, { line: Math.max(1, Math.trunc(line)), col: Math.max(1, Math.trunc(col)), selected: Math.max(0, Math.trunc(selected)), at: now });
+  editorChanged();
+}
+
+/** An open editor's own typing and selecting (CodeMirror's dispatch, Monaco's type / setSelection): what Carl's keys do,
+ *  so app/viewer's type and select actions take the same path. Registered while the editor is mounted. */
+export type EditorHandle = {
+  /** Type `text` at the caret (replacing the selection), as keys would. */
+  type(text: string): void;
+  /** Select from (line, col) to (endLine, endCol), 1-based; a caret when the end is left out. */
+  select(line: number, col: number, endLine?: number, endCol?: number): void;
+  /** Open a Ctrl+K box at the caret or selection, as Ctrl+K does. */
+  ask?(): void;
+};
+const HKEY = "__vcEditorHandles";
+function handles(): Map<string, EditorHandle> {
+  const g = globalThis as Record<string, unknown>;
+  return ((g[HKEY] as Map<string, EditorHandle> | undefined) ??= new Map());
+}
+export function registerEditor(path: string | null | undefined, h: EditorHandle): () => void {
+  if (!path) return () => {};
+  handles().set(path, h);
+  return () => {
+    if (handles().get(path) === h) handles().delete(path);
+  };
+}
+export function editorOf(path: string): EditorHandle | null {
+  return handles().get(path) ?? null;
+}
+
+const changedFns = new Set<() => void>();
+/** A caret moved or a selection changed in an editor (app/viewer's watch). */
+export function onEditorChanged(fn: () => void): () => void {
+  changedFns.add(fn);
+  return () => void changedFns.delete(fn);
+}
+function editorChanged(): void {
+  for (const f of [...changedFns]) f();
 }
 
 export function caretOf(path: string): Caret | null {

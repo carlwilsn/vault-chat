@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { registerTex, texChanged } from "./texState";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { FileCode2 } from "lucide-react";
@@ -105,6 +106,18 @@ export function TexView({
   // queuedRef above, this gives: "burst of edits → one compile when
   // settled; if another edit lands mid-compile, exactly one more
   // compile when that finishes."
+  // Its compile status for app/viewer (src/texState.ts): read there, and recompiled through the same compile.
+  const lastAt = useRef<string | null>(null);
+  const statusRef = useRef({ compiling, error, pdfPath });
+  statusRef.current = { compiling, error, pdfPath };
+  const compileRef = useRef(compile);
+  compileRef.current = compile;
+  useEffect(() => registerTex(path, { now: () => ({ compiling: statusRef.current.compiling, error: statusRef.current.error, pdf: statusRef.current.pdfPath, at: lastAt.current }), compile: () => void compileRef.current() }), [path]);
+  useEffect(() => {
+    if (!compiling) lastAt.current = new Date().toISOString();
+    texChanged();
+  }, [compiling, error, pdfPath]);
+
   const debounceTimer = useRef<number | null>(null);
   const requestCompile = () => {
     if (debounceTimer.current !== null) window.clearTimeout(debounceTimer.current);
@@ -193,7 +206,7 @@ export function TexView({
   // of the marquee). Same icon-button shape as PdfView's own controls
   // so visually nothing distinguishes a .tex preview from a real PDF.
   const toolbarExtras = onToggleMode ? (
-    <button
+    <button data-offer="app/viewer.setMode"
       onClick={(e) => {
         e.stopPropagation();
         onToggleMode();

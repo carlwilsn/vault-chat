@@ -6,25 +6,22 @@ import { cleanKeyName } from "../../keychain";
 import {
   readBoxConfig,
   subscribeBoxSync,
-  boxSyncNow,
   fmtSize,
   githubPlain,
   type BoxConfig,
   type BoxSyncState,
   boxName,
-  boxVaultName,
   discoverBoxes,
-  connectBox,
-  disconnectBox,
   type FoundBox,
   tailscaleCheck,
   openTailscale,
 } from "../../vaultSync";
 import { connectTrouble, tailscaleHelp, GET_TAILSCALE_URL, type TailscaleHelp } from "../../tailscaleHelp";
 import { openUrl } from "../../opener";
-import { boxGet, boxPost } from "../../boxChat";
+import { boxGet } from "../../boxChat";
 import { pushKeysToBox, keysChanged, subscribeKeyPush } from "../../boxKeys";
 import { ClaudeAccountLine } from "../../ClaudeCodeSignIn";
+import { disconnectFromBox, syncBoxNow, syncWithBox } from "../../settingsBox";
 import { MasterSection } from "../../MasterSection";
 import { openShortcutSheet } from "../../ShortcutSheet";
 import { chordText } from "../../shortcuts";
@@ -69,7 +66,7 @@ export function Pane() {
   return (
     <div className="h-full flex flex-col bg-card border-l border-border" data-el="settings-pane">
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
-        <Button variant="ghost" size="icon" onClick={() => setShowSettings(false)} data-el="settings-back">
+        <Button data-offer="app/settings.close" variant="ghost" size="icon" onClick={() => setShowSettings(false)} data-el="settings-back">
           <ArrowLeft className="h-3.5 w-3.5" />
         </Button>
         <span className="text-[13px] font-semibold">Settings</span>
@@ -90,7 +87,7 @@ export function Pane() {
         <div data-settings="appearance">
           <AppearanceSection />
         </div>
-        <button
+        <button data-offer="app/settings.openShortcuts"
           onClick={openShortcutSheet}
           className="w-full flex items-center justify-between rounded px-2 py-1.5 -mx-2 text-[12px] text-foreground/90 hover:bg-accent/60"
           data-el="settings-shortcuts"
@@ -139,7 +136,7 @@ function KeysSection() {
     <section className="space-y-2.5" data-settings="keys">
       {/* No row per provider: the agent is Claude Code, and its sign-in is the
           line at the top of Settings, not a key. Every key is a name and a secret. */}
-      <SectionHead
+      <SectionHead data-offer-exempt="Keys: a key is a secret, never state the agent reads or sets"
         title="Keys"
         hint="Kept in this machine's keychain, and given to whatever runs your vault."
         right={
@@ -172,10 +169,10 @@ function KeysSection() {
             className="flex-[3]"
             autoFocus={edit.replacing}
           />
-          <Button size="sm" onClick={() => void save()} disabled={!edit.name.trim() || !edit.value.trim()}>
+          <Button data-offer-exempt="Keys: a key is a secret, never state the agent reads or sets" size="sm" onClick={() => void save()} disabled={!edit.name.trim() || !edit.value.trim()}>
             Save
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => setEdit(null)} title="Cancel">
+          <Button data-offer-exempt="Keys: a key is a secret, never state the agent reads or sets" size="sm" variant="ghost" onClick={() => setEdit(null)} title="Cancel">
             <X className="h-3 w-3" />
           </Button>
         </div>
@@ -186,10 +183,10 @@ function KeysSection() {
             <li key={n} className="flex items-center justify-between px-3 py-1 text-[12px]" data-key={n}>
               <span className="font-mono text-foreground/90">{n}</span>
               <span className="flex gap-1">
-                <Button size="sm" variant="ghost" onClick={() => setEdit({ name: n, value: "", replacing: true })} title="Replace">
+                <Button data-offer-exempt="Keys: a key is a secret, never state the agent reads or sets" size="sm" variant="ghost" onClick={() => setEdit({ name: n, value: "", replacing: true })} title="Replace">
                   Replace
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => void removeKey(n)} title="Remove">
+                <Button data-offer-exempt="Keys: a key is a secret, never state the agent reads or sets" size="sm" variant="ghost" onClick={() => void removeKey(n)} title="Remove">
                   <X className="h-3 w-3" />
                 </Button>
               </span>
@@ -252,9 +249,8 @@ function BoxSection() {
   // Connect / disconnect: re-read sync.json, and move the chat (box mode is
   // decided when the conversations load).
   const changed = async (connected: boolean) => {
-    if (!connected) (await import("../../boxChat")).stopBoxChat();
+    void connected; // boxConnectionChanged (src/settingsBox.ts) moved the chat already
     setRev((n) => n + 1);
-    void useStore.getState().loadConversations();
   };
 
   // Sync exists only with a box. Without one, the vault is saved locally for
@@ -298,7 +294,7 @@ export function TailscaleNote({ help }: { help: TailscaleHelp | null }) {
     <p className="text-[11px] text-amber-500/90 break-words" data-testid="tailscale-note">
       {help.line}
       {help.action && (
-        <button onClick={() => void act()} className="ml-1.5 underline hover:text-foreground" data-testid="tailscale-action">
+        <button data-offer="app/titlebar.openTailscale" onClick={() => void act()} className="ml-1.5 underline hover:text-foreground" data-testid="tailscale-action">
           {help.action.label}
         </button>
       )}
@@ -336,6 +332,7 @@ function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => 
       setFound([]);
       setTrouble(connectTrouble("the tailnet", e instanceof Error ? e.message : String(e), await tailscaleCheck()));
     }
+    // (app/settings findBoxes runs the same discovery: src/settingsBox.ts.)
   };
   const check = async (raw: string) => {
     let url = raw.trim().replace(/\/+$/, "");
@@ -357,17 +354,15 @@ function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => 
     } finally {
       setBusy(null);
     }
+    // (app/settings connectBox checks the same way: src/settingsBox.ts checkBox.)
   };
   const sync = async () => {
     if (!picked || !health) return;
     setBusy("sync");
     setError(null);
     try {
-      const r = await boxPost(link(picked), "/api/v1/vaults", { name: boxVaultName(vault) });
-      if (!r.ok) throw new Error(r.error ?? "the box refused");
-      const keyErr = await pushKeysToBox(picked);
-      if (keyErr) throw new Error(`your keys didn't reach it (${keyErr})`);
-      await connectBox(vault, picked, health.name);
+      // The one connect (src/settingsBox.ts), as app/settings' connectBox.
+      await syncWithBox(vault, picked, health.name);
       onConnected();
     } catch (e) {
       setError(`Couldn't sync with ${health.name}: ${e instanceof Error ? e.message : String(e)}`);
@@ -377,7 +372,7 @@ function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => 
 
   if (!open) {
     return (
-      <Button size="sm" variant="outline" onClick={() => void start()}>
+      <Button data-offer="app/settings.findBoxes" size="sm" variant="outline" onClick={() => void start()}>
         Connect a box
       </Button>
     );
@@ -408,7 +403,7 @@ function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => 
               placeholder="Or enter an address"
               className="font-mono text-[11.5px]"
             />
-            <Button size="sm" variant="outline" onClick={() => void check(address)} disabled={!address.trim() || busy === "checking"}>
+            <Button data-offer="app/settings.connectBox" size="sm" variant="outline" onClick={() => void check(address)} disabled={!address.trim() || busy === "checking"}>
               Check
             </Button>
           </div>
@@ -422,14 +417,14 @@ function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => 
               <span className="text-foreground/90">{health.name}</span>
               <span className="text-muted-foreground">{health.version ? ` · v${health.version}` : ""}</span>
             </span>
-            <button onClick={() => setHealth(null)} className="text-[10.5px] text-muted-foreground hover:text-foreground underline shrink-0">
+            <button data-offer="app/settings.findBoxes" onClick={() => setHealth(null)} className="text-[10.5px] text-muted-foreground hover:text-foreground underline shrink-0">
               change
             </button>
           </div>
           {/* Nothing to paste first: syncing needs the box, not a key. The
               Claude sign-in is the one thing the agent waits on, and it has its
               own line at the top of Settings. */}
-          <Button size="sm" onClick={() => void sync()} disabled={busy === "sync"}>
+          <Button data-offer="app/settings.connectBox" size="sm" onClick={() => void sync()} disabled={busy === "sync"}>
             {busy === "sync" ? "Syncing…" : `Sync this vault with ${health.name}`}
           </Button>
         </>
@@ -438,13 +433,13 @@ function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => 
         <p className="text-[11px] text-amber-500/90 break-words">
           {error}
           {health && busy === null && (
-            <button onClick={() => void sync()} className="ml-1.5 underline hover:text-foreground">
+            <button data-offer="app/settings.connectBox" onClick={() => void sync()} className="ml-1.5 underline hover:text-foreground">
               Retry
             </button>
           )}
         </p>
       )}
-      <button
+      <button data-offer="app/settings.findBoxes"
         onClick={() => {
           setOpen(false);
           setHealth(null);
@@ -462,7 +457,7 @@ function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => 
 
 // Read-only status of the box sync, plus "Sync now". Everything here comes
 // from the last cycle's report (src-tauri/src/box_sync.rs).
-function BoxSyncPanel({ vault, box, onDisconnected }: { vault: string; box: BoxConfig; onDisconnected: () => void }) {
+function BoxSyncPanel({ box, onDisconnected }: { vault: string; box: BoxConfig; onDisconnected: () => void }) {
   const [st, setSt] = useState<BoxSyncState | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -473,7 +468,7 @@ function BoxSyncPanel({ vault, box, onDisconnected }: { vault: string; box: BoxC
     setBusy(true);
     setDiscError(null);
     try {
-      await disconnectBox(vault);
+      await disconnectFromBox();
       onDisconnected();
     } catch (e) {
       setDiscError(String(e instanceof Error ? e.message : e));
@@ -506,7 +501,7 @@ function BoxSyncPanel({ vault, box, onDisconnected }: { vault: string; box: BoxC
   const syncNow = async () => {
     setBusy(true);
     try {
-      await boxSyncNow(vault);
+      await syncBoxNow();
     } finally {
       setBusy(false);
     }
@@ -558,7 +553,7 @@ function BoxSyncPanel({ vault, box, onDisconnected }: { vault: string; box: BoxC
         </details>
       )}
       <div className="pt-1 flex items-center gap-2">
-        <button
+        <button data-offer="app/settings.syncBoxNow"
           onClick={syncNow}
           disabled={busy || !!st?.running}
           className="text-[10.5px] text-muted-foreground hover:text-foreground underline disabled:opacity-40 disabled:cursor-not-allowed"
@@ -566,7 +561,7 @@ function BoxSyncPanel({ vault, box, onDisconnected }: { vault: string; box: BoxC
           {busy || st?.running ? "syncing…" : "sync now"}
         </button>
         <span className="text-[10.5px] text-muted-foreground/70">·</span>
-        <button
+        <button data-offer="app/settings.disconnectBox"
           onClick={() => setConfirming(true)}
           disabled={busy}
           className="text-[10.5px] text-muted-foreground hover:text-foreground underline disabled:opacity-40 disabled:cursor-not-allowed"
@@ -580,10 +575,10 @@ function BoxSyncPanel({ vault, box, onDisconnected }: { vault: string; box: BoxC
             Disconnect {boxName(box)}? Chat goes back to running on this laptop. {boxName(box)} keeps its copy of this vault.
           </p>
           <div className="flex gap-2">
-            <Button size="sm" variant="destructive" onClick={() => void disconnect()} disabled={busy}>
+            <Button data-offer="app/settings.disconnectBox" size="sm" variant="destructive" onClick={() => void disconnect()} disabled={busy}>
               Disconnect
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setConfirming(false)} disabled={busy}>
+            <Button data-offer="app/settings.disconnectBox" size="sm" variant="ghost" onClick={() => setConfirming(false)} disabled={busy}>
               Cancel
             </Button>
           </div>
@@ -593,7 +588,7 @@ function BoxSyncPanel({ vault, box, onDisconnected }: { vault: string; box: BoxC
       {keyFail && (
         <p className="text-[11px] text-amber-500/90 break-words pt-1">
           Your keys didn't reach {boxName(box)}: {keyFail}
-          <button onClick={() => void pushKeysToBox(box.box)} className="ml-1.5 underline hover:text-foreground">
+          <button data-offer-exempt="pushes this laptop's keys to the box again: keys are secrets" onClick={() => void pushKeysToBox(box.box)} className="ml-1.5 underline hover:text-foreground">
             Retry
           </button>
         </p>
@@ -614,7 +609,7 @@ function PhoneLink({ box }: { box: BoxConfig | null }) {
         <>
           <div className="flex items-center gap-2">
             <code className="text-[11px] font-mono bg-muted px-2 py-1 rounded truncate flex-1 min-w-0">{link}</code>
-            <button
+            <button data-offer-exempt="copies the phone's link to this laptop's clipboard (the link is the box's, box:links shows the phone)"
               className="text-[11px] px-2.5 py-1 rounded border border-border hover:bg-muted shrink-0"
               onClick={() => {
                 void navigator.clipboard?.writeText(link);

@@ -34,7 +34,21 @@ export type Offers = {
   state?: Record<string, OfferState>;
   actions?: Record<string, OfferAction>;
   events?: Record<string, OfferEvent>;
+  /**
+   * How its state says it changed (the subscribe of the stores its selectors read; returns the unsubscribe), as a
+   * model noun's watch (server/model/index.ts). Each call is a hint: the registry reads the state back and emits the
+   * generic STATE_CHANGED event when it differs, whoever changed it (Carl's own control, the agent, the box).
+   */
+  watch?: (fn: () => void) => () => void;
 };
+
+/**
+ * The event every part with state emits when its state read back differs from the last time (report 28, fix 1): so
+ * a single PluginRead wait wakes on Carl's own change to anything readable, not only on the agent's actions. Checked
+ * after a change source fires (the app's store, the part's own watch, an action), debounced, off the input path.
+ */
+export const STATE_CHANGED = "stateChanged";
+const STATE_CHANGED_EVENT: OfferEvent = { description: "Its state changed (whoever changed it): changed, the state names that differ; before, their old values." };
 export type OffersHandle = { emit(event: string, payload?: unknown): void };
 
 /** What a plugin offers, as plain data (what the agent is shown). */
@@ -56,7 +70,7 @@ export type OfferEventRecord = { event: string; at: number; seq?: number; payloa
 const SEQS = new WeakMap<OfferEventRecord, number>();
 const seqOf = (r: OfferEventRecord) => SEQS.get(r) ?? 0;
 
-type Entry = { id: string; name: string; offers: Offers; events: OfferEventRecord[]; alive: () => boolean; snap?: Map<string, Snap> };
+type Entry = { handle?: OffersHandle; id: string; name: string; offers: Offers; events: OfferEventRecord[]; alive: () => boolean; snap?: Map<string, Snap>; /** The state as last compared for STATE_CHANGED. */ seen?: Map<string, string> };
 /** One state name's value as last seen: its JSON (to compare) and the value (to give back as the before). */
 type Snap = { json: string; value: unknown };
 /** What a subscriber is handed: which plugin emitted, the event, when, its payload. */
@@ -106,8 +120,10 @@ const errText = (e: unknown) => String((e as Error)?.message ?? e ?? "error");
 /** Check a declaration; a bad one is refused with every reason (the plugin keeps running without offers). */
 export function offersProblems(o: unknown): string[] {
   const out: string[] = [];
-  if (!o || typeof o !== "object") return ["offers must be an object {state?, actions?, events?}"];
+  if (!o || typeof o !== "object") return ["offers must be an object {state?, actions?, events?, watch?}"];
   const x = o as Offers;
+  if (x.watch !== undefined && typeof x.watch !== "function") out.push("watch must be a function (fn) => unsubscribe");
+  if (x.events && Object.prototype.hasOwnProperty.call(x.events, STATE_CHANGED)) out.push(`events "${STATE_CHANGED}": every part has it already (the registry emits it)`);
   for (const [kind, map] of [["state", x.state], ["actions", x.actions], ["events", x.events]] as const) {
     if (map === undefined) continue;
     if (!map || typeof map !== "object") {
@@ -139,8 +155,18 @@ export function declareOffers(id: string, name: string, offers: Offers, alive: (
   // The first snapshot once the part has drawn (its state may read empty during mount).
   queueMicrotask(() => {
     if (alive() && !entry.snap) entry.snap = snapshot(offers);
+    if (alive() && !entry.seen) void stateJson(offers).then((m) => (entry.seen ??= m));
   });
+  let offWatch: () => void = () => {};
+  if (offers.watch) {
+    try {
+      offWatch = offers.watch(() => alive() && offersMayHaveChanged()) ?? (() => {});
+    } catch (e) {
+      console.warn(`[offers] ${id}: its watch threw: ${errText(e)}`);
+    }
+  }
   const undo = () => {
+    offWatch();
     const list = (reg.get(id) ?? []).filter((e) => e !== entry);
     if (list.length) reg.set(id, list);
     else reg.delete(id);
@@ -148,21 +174,76 @@ export function declareOffers(id: string, name: string, offers: Offers, alive: (
   const handle: OffersHandle = {
     emit(event, payload) {
       if (!alive() || !(reg.get(id) ?? []).includes(entry)) return;
-      if (!offers.events || !Object.prototype.hasOwnProperty.call(offers.events, event)) return;
-      const before = offers.events[event]?.before === false ? undefined : beforeOf(entry);
+      if (event !== STATE_CHANGED && (!offers.events || !Object.prototype.hasOwnProperty.call(offers.events, event))) return;
+      const before = offers.events?.[event]?.before === false ? undefined : beforeOf(entry);
       const rec: OfferEventRecord = { event: String(event), at: Date.now(), ...(payload === undefined ? {} : { payload: plain(payload) }), ...(before === undefined ? {} : { before }) };
       SEQS.set(rec, nextSeq());
       entry.events.push(rec);
       if (entry.events.length > MAX_EVENTS) entry.events.splice(0, entry.events.length - MAX_EVENTS);
       deliver(entry, rec);
-      try {
+      // The history is what happened (opened, switched, sent); the generic state check stays on this app.
+      if (event !== STATE_CHANGED) try {
         ((globalThis as Record<string, unknown>)[SINK_KEY] as OfferSink | undefined)?.({ id, name }, rec);
       } catch {
         /* the history is best effort; the plugin's emit never fails for it */
       }
     },
   };
+  entry.handle = handle;
   return { undo, handle };
+}
+
+const CHECK_KEY = "__vcPluginOfferCheck";
+/** How long the state check waits for the changes to settle, and at most. */
+const CHECK_QUIET_MS = 150;
+const CHECK_MAX_MS = 600;
+
+/**
+ * Something the parts' state is read from changed (the app's store, a part's own store, an action ran): read every
+ * live part's state back, once the changes settle, and emit STATE_CHANGED on each part whose state differs. Cheap to
+ * call often (one timer).
+ */
+export function offersMayHaveChanged(): void {
+  const g = globalThis as Record<string, unknown>;
+  const c = ((g[CHECK_KEY] as { t?: ReturnType<typeof setTimeout>; first?: number } | undefined) ??= {});
+  const now = Date.now();
+  c.first ??= now;
+  if (c.t) clearTimeout(c.t);
+  const wait = Math.max(0, Math.min(CHECK_QUIET_MS, c.first + CHECK_MAX_MS - now));
+  c.t = setTimeout(() => {
+    c.t = undefined;
+    c.first = undefined;
+    void checkOffersNow();
+  }, wait);
+}
+
+/** Read every live part's state back now (a selector that answers a promise is awaited) and emit STATE_CHANGED where
+ *  it differs (tests; offersMayHaveChanged's timer). */
+export async function checkOffersNow(): Promise<void> {
+  for (const e of live()) {
+    if (!e.offers.state || !Object.keys(e.offers.state).length || !e.handle) continue;
+    const now = await stateJson(e.offers);
+    const was = e.seen;
+    e.seen = now;
+    if (!was) continue;
+    const changed = [...now].filter(([k, v]) => was.get(k) !== v).map(([k]) => k);
+    if (changed.length && e.alive()) e.handle.emit(STATE_CHANGED, { changed });
+  }
+}
+
+/** Each state name's value as JSON, promises awaited (a throw or a hang past a second is left out). */
+async function stateJson(o: Offers): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const [n, s] of Object.entries(o.state ?? {})) {
+    try {
+      let v = s.read();
+      if (v && typeof (v as Promise<unknown>).then === "function") v = await Promise.race([v, new Promise((_r, rej) => setTimeout(() => rej(new Error("slow")), 1_000))]);
+      out.set(n, JSON.stringify(plain(v)) ?? "null");
+    } catch {
+      /* its own failure: not compared */
+    }
+  }
+  return out;
 }
 
 /** A state value bigger than this (as JSON) is compared but given back only as a mark: the event stays small. */
@@ -313,7 +394,7 @@ export function describeOffers(e: Pick<Entry, "id" | "name" | "offers">): Offers
     name: e.name,
     state: Object.entries(o.state ?? {}).map(([name, s]) => ({ name, description: String(s.description ?? "") })),
     actions: Object.entries(o.actions ?? {}).map(([name, a]) => ({ name, description: String(a.description ?? ""), args: a.args ?? { type: "object", properties: {}, additionalProperties: false } })),
-    events: Object.entries(o.events ?? {}).map(([name, v]) => ({ name, description: String(v.description ?? "") })),
+    events: [...Object.entries(o.events ?? {}), ...(Object.keys(o.state ?? {}).length ? [[STATE_CHANGED, STATE_CHANGED_EVENT] as const] : [])].map(([name, v]) => ({ name, description: String(v.description ?? "") })),
   };
 }
 
@@ -482,6 +563,7 @@ export async function actOffers(word: string, action: string, args: Record<strin
   const bad = argsProblems(a.args, args);
   if (bad.length) return { ok: false, plugin, error: `${e.id} ${name}: ${bad.join("; ")}. Nothing was run.` };
   const r = await guarded(`action "${name}"`, () => a.run({ ...(args ?? {}) }), ms);
+  offersMayHaveChanged();
   // The read-back: what the plugin's state is now, whatever the action said.
   const back = e.alive() ? (await readAll(e, undefined, ms)).state : {};
   if ("error" in r) return { ok: false, plugin, error: `${e.id} ${r.error}. The plugin is still running.`, state: back };

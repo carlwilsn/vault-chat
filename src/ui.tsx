@@ -24,7 +24,7 @@ export const Button = forwardRef<
     icon: "h-8 w-8",
   };
   return (
-    <button
+    <button data-offer-exempt="a UI primitive: each use names its own offer"
       ref={ref}
       className={cn(base, variants[variant], sizes[size], className)}
       {...props}
@@ -35,7 +35,7 @@ Button.displayName = "Button";
 
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
   ({ className, ...props }, ref) => (
-    <input
+    <input data-offer-exempt="a UI primitive: each use names its own offer"
       ref={ref}
       className={cn(
         "flex h-8 w-full rounded-md border border-input bg-background px-2.5 text-[13px] transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
@@ -49,7 +49,7 @@ Input.displayName = "Input";
 
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement>>(
   ({ className, ...props }, ref) => (
-    <textarea
+    <textarea data-offer-exempt="a UI primitive: each use names its own offer"
       ref={ref}
       className={cn(
         "flex w-full rounded-md border border-input bg-background px-3 py-2 text-[13px] leading-relaxed transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 resize-none",
@@ -63,7 +63,7 @@ Textarea.displayName = "Textarea";
 
 export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(
   ({ className, children, ...props }, ref) => (
-    <select
+    <select data-offer-exempt="a UI primitive: each use names its own offer"
       ref={ref}
       className={cn(
         "flex h-8 w-full rounded-md border border-input bg-background px-2.5 text-[13px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
@@ -81,7 +81,7 @@ export type MenuOption = { value: string; label: string };
 export type MenuGroup = { label?: string; options: MenuOption[] };
 
 /**
- * A custom dropdown whose OPEN menu is styled (unlike a native <select>, whose
+ * A custom dropdown whose OPEN menu is styled (unlike a native <select data-offer-exempt="a UI primitive: each use names its own offer">, whose
  * popup is drawn by the OS and can't be themed). Modeled on the ElevenLabs voice
  * picker: a <details> with outside-click-close and a bordered, scrollable list
  * with hover/active states. Supports option groups (the equivalent of <optgroup>).
@@ -142,7 +142,7 @@ export function MenuSelect({
               </div>
             )}
             {g.options.map((o) => (
-              <div
+              <div data-offer-exempt="a UI primitive: each use names its own offer"
                 key={o.value}
                 onClick={() => pick(o.value)}
                 className={cn(

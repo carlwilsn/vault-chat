@@ -6,7 +6,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { MessageSquare, Plus, X as XIcon, Folder, PanelLeftClose, Home, ChevronRight } from "lucide-react";
 import { useStore } from "../../store";
 import { useProjects } from "../../ProjectChip";
-import { createProjectThread, deleteProject, MEMORY_SLUG, newChatInProject, openProjectNotes, openThread, projectName, renameProject } from "../../projects";
+import { newChatIn } from "../../chat-controller";
+import { createProjectThread, deleteProject, MEMORY_SLUG, openProjectNotes, openThread, projectName, renameProject } from "../../projects";
 import { panelModel, visibleChats, nextChatLevel, type PanelChat, type PanelEntry } from "../../threads";
 import { canDeleteChat, deleteChats, renameChat } from "../../chatDelete";
 import { cn } from "../../lib/utils";
@@ -64,7 +65,7 @@ export function ChatsOverlay() {
         ref={panelRef}
         className="h-full w-[380px] max-w-[92vw] bg-card border-l border-border shadow-xl flex flex-col pointer-events-auto"
       >
-        <ThreadsList
+        <ThreadsList data-offer="app/chats.closePanel"
           onPicked={onClose}
           onFocusComposer={focusComposer}
           trailing={
@@ -87,7 +88,7 @@ export function ChatsSidebarView() {
   const toggle = useStore((s) => s.toggleChatSidebar);
   return (
     <aside data-el="chats-sidebar" className="h-full w-[272px] shrink-0 bg-background flex flex-col">
-      <ThreadsList
+      <ThreadsList data-offer="box:workspace.chatSidebar"
         onFocusComposer={focusComposer}
         trailing={
           <button
@@ -183,7 +184,7 @@ export function ThreadsList({
             deleteOne={deleteOne}
             onOpenChat={(id, title) => open(id, title)}
             onNewChat={() => {
-              useStore.getState().newConversation();
+              newChatIn("main");
               focusChat();
             }}
             onNotes={() => void openProjectNotes(MEMORY_SLUG, "Memory").then(() => onPicked?.())}
@@ -196,7 +197,7 @@ export function ThreadsList({
         {entries.map((e) =>
           e.type === "main" ? null : e.type === "new-project" ? (
             naming === null ? (
-              <button
+              <button data-offer="box:chats.openProject"
                 key="new-project"
                 onClick={() => setNaming("")}
                 data-el="new-project"
@@ -216,7 +217,7 @@ export function ThreadsList({
               deleteOne={deleteOne}
               onOpenChat={(id, title) => open(id, title)}
               onNewChat={() => {
-                newChatInProject(e.slug);
+                newChatIn(e.slug);
                 focusChat();
               }}
               onNotes={() => void openProjectNotes(e.slug, e.title).then(() => onPicked?.())}
@@ -323,7 +324,7 @@ export function ThreadRow({
   if (mode === "rename")
     return (
       <div className="px-4 py-1" data-el="project-rename" data-thread={entry.id}>
-        <input
+        <input data-offer="box:chats.openProject"
           autoFocus
           value={draft}
           disabled={busy}
@@ -359,7 +360,7 @@ export function ThreadRow({
       // place shows its spinner where its icon was, so an idle or working bar ends at its "+".
       className={cn("relative flex items-center gap-1 group", !running && unread ? "pr-7" : "pr-1.5", active ? "bg-accent" : "hover:bg-accent/40")}
     >
-      <button
+      <button data-offer="app/chats.expand"
         data-el="place-toggle"
         // Only shows or hides the chats: never opens the place or switches chat.
         onClick={() => setOpened(!shown)}
@@ -392,7 +393,7 @@ export function ThreadRow({
       {hasMenu && menu && (
         <div ref={menuRef} data-el="project-menu-list" className="absolute right-2 top-full -mt-1 z-30 min-w-[150px] p-1 rounded-lg border border-border bg-popover shadow-lg text-[12px]">
           {onNotes && (
-            <MenuItem
+            <MenuItem data-offer="app/chat.openMemory"
               el="project-memory-item"
               onClick={() => {
                 setMenu(false);
@@ -404,7 +405,7 @@ export function ThreadRow({
           )}
           {canEdit && (
             <>
-              <MenuItem
+              <MenuItem data-offer="box:chats.renameProject"
                 el="project-rename-item"
                 onClick={() => {
                   setMenu(false);
@@ -415,7 +416,7 @@ export function ThreadRow({
                 Rename
               </MenuItem>
               <div className="my-1 mx-0.5 h-px bg-border" />
-              <MenuItem
+              <MenuItem data-offer="box:chats.deleteProject"
                 el="project-delete-item"
                 danger
                 onClick={() => {
@@ -430,7 +431,7 @@ export function ThreadRow({
         </div>
       )}
       {onNewChat && (
-        <button
+        <button data-offer="app/chats.newChat"
           onClick={onNewChat}
           data-el="place-new-chat"
           data-place={entry.id}
@@ -448,7 +449,7 @@ export function ThreadRow({
           <ChatItem key={c.id} chat={c} onOpen={() => onOpenChat?.(c.id, c.title)} deleteOne={deleteOne} />
         ))}
         {vis.next && (
-          <button
+          <button data-offer="app/chats.showMore"
             data-el="place-show-more"
             data-place={entry.id}
             onClick={() => chatLevels.set(entry.id, nextChatLevel(chats.length, level))}
@@ -536,7 +537,7 @@ function Spinner({ className }: { className?: string }) {
 /** One line of a row's right-click menu. */
 function MenuItem({ el, danger, onClick, children }: { el: string; danger?: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button
+    <button data-offer-exempt="a UI primitive: each use names its own offer"
       data-el={el}
       onClick={onClick}
       className={cn("w-full text-left px-2 py-1.5 rounded-md", danger ? "text-destructive hover:bg-destructive/10" : "text-foreground/85 hover:bg-accent hover:text-foreground")}
@@ -593,7 +594,7 @@ function ChatItem({ chat: c, onOpen, deleteOne }: { chat: PanelChat; onOpen: () 
   if (renaming)
     return (
       <div className="pl-9 pr-3 py-0.5" data-el="chat-rename" data-chat={c.id}>
-        <input
+        <input data-offer="box:chats.rename"
           autoFocus
           value={draft}
           disabled={busy}
@@ -625,7 +626,7 @@ function ChatItem({ chat: c, onOpen, deleteOne }: { chat: PanelChat; onOpen: () 
             : undefined
         }
       >
-        <button
+        <button data-offer="app/chats.open"
           data-el="place-chat"
           data-chat={c.id}
           onClick={onOpen}
@@ -652,7 +653,7 @@ function ChatItem({ chat: c, onOpen, deleteOne }: { chat: PanelChat; onOpen: () 
             style={{ left: Math.max(24, menu.x), top: menu.y + 4 }}
             className="absolute z-30 min-w-[150px] p-1 rounded-lg border border-border bg-popover shadow-lg text-[12px]"
           >
-            <MenuItem
+            <MenuItem data-offer="box:chats.rename"
               el="chat-menu-rename"
               onClick={() => {
                 setMenu(null);
@@ -666,7 +667,7 @@ function ChatItem({ chat: c, onOpen, deleteOne }: { chat: PanelChat; onOpen: () 
             {deletable && (
               <>
                 <div className="my-1 mx-0.5 h-px bg-border" />
-                <MenuItem
+                <MenuItem data-offer="box:chats.delete"
                   el="chat-menu-delete"
                   danger
                   onClick={() => {
@@ -689,10 +690,10 @@ function ChatItem({ chat: c, onOpen, deleteOne }: { chat: PanelChat; onOpen: () 
           </div>
           {err && <div className="mt-1 text-destructive text-[11.5px]">Not deleted: {err}</div>}
           <div className="mt-2 flex justify-end gap-1">
-            <button data-el="chat-delete-cancel" disabled={busy} onClick={() => setConfirm(false)} className="h-6 px-2.5 rounded text-[11.5px] text-muted-foreground hover:bg-accent hover:text-foreground">
+            <button data-offer="box:chats.delete" data-el="chat-delete-cancel" disabled={busy} onClick={() => setConfirm(false)} className="h-6 px-2.5 rounded text-[11.5px] text-muted-foreground hover:bg-accent hover:text-foreground">
               Cancel
             </button>
-            <button data-el="chat-delete-yes" disabled={busy} autoFocus onClick={() => void yes()} className="h-6 px-2.5 rounded text-[11.5px] text-destructive hover:bg-destructive/10 disabled:opacity-60">
+            <button data-offer="box:chats.delete" data-el="chat-delete-yes" disabled={busy} autoFocus onClick={() => void yes()} className="h-6 px-2.5 rounded text-[11.5px] text-destructive hover:bg-destructive/10 disabled:opacity-60">
               {busy ? "Deleting…" : "Delete"}
             </button>
           </div>
@@ -711,15 +712,15 @@ export function DeleteProjectConfirm({ name, busy, onCancel, onYes }: { name: st
         Delete project <span className="font-medium">{name}</span>? Git keeps a copy either way.
       </div>
       <div className="mt-2 flex flex-col gap-1">
-        <button data-el="project-delete-yes" disabled={busy} autoFocus onClick={() => onYes(false)} className="min-h-6 py-1 px-2 rounded text-left leading-snug text-[11.5px] hover:bg-accent disabled:opacity-60">
+        <button data-offer="box:chats.deleteProject" data-el="project-delete-yes" disabled={busy} autoFocus onClick={() => onYes(false)} className="min-h-6 py-1 px-2 rounded text-left leading-snug text-[11.5px] hover:bg-accent disabled:opacity-60">
           Remove the conversation, keep the folder
         </button>
-        <button data-el="project-delete-everything" disabled={busy} onClick={() => onYes(true)} className="min-h-6 py-1 px-2 rounded text-left leading-snug text-[11.5px] text-destructive hover:bg-accent disabled:opacity-60">
+        <button data-offer="box:chats.deleteProject" data-el="project-delete-everything" disabled={busy} onClick={() => onYes(true)} className="min-h-6 py-1 px-2 rounded text-left leading-snug text-[11.5px] text-destructive hover:bg-accent disabled:opacity-60">
           Delete everything, the folder too
         </button>
       </div>
       <div className="mt-1 flex justify-end">
-        <button data-el="project-delete-cancel" disabled={busy} onClick={onCancel} className="h-6 px-2.5 rounded text-[11.5px] text-muted-foreground hover:bg-accent hover:text-foreground">
+        <button data-offer="box:chats.deleteProject" data-el="project-delete-cancel" disabled={busy} onClick={onCancel} className="h-6 px-2.5 rounded text-[11.5px] text-muted-foreground hover:bg-accent hover:text-foreground">
           {busy ? "Deleting…" : "Cancel"}
         </button>
       </div>

@@ -100,7 +100,7 @@ describe("the box's own state, with no device online", () => {
     expect(bad.ok).toBe(false);
     expect(bad.text).toMatch(/needs text\. Nothing was run/);
     const none = await rig.backend.h.toolCall(tid, "PluginRead", { plugin: "box:nope" });
-    expect(none.text).toMatch(/no box state "box:nope" \(the box offers: box:settings, box:notes, box:pages, box:workspace, box:history, box:jobs, box:chats, box:links/);
+    expect(none.text).toMatch(/no box state "box:nope" \(the box offers: box:settings, box:notes, box:alerts, box:pages, box:workspace, box:history, box:jobs, box:chats, box:links/);
   });
 
   it("box:logs: the newest lines, with credentials cut out", async () => {

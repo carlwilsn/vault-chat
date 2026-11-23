@@ -4,6 +4,7 @@
 // "Open in viewer" control (the page opens in the file viewer like any file). The page's bytes come the way ChatImage's do (box
 // conversation: the box's file route; local: the vault on disk).
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { inlineChanged, registerInlineFrame } from "./inlineFrames";
 import { invoke } from "@tauri-apps/api/core";
 import { Maximize2, Minimize2, PanelRight } from "lucide-react";
 import { useStore } from "./store";
@@ -135,7 +136,7 @@ export type InlineHtmlChoices = {
 /** The one-line row that stands for a page in the chat: opens (or brings forward) the page in the viewer. */
 function OpenInViewerRow({ name, onOpen }: { name: string; onOpen: () => void }) {
   return (
-    <button type="button" onClick={onOpen} className="flex items-center gap-1.5 my-2 px-2 py-1 rounded-md border border-border/60 bg-muted/40 text-[11.5px] text-muted-foreground hover:text-foreground max-w-full" data-el="chat-html-in-viewer" title="Bring it to the front in the viewer">
+    <button data-offer="app/chat-rows.inline" type="button" onClick={onOpen} className="flex items-center gap-1.5 my-2 px-2 py-1 rounded-md border border-border/60 bg-muted/40 text-[11.5px] text-muted-foreground hover:text-foreground max-w-full" data-el="chat-html-in-viewer" title="Bring it to the front in the viewer">
       <PanelRight className="h-3 w-3 shrink-0" /> <span className="truncate">Open in viewer: {name}</span>
     </button>
   );
@@ -243,6 +244,34 @@ function LiveInlineHtml({ src, alt, sizeHint, placement = "inline", foldInViewer
   const title = alt || name;
   // A vault page is a plugin: stopped by the supervisor (src/pluginSupervisorApp.ts), its copy here is taken down too.
   const desired = usePluginDesired(pagePath);
+  // What it shows and its buttons, for app/chat-rows' inline state and action (src/inlineFrames.ts).
+  const idRef = useRef(`html:${Math.random().toString(36).slice(2, 9)}`);
+  const liveRef = useRef({ src, title, big, drag, inViewer, placement, live, vaultPath });
+  liveRef.current = { src, title, big, drag, inViewer, placement, live, vaultPath };
+  useEffect(
+    () =>
+      registerInlineFrame({
+        id: idRef.current,
+        kind: "html",
+        state: () => {
+          const l = liveRef.current;
+          return { page: l.src, title: l.title, larger: l.big, height: l.drag, inViewer: l.inViewer || l.placement === "viewer" };
+        },
+        act: {
+          larger: (a) => {
+            setBig(a.on !== false);
+            setTimeout(() => focusFrame(wrapRef.current?.querySelector("iframe") ?? null), 0);
+          },
+          resize: (a) => setDrag(Math.max(HTML_MIN_FRAME_H, Math.min(HTML_MAX_H, Math.round(Number(a.height))))),
+          openInViewer: () => {
+            const l = liveRef.current;
+            openInViewer(l.src, (l.live?.media?.size ? l.live.raw : l.live?.html) ?? "", l.vaultPath);
+          },
+        },
+      }),
+    [],
+  );
+  useEffect(() => inlineChanged());
   if (pagePath !== null && desired?.state === "stopped") {
     return (
       <span className="block my-2 rounded-md border border-border/60 bg-muted/40" data-el="chat-html-wrap">
@@ -287,10 +316,10 @@ function LiveInlineHtml({ src, alt, sizeHint, placement = "inline", foldInViewer
       <span className="flex items-center gap-2 px-2 py-1 border-b border-border/60 bg-muted/40 text-[11px] text-muted-foreground shrink-0">
         <span className="truncate flex-1" title={src}>{title}</span>
         {!inProcess && <span className="hidden sm:inline opacity-70 whitespace-nowrap" data-el="chat-html-hint">Click the page, then use the keyboard</span>}
-        {!inProcess && <button type="button" onClick={toggleBig} className="inline-flex items-center gap-1 hover:text-foreground" data-el="chat-html-larger" title={big ? "Back to the chat" : "Show the page large"}>
+        {!inProcess && <button data-offer="app/chat-rows.inline" type="button" onClick={toggleBig} className="inline-flex items-center gap-1 hover:text-foreground" data-el="chat-html-larger" title={big ? "Back to the chat" : "Show the page large"}>
           {big ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />} {big ? "Smaller" : "Larger"}
         </button>}
-        {viewerButton && <button type="button" onClick={() => openInViewer(src, (live.media?.size ? live.raw : live.html) ?? "", vaultPath)} className="inline-flex items-center gap-1 hover:text-foreground" data-el="chat-html-viewer" title="Open in the viewer">
+        {viewerButton && <button data-offer="app/chat-rows.inline" type="button" onClick={() => openInViewer(src, (live.media?.size ? live.raw : live.html) ?? "", vaultPath)} className="inline-flex items-center gap-1 hover:text-foreground" data-el="chat-html-viewer" title="Open in the viewer">
           <PanelRight className="h-3 w-3" /> Open in viewer
         </button>}
       </span>
@@ -321,7 +350,7 @@ export const InlineHtmlFrame = memo(function InlineHtmlFrame({ src, alt, sizeHin
       {newest ? (
         <LiveInlineHtml src={src} alt={alt} sizeHint={sizeHint} {...choices} />
       ) : (
-        <button type="button" onClick={() => newestEmbed(file)?.scrollIntoView({ block: "center", behavior: "smooth" })} className="flex items-center gap-1.5 my-2 px-2 py-1 rounded-md border border-border/60 bg-muted/40 text-[11.5px] text-muted-foreground hover:text-foreground max-w-full" data-el="chat-html-older" title="A newer copy of this page is further down: that one is live">
+        <button data-offer="app/chat-rows.scrollTo" type="button" onClick={() => newestEmbed(file)?.scrollIntoView({ block: "center", behavior: "smooth" })} className="flex items-center gap-1.5 my-2 px-2 py-1 rounded-md border border-border/60 bg-muted/40 text-[11.5px] text-muted-foreground hover:text-foreground max-w-full" data-el="chat-html-older" title="A newer copy of this page is further down: that one is live">
           <PanelRight className="h-3 w-3 shrink-0" /> <span className="truncate">{alt || name} · older version, go to the latest</span>
         </button>
       )}

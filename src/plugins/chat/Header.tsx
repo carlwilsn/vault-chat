@@ -55,7 +55,7 @@ export function ChatMenu({ align = "right" }: { align?: "left" | "right" }) {
   const row = "flex items-center gap-2 w-full text-left px-3 py-1.5 text-[12px] hover:bg-accent transition-colors";
   return (
     <div className="relative pointer-events-auto" ref={ref}>
-      <button
+      <button data-offer="app/chat.openMenu"
         type="button"
         data-el="chat-menu-button"
         aria-label="Chat menu"
@@ -68,7 +68,7 @@ export function ChatMenu({ align = "right" }: { align?: "left" | "right" }) {
       </button>
       {open && (
         <div data-el="chat-menu" className={`absolute top-full mt-1 ${align === "right" ? "right-0" : "left-0"} w-56 rounded-lg border border-border bg-card shadow-lg z-50 py-1`}>
-          <button
+          <button data-offer="app/chat.openMemory"
             type="button"
             data-el="chat-menu-memory"
             className={row}
@@ -81,7 +81,7 @@ export function ChatMenu({ align = "right" }: { align?: "left" | "right" }) {
           </button>
           {items.length > 0 && <div className="my-1 h-px bg-border/60" />}
           {items.map((i) => (
-            <button
+            <button data-offer="app/chat.clickItem"
               key={i.key}
               type="button"
               data-el="chat-menu-item"

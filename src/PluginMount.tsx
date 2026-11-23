@@ -14,6 +14,7 @@
 // PlaceMount: a place of the app (src/places.ts PLACES) mounts the parts the table puts there, in order. The built-in
 // modules are registered by the files that hold the places (src/places.ts placeModule).
 import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { notePartFailed } from "./partFailures";
 import type { Desired } from "./pluginSupervisor";
 import { hostTheme, mountPlugin, type AppPluginSource, type PluginHandle } from "./mountHost";
 import { APP_PLUGINS, type AppPluginInfo } from "./appPlugins";
@@ -113,6 +114,8 @@ export function AppPluginMount({ plugin, module, code, props, fallback, copyKind
   };
   // Not known yet (the vault's on/off records not in): nothing is mounted, so a plugin turned off never flashes on;
   // a core part with a fallback shows its plain fallback meanwhile (`pending`), so its place is never empty.
+  // A failed part's Reload, for app/titlebar's crashed state and reloadPart (src/partFailures.ts).
+  useEffect(() => (fallback && failed !== null ? notePartFailed(plugin.id, failed, retry) : undefined), [failed, plugin.id, !!fallback]);
   if (desired === null) return fallback ? <>{fallback({ off: null, error: null, pending: true, retry })}</> : null;
   if (desired.state === "stopped") return fallback ? <>{fallback({ off: desired, error: null, pending: false, retry })}</> : null;
   if (desired.state !== "running") return null;

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type Poin
 import { Play, Pause, Volume2, VolumeX, Maximize2, Minimize2 } from "lucide-react";
 import { cn } from "./lib/utils";
 import { hit } from "./shortcuts";
+import { registerVideo, videoChanged } from "./videoState";
 
 // The app's own video player: the browser's default controls (a different
 // look in every webview) are replaced by a quiet bar in vault-chat's style,
@@ -123,8 +124,11 @@ export function VideoPlayer({
   onError,
   extra,
   idleMs = VIDEO_IDLE_MS,
+  stateId,
 }: {
   src: string;
+  /** Who it is in the videos state (src/videoState.ts): the viewer's vault path; a chat's video: its address. */
+  stateId?: string;
   title?: string;
   /** The viewer: the video takes the whole pane. Without it (a chat), it is as wide as its message allows. */
   fill?: boolean;
@@ -269,6 +273,28 @@ export function VideoPlayer({
     else void w.requestFullscreen?.().catch(() => {});
   };
 
+  // What it shows and its controls, for app/viewer's videos state and its video action (the same toggle, seek, mute
+  // and full screen as the bar).
+  const live = useRef({ toggle, seekTo, toggleMute, toggleFull });
+  live.current = { toggle, seekTo, toggleMute, toggleFull };
+  useEffect(
+    () =>
+      registerVideo({
+        id: stateId ?? src,
+        where: fill ? "viewer" : "chat",
+        now: () => {
+          const v = video.current;
+          return { time: v?.currentTime ?? 0, duration: v && Number.isFinite(v.duration) ? v.duration : 0, playing: !!v && !v.paused && !v.ended, muted: !!v?.muted, fullscreen: document.fullscreenElement === wrap.current };
+        },
+        toggle: () => live.current.toggle(),
+        seekTo: (s) => live.current.seekTo(s),
+        toggleMute: () => live.current.toggleMute(),
+        toggleFull: () => live.current.toggleFull(),
+      }),
+    [stateId, src, fill],
+  );
+  useEffect(() => videoChanged(), [playing, muted, full, duration]);
+
   const onKey = (e: KeyboardEvent<HTMLSpanElement>) => {
     wake();
     const onButton = (e.target as HTMLElement).closest("button");
@@ -305,7 +331,7 @@ export function VideoPlayer({
         className,
       )}
     >
-      <video
+      <video data-offer="app/viewer.video"
         ref={video}
         src={src}
         title={title}
@@ -320,6 +346,7 @@ export function VideoPlayer({
         }}
         onPause={() => setPlaying(false)}
         onEnded={() => setPlaying(false)}
+        onSeeked={() => videoChanged()}
         onTimeUpdate={(e) => {
           if (!dragging.current) setTime(e.currentTarget.currentTime);
         }}
@@ -343,7 +370,7 @@ export function VideoPlayer({
           hidden && "pointer-events-none opacity-0",
         )}
       >
-        <button type="button" className={barButton} onClick={toggle} title={playing ? "Pause" : "Play"} aria-label={playing ? "Pause" : "Play"} data-el="video-play">
+        <button data-offer="app/viewer.video" type="button" className={barButton} onClick={toggle} title={playing ? "Pause" : "Play"} aria-label={playing ? "Pause" : "Play"} data-el="video-play">
           {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
         </button>
         <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground" data-el="video-time">
@@ -379,11 +406,11 @@ export function VideoPlayer({
             style={{ left: `${at * 100}%` }}
           />
         </span>
-        <button type="button" className={barButton} onClick={toggleMute} title={muted ? "Unmute" : "Mute"} aria-label={muted ? "Unmute" : "Mute"} data-el="video-mute">
+        <button data-offer="app/viewer.video" type="button" className={barButton} onClick={toggleMute} title={muted ? "Unmute" : "Mute"} aria-label={muted ? "Unmute" : "Mute"} data-el="video-mute">
           {muted ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
         </button>
         {extra}
-        <button type="button" className={barButton} onClick={toggleFull} title={full ? "Exit full screen" : "Full screen"} aria-label={full ? "Exit full screen" : "Full screen"} data-el="video-full">
+        <button data-offer="app/viewer.video" type="button" className={barButton} onClick={toggleFull} title={full ? "Exit full screen" : "Full screen"} aria-label={full ? "Exit full screen" : "Full screen"} data-el="video-full">
           {full ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
         </button>
       </span>

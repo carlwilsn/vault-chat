@@ -13,9 +13,19 @@ import { FullscreenChat } from "./FullscreenChat";
 import { NotePopup } from "./NotePopup";
 import { VoiceSlot } from "./VoiceSlot";
 import { PlaceMount } from "./PluginMount";
+import { registerOuterResize, sashMoved } from "./layoutOps";
 import { placeModule } from "./places";
 import { VaultPlugins } from "./VaultPluginHost";
-import { ASK_PLUGIN, CONTEXT_PLUGIN, ELEVENLABS_VOICE_PLUGIN, NOTES_PLUGIN } from "./appPlugins";
+import { ASK_PLUGIN, CHAT_PLUGIN, CHAT_ROWS_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CONTEXT_PLUGIN, ELEVENLABS_VOICE_PLUGIN, FILETREE_PLUGIN, NOTES_PLUGIN, SETTINGS_PLUGIN, TITLEBAR_PLUGIN, VAULTS_PLUGIN, VIEWER_PLUGIN } from "./appPlugins";
+import * as titlebarPlugin from "./plugins/titlebar";
+import * as settingsPlugin from "./plugins/settings";
+import * as vaultsPlugin from "./plugins/vaults";
+import * as fileTreePlugin from "./plugins/filetree";
+import * as viewerPlugin from "./plugins/viewer";
+import * as chatsPlugin from "./plugins/chats";
+import * as chatPlugin from "./plugins/chat";
+import * as chatRowsPlugin from "./plugins/chat-rows";
+import * as composerPlugin from "./plugins/composer";
 import * as notesPlugin from "./plugins/notes";
 import * as elevenLabsVoicePlugin from "./plugins/elevenlabs-voice";
 import * as contextPlugin from "./plugins/context";
@@ -51,6 +61,16 @@ placeModule(NOTES_PLUGIN, () => notesPlugin);
 placeModule(CONTEXT_PLUGIN, () => contextPlugin);
 placeModule(ASK_PLUGIN, () => askPlugin);
 placeModule(ELEVENLABS_VOICE_PLUGIN, () => elevenLabsVoicePlugin);
+// Every part's offers, headless (src/places.ts "offers"): reachable whatever the layout.
+placeModule(TITLEBAR_PLUGIN, () => titlebarPlugin.offers, "offers");
+placeModule(SETTINGS_PLUGIN, () => settingsPlugin.offers, "offers");
+placeModule(VAULTS_PLUGIN, () => vaultsPlugin.offers, "offers");
+placeModule(FILETREE_PLUGIN, () => fileTreePlugin.offers, "offers");
+placeModule(VIEWER_PLUGIN, () => viewerPlugin.offers, "offers");
+placeModule(CHATS_PLUGIN, () => chatsPlugin.offers, "offers");
+placeModule(CHAT_PLUGIN, () => chatPlugin.offers, "offers");
+placeModule(CHAT_ROWS_PLUGIN, () => chatRowsPlugin.offers, "offers");
+placeModule(COMPOSER_PLUGIN, () => composerPlugin.offers, "offers");
 
 export default function App() {
   const toggleMode = useStore((s) => s.toggleMode);
@@ -113,6 +133,8 @@ export default function App() {
   const fitWidth = useMemo(() => computeFitWidth(files), [files]);
   const leftMax = Math.max(fitWidth, 600);
   const layoutRef = useRef<AllotmentHandle>(null);
+  // The sashes' own resize, for box:workspace's resize (src/layoutOps.ts): what dragging them does.
+  useEffect(() => registerOuterResize((sizes) => layoutRef.current?.resize(sizes)), []);
   useEffect(() => {
     // preferredSize updates the library's preference, not its current width.
     // Refit through its native API without replacing the conversation owner.
@@ -471,6 +493,7 @@ export default function App() {
           (src/plugins/notes), the shared context (src/plugins/context: draws nothing) and the Ctrl+K / Ctrl+L box's
           offers (src/plugins/ask: draws nothing; each box is its `prompt` part, src/InlineEditPrompt.tsx). */}
       <PlaceMount place="overlay" />
+      <PlaceMount place="offers" />
       {/* Plugins that are code files in .vault-chat/plugins: live as they are added, changed or removed. */}
       <VaultPlugins />
       {/* Voice: a plugin (src/plugins/voice): its text box here, its controls in the title bar and the composer. */}
@@ -522,7 +545,7 @@ export default function App() {
             Refit file-tree widths through Allotment, not a React remount. A vault
             key here remounted ChatPane, discarded its draft and reader scroll,
             and rebuilt the entire historical transcript for a file operation. */}
-        <Allotment ref={layoutRef} key={popoutOpen ? "pop" : "dock"} proportionalLayout={false}>
+        <Allotment ref={layoutRef} key={popoutOpen ? "pop" : "dock"} proportionalLayout={false} onChange={sashMoved}>
           <Allotment.Pane preferredSize={fitWidth} minSize={160} maxSize={leftMax} visible={!leftCollapsed} snap>
             <FileTree />
           </Allotment.Pane>

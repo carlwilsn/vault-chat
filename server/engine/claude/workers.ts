@@ -170,6 +170,17 @@ export function formatWorker(r: WorkerRow, now: number): string {
   return lines.filter(Boolean).join("\n");
 }
 
+/** A session's own directories, in any project folder of the config dir. */
+export function sessionDirs(configDir: string, sessionId: string): string[] {
+  const root = join(configDir, "projects");
+  if (!sessionId || !existsSync(root)) return [];
+  try {
+    return readdirSync(root).map((p) => join(root, p, sessionId)).filter((d) => existsSync(d));
+  } catch {
+    return [];
+  }
+}
+
 /** The subagents/ directories of a session, in any project folder of the config dir (the folder name encodes a cwd). */
 export function subagentDirs(configDir: string, sessionId: string): string[] {
   const root = join(configDir, "projects");

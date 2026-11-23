@@ -32,7 +32,7 @@ export function SettingsFallback({ info }: { info: PluginFallbackInfo }) {
   return (
     <div className="h-full flex flex-col bg-card border-l border-border" data-el="settings-fallback">
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
-        <Button variant="ghost" size="icon" onClick={() => setShowSettings(false)} data-el="settings-back" title="Back">
+        <Button data-offer="app/settings.close" variant="ghost" size="icon" onClick={() => setShowSettings(false)} data-el="settings-back" title="Back">
           <ArrowLeft className="h-3.5 w-3.5" />
         </Button>
         <span className="text-[13px] font-semibold">Settings</span>
@@ -43,12 +43,12 @@ export function SettingsFallback({ info }: { info: PluginFallbackInfo }) {
         ) : (
           <div data-el="settings-fallback-error" className="flex items-center gap-2 text-[12px] text-muted-foreground">
             <span className="truncate" title={info.error ?? ""}>Settings stopped; ask the agent to change a setting until it is back.</span>
-            <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
+            <button data-offer="app/titlebar.reloadPart" type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
               Reload
             </button>
           </div>
         )}
-        <button
+        <button data-offer="app/settings.openShortcuts"
           onClick={openShortcutSheet}
           className="w-full flex items-center justify-between rounded px-2 py-1.5 -mx-2 text-[12px] text-foreground/90 hover:bg-accent/60"
           data-el="settings-shortcuts"

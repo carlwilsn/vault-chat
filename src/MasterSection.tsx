@@ -4,7 +4,8 @@
 import { useEffect, useState } from "react";
 import { useStore } from "./store";
 import { Button, Input } from "./ui";
-import { masterPath, suggestedMaster, setMasterPath, localVaults, localProjects, boxMasterInfo, syncMasterFolder, joinPath, type BoxMasterInfo } from "./master";
+import { masterPath, suggestedMaster, localVaults, localProjects, boxMasterInfo, joinPath, type BoxMasterInfo } from "./master";
+import { setFolder } from "./settingsBox";
 import { subscribeBoxSync, boxSyncStates, type BoxSyncState } from "./vaultSync";
 
 function SyncDot({ st }: { st: BoxSyncState | undefined }) {
@@ -44,12 +45,8 @@ export function MasterSection() {
 
   const save = async () => {
     setBusy(true);
-    const r = await setMasterPath(draft);
-    if ("error" in r) setMsg(r.error);
-    else {
-      const s = await syncMasterFolder();
-      setMsg(s.errors.length ? s.errors.join("; ") : s.made.length ? `Brought from the box: ${s.made.join(", ")}.` : null);
-    }
+    // The one set (src/settingsBox.ts), as app/settings' setFolder.
+    setMsg(await setFolder(draft));
     await refresh();
     setBusy(false);
   };
@@ -67,7 +64,7 @@ export function MasterSection() {
       </div>
       <div className="flex gap-1.5">
         <Input data-el="master-path" value={draft} onChange={(e) => setDraft(e.target.value)} className="h-7 text-[12px]" />
-        <Button size="sm" data-el="master-save" disabled={busy || !draft.trim() || draft.trim() === mine} onClick={() => void save()}>
+        <Button data-offer="app/settings.setFolder" size="sm" data-el="master-save" disabled={busy || !draft.trim() || draft.trim() === mine} onClick={() => void save()}>
           {mine ? "Change" : "Set"}
         </Button>
       </div>

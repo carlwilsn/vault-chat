@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { COVERAGE, OTHER_STATE, UNMAPPED_CONTROLS, coveragePercent } from "../../src/agencyCoverage";
+import { COVERAGE, EXEMPT_REASONS, OTHER_STATE, coveragePercent } from "../../src/agencyCoverage";
 import { controlsIn, uiControlFiles } from "./agencyControls";
 import { APP_PLUGINS } from "../../src/appPlugins";
 
@@ -42,8 +42,9 @@ describe("everything on screen has a line saying how the agent reaches it", () =
 
   it("the share covered is counted (a gap counts half), and only rises", () => {
     // Raise these floors when a gap closes; a change that lowers them must say why here.
-    expect(coveragePercent(COVERAGE, "src/")).toBeGreaterThanOrEqual(80);
-    expect(coveragePercent(COVERAGE, "phone/")).toBeGreaterThanOrEqual(50);
+    expect(coveragePercent(COVERAGE, "src/")).toBe(100);
+    expect(coveragePercent(COVERAGE, "phone/")).toBe(100);
+    expect(Object.values(COVERAGE).filter((c) => "screenOnly" in c || ("gap" in c && c.gap)), "no screen-only line and no gap").toEqual([]);
   });
 });
 
@@ -53,17 +54,12 @@ describe("everything on screen has a line saying how the agent reaches it", () =
 describe("every new control on screen names the offer that reaches it", () => {
   const all = uiControlFiles(ROOT).flatMap((f) => controlsIn(ROOT, f));
 
-  it("no file has more unmapped controls than the ratchet allows", () => {
-    const over: string[] = [];
-    const counts = new Map<string, number>();
-    for (const c of all) if (!c.offer && !c.exempt) counts.set(c.file, (counts.get(c.file) ?? 0) + 1);
-    for (const [f, n] of counts) if (n > (UNMAPPED_CONTROLS[f] ?? 0)) over.push(`${f}: ${n} controls without data-offer (allowed ${UNMAPPED_CONTROLS[f] ?? 0}); e.g. ${all.filter((c) => c.file === f && !c.offer && !c.exempt).slice(-1)[0]!.tag}`);
-    expect(over, "a new control must carry data-offer=\"<part>.<action>\" or data-offer-exempt=\"<why>\"").toEqual([]);
+  it("every control names the model action it runs, or one of the allowed exemptions (no ratchet: none may bypass)", () => {
+    const bare = all.filter((c) => !c.offer && !c.exempt).map((c) => `${c.file}: ${c.tag}`);
+    expect(bare, "a control must carry data-offer=\"app/<part>.<action>\" (or box:<noun>.<action>) or data-offer-exempt=\"<an EXEMPT_REASONS line>\"").toEqual([]);
+    const odd = all.filter((c) => c.exempt && !EXEMPT_REASONS.includes(c.exempt)).map((c) => `${c.file}: ${c.exempt}`);
+    expect(odd, "an exemption must be one of src/agencyCoverage.ts EXEMPT_REASONS").toEqual([]);
   });
 
-  it("the ratchet only names files that exist (lower or drop a number when controls go)", () => {
-    const files = new Set(uiControlFiles(ROOT));
-    expect(Object.keys(UNMAPPED_CONTROLS).filter((f) => !files.has(f))).toEqual([]);
-  });
   // A control's data-offer is checked against the offers the parts really build: test/harness/offerParity.test.ts.
 });

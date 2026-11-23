@@ -32,7 +32,7 @@ export function ChangeLine({ change }: { change: ChangeRef }) {
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5 ml-1.5 align-middle" data-el="change-line" data-vc-state={s.state}>
       {s.state === "applied" && (
-        <button type="button" className={btn} data-el="change-undo" disabled={busy} onClick={() => void undo()}>
+        <button data-offer-exempt="Undo of a change line (left out of report 28: Undo is the change flow's own)" type="button" className={btn} data-el="change-undo" disabled={busy} onClick={() => void undo()}>
           Undo
         </button>
       )}

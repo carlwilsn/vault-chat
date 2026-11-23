@@ -37,10 +37,10 @@ export function AskFallback({ info, props }: { info: PluginFallbackInfo; props: 
       style={{ left: Math.max(8, Math.min(a.left, window.innerWidth - 368)), top: Math.max(8, Math.min(a.bottom + 6, window.innerHeight - 60)) }}
     >
       <span className="flex-1 min-w-0 truncate text-muted-foreground" title={info.error ?? ""}>The {shortcutHint("edit.inline")} box stopped.</span>
-      <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
+      <button data-offer="app/titlebar.reloadPart" type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
         Reload
       </button>
-      <button type="button" data-el="ask-fallback-close" onClick={props.onCancel} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
+      <button data-offer="app/ask.close" type="button" data-el="ask-fallback-close" onClick={props.onCancel} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
         Close
       </button>
     </div>,

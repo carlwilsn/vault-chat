@@ -120,3 +120,17 @@ export function installFakeTauri(vault: string): FakeTauri {
   };
   return state;
 }
+
+/** A drawn part and its plugin's headless offers (src/places.ts "offers") in one mount, as the app has both on screen. */
+export function withOffers(drawn: { mount: (el: HTMLElement, api: any) => unknown }, plugin: { offers?: { mount: (el: HTMLElement, api: any) => unknown } }) {
+  return {
+    mount(el: HTMLElement, api: any) {
+      const a = plugin.offers?.mount(el, api);
+      const b = drawn.mount(el, api);
+      return () => {
+        if (typeof a === "function") a();
+        if (typeof b === "function") b();
+      };
+    },
+  };
+}

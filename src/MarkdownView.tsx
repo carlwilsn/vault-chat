@@ -37,7 +37,7 @@ export function PaneFallback({ info, paneId }: { info: PluginFallbackInfo; paneI
       <div className="shrink-0 flex items-center gap-2 px-6 py-2.5 border-b border-border/60 text-[11px] text-muted-foreground">
         <span className="font-mono truncate flex-1 min-w-0">{file ? file.split("/").slice(-3).join(" › ") : "No file open"}</span>
         <span className="truncate" title={info.error ?? ""}>The viewer stopped; a plain view until it is back.</span>
-        <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
+        <button data-offer="app/titlebar.reloadPart" type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
           Reload
         </button>
       </div>

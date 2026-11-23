@@ -30,11 +30,11 @@ import { chatMenuItemNamed, chatMenuItems, subscribeChatMenuItems, type ChatMenu
 import { taskActivity, taskElapsed, taskName, taskState } from "../../backgroundTasks";
 import { ongoingText, ongoingWork } from "../../ongoingWork";
 import { uiChoice } from "../../uiChoices";
-import { boxSubagent } from "../../boxChat";
+import { boxRetry, boxSubagent } from "../../boxChat";
 import { BarTitle, DockHeader } from "./Header";
 import { Transcript, openBoxSettings } from "./Transcript";
 import { Frame } from "./Frame";
-import { emitChatEvent, memoryTarget, onChatEvent, openChatMemory, paneScroll, setMenuOpen, useChatMenu } from "./model";
+import { emitChatEvent, memoryTarget, onChatEvent, onPaneScroll, openChatMemory, paneScroll, setMenuOpen, useChatMenu } from "./model";
 
 const shownItem = (i: ChatMenuItem) => ({ key: i.key, id: i.id, by: i.by, label: i.label, ...(i.title ? { title: i.title } : {}) });
 const OPEN = { type: "object", properties: { open: { type: "boolean", description: "true: open it, false: close it; left out: toggle." } }, additionalProperties: false };
@@ -66,9 +66,14 @@ export function chatOffers() {
   };
   const TASK = { type: "object", properties: { id: { type: "string", description: "The task's id (tasks: id)." } }, required: ["id"], additionalProperties: false };
   return {
+    // Fullscreen and its sidebar are box:workspace (fullscreenChat, chatSidebar): one route with the layout's other ops.
+    watch: (fn: () => void) => {
+      const offs = [useStore.subscribe(fn), useChatMenu.subscribe(fn), subscribeChatMenuItems(fn), onPaneScroll(fn), onChatEvent(() => fn())];
+      return () => offs.forEach((f) => f());
+    },
     state: {
       chat: {
-        description: "The open chat: id, title, kind (main, project, separate, older), project (its slug or null), busy (the agent is working), messages (how many).",
+        description: "The open chat: id, title, kind (main, project, separate, older), project (its slug or null), busy (the agent is working), messages (how many), cost (its spend in USD as the header shows it), retry (its last turn ended on a failed request: Try again is shown).",
         read: () => {
           const s = S();
           const c = active();
@@ -80,6 +85,8 @@ export function chatOffers() {
             project: c?.project ?? null,
             busy: s.busy,
             messages: s.messages.length,
+            cost: c?.costUsd ?? null,
+            retry: !![...s.messages].reverse().find((m) => m.role !== "user" || !m.waiting)?.retry,
           };
         },
       },
@@ -210,34 +217,21 @@ export function chatOffers() {
         args: { type: "object", properties: { id: { type: "string", description: "The task's id (tasks: id)." }, text: { type: "string" } }, required: ["id", "text"], additionalProperties: false },
         run: (a: Record<string, unknown>) => control(a.id, "steer", String(a.text ?? "")),
       },
-      setFullscreen: {
-        description: "Enter or leave the fullscreen chat in the main window (as Ctrl+Shift+F); on left out: toggle. Not while the chat is popped out.",
-        args: { type: "object", properties: { on: { type: "boolean" } }, additionalProperties: false },
-        run: (a: Record<string, unknown>) => {
-          const s = S();
-          if (isPopout || s.popoutOpen) throw new Error("the chat is popped out: its window is the fullscreen chat");
-          const want = typeof a.on === "boolean" ? a.on : !s.chatFullscreen;
-          if (want !== s.chatFullscreen) s.toggleChatFullscreen();
-          emitChatEvent("fullscreenChanged", { fullscreen: want });
-          return { fullscreen: want };
-        },
-      },
-      setSidebar: {
-        description: "Open or close the fullscreen chat's chats sidebar (as Ctrl+B there); open left out: toggle. Kept as Carl's chatSidebar setting.",
-        args: OPEN,
-        run: (a: Record<string, unknown>) => {
-          const s = S();
-          const want = typeof a.open === "boolean" ? a.open : !s.chatSidebarOpen;
-          if (want !== s.chatSidebarOpen) s.toggleChatSidebar();
-          emitChatEvent("sidebarChanged", { open: want });
-          return { sidebar: want };
-        },
-      },
       openBoxSettings: {
         description: "Open Settings at its Box section (the no-box screen's button).",
         run: () => {
           openBoxSettings();
           return { open: true };
+        },
+      },
+      retry: {
+        description: "Try again on a turn that ended on a failed request (its notice's Try again): a new turn that continues.",
+        run: async () => {
+          const s = S();
+          const last = [...s.messages].reverse().find((m) => m.role !== "user" || !m.waiting);
+          if (!last?.retry) throw new Error("the last turn did not end on a failed request (no Try again is shown)");
+          if (!(await boxRetry(s.activeConversationId))) throw new Error("the box chat is not on");
+          return { retrying: s.activeConversationId };
         },
       },
     },
@@ -251,14 +245,14 @@ export function chatOffers() {
       olderShown: { description: "Carl scrolled up and older messages were drawn above: by, shown." },
       jumped: { description: "Carl clicked 'new messages' to go back to the newest." },
       tasksChanged: { description: "The running background tasks changed: running (how many)." },
-      fullscreenChanged: { description: "setFullscreen entered or left the fullscreen chat: fullscreen." },
-      sidebarChanged: { description: "setSidebar opened or closed the fullscreen chat's sidebar: open." },
     },
   };
 }
 
-function mountSurface(el: HTMLElement, api: PluginApi, view: () => ReactNode): () => void {
-  let alive = true;
+/** The offers, headless: mounted in every layout (src/places.ts "offers"), whichever surfaces are drawn. */
+export const offers = { mount: mountOffers };
+
+function mountOffers(_el: HTMLElement, api: PluginApi): void {
   const offers = api.offer(chatOffers());
   api.effect(onChatEvent((name, data) => offers.emit(name, data)));
   let known = new Map(chatMenuItems().map((i) => [i.key, i] as const));
@@ -270,6 +264,10 @@ function mountSurface(el: HTMLElement, api: PluginApi, view: () => ReactNode): (
       known = now;
     }),
   );
+}
+
+function mountSurface(el: HTMLElement, api: PluginApi, view: () => ReactNode): () => void {
+  let alive = true;
   // A render error the part does not catch is the plugin's failure (src/ChatHeader.tsx, src/ChatPane.tsx then show their fallback).
   const root = createRoot(el, { onUncaughtError: (e) => api.error(e) });
   // Drawn right after the app's commit (before the browser paints: the pane never lacks its header), unmounted outside it.

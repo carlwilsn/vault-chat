@@ -57,7 +57,7 @@ export function Picker({
   const current = label ?? options.find((o) => o.value === value)?.label ?? value;
   return (
     <div className="relative" ref={ref}>
-      <button
+      <button data-offer-exempt="a UI primitive: each use names its own offer"
         onClick={() => setOpen(!open)}
         className="w-full h-7 px-2.5 flex items-center justify-between gap-2 rounded-md border border-input bg-background text-[12px] hover:border-border transition-colors"
       >
@@ -67,7 +67,7 @@ export function Picker({
       {open && (
         <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border border-border bg-card shadow-lg z-50 flex flex-col">
           <div className="p-1.5 border-b border-border/60">
-            <input
+            <input data-offer-exempt="a UI primitive: each use names its own offer"
               ref={searchRef}
               type="search"
               value={query}
@@ -90,7 +90,7 @@ export function Picker({
               <div className="px-3 py-2 text-[11px] text-muted-foreground italic">No matches</div>
             ) : (
               shown.map((o) => (
-                <button
+                <button data-offer-exempt="a UI primitive: each use names its own offer"
                   key={o.value}
                   onClick={() => !o.disabled && pick(o.value)}
                   disabled={o.disabled}
@@ -108,7 +108,7 @@ export function Picker({
             )}
           </div>
           {footer && (
-            <button
+            <button data-offer-exempt="a UI primitive: each use names its own offer"
               onClick={() => {
                 setOpen(false);
                 footer.onClick();

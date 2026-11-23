@@ -7,7 +7,7 @@ export function NewProjectForm({ onCreate, onCancel }: { onCreate: (name: string
   const [name, setName] = useState("");
   return (
     <div className="px-4 pt-2 pb-2" data-el="new-project-form">
-      <input
+      <input data-offer="box:chats.openProject"
         autoFocus
         value={name}
         data-el="new-project-name"

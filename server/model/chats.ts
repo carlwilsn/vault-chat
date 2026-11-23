@@ -4,7 +4,7 @@
 // restore), each through the same box path the app's intent takes, plus what only the agent does on Carl's ask:
 // restoreProject, openProject (his screens and a live call follow to the thread) and post (hand work to the chat that
 // owns it). Where the list is on screen (open, expand, Show more, the panel) stays app/chats: that is the laptop's view.
-// Watched by re-reading every 2 s (a chat changes through each vault's own log, not one event).
+// Watched on the records of every chat vault's log (a chat changes through its vault's own log): no re-reading on a timer.
 // Was the ListConversations, ReadConversation, ListProjects, RenameConversation, DeleteConversation,
 // RestoreConversation, RestoreProject, OpenProject and PostToConversation tools, and (piece D) Compact and Cost.
 import type { ActResult, Noun } from "./index";
@@ -22,17 +22,19 @@ export type ChatsCtl = {
   delete: (ids: string[]) => Promise<ActResult>;
   restore: (id: string) => Promise<ActResult>;
   restoreProject: (project: string) => Promise<ActResult>;
+  deleteProject: (project: string, folder: boolean) => Promise<ActResult>;
   openProject: (args: Record<string, unknown>) => Promise<ActResult>;
   post: (id: string, text: string) => Promise<ActResult>;
   compact: (id?: string, focus?: string) => Promise<ActResult>;
   cost: (id?: string, project?: string) => Promise<ActResult>;
+  /** Call `fn` when a chat or a project may have changed: a record in any chat vault's log (a message, a title, a
+   *  delete, a project's signal). Returns the undo. */
+  watch: (fn: () => void) => () => void;
 };
 
 const obj = (props: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties: props, required, additionalProperties: false });
 const str = (description: string) => ({ type: "string", description });
 const s = (v: unknown) => (typeof v === "string" ? v.trim() : "");
-
-const WATCH_MS = 2_000;
 
 export function chatsNoun(ctl: ChatsCtl): Noun {
   return {
@@ -103,6 +105,11 @@ export function chatsNoun(ctl: ChatsCtl): Noun {
         args: obj({ id: str("the chat's id") }, ["id"]),
         run: (a) => ctl.restore(s(a.id)),
       },
+      deleteProject: {
+        description: "delete a project, only when Carl asks (the list's ⋯ Delete): its thread and notes move to agent-projects/.deleted (restoreProject brings it back); folder true: its folder goes too (recoverably), else it stays a plain folder",
+        args: obj({ project: str("its name or slug"), folder: { type: "boolean", description: "the folder goes too (Carl's \"delete everything\")" } }, ["project"]),
+        run: (a) => ctl.deleteProject(s(a.project), a.folder === true),
+      },
       restoreProject: {
         description: "bring back a deleted project whole (folder, notes, memory, its thread), only when Carl asks; never move files out of agent-projects/.deleted yourself",
         args: obj({ project: str("its name, slug or deleted entry") }, ["project"]),
@@ -124,9 +131,6 @@ export function chatsNoun(ctl: ChatsCtl): Noun {
         run: (a) => ctl.post(s(a.id), s(a.text)),
       },
     },
-    watch: (fn) => {
-      const t = setInterval(fn, WATCH_MS);
-      return () => clearInterval(t);
-    },
+    watch: (fn) => ctl.watch(fn),
   };
 }

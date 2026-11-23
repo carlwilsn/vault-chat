@@ -149,7 +149,7 @@ export function Picker() {
 
   return (
     <div className="relative" ref={ref}>
-      <button
+      <button data-offer="app/vaults.openMenu"
         onClick={() => (isOpen ? close() : setOpen(true))}
         data-el="vault-picker"
         className="h-7 flex items-center gap-1.5 px-2 rounded hover:bg-titlebar-hover text-[12px] text-titlebar-foreground"
@@ -171,7 +171,7 @@ export function Picker() {
             {list.map((r) =>
               renaming?.rel === r.rel ? (
                 <div key={r.rel} className="px-1.5 py-1">
-                  <input
+                  <input data-offer="app/vaults.rename"
                     autoFocus
                     data-el="picker-rename-input"
                     value={renaming.value}
@@ -200,13 +200,13 @@ export function Picker() {
                       if (trigger) showActions(r, trigger);
                     }}
                   >
-                    <button className="flex items-center gap-2 min-w-0 flex-1 h-full text-left" onClick={() => void pick(r)}>
+                    <button data-offer="app/vaults.open" className="flex items-center gap-2 min-w-0 flex-1 h-full text-left" onClick={() => void pick(r)}>
                       <span className="w-3.5 shrink-0">
                         {isOpenRow(r) && <Check className="h-3.5 w-3.5 text-primary" />}
                       </span>
                       <span className="truncate">{r.name}</span>
                     </button>
-                    <button
+                    <button data-offer="app/vaults.openMenu"
                       data-el="picker-row-menu"
                       title="More"
                       aria-label={`Actions for ${r.name}`}
@@ -245,15 +245,15 @@ export function Picker() {
                         onClick={(e) => e.stopPropagation()}
                         className="z-[60] py-1 rounded-md border border-border bg-popover text-popover-foreground shadow-md text-[12px]"
                       >
-                        <button role="menuitem" data-el="picker-rename" className={item} onClick={() => (setMenu(null), setRenaming({ rel: r.rel, value: r.name }))}>
+                        <button data-offer="app/vaults.rename" role="menuitem" data-el="picker-rename" className={item} onClick={() => (setMenu(null), setRenaming({ rel: r.rel, value: r.name }))}>
                           Rename
                         </button>
                         {!r.project && (
-                          <button role="menuitem" data-el="picker-make-project" disabled={busy} className={item} onClick={() => void makeProject(r)}>
+                          <button data-offer="app/vaults.makeProject" role="menuitem" data-el="picker-make-project" disabled={busy} className={item} onClick={() => void makeProject(r)}>
                             Make this a project
                           </button>
                         )}
-                        <button role="menuitem" data-el="picker-delete" className={cn(item, "text-destructive")} onClick={() => (setMenu(null), setDeleting(r))}>
+                        <button data-offer="app/vaults.delete" role="menuitem" data-el="picker-delete" className={cn(item, "text-destructive")} onClick={() => (setMenu(null), setDeleting(r))}>
                           Delete
                         </button>
                       </div>, document.body,
@@ -267,10 +267,10 @@ export function Picker() {
                             Delete project <span className="font-medium">{r.name}</span>? Git keeps a copy either way.
                           </div>
                           <div className="mt-1.5 flex flex-col gap-1">
-                            <button data-el="picker-delete-conversation" disabled={busy} onClick={() => void remove(r, false)} className="min-h-6 py-1 px-2 rounded text-left leading-snug hover:bg-accent">
+                            <button data-offer="app/vaults.delete" data-el="picker-delete-conversation" disabled={busy} onClick={() => void remove(r, false)} className="min-h-6 py-1 px-2 rounded text-left leading-snug hover:bg-accent">
                               Remove the conversation, keep the folder
                             </button>
-                            <button data-el="picker-delete-everything" disabled={busy} onClick={() => void remove(r, true)} className="min-h-6 py-1 px-2 rounded text-left leading-snug text-destructive hover:bg-accent">
+                            <button data-offer="app/vaults.delete" data-el="picker-delete-everything" disabled={busy} onClick={() => void remove(r, true)} className="min-h-6 py-1 px-2 rounded text-left leading-snug text-destructive hover:bg-accent">
                               Delete everything, the folder too
                             </button>
                           </div>
@@ -280,13 +280,13 @@ export function Picker() {
                           <div>
                             Delete <span className="font-medium">{r.name}</span>? Git keeps a copy.
                           </div>
-                          <button data-el="picker-delete-yes" disabled={busy} onClick={() => void remove(r, true)} className="h-6 px-2.5 rounded text-destructive hover:bg-accent">
+                          <button data-offer="app/vaults.delete" data-el="picker-delete-yes" disabled={busy} onClick={() => void remove(r, true)} className="h-6 px-2.5 rounded text-destructive hover:bg-accent">
                             Delete
                           </button>
                         </div>
                       )}
                       <div className="mt-1 flex justify-end">
-                        <button data-el="picker-delete-cancel" disabled={busy} onClick={() => setDeleting(null)} className="h-6 px-2 rounded text-muted-foreground hover:bg-accent hover:text-foreground">
+                        <button data-offer="app/vaults.delete" data-el="picker-delete-cancel" disabled={busy} onClick={() => setDeleting(null)} className="h-6 px-2 rounded text-muted-foreground hover:bg-accent hover:text-foreground">
                           Cancel
                         </button>
                       </div>
@@ -299,7 +299,7 @@ export function Picker() {
           {m &&
             (naming ? (
               <div className="px-1.5 py-1">
-                <input
+                <input data-offer="app/vaults.create"
                   autoFocus
                   data-el="vault-picker-new-name"
                   value={name}
@@ -316,7 +316,7 @@ export function Picker() {
                 />
               </div>
             ) : (
-              <button data-el="vault-picker-new" className={cn(rowCls, "border-t border-border mt-1 pt-1")} onClick={() => setNaming(true)}>
+              <button data-offer="app/vaults.create" data-el="vault-picker-new" className={cn(rowCls, "border-t border-border mt-1 pt-1")} onClick={() => setNaming(true)}>
                 <Plus className="h-3.5 w-3.5 text-muted-foreground" />
                 <span>New vault</span>
               </button>

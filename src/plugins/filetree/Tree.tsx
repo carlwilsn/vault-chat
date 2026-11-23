@@ -3,14 +3,12 @@
 // moves files. What it shows and does to the files is the model's (./model.ts), shared with the plugin's offers.
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, EyeOff, FolderOpen, Plus, Upload, AlertTriangle, Folder, X as XIcon } from "lucide-react";
 import { useStore, type FileEntry } from "../../store";
 import { isExternalFileDrop, copyExternalFilesInto, treeDrag } from "../../dnd";
 import { cn } from "../../lib/utils";
-import { revealInFileExplorer } from "../../opener";
-import { commitFsAction } from "../../commit-controller";
+import { openOutside } from "../../opener";
 import {
   clickRow,
   createEntry,
@@ -27,6 +25,8 @@ import {
   visibleItems,
   type PendingKind,
   type TreeItem,
+  notifyTree,
+  uploadInto,
 } from "./model";
 
 type Menu = { x: number; y: number; entry: FileEntry | null } | null;
@@ -414,6 +414,7 @@ export function Tree() {
     try {
       await copyExternalFilesInto(targetDir ?? vaultPath, files);
       await refreshFiles();
+      notifyTree("uploaded", { into: relOf(targetDir ?? vaultPath, vaultPath), files: files.length });
     } catch (err) {
       console.error("[drop] copy failed:", err);
     }
@@ -449,23 +450,7 @@ export function Tree() {
     if (!picked) return;
     const sources = Array.isArray(picked) ? picked : [picked];
     if (sources.length === 0) return;
-    const parent = parentOverride ?? selectedDir ?? vaultPath;
-    if (parent !== vaultPath) setExpanded((prev) => new Set(prev).add(parent));
-    const copied: string[] = [];
-    for (const src of sources) {
-      try {
-        const out = await invoke<string>("copy_into_vault", {
-          dstDir: parent,
-          src,
-        });
-        copied.push(out);
-      } catch (e) {
-        console.error("[upload] copy failed:", src, e);
-      }
-    }
-    if (copied.length === 0) return;
-    await refreshFiles();
-    commitFsAction(vaultPath, copied.length === 1 ? `upload ${relOf(copied[0], vaultPath)}` : `upload ${copied.length} items`).catch(() => {});
+    await uploadInto(parentOverride ?? selectedDir ?? vaultPath, sources);
   };
 
   const beginCreate = (kind: PendingKind, parentOverride?: string) => {
@@ -589,7 +574,7 @@ export function Tree() {
           <div className="flex-1 text-[10px] text-muted-foreground/70 font-mono truncate">
             {vaultPath}
           </div>
-          <button
+          <button data-offer="app/filetree.create"
             onClick={(e) => {
               e.stopPropagation();
               setAddMenuOpen((v) => !v);
@@ -604,7 +589,7 @@ export function Tree() {
               className="absolute right-1 top-7 z-40 rounded-md border border-border bg-card shadow-lg py-1 text-[12.5px] min-w-[140px]"
               onMouseDown={(e) => e.stopPropagation()}
             >
-              <button
+              <button data-offer="app/filetree.create"
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                 onClick={() => {
                   setAddMenuOpen(false);
@@ -613,7 +598,7 @@ export function Tree() {
               >
                 <FilePlus className="h-3.5 w-3.5 opacity-70" /> New file
               </button>
-              <button
+              <button data-offer="app/filetree.create"
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                 onClick={() => {
                   setAddMenuOpen(false);
@@ -623,7 +608,7 @@ export function Tree() {
                 <FolderPlus className="h-3.5 w-3.5 opacity-70" /> New folder
               </button>
               <div className="my-1 h-px bg-border/60" />
-              <button
+              <button data-offer="app/filetree.upload"
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                 onClick={() => {
                   setAddMenuOpen(false);
@@ -641,7 +626,7 @@ export function Tree() {
           <span className="flex-1 truncate">
             Only names with <span className="text-foreground">{filter}</span>
           </span>
-          <button type="button" title="Show the whole tree" onClick={() => setFilter("")} className="h-5 w-5 flex items-center justify-center rounded hover:bg-accent/60 hover:text-foreground">
+          <button data-offer="app/filetree.setFilter" type="button" title="Show the whole tree" onClick={() => setFilter("")} className="h-5 w-5 flex items-center justify-center rounded hover:bg-accent/60 hover:text-foreground">
             <XIcon className="h-3 w-3" />
           </button>
         </div>
@@ -719,7 +704,7 @@ export function Tree() {
                   ) : (
                     <FileText className="h-3.5 w-3.5 shrink-0 opacity-70 ml-3.5" />
                   )}
-                  <input
+                  <input data-offer="app/filetree.rename"
                     ref={renameRef}
                     size={1}
                     value={renaming.value}
@@ -733,7 +718,7 @@ export function Tree() {
                   />
                 </div>
               ) : (
-                <div
+                <div data-offer="app/filetree.select"
                   className={cn(
                     "flex items-center gap-1 px-2 h-[25px] text-[12.5px] cursor-pointer select-none rounded-sm",
                     f.is_dir
@@ -801,7 +786,7 @@ export function Tree() {
         {last < items.length && <div style={{ height: (items.length - last) * ROW_H }} aria-hidden />}
       </div>
       {menu && (
-        <div
+        <div data-offer-exempt="a menu's container: it only keeps a click from reaching the tree (its items name their offers)"
           className="fixed z-50 rounded-md border border-border bg-card shadow-lg py-1 text-[12.5px]"
           style={{ left: menu.x, top: menu.y }}
           onMouseDown={(e) => e.stopPropagation()}
@@ -809,7 +794,7 @@ export function Tree() {
         >
           {selected.size > 1 ? (
             <>
-              <button
+              <button data-offer="app/filetree.hide"
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                 onClick={() => {
                   const paths = Array.from(selected);
@@ -819,7 +804,7 @@ export function Tree() {
               >
                 <EyeOff className="h-3.5 w-3.5 opacity-70" /> Hide {selected.size} selected
               </button>
-              <button
+              <button data-offer="app/filetree.delete"
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-destructive whitespace-nowrap"
                 onClick={() => {
                   setConfirmDeleteMulti(Array.from(selected));
@@ -833,7 +818,7 @@ export function Tree() {
             <>
               {menu.entry.is_dir && (
                 <>
-                  <button
+                  <button data-offer="app/filetree.create"
                     className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                     onClick={() => {
                       beginCreate("file", menu.entry!.path);
@@ -842,7 +827,7 @@ export function Tree() {
                   >
                     <FilePlus className="h-3.5 w-3.5 opacity-70" /> New file
                   </button>
-                  <button
+                  <button data-offer="app/filetree.create"
                     className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                     onClick={() => {
                       beginCreate("folder", menu.entry!.path);
@@ -851,7 +836,7 @@ export function Tree() {
                   >
                     <FolderPlus className="h-3.5 w-3.5 opacity-70" /> New folder
                   </button>
-                  <button
+                  <button data-offer="app/filetree.upload"
                     className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                     onClick={() => {
                       const target = menu.entry!.path;
@@ -864,7 +849,7 @@ export function Tree() {
                   <div className="my-1 h-px bg-border/60" />
                 </>
               )}
-              <button
+              <button data-offer="app/filetree.rename"
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                 onClick={() => {
                   beginRename(menu.entry!);
@@ -873,10 +858,10 @@ export function Tree() {
               >
                 <Pencil className="h-3.5 w-3.5 opacity-70" /> Rename
               </button>
-              <button
+              <button data-offer="app/viewer.openOutside"
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                 onClick={() => {
-                  revealInFileExplorer(menu.entry!.path).catch((e) =>
+                  openOutside(menu.entry!.path, "explorer").catch((e) =>
                     console.error("[opener] reveal failed:", e),
                   );
                   setMenu(null);
@@ -884,7 +869,7 @@ export function Tree() {
               >
                 <FolderOpen className="h-3.5 w-3.5 opacity-70" /> File Explorer
               </button>
-              <button
+              <button data-offer="app/filetree.hide"
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                 onClick={() => {
                   hideEntry(menu.entry!);
@@ -893,7 +878,7 @@ export function Tree() {
               >
                 <EyeOff className="h-3.5 w-3.5 opacity-70" /> Hide
               </button>
-              <button
+              <button data-offer="app/filetree.delete"
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-destructive whitespace-nowrap"
                 onClick={() => {
                   setConfirmDelete(menu.entry);
@@ -905,7 +890,7 @@ export function Tree() {
             </>
           ) : (
             <>
-              <button
+              <button data-offer="app/filetree.create"
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                 onClick={() => {
                   beginCreate("file", vaultPath ?? undefined);
@@ -914,7 +899,7 @@ export function Tree() {
               >
                 <FilePlus className="h-3.5 w-3.5 opacity-70" /> New file
               </button>
-              <button
+              <button data-offer="app/filetree.create"
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                 onClick={() => {
                   beginCreate("folder", vaultPath ?? undefined);
@@ -925,7 +910,7 @@ export function Tree() {
               </button>
               {vaultPath && (
                 <>
-                  <button
+                  <button data-offer="app/filetree.upload"
                     className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                     onClick={() => {
                       setMenu(null);
@@ -934,10 +919,10 @@ export function Tree() {
                   >
                     <Upload className="h-3.5 w-3.5 opacity-70" /> Upload…
                   </button>
-                  <button
+                  <button data-offer="app/viewer.openOutside"
                     className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                     onClick={() => {
-                      revealInFileExplorer(vaultPath).catch((e) =>
+                      openOutside(vaultPath, "explorer").catch((e) =>
                         console.error("[opener] reveal failed:", e),
                       );
                       setMenu(null);
@@ -976,13 +961,13 @@ export function Tree() {
               Folders will be removed with everything inside. This cannot be undone.
             </div>
             <div className="flex justify-end gap-2 mt-4">
-              <button
+              <button data-offer="app/filetree.delete"
                 className="px-3 py-1 rounded text-[12px] hover:bg-accent/60 text-foreground"
                 onClick={() => setConfirmDeleteMulti(null)}
               >
                 Cancel
               </button>
-              <button
+              <button data-offer="app/filetree.delete"
                 className="px-3 py-1 rounded text-[12px] bg-destructive text-destructive-foreground hover:bg-destructive/90"
                 autoFocus
                 onClick={() => {
@@ -1023,13 +1008,13 @@ export function Tree() {
               )}
             </div>
             <div className="flex justify-end gap-2 mt-4">
-              <button
+              <button data-offer="app/filetree.delete"
                 className="px-3 py-1 rounded text-[12px] hover:bg-accent/60 text-foreground"
                 onClick={() => setConfirmDelete(null)}
               >
                 Cancel
               </button>
-              <button
+              <button data-offer="app/filetree.delete"
                 className="px-3 py-1 rounded text-[12px] bg-destructive text-destructive-foreground hover:bg-destructive/90"
                 autoFocus
                 onClick={() => {
@@ -1109,7 +1094,7 @@ function PendingRow({
       ) : (
         <FileText className="h-3.5 w-3.5 shrink-0 opacity-70 ml-3.5" />
       )}
-      <input
+      <input data-offer="app/filetree.create"
         ref={inputRef}
         size={1}
         value={name}

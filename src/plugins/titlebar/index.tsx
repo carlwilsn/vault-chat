@@ -20,14 +20,17 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { PluginApi } from "../../mountHost";
 import { useStore } from "../../store";
 import { NOTES_PLUGIN_ID } from "../../appPlugins";
-import { pluginDesiredNow } from "../../pluginSupervisorApp";
+import { pluginDesiredNow, subscribePluginDesired } from "../../pluginSupervisorApp";
 import { runningTaskCount } from "../../backgroundTasks";
 import { openChatPopout } from "../../sync";
 import { openTerminal } from "../../terminal";
 import { subscribeBoxSync, type BoxSyncState } from "../../vaultSync";
 import { subscribeTitlebarItems, titlebarItemNamed, titlebarItems, type TitlebarItem } from "../../titlebarItems";
 import { Bar } from "./Bar";
-import { closeHidden, emitBarEvent, onBarEvent, openHidden, refreshTree, unhide, useBar, windowState } from "./model";
+import { closeHidden, emitBarEvent, followWindow, onBarEvent, openHidden, openTailscaleNow, refreshTree, setSyncOpen, unhide, useBar, windowState } from "./model";
+import { onTerminalsChanged, terminalsOpened } from "../../terminal";
+import { diagNow, onPartFailures, partFailures, retryPart } from "../../partFailures";
+import { runDiag } from "../../diag";
 
 const shownItem = (i: TitlebarItem) => ({
   key: i.key,
@@ -45,7 +48,7 @@ const OPEN = { type: "object", properties: { open: { type: "boolean", descriptio
 const want = (a: Record<string, unknown>, now: boolean) => (typeof a.open === "boolean" ? a.open : !now);
 
 /** The plugin's offers (exported for tests). `sync` reads the vault sync's last state. */
-export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSyncState | null = () => null) {
+export function titlebarOffers(_api: Pick<PluginApi, "host">, sync: () => BoxSyncState | null = () => null, onSync: (fn: () => void) => () => void = () => () => {}) {
   const panels = () => {
     const s = useStore.getState();
     return {
@@ -58,12 +61,11 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
       settings: s.showSettings,
     };
   };
-  const layoutPanel = async (open: boolean, which: "Left" | "Right") => {
-    const r = await api.host.layout.apply({ op: `${open ? "open" : "close"}${which}Panel` } as never);
-    if (!r.ok) throw new Error(r.results.map((x) => x.error).filter(Boolean).join("; ") || "it did not work");
-    return r;
-  };
   return {
+    watch: (fn: () => void) => {
+      const offs = [useStore.subscribe(fn), useBar.subscribe(fn), onUpdateChanged(fn), onLandedChanged(fn), onReadyChanged(fn), subscribeTitlebarItems(fn), onSync(fn), onTerminalsChanged(fn), subscribePluginDesired(NOTES_PLUGIN_ID, fn), onPartFailures(fn)];
+      return () => offs.forEach((f) => f());
+    },
     state: {
       update: {
         description: "The update banner (src/UpdateBanner.tsx): state idle | available (version, notes) | downloading (downloaded, total) | installing | error (message). The app checks for updates by itself.",
@@ -83,7 +85,7 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
       },
       window: {
         description: "The app window now: maximized, minimized, fullscreen, focused (null where there is no native window).",
-        read: () => windowState(),
+        read: () => useBar.getState().window,
       },
       vault: {
         description: "The vault open as the workspace (name, path) and the file open in the viewer (path), or nulls.",
@@ -97,38 +99,24 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
         read: panels,
       },
       status: {
-        description: "The bar's indicators: runningTasks (the agent's background tasks), sync (the attention chip's text and level, or null), hiddenFiles (the Hidden files list open, and its lines), refreshing.",
+        description: "The bar's indicators: runningTasks (the agent's background tasks), sync (the attention chip's kind, text and level, its details open, what they say, whether Open Tailscale shows, its last error; or null), hiddenFiles (the Hidden files list open, and its lines), refreshing, terminals (the terminals opened from the bar this session: where, at; the box's own sessions: box:links terminals), crashed (app parts that failed and show Reload: part, error), diagnostics (the last bundle written: path, at).",
         read: () => {
           const s = useStore.getState();
           const b = useBar.getState();
           const att = sync()?.attention ?? null;
           return {
             runningTasks: runningTaskCount(s.conversations),
-            sync: att ? { kind: att.kind, level: att.level, text: att.text } : null,
+            sync: att ? { kind: att.kind, level: att.level, text: att.text, since: att.since, open: b.syncOpen, detail: b.syncOpen ? att.detail : undefined, canOpenTailscale: att.kind === "tailscale" && !!sync()?.tailscale?.canOpen, ...(b.tailscaleError ? { tailscaleError: b.tailscaleError } : {}) } : null,
             hiddenFiles: { open: b.hiddenOpen, lines: b.hiddenOpen ? b.hiddenLines : undefined },
             refreshing: b.refreshing,
+            terminals: terminalsOpened(),
+            crashed: partFailures(),
+            diagnostics: diagNow(),
           };
         },
       },
     },
     actions: {
-      toggleLeftPanel: {
-        description: "Show or hide the file panel (the bar's left button, Ctrl+B).",
-        args: OPEN,
-        run: async (a: Record<string, unknown>) => {
-          await layoutPanel(want(a, panels().left), "Left");
-          return { left: panels().left };
-        },
-      },
-      toggleChatPanel: {
-        description: "Show or hide the docked chat panel (the bar's right button, Ctrl+Shift+B). Not while the chat is popped out.",
-        args: OPEN,
-        run: async (a: Record<string, unknown>) => {
-          if (useStore.getState().popoutOpen) throw new Error("the chat is popped out: close the pop-out window to dock it");
-          await layoutPanel(want(a, panels().chat), "Right");
-          return { chat: panels().chat };
-        },
-      },
       toggleNotes: {
         description: "Open or close the Notes panel (the bar's Notes button). Only while the Notes plugin runs.",
         args: OPEN,
@@ -240,6 +228,57 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
           return { ready: readyNow() };
         },
       },
+      openSyncDetails: {
+        description: "Open (or close) the sync chip's details (its click): what needs attention and what to do.",
+        args: OPEN,
+        run: (a: Record<string, unknown>) => {
+          if (!sync()?.attention) throw new Error("the sync chip is not shown (nothing needs attention)");
+          setSyncOpen(want(a, useBar.getState().syncOpen));
+          return { open: useBar.getState().syncOpen };
+        },
+      },
+      openTailscale: {
+        description: "The sync chip's Open Tailscale (shown when Tailscale on this laptop is not connected): opens the Tailscale app, then syncs again.",
+        run: async () => {
+          const st = sync();
+          if (!(st?.attention?.kind === "tailscale" && st.tailscale?.canOpen)) throw new Error("Open Tailscale is not offered now");
+          await openTailscaleNow(st.vault);
+          return { opened: true };
+        },
+      },
+      reloadPart: {
+        description: "Reload an app part that failed (its fallback's Reload): part from status.crashed.",
+        args: { type: "object", properties: { part: { type: "string" } }, required: ["part"], additionalProperties: false },
+        run: (a: Record<string, unknown>) => {
+          if (!retryPart(String(a.part ?? ""))) throw new Error(`no failed part "${String(a.part ?? "")}" (failed: ${partFailures().map((f) => f.part).join(", ") || "none"})`);
+          return { reloading: a.part };
+        },
+      },
+      diagnostics: {
+        description: "Write the diagnostics bundle (Ctrl+Shift+D): the last minutes of the laptop's and the box's logs to a file in the vault (its path; Carl sees the same note). minutes: how far back (default 30).",
+        args: { type: "object", properties: { minutes: { type: "integer", minimum: 1, maximum: 240 } }, additionalProperties: false },
+        run: async (a: Record<string, unknown>) => {
+          const p = await runDiag(typeof a.minutes === "number" ? a.minutes : undefined);
+          if (!p) throw new Error("the bundle was not written (no vault open, or see the app log)");
+          return { path: p };
+        },
+      },
+      focusWindow: {
+        description: "Bring the app window to the front (as the tray's Show vault-chat): shown and focused.",
+        run: async () => {
+          const w = getCurrentWindow();
+          await w.show();
+          await w.setFocus();
+          return { window: await windowState() };
+        },
+      },
+      closeWindow: {
+        description: "Close the app window (the × button: to the tray when run in background, else the app quits). Only when Carl asks.",
+        run: async () => {
+          await getCurrentWindow().close();
+          return { closed: true };
+        },
+      },
       minimize: {
         description: "Minimize the app window (the – button). Only when Carl asks.",
         run: async () => {
@@ -261,7 +300,7 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
       landedChanged: { description: "The Landed card showed or was dismissed: shown, revision, what." },
       itemAdded: { description: "A plugin put an item in the bar: key, by, side." },
       itemRemoved: { description: "An item left the bar (its plugin stopped or removed it): key, by." },
-      itemClicked: { description: "The agent clicked a plugin's item: key, by." },
+      itemClicked: { description: "A plugin's item was clicked (Carl's click or the agent's): key, by." },
       refreshed: { description: "The file list was re-read: files." },
       unhidden: { description: "Lines left the hide list: lines." },
       windowChanged: { description: "The window was maximized or restored: maximized." },
@@ -269,11 +308,17 @@ export function titlebarOffers(api: Pick<PluginApi, "host">, sync: () => BoxSync
   };
 }
 
-export function mount(el: HTMLElement, api: PluginApi): () => void {
+/** The offers, headless: mounted in every layout (src/places.ts "offers"), drawn or not. */
+export const offers = { mount: mountOffers };
+
+function mountOffers(_el: HTMLElement, api: PluginApi): () => void {
   let alive = true;
   let sync: BoxSyncState | null = null;
   api.effect(subscribeBoxSync((s) => void (sync = s)));
-  const offers = api.offer(titlebarOffers(api, () => sync));
+  api.effect(followWindow());
+  const syncFns = new Set<() => void>();
+  api.effect(subscribeBoxSync(() => syncFns.forEach((f) => f())));
+  const offers = api.offer(titlebarOffers(api, () => sync, (fn) => (syncFns.add(fn), () => void syncFns.delete(fn))));
   api.effect(onBarEvent((name, data) => offers.emit(name, data)));
   api.effect(onUpdateChanged((u) => offers.emit("updateChanged", u)));
   api.effect(onLandedChanged((l) => offers.emit("landedChanged", l)));
@@ -304,6 +349,13 @@ export function mount(el: HTMLElement, api: PluginApi): () => void {
       /* no native window here */
     }
   })();
+  return () => {
+    alive = false;
+  };
+}
+
+export function mount(el: HTMLElement, api: PluginApi): () => void {
+  let alive = true;
   // A render error the bar does not catch is the plugin's failure (src/Titlebar.tsx then shows its fallback).
   const root = createRoot(el, { onUncaughtError: (e) => api.error(e) });
   // Drawn right after the app's commit (before the browser paints: the window never lacks its bar), unmounted outside it.

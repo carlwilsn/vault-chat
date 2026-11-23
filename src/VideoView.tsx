@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { ExternalLink, FolderOpen, Film } from "lucide-react";
-import { openPathWithDefaultApp, revealInFileExplorer } from "./opener";
+import { openOutside } from "./opener";
 import { VideoPlayer } from "./VideoPlayer";
 
 // Streams the file via Tauri's asset:// protocol so the browser does
@@ -28,11 +28,11 @@ export function VideoView({ path }: { path: string }) {
   const [codecError, setCodecError] = useState(false);
 
   const openWith = () =>
-    openPathWithDefaultApp(path).catch((e) =>
+    openOutside(path, "video").catch((e) =>
       console.error("[opener] open failed:", e),
     );
   const reveal = () =>
-    revealInFileExplorer(path).catch((e) =>
+    openOutside(path, "explorer").catch((e) =>
       console.error("[opener] reveal failed:", e),
     );
 
@@ -60,13 +60,13 @@ export function VideoView({ path }: { path: string }) {
             </div>
           </div>
           <div className="flex items-center gap-2 pt-2">
-            <button
+            <button data-offer="app/viewer.openOutside"
               onClick={openWith}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-border bg-card hover:bg-accent/60 text-[12px] text-foreground"
             >
               <ExternalLink className="h-3.5 w-3.5" /> Open with system player
             </button>
-            <button
+            <button data-offer="app/viewer.openOutside"
               onClick={reveal}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-border bg-card hover:bg-accent/60 text-[12px] text-foreground"
             >
@@ -83,13 +83,14 @@ export function VideoView({ path }: { path: string }) {
       <VideoPlayer
         key={path}
         src={src}
+        stateId={path}
         fill
         dataEl="viewer-video"
         onError={() => setCodecError(true)}
         extra={
           // Escape hatch even when the video loads: open it in VLC and the like
           // without navigating away from the vault.
-          <button
+          <button data-offer="app/viewer.openOutside"
             type="button"
             onClick={openWith}
             title="Open with system player"

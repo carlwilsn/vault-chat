@@ -52,7 +52,7 @@ export function ComposerFallback({ info }: { info: PluginFallbackInfo }) {
       ) : (
         <div data-el="composer-fallback-error" className="flex items-center gap-2 px-1 pb-1.5 text-[12px] text-muted-foreground">
           <span className="truncate" title={info.error ?? ""}>The composer stopped; a plain one until it is back.</span>
-          <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
+          <button data-offer="app/titlebar.reloadPart" type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
             Reload
           </button>
         </div>
@@ -82,11 +82,11 @@ export function ComposerFallback({ info }: { info: PluginFallbackInfo }) {
           />
           <div className="absolute right-3 bottom-2">
             {(busy || held) && !hasDraft ? (
-              <Button size="icon" variant="secondary" onClick={stopAgent} className="h-7 w-7 rounded-lg" title="Stop the agent (Esc)" data-el="composer-stop">
+              <Button data-offer="app/composer.stop" size="icon" variant="secondary" onClick={stopAgent} className="h-7 w-7 rounded-lg" title="Stop the agent (Esc)" data-el="composer-stop">
                 <Square className="h-3 w-3 fill-current" />
               </Button>
             ) : (
-              <Button size="icon" onClick={send} disabled={!ready || !hasDraft} className="h-7 w-7 rounded-lg" title="Send" data-el="composer-send">
+              <Button data-offer="app/composer.send" size="icon" onClick={send} disabled={!ready || !hasDraft} className="h-7 w-7 rounded-lg" title="Send" data-el="composer-send">
                 <ArrowUp className="h-3.5 w-3.5" />
               </Button>
             )}

@@ -3,22 +3,28 @@
 // online. What lives on the box — the settings, the notes, the jobs, the device links, the logs — was reachable only
 // through one-off tools or Bash, and not at all as "state". Here it is offers of the same shape, answered by the box
 // itself: PluginRead {plugin: "box:settings"} reads, PluginAct {plugin: "box:notes", action: "add", args} changes,
-// PluginRead {plugin, wait} watches (the box re-reads the state until it changes). A device being off changes nothing.
+// PluginRead {plugin, wait} watches: each offer says when it changes (its `watch`, a real event: a noun's own listener,
+// a device link coming up or going down, the queue or perf file written, a log file growing), and only then is it
+// read again. No offer is re-read on a timer. A device being off changes nothing.
 //
 // Secrets are never state: settings hold none (the key store is not reachable here), and log lines pass through
 // `redact` before they leave this file.
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, watch as fsWatch } from "node:fs";
 import { join } from "node:path";
 import type { OffersDescription } from "../src/pluginOffers";
-import { linkStates } from "./deviceLink";
-import { noun, nouns, type Noun } from "./model";
+import { linkStates, onLinkChanged } from "./deviceLink";
+import { signal } from "./convlog/log";
+import { boxTerminals, closeBoxTerminal, watchBoxTerminals } from "./boxTerminals";
+import { nouns, type Noun } from "./model";
 import type { ChatsCtl } from "./model/chats";
 import type { JobsCtl } from "./model/jobs";
 
 export type JsonSchema = Record<string, unknown>;
 type State = { description: string; read: () => unknown | Promise<unknown> };
 type Action = { description: string; args?: JsonSchema; /** A search: nothing changes, so no state is read back. */ readOnly?: boolean; run: (args: Record<string, unknown>) => Promise<{ ok: boolean; text: string }> | { ok: boolean; text: string } };
-export type BoxOffer = { id: string; name: string; state: Record<string, State>; actions: Record<string, Action> };
+/** Call `fn` each time the offer's state may have changed (a real event, never a timer); returns the unsubscribe. */
+export type Watch = (fn: () => void) => () => void;
+export type BoxOffer = { id: string; name: string; state: Record<string, State>; actions: Record<string, Action>; watch: Watch };
 
 export type BoxOfferDeps = {
   vault: string;
@@ -73,9 +79,30 @@ export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
       id: "box:links",
       name: "Devices",
       state: {
-        devices: { description: "each device app's link to the box: up or down since when and why, the vault it has open, unanswered requests", read: () => linkStates() },
+        devices: { description: "each device app's link to the box: up or down since when and why, the vault it has open, unanswered requests, what the phone shows (view)", read: () => linkStates() },
+        terminals: { description: "the box terminals open now (the title bar's terminal / Ctrl+J: an SSH session into the box): pid, user, tty, since", read: () => boxTerminals() },
       },
-      actions: {},
+      actions: {
+        closeTerminal: {
+          description: "close a box terminal (its session hangs up, as closing its window), by its tty from terminals. Only when Carl asks",
+          args: obj({ tty: str("e.g. pts/3") }, ["tty"]),
+          run: (a) => closeBoxTerminal(String(a.tty ?? "")),
+        },
+        showOnPhone: {
+          description: "switch the phone app to a page (alerts or notes), as its menu does; it follows the next time its feed answers (it must be open)",
+          args: obj({ page: { type: "string", enum: ["alerts", "notes"] } }, ["page"]),
+          run: (a) => {
+            if (linkStates().phone.control !== "up") return { ok: false, text: "The phone app is not open (its feed is down); nothing was shown." };
+            signal(d.vault, { type: "phone.page", page: a.page === "notes" ? "notes" : "alerts" });
+            return { ok: true, text: `The phone shows ${a.page === "notes" ? "Notes" : "Alerts"}.` };
+          },
+        },
+      },
+      watch: (fn) => {
+        const a = onLinkChanged(fn);
+        const b = watchBoxTerminals(fn);
+        return () => (a(), b());
+      },
     },
   ];
   if (d.stateDir) {
@@ -90,6 +117,7 @@ export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
       actions: {
         cancel: { description: "drop a kept action before it runs", args: obj({ id: str("its id (q-…)") }, ["id"]), run: async (a) => (await import("./deviceQueue")).cancelQueued(sd, String(a.id)) },
       },
+      watch: lazyWatch(async () => (await import("./deviceQueue")).onQueueChanged),
     });
   }
   if (d.stateDir) {
@@ -108,6 +136,7 @@ export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
           run: async (a) => (await import("./perfLog")).perfCompare(sd, a as never),
         },
       },
+      watch: lazyWatch(async () => (await import("./perfLog")).onPerfChanged),
     });
   }
   if (d.stateDir) {
@@ -117,6 +146,7 @@ export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
       name: "Logs",
       state: Object.fromEntries(LOGS.map((l) => [l, { description: `the newest ${LOG_LINES} lines of the box's ${l} log (credentials cut out)`, read: () => tail(join(dir, `${l}.jsonl`), LOG_LINES) }])),
       actions: {},
+      watch: (fn) => watchLogs(dir, fn),
     });
   }
   return out;
@@ -124,9 +154,35 @@ export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
 
 const noArgs = obj({});
 
+/** A watch whose listener lives in a module loaded on first use. */
+function lazyWatch(get: () => Promise<Watch>): Watch {
+  return (fn) => {
+    let off = () => {};
+    let done = false;
+    void get().then((w) => {
+      if (!done) off = w(fn);
+    });
+    return () => ((done = true), off());
+  };
+}
+
+/** The logs dir's files growing (the OS's file events): one of the four logs changed. */
+function watchLogs(dir: string, fn: () => void): () => void {
+  try {
+    mkdirSync(dir, { recursive: true });
+    const w = fsWatch(dir, (_ev, f) => {
+      if (!f || LOGS.some((l) => String(f).startsWith(`${l}.jsonl`))) fn();
+    });
+    w.on("error", () => {});
+    return () => w.close();
+  } catch {
+    return () => {};
+  }
+}
+
 /** A model noun as a box offer: its state, and its actions run by the agent. */
 function nounOffer(n: Noun): BoxOffer {
-  return { id: `${BOX_PREFIX}${n.id}`, name: n.name, state: n.state, actions: Object.fromEntries(Object.entries(n.actions).map(([k, a]) => [k, { description: a.description, args: a.args, readOnly: a.readOnly, run: (args: Record<string, unknown>) => a.run(args, "agent") }])) };
+  return { id: `${BOX_PREFIX}${n.id}`, name: n.name, state: n.state, watch: n.watch, actions: Object.fromEntries(Object.entries(n.actions).map(([k, a]) => [k, { description: a.description, args: a.args, readOnly: a.readOnly, run: (args: Record<string, unknown>) => a.run(args, "agent") }])) };
 }
 
 export function describeBoxOffer(o: BoxOffer): OffersDescription {
@@ -163,26 +219,24 @@ export async function readBoxOffer(d: BoxOfferDeps, word: string, only?: string)
   return { ok: true, id: o.id, state };
 }
 
-/** Wait (at most `ms`) for a box offer's state to differ from what it is now; then its state. */
-export async function watchBoxOffer(d: BoxOfferDeps, word: string, ms: number, only?: string, everyMs = 500): Promise<{ ok: boolean; id?: string; state?: Record<string, unknown>; error?: string; changed?: boolean }> {
-  // A model noun says when it changes (listened to before the first read, so no change is missed): no re-reading.
+/** Wait (at most `ms`) for a box offer's state to differ from what it is now; then its state. Read again only when its
+ *  watch fires (listened to before the first read, so no change is missed). */
+export async function watchBoxOffer(d: BoxOfferDeps, word: string, ms: number, only?: string): Promise<{ ok: boolean; id?: string; state?: Record<string, unknown>; error?: string; changed?: boolean }> {
   const o = find(d, word);
-  const n = o ? noun(o.id.slice(BOX_PREFIX.length), { vault: d.vault, jobs: d.jobs, chats: d.chats }) : null;
+  if (!o) return readBoxOffer(d, word, only);
   let hits = 0;
   let wake: (() => void) | null = null;
-  const off = n ? n.watch(() => (hits++, wake?.())) : () => {};
+  const off = o.watch(() => (hits++, wake?.()));
   try {
     const first = await readBoxOffer(d, word, only);
     if (!first.ok) return first;
     const was = JSON.stringify(first.state);
     const end = Date.now() + Math.max(0, Math.min(ms, 25_000));
     while (Date.now() < end) {
-      if (n) {
-        if (!hits) await new Promise<void>((r) => ((wake = r), setTimeout(r, Math.max(1, end - Date.now()))));
-        wake = null;
-        if (!hits) break;
-        hits = 0;
-      } else await new Promise((r) => setTimeout(r, Math.min(everyMs, Math.max(1, end - Date.now()))));
+      if (!hits) await new Promise<void>((r) => ((wake = r), setTimeout(r, Math.max(1, end - Date.now()))));
+      wake = null;
+      if (!hits) break;
+      hits = 0;
       const now = await readBoxOffer(d, word, only);
       if (now.ok && JSON.stringify(now.state) !== was) return { ...now, changed: true };
     }

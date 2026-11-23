@@ -12,6 +12,8 @@
 import type { PluginApi } from "../../mountHost";
 import "../../convlog/view"; // the app's own translators register with it
 import { describeTranslators, setTranslatorPrefs, subscribeTranslators, translatorById } from "../../convlog/translators";
+import { rowKey, rowOpenParts, setRowOpen, useRowOpen } from "../../rowOpen";
+import { inlineAct, inlineFramesNow, onInlineChanged } from "../../inlineFrames";
 import { CHAT_REVEAL_EVENT, TAIL_KINDS, describeRowOptions, rowChain, describeRows, rowOptionProblem, rowRenderer, setRowOptionValues, setRowPrefs, subscribeRows, visibleRows } from "../../chatRows";
 import { appPluginState, setAppPluginState, subscribeAppPluginState } from "../../appPluginState";
 import { CHAT_ROWS_PLUGIN_ID } from "../../appPlugins";
@@ -65,12 +67,6 @@ function named(id: string): void {
   if (!rowRenderer(id)) throw new Error(`no chat row renderer "${id}" (see the renderers state)`);
 }
 
-/** The chat's scroller: the element the rows sit in (null: no chat pane on screen). */
-function rowsRoot(doc: Document): HTMLElement | null {
-  const any = doc.querySelector<HTMLElement>("[data-row]");
-  return any?.parentElement ?? null;
-}
-
 const frames = () => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
 
 /** The row's element on screen (its index; the newest row with `last`). */
@@ -81,9 +77,6 @@ function rowEl(doc: Document, index: number | "last"): HTMLElement | null {
   }
   return doc.querySelector<HTMLElement>(`[data-row="${index}"]`);
 }
-
-/** The collapsible rows: a reply's tool calls, a voice ask's work, a job's output, the compaction summary. */
-const TOOL_ROWS = 'details[data-el="tool-calls"], details[data-el="voice-ask"], details[data-el="job-end"]';
 
 const lastLine = (t: string) => {
   const x = t.trimEnd().split("\n").pop() ?? "";
@@ -105,6 +98,16 @@ function liveTail() {
     tools,
     renderers: Object.fromEntries(TAIL_KINDS.map((k) => [k, rowChain(k)[0]?.id ?? "fallback"])),
   };
+}
+
+/** The collapsible parts a row has (what toolRows opens). */
+function collapsible(r: Record<string, unknown>): string[] {
+  const k = String(r.kind ?? "");
+  if (k === "voice-ask") return ["voice-ask"];
+  if (k === "job") return ["job"];
+  if (k === "divider") return ["divider"];
+  if (k === "assistant") return [...(Array.isArray(r.tools) && r.tools.length ? ["tools"] : []), ...(r.thought ? ["thought"] : [])];
+  return [];
 }
 
 export function chatRowsOffers(doc: Document = document) {
@@ -134,10 +137,24 @@ export function chatRowsOffers(doc: Document = document) {
           "What turns each event in the chat's log into rows (the step before the renderers): per event type (user, user:<via> such as user:job / user:wake, worker = a background worker's line, assistant, thinking, commentary = text beside a tool call, compaction, notice) the translator now active (builtin:<type>, an app alternative app:<type>:<name> such as app:commentary:thought, a plugin's <plugin id>#<type>) and every one registered (enabled, failures). A vault plugin adds one with api.host.chat.translate(type, (event, next) => messages | null).",
         read: () => describeTranslators(),
       },
-      rows: {
-        description: "The rows drawn now (the newest 60): {index, kind, renderer, mid?, text (one line), tools?}; total = messages in the chat, shownFrom = the first index drawn (older ones join on scroll).",
-        read: () => visibleRows(60),
+      inline: {
+        description: "What the chat shows inline: live web pages (kind web: id, url, title, loading, fullWindow, resting, height, a refused link's note) and vault pages (kind html: id, page, title, larger, height, inViewer). Change one with inline.",
+        read: () => inlineFramesNow(),
       },
+      rows: {
+        description: "The rows drawn now (the newest 60): {index, kind, renderer, mid?, text (one line), tools?, open? (its collapsible parts open now: tools, thought, voice-ask, job, divider)}; total = messages in the chat, shownFrom = the first index drawn (older ones join on scroll).",
+        read: () => {
+          const v = visibleRows(60);
+          return { ...v, rows: v.rows.map((r) => {
+            const open = rowOpenParts(Number(r.index));
+            return open.length ? { ...r, open } : r;
+          }) };
+        },
+      },
+    },
+    watch: (fn: () => void) => {
+      const offs = [subscribeRows(fn), subscribeTranslators(fn), useStore.subscribe(fn), useRowOpen.subscribe(fn), onInlineChanged(fn)];
+      return () => offs.forEach((f) => f());
     },
     actions: {
       disable: {
@@ -241,15 +258,27 @@ export function chatRowsOffers(doc: Document = document) {
           return { scrolledTo: want };
         },
       },
+      inline: {
+        description: "Use an inline page's buttons (id from inline; left out: the newest): a web page's back, forward, reload, fullWindow {on}, browser (open in the browser), close, wake (show it again after it rested), resize {height}, dismissNote (a refused link's note), reopen (a closed page's show here); a vault page's larger {on}, resize {height}, openInViewer.",
+        args: { type: "object", properties: { id: { type: "string" }, action: { type: "string", enum: ["back", "forward", "reload", "fullWindow", "browser", "close", "wake", "resize", "dismissNote", "reopen", "larger", "openInViewer"] }, on: { type: "boolean" }, height: { type: "number", minimum: 80 } }, required: ["action"], additionalProperties: false },
+        run: async (a: Record<string, unknown>) => {
+          await inlineAct(String(a.id ?? ""), String(a.action), a);
+          return inlineFramesNow().find((f) => f.id === a.id) ?? { done: a.action };
+        },
+      },
       toolRows: {
-        description: "Open or close the collapsible rows (a reply's tool calls, voice-ask work, job output): every one on screen, or the one row at index.",
-        args: { type: "object", properties: { open: { type: "boolean" }, index: { type: "integer" } }, required: ["open"], additionalProperties: false },
+        description: "Open or close the collapsible rows (a reply's tool calls and Thought, voice-ask work, job output, a summary divider), as a click on each: every one drawn, or the parts of the row at index. Kept as the rows' open state (rows: open).",
+        args: { type: "object", properties: { open: { type: "boolean" }, index: { type: "integer" }, part: { type: "string", enum: ["tools", "thought", "voice-ask", "job", "divider"] } }, required: ["open"], additionalProperties: false },
         run: (a: Record<string, unknown>) => {
-          const root = a.index === undefined ? rowsRoot(doc) : rowEl(doc, Number(a.index));
-          if (!root) throw new Error(a.index === undefined ? "no chat rows on screen" : `row ${a.index} is not drawn`);
-          const list = [...(root.matches(TOOL_ROWS) ? [root] : []), ...root.querySelectorAll<HTMLDetailsElement>(TOOL_ROWS)] as HTMLDetailsElement[];
-          for (const d of list) d.toggleAttribute("open", a.open === true);
-          return { rows: list.length, open: a.open === true };
+          const { rows } = visibleRows(10_000);
+          const want = a.index === undefined ? rows : rows.filter((r) => r.index === Number(a.index));
+          if (!want.length) throw new Error(a.index === undefined ? "no chat rows on screen" : `row ${a.index} is not drawn`);
+          let n = 0;
+          for (const r of want) for (const part of collapsible(r)) if (a.part === undefined || a.part === part) {
+            setRowOpen(rowKey(Number(r.index), part)!, a.open === true);
+            n++;
+          }
+          return { rows: n, open: a.open === true };
         },
       },
     },
@@ -259,6 +288,9 @@ export function chatRowsOffers(doc: Document = document) {
     },
   };
 }
+
+/** Headless (it draws nothing; the rows draw in the transcript): mounted in every layout by the "offers" place. */
+export const offers = { mount };
 
 export function mount(_el: HTMLElement, api: PluginApi): () => void {
   const offers = api.offer(chatRowsOffers(document));

@@ -21,7 +21,7 @@ import { loadVaultNorthStar } from "../../meta";
 import { contextImageFor, flushActivity, recordActivity } from "../../activity";
 import { editSummary } from "../../activityCore";
 
-import { emitAskEvent, nextAskId, registerAskBox, shownProposal, type InlineEditAnchor, type InlineEditRequest } from "./view";
+import { askChanged, emitAskEvent, nextAskId, registerAskBox, shownProposal, type InlineEditAnchor, type InlineEditRequest } from "./view";
 
 const POPOVER_WIDTH = 416;
 const MARGIN = 8;
@@ -702,8 +702,9 @@ export function AskPrompt({ request, editable = false, onAccept, onCancel }: Ask
 
   // The box on screen, for app/ask's offers (./view.ts): what it shows and its controls, the newest of each.
   const [boxId] = useState(nextAskId);
-  const live = useRef({ prompt, streaming, result, error, proposal, priorTurns, lastPrompt, extraImages, submit, accept, cancel, sendToChat, saveAsNote, setPrompt });
-  live.current = { prompt, streaming, result, error, proposal, priorTurns, lastPrompt, extraImages, submit, accept, cancel, sendToChat, saveAsNote, setPrompt };
+  const live = useRef({ prompt, streaming, result, error, proposal, priorTurns, lastPrompt, extraImages, submit, accept, cancel, sendToChat, saveAsNote, setPrompt, attachedMentions, capturing, drag, placement, pinnedTop, resultMaxHeight, captureRegion, removeExtraImage });
+  live.current = { prompt, streaming, result, error, proposal, priorTurns, lastPrompt, extraImages, submit, accept, cancel, sendToChat, saveAsNote, setPrompt, attachedMentions, capturing, drag, placement, pinnedTop, resultMaxHeight, captureRegion, removeExtraImage };
+  useEffect(() => askChanged());
   useEffect(
     () =>
       registerAskBox(boxId, {
@@ -725,7 +726,40 @@ export function AskPrompt({ request, editable = false, onAccept, onCancel }: Ask
             proposal: shownProposal(l.proposal, request.selection),
             turns: l.priorTurns.length + (l.lastPrompt !== null ? 1 : 0),
             images: l.extraImages.length + (request.imageDataUrl ? 1 : 0),
+            references: l.attachedMentions.map((m) => ({ name: m.name, path: m.rel })),
+            captured: l.extraImages.map((i) => ({ source: i.sourcePath ?? null, anchor: i.sourceAnchor ?? null })),
+            capturing: l.capturing,
+            position: { moved: dragged.current, left: Math.round(l.placement.left + l.drag.x), top: l.pinnedTop !== null ? Math.round(l.pinnedTop + l.drag.y) : l.placement.top !== undefined ? Math.round(l.placement.top + l.drag.y) : null, answerHeight: l.resultMaxHeight },
           };
+        },
+        more: {
+          mention: (a) => {
+            const s = useStore.getState();
+            const v = (s.vaultPath ?? "").replace(/\\/g, "/");
+            const rel = String(a.path ?? "").replace(/\\/g, "/").replace(/^\.?\//, "");
+            const f = s.files.find((x) => x.path.replace(/\\/g, "/") === `${v}/${rel}` && !x.is_dir);
+            if (!f) throw new Error(`no file "${rel}" in the vault`);
+            const hit = { rel, path: f.path, name: f.name };
+            // The @ menu's pick: the @name in the text and the file attached.
+            flushSync(() => {
+              live.current.setPrompt((p) => `${p}${p && !/\s$/.test(p) ? " " : ""}@${hit.name} `);
+              setAttachedMentions((prev) => (prev.some((m) => m.path === hit.path) ? prev : [...prev, hit]));
+            });
+          },
+          capture: () => live.current.captureRegion(),
+          removeImage: (a) => live.current.removeExtraImage(Number(a.index)),
+          move: (a) => {
+            dragged.current = true;
+            setDrag((d) => ({ x: d.x + Number(a.dx ?? 0), y: d.y + Number(a.dy ?? 0) }));
+          },
+          resize: (a) => {
+            const r = resultRef.current;
+            const p = popupRef.current;
+            if (p) setPinnedTop((t) => t ?? p.getBoundingClientRect().top - live.current.drag.y);
+            dragged.current = true;
+            const cap = r ? Math.min(r.scrollHeight, window.innerHeight - 80) : 600;
+            setResultMaxHeight(Math.max(60, Math.min(Number(a.height), cap)));
+          },
         },
         type: (text) => flushSync(() => live.current.setPrompt(text)),
         submit: (text) => {
@@ -810,7 +844,7 @@ export function AskPrompt({ request, editable = false, onAccept, onCancel }: Ask
         </div>
       )}
       <div className="flex items-start gap-1 p-2 shrink-0">
-        <textarea
+        <textarea data-offer="app/ask.type"
           data-perf-target="ctrl-k"
           ref={inputRef}
           rows={1}
@@ -829,7 +863,7 @@ export function AskPrompt({ request, editable = false, onAccept, onCancel }: Ask
           className="flex-1 min-w-0 resize-none overflow-y-auto bg-transparent p-1 text-[13px] text-foreground outline-none placeholder:text-muted-foreground/60"
         />
         {!streaming && prompt.trim() && (
-          <button
+          <button data-offer="app/ask.submit"
             onClick={submit}
             className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground"
             title={result ? "Send refinement (Enter)" : "Submit (Enter)"}
@@ -838,7 +872,7 @@ export function AskPrompt({ request, editable = false, onAccept, onCancel }: Ask
           </button>
         )}
         {!streaming && !prompt.trim() && proposal && (
-          <button
+          <button data-offer="app/ask.accept"
             onClick={accept}
             className="h-6 px-2 flex items-center gap-1 rounded bg-primary/90 text-[11px] text-primary-foreground hover:bg-primary"
             title="Accept (Enter)"
@@ -848,7 +882,7 @@ export function AskPrompt({ request, editable = false, onAccept, onCancel }: Ask
           </button>
         )}
         {!streaming && result && (
-          <button
+          <button data-offer="app/ask.sendToChat"
             onClick={sendToChat}
             className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground"
             title="Send conversation to chat panel"
@@ -857,7 +891,7 @@ export function AskPrompt({ request, editable = false, onAccept, onCancel }: Ask
           </button>
         )}
         {!streaming && (
-          <button
+          <button data-offer="app/ask.saveAsNote"
             onClick={saveAsNote}
             className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground"
             title="Save as note — keeps selection, conversation, and source anchor"
@@ -869,7 +903,7 @@ export function AskPrompt({ request, editable = false, onAccept, onCancel }: Ask
           (request.language === "pdf" ||
             request.language === "html" ||
             request.language === "image") && (
-            <button
+            <button data-offer="app/ask.capture"
               onClick={captureRegion}
               className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground"
               title="Capture region — hides this popup, draw a marquee, then resume with the image attached"
@@ -877,7 +911,7 @@ export function AskPrompt({ request, editable = false, onAccept, onCancel }: Ask
               <Camera className="h-3 w-3" />
             </button>
           )}
-        <button
+        <button data-offer="app/ask.close"
           onClick={cancel}
           className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground"
           title={streaming ? "Stop (Esc)" : "Close (Esc)"}
@@ -902,7 +936,7 @@ export function AskPrompt({ request, editable = false, onAccept, onCancel }: Ask
                     {img.sourceAnchor ? ` · ${img.sourceAnchor}` : ""}
                   </span>
                 )}
-                <button
+                <button data-offer="app/ask.removeImage"
                   onClick={() => removeExtraImage(i)}
                   className="absolute -top-1.5 -right-1.5 h-4 w-4 flex items-center justify-center rounded-full bg-card border border-border text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
                   title="Remove"

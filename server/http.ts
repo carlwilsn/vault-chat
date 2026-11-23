@@ -1,5 +1,7 @@
 import { serverBuildRoute } from "./serverBuild";
-import { globalNotes, appendGlobalNote, writeGlobalNotes, noteSourceOwner } from "./notesStorage";
+import { globalNotes, writeGlobalNotes, noteSourceOwner } from "./notesStorage";
+import { alertsNoun } from "./model/alerts";
+import { settingsNoun } from "./model/settings";
 import { notesNoun } from "./model/notes";
 import { dedupeIntent } from "./intentDedupe";
 // The box's HTTP surface: the phone routes ported from voice_server.rs (same
@@ -11,7 +13,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import { inProjectFolder } from "./projectFolders";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
-import { legacyPushEnabled, setLegacyPushEnabled } from "./pushPreferences";
+import { legacyPushEnabled } from "./pushPreferences";
 import { readSetting, settingsRoute } from "./settings";
 import { trackWrites } from "./drain";
 import { inputSurface, noteInput } from "./presence";
@@ -35,7 +37,7 @@ import { brainRoute, type BrainDeps } from "./voiceBrain";
 import { relay } from "./bus";
 import { globalFeed, ownerVault, signal } from "./convlog/log";
 import { conversationsSummary, conversationDetail, notificationsFeed, notesFeed, withinVault, mimeFor } from "./phoneData";
-import { notificationAppend, pushSubsAdd, pushSubsRemove, vapidPublicKey } from "./commands/phone";
+import { notificationAppend, vapidPublicKey } from "./commands/phone";
 import { isGitPath, handleGitHttp } from "./gitHttp";
 import { isLfsPath, handleLfs } from "./lfs";
 import { validVaultName, syncNow } from "./sync";
@@ -50,7 +52,7 @@ import ICON_PNG_INLINE from "../src-tauri/assets/icon-apple-touch.png";
 import PHONE_APP from "vc:phone-app";
 import { boxLogs } from "./boxLogs";
 import { ackShow, feedOpened } from "./show";
-import { chatSeen, linkStates } from "./deviceLink";
+import { chatSeen, linkStates, setDeviceView } from "./deviceLink";
 import { hostBuildHistory, lastHostBuild, recordHostBuild } from "./hostBuild";
 import { noteAttention, pushGate } from "./pushGate";
 import { boxDiag, clientLogPost } from "./diag";
@@ -258,6 +260,7 @@ const CONVERSATION_ROUTES = new Set([
   "/api/v1/side",
   "/api/v1/brain/call",
   "/api/v1/attention",
+  "/api/v1/phone/view",
   "/api/v1/voice/tool",
   "/api/v1/voice/session",
   "/api/v1/voice/updates",
@@ -590,6 +593,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
 
   // Is Carl looking (server/pushGate.ts): a surface says so while it is on screen (and, on the
   // laptop, used), and says when it no longer is. The phone buzzes only when no surface is.
+  // What the phone shows (its page): box:links' phone view, watched.
+  if (path === "/api/v1/phone/view" && method === "POST") {
+    const b = await jsonBody(req);
+    setDeviceView("phone", { page: b.page === "notes" ? "notes" : "alerts", ...(typeof b.sheet === "string" ? { sheet: b.sheet } : {}) });
+    return json(res, 200, { ok: true });
+  }
   if (path === "/api/v1/attention" && method === "POST") {
     const b = await jsonBody(req);
     if (!noteAttention(vault, b.device, b.looking === true, b.convId)) return json(res, 400, { error: "device: laptop or phone" });
@@ -693,6 +702,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     return json(res, out.status, out.body);
   }
   // Offer events from the app (src/offerHistory.ts) into the event log (server/offerLog.ts).
+  // The laptop's layout as it changed by hand (src/layoutOps.ts pushLayoutChanges): box:workspace's state and watch.
+  if (path === "/api/v2/layout" && method === "POST") {
+    const b = await jsonBody(req);
+    (await import("./layoutTool")).keepLaptopLayout(b.layout);
+    return json(res, 200, { ok: true });
+  }
   if (path === "/api/v2/offer-events" && method === "POST") {
     const out = (await import("./offerLog")).offerEventsRoute(vault, await jsonBody(req));
     return json(res, out.status, out.body);
@@ -762,13 +777,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       return json(res, 200, q("full") === "1" ? { notes: globalNotes(vault).sort((a,b) => a.timestamp < b.timestamp ? 1 : -1) } : notesFeed(vault));
     case "POST /notes": {
       const b = await jsonBody(req);
-      if (b.note) {
-        appendGlobalNote(vault, b.note);
-        return json(res, 200, { ok: true, id: b.note.id });
-      }
-      // The notes noun's actions (server/model/notes.ts): the panel's and the phone's controls are the agent's box:notes.
-      const r = await notesNoun(vault).actions.add!.run({ text: b.text, source_path: b.source_path }, "app");
-      return json(res, r.ok ? 200 : 400, { ...r, error: r.ok ? undefined : r.text });
+      // The notes noun's add (server/model/notes.ts): the note composer's save, the panel's and the phone's are the agent's box:notes add.
+      const args: Record<string, unknown> = { text: typeof b.text === "string" ? b.text : "" };
+      for (const k of ["source_path", "anchors", "turns", "id"]) if (b[k] !== undefined) args[k] = b[k];
+      const r = await notesNoun(vault).actions.add!.run(args, "app");
+      return json(res, r.ok ? 200 : 400, { ...r, id: typeof b.id === "string" ? b.id : undefined, error: r.ok ? undefined : r.text });
     }
     case "POST /notes/write": {
       const b = await jsonBody(req);
@@ -789,17 +802,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       const r = await notesNoun(vault).actions.clearResolved!.run({}, "app");
       return json(res, r.ok ? 200 : 400, { ...r, error: r.ok ? undefined : r.text });
     }
+    // The alerts noun's actions (server/model/alerts.ts): the phone's controls are the agent's box:alerts.
     case "POST /notifications/read":
     case "POST /notifications/hide": {
       const b = await jsonBody(req);
       if (typeof b.id !== "string") return json(res, 400, { error: "missing id or vault" });
-      const type = path.endsWith("/read") ? "read" : "hide";
-      notificationAppend(vault, JSON.stringify({ type, id: b.id, ts: Date.now() }));
+      const r = await alertsNoun(vault).actions[path.endsWith("/read") ? "markRead" : "hide"]!.run({ id: b.id }, "app");
+      return json(res, 200, { ok: true, said: r.text });
+    }
+    case "POST /notifications/clear": {
+      await alertsNoun(vault).actions.clear!.run({}, "app");
       return json(res, 200, { ok: true });
     }
-    case "POST /notifications/clear":
-      notificationAppend(vault, JSON.stringify({ type: "clear", ts: Date.now() }));
-      return json(res, 200, { ok: true });
     case "GET /status":
       // Every vault's runs are its engine's.
       if (hooks.vaultStatus) return json(res, 200, await hooks.vaultStatus(scope));
@@ -830,7 +844,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     case "POST /push/preferences": {
       const b = await jsonBody(req);
       if (typeof b.legacyAutomatic !== "boolean") return json(res, 400, { error: "legacyAutomatic must be a boolean" });
-      setLegacyPushEnabled(b.legacyAutomatic);
+      // The settings noun's set (box:settings): the phone's switch is the agent's set of pushAutomatic.
+      const r = await settingsNoun.actions.set!.run({ key: "pushAutomatic", value: b.legacyAutomatic }, "carl");
+      if (!r.ok) return json(res, 400, { error: r.text });
       return json(res, 200, { legacyAutomatic: legacyPushEnabled() });
     }
     case "GET /push/vapid": {
@@ -841,16 +857,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       const b = await jsonBody(req);
       const sub = b.subscription ?? b;
       if (typeof sub?.endpoint !== "string") return json(res, 400, { error: "missing endpoint" });
-      pushSubsAdd(sub);
+      await alertsNoun(vault).actions.subscribe!.run({ subscription: sub }, "app");
       return json(res, 200, { ok: true });
     }
     case "POST /push/unsubscribe": {
       const b = await jsonBody(req);
-      if (typeof b.endpoint === "string") pushSubsRemove(b.endpoint);
+      if (typeof b.endpoint === "string") await alertsNoun(vault).actions.unsubscribe!.run({ endpoint: b.endpoint }, "app");
       return json(res, 200, { ok: true });
     }
-    case "POST /push/test":
-      return relayRoute(res, "phone:pushtest", {}, 15_000, "app not answering");
+    case "POST /push/test": {
+      const r = await alertsNoun(vault).actions.test!.run({}, "app");
+      return r.ok ? json(res, 200, { ok: true }) : json(res, 503, { error: r.text });
+    }
     // Projects: the chat chip and "New chat in project" (desktop box mode, phone).
     // Every vault's projects, whatever vault is open (a project is a folder with its own conversation).
     case "GET /projects":

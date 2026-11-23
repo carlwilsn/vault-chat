@@ -1,3 +1,5 @@
+import { startCapture } from "../../capture";
+import { registerVoicePanel, voicePanelChanged } from "./panel";
 import { useEffect, useRef, useState } from "react";
 import { Camera, X, GripHorizontal, ArrowRight } from "lucide-react";
 import { useStore } from "../../store";
@@ -36,10 +38,6 @@ export function VoiceTextPanel() {
   const currentFile = useStore((s) => s.currentFile);
   const voiceLastCapture = useStore((s) => s.voiceLastCapture);
   const setVoiceLastCapture = useStore((s) => s.setVoiceLastCapture);
-  const setVoiceCapturePending = useStore((s) => s.setVoiceCapturePending);
-  const setChatPaneCapturePending = useStore((s) => s.setChatPaneCapturePending);
-  const setEditPromptCapturePending = useStore((s) => s.setEditPromptCapturePending);
-  const setNoteCapturePending = useStore((s) => s.setNoteCapturePending);
 
   const [text, setText] = useState("");
   const [pendingImage, setPendingImage] = useState<{
@@ -189,13 +187,7 @@ export function VoiceTextPanel() {
     if (!canMarquee) return;
     // Steal the marquee queue from the other consumers — viewers route
     // by the first pending flag they see, so clear the others to be safe.
-    setChatPaneCapturePending(false);
-    setEditPromptCapturePending(false);
-    setNoteCapturePending(false);
-    setVoiceCapturePending(true);
-    // Fullscreen chat has no viewer: App shows the file over the chat for it.
-    const st = useStore.getState();
-    window.dispatchEvent(new CustomEvent(st.chatFullscreen && !st.popoutOpen ? "vc-fullscreen-capture" : "vc-marquee-toggle"));
+    startCapture("voice");
   };
 
   const removeImage = () => setPendingImage(null);
@@ -215,6 +207,21 @@ export function VoiceTextPanel() {
     setPendingImage(null);
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
+
+  // What it holds and its controls, for app/voice's textPanel state and its type / send / removeImage actions.
+  const liveRef = useRef({ text, pendingImage, pos, setText, send, removeImage });
+  liveRef.current = { text, pendingImage, pos, setText, send, removeImage };
+  useEffect(
+    () =>
+      registerVoicePanel({
+        state: () => ({ text: liveRef.current.text, image: liveRef.current.pendingImage ? { source: liveRef.current.pendingImage.sourcePath, anchor: liveRef.current.pendingImage.sourceAnchor } : null, moved: !!liveRef.current.pos }),
+        type: (t) => liveRef.current.setText(t),
+        send: () => liveRef.current.send(),
+        removeImage: () => liveRef.current.removeImage(),
+      }),
+    [],
+  );
+  useEffect(() => voicePanelChanged());
 
   const onTextareaKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key !== "Enter" || e.shiftKey) return;
@@ -243,7 +250,7 @@ export function VoiceTextPanel() {
         <GripHorizontal className="h-3 w-3" />
         <span className="text-[11px] font-medium">Type to voice agent</span>
         <div className="flex-1" />
-        <button
+        <button data-offer="app/viewer.capture"
           onMouseDown={(e) => e.stopPropagation()}
           onClick={onCapture}
           disabled={!canMarquee}
@@ -256,7 +263,7 @@ export function VoiceTextPanel() {
         >
           <Camera className="h-3 w-3" />
         </button>
-        <button
+        <button data-offer="app/voice.end"
           onMouseDown={(e) => e.stopPropagation()}
           onClick={() => {
             setOpen(false);
@@ -277,7 +284,7 @@ export function VoiceTextPanel() {
               alt="capture"
               className="max-h-24 rounded border border-border"
             />
-            <button
+            <button data-offer="app/voice.removeImage"
               onClick={removeImage}
               className="absolute -top-1.5 -right-1.5 h-4 w-4 flex items-center justify-center rounded-full bg-card border border-border text-muted-foreground hover:text-foreground"
               title="Remove image"
@@ -296,7 +303,7 @@ export function VoiceTextPanel() {
           auto-grows the button stays glued to the bottom-right. */}
       <div className="p-2">
         <div className="relative rounded-md border border-border bg-background pl-3 pr-9 py-2 focus-within:border-primary/60">
-          <textarea
+          <textarea data-offer="app/voice.say"
             ref={textareaRef}
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -306,7 +313,7 @@ export function VoiceTextPanel() {
             className="block w-full resize-none bg-transparent border-0 p-0 text-[13px] leading-snug outline-none placeholder:text-muted-foreground"
             style={{ minHeight: TEXTAREA_MIN_H, maxHeight: TEXTAREA_MAX_H, overflowY: "hidden" }}
           />
-          <button
+          <button data-offer="app/voice.say"
             onClick={() => void send()}
             disabled={!canSend}
             className={`absolute right-1.5 h-6 w-6 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent/60 disabled:opacity-40 disabled:cursor-not-allowed ${

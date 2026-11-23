@@ -12,7 +12,7 @@ import React, { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
-import { installFakeTauri, makeTempVault } from "./fakes.ts";
+import { installFakeTauri, makeTempVault, withOffers } from "./fakes.ts";
 
 const vault = makeTempVault("vc-composerplugin-");
 const fake = installFakeTauri(vault);
@@ -111,7 +111,7 @@ test("mounted through the host, it draws the composer at once and declares its o
   _resetDraft();
   seed();
   host = el();
-  handle = mountPlugin(host, { name: "Composer", module: composer }, { path: COMPOSER_PLUGIN_ID, theme: () => THEME, host: appHostBackend });
+  handle = mountPlugin(host, { name: "Composer", module: withOffers(composer, composer) }, { path: COMPOSER_PLUGIN_ID, theme: () => THEME, host: appHostBackend });
   await handle.ready;
   assert.equal(handle.error, null);
   assert.match(html(host), /data-el="composer"/);
@@ -122,9 +122,9 @@ test("mounted through the host, it draws the composer at once and declares its o
   const d = listOffers().find((p) => p.id === "app/composer")!;
   assert.ok(d, "listed while it runs");
   assert.equal(d.name, "Composer");
-  assert.deepEqual(d.state.map((s) => s.name), ["draft", "model", "send"]);
-  assert.deepEqual(d.actions.map((a) => a.name), ["setDraft", "attach", "detach", "clear", "setModel", "setEffort", "send", "stop", "focus"]);
-  assert.deepEqual(d.events.map((e) => e.name), ["sent", "attached"]);
+  assert.deepEqual(d.state.map((s) => s.name), ["draft", "model", "send", "usage", "skills"]);
+  assert.deepEqual(d.actions.map((a) => a.name), ["setDraft", "attach", "detach", "openUsage", "sendQueuedNow", "editQueued", "cancelQueued", "clear", "setModel", "setEffort", "send", "stop", "focus"]);
+  assert.deepEqual(d.events.map((e) => e.name), ["sent", "attached", "detached", "stateChanged"]);
 });
 
 test("read: an empty draft, the model labels, and whether a message can go", async () => {
@@ -133,7 +133,7 @@ test("read: an empty draft, the model labels, and whether a message can go", asy
   assert.deepEqual(r.state!.draft, { text: "", references: [], images: [], files: [] });
   const m = r.state!.model as any;
   assert.ok("model" in m && "effort" in m && Array.isArray(m.models));
-  assert.deepEqual(r.state!.send, { ready: true, sending: false, busy: false, held: false, waiting: 0, canSend: false, button: "send" });
+  assert.deepEqual(r.state!.send, { ready: true, sending: false, busy: false, held: false, waiting: 0, queued: [], canSend: false, button: "send" });
   // The box out of reach: not ready, and why.
   useStore.setState({ boxChat: { on: true, reachable: false, reason: "timed out" } } as any);
   const down = (await readOffers("composer", "send")).state!.send as any;
@@ -263,7 +263,7 @@ test("ComposerSlot: unknown, the composer itself in the app's tree; running, the
   assert.match(renderToStaticMarkup(createElement(ComposerSlot)), /data-vc-plugin="app\/composer"/);
 });
 
-test("a plugin that throws on mount: the built-in composer stands in (no error card), Reload mounts it afresh; the offers come back", async () => {
+test("a plugin that throws on mount: the built-in composer stands in (no error card), Reload mounts it afresh", async () => {
   _resetOffers();
   seed();
   let fail = true;
@@ -290,11 +290,9 @@ test("a plugin that throws on mount: the built-in composer stands in (no error c
   await waitFor("the fallback composer", () => html(container).includes('data-el="composer-fallback"'));
   assert.match(html(container), /data-el="composer-fallback-error"/);
   assert.ok(!html(container).includes('data-el="plugin-error"'), "the fallback, not the error card");
-  assert.ok(!listOffers().some((p) => p.id === "app/composer"));
   fail = false;
   retry!();
   await waitFor("the plugin again", () => html(container).includes('data-el="composer"') && html(container).includes("composer-plus"));
-  assert.ok(listOffers().some((p) => p.id === "app/composer"));
   root.unmount();
   await tick();
 });

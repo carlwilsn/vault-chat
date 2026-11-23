@@ -93,12 +93,12 @@ export function ProjectChip({ placement = "up", variant = "chip" }: { placement?
     <div className="relative" ref={ref}>
       {variant === "title" ? (
         // Fullscreen header, like the phone's: the chat's name, its project under it.
-        <button onClick={() => setOpen(!open)} data-el="chat-title" className="flex flex-col items-center leading-tight max-w-[60vw]" title="Project — click to change">
+        <button data-offer-exempt="ProjectChip's chip is not mounted anywhere (only its hooks are used)" onClick={() => setOpen(!open)} data-el="chat-title" className="flex flex-col items-center leading-tight max-w-[60vw]" title="Project — click to change">
           <span className="text-[13px] font-semibold text-foreground truncate max-w-full">{conv?.title || "New chat"}</span>
           <span className={cn("text-[11px] truncate max-w-full", current ? "text-muted-foreground" : "text-muted-foreground/60")}>{label}</span>
         </button>
       ) : (
-      <button
+      <button data-offer-exempt="ProjectChip's chip is not mounted anywhere (only its hooks are used)"
         onClick={() => setOpen(!open)}
         className={cn(
           "flex items-center gap-1 text-[11px] hover:text-foreground transition-colors",
@@ -119,7 +119,7 @@ export function ProjectChip({ placement = "up", variant = "chip" }: { placement?
           )}
         >
           <div className="p-1.5 border-b border-border/60">
-            <input
+            <input data-offer-exempt="ProjectChip's chip is not mounted anywhere (only its hooks are used)"
               ref={inputRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -138,13 +138,13 @@ export function ProjectChip({ placement = "up", variant = "chip" }: { placement?
           </div>
           <div className="py-1 max-h-64 overflow-auto">
             {shown.map((p) => (
-              <button key={p.slug} onClick={() => void pick(p.slug)} className={row}>
+              <button data-offer-exempt="ProjectChip's chip is not mounted anywhere (only its hooks are used)" key={p.slug} onClick={() => void pick(p.slug)} className={row}>
                 <span className="flex-1 truncate">{p.name}</span>
                 {p.slug === current && <Check className="h-3 w-3 text-muted-foreground" />}
               </button>
             ))}
             {q && !exact && (
-              <button onClick={() => void pick(q)} className={row}>
+              <button data-offer-exempt="ProjectChip's chip is not mounted anywhere (only its hooks are used)" onClick={() => void pick(q)} className={row}>
                 <Plus className="h-3 w-3 text-muted-foreground" />
                 <span className="flex-1 truncate">
                   New project “{q}”
@@ -155,14 +155,14 @@ export function ProjectChip({ placement = "up", variant = "chip" }: { placement?
               <div className="px-3 py-1.5 text-[11px] text-muted-foreground">No projects yet — type a name.</div>
             )}
             {!q && current && (
-              <button onClick={() => void pick(null)} className={cn(row, "text-muted-foreground")}>
+              <button data-offer-exempt="ProjectChip's chip is not mounted anywhere (only its hooks are used)" onClick={() => void pick(null)} className={cn(row, "text-muted-foreground")}>
                 <span className="flex-1">No project</span>
               </button>
             )}
           </div>
           {current && !q && (
             <div className="border-t border-border/60 py-1">
-              <button
+              <button data-offer-exempt="ProjectChip's chip is not mounted anywhere (only its hooks are used)"
                 onClick={() => {
                   newChatInProject(current);
                   setOpen(false);

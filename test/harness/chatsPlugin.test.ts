@@ -12,7 +12,7 @@ import React, { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
-import { installFakeTauri, makeTempVault } from "./fakes.ts";
+import { installFakeTauri, makeTempVault, withOffers } from "./fakes.ts";
 
 const vault = makeTempVault("vc-chatsplugin-");
 const fake = installFakeTauri(vault);
@@ -99,7 +99,7 @@ test("mounted through the host (the sidebar surface), it renders the list and de
   _resetOffers();
   seed();
   host = el();
-  handle = mountPlugin(host, { name: "Chats", module: chats.sidebar }, { path: CHATS_PLUGIN_ID, theme: () => THEME, host: appHostBackend });
+  handle = mountPlugin(host, { name: "Chats", module: withOffers(chats.sidebar, chats) }, { path: CHATS_PLUGIN_ID, theme: () => THEME, host: appHostBackend });
   await handle.ready;
   assert.equal(handle.error, null);
   await waitFor("the list renders its places", () => html(host).includes('data-el="thread-project"') && html(host).includes("Physics"));
@@ -109,7 +109,7 @@ test("mounted through the host (the sidebar surface), it renders the list and de
   assert.ok(d, "listed while it runs");
   assert.equal(d.name, "Chats");
   assert.deepEqual(d.state.map((s) => s.name), ["places", "selected", "panel"]);
-  assert.deepEqual(d.actions.map((a) => a.name), ["open", "expand", "collapse", "showMore", "showLess", "newChat", "rename", "renameProject", "delete", "restore", "openPanel", "closePanel"]);
+  assert.deepEqual(d.actions.map((a) => a.name), ["open", "expand", "collapse", "showMore", "showLess", "newChat", "openPanel", "closePanel"]);
 });
 
 test("read: the places as the screen has them; Main is expanded (Carl is in it), 5 of its 8 chats shown", async () => {
@@ -165,21 +165,14 @@ test("act round trip: expand a project, open its chat, show more on Main; the li
   await waitFor("Physics hides its chats", () => !html(host).includes('data-chat="p1"'));
 });
 
-test("actions that change chats: new chat in a place, rename, delete (never Main or a project thread); bad input refused", async () => {
+test("actions on the list: new chat in a place, renames and deletes are box:chats' (one route); bad input refused", async () => {
   let r = await actOffers("chats", "newChat", { place: "essays" });
   assert.equal(r.ok, true, r.error);
   const id = (r.result as any).created as string;
   assert.equal(S().conversations.find((c) => c.id === id)?.project, "essays");
   assert.equal(S().activeConversationId, id);
   r = await actOffers("chats", "rename", { id: "m3", title: "Lab report" });
-  assert.equal(r.ok, true, r.error);
-  assert.equal(S().conversations.find((c) => c.id === "m3")?.title, "Lab report");
-  r = await actOffers("chats", "delete", { id: "main" });
-  assert.equal(r.ok, false);
-  assert.match(r.error!, /never deleted/);
-  r = await actOffers("chats", "delete", { id: "m7" });
-  assert.equal(r.ok, true, r.error);
-  assert.ok(!S().conversations.some((c) => c.id === "m7"));
+  assert.equal(r.ok, false, "renaming is box:chats rename");
   r = await actOffers("chats", "expand", { place: "nowhere" });
   assert.match(r.error!, /no place "nowhere"/);
   r = await actOffers("chats", "open", { id: "zzz" });
@@ -232,7 +225,7 @@ test("AppPluginMount with a fallback: running, the plugin; turned off, the built
   assert.match(sidebar(), /data-vc-plugin="app\/chats"/);
 });
 
-test("a plugin that throws on mount: the fallback list stands in (no error card), Reload mounts it afresh; the offers are gone", async () => {
+test("a plugin that throws on mount: the fallback list stands in (no error card), Reload mounts it afresh", async () => {
   _resetOffers();
   seed();
   let fail = true;
@@ -260,11 +253,9 @@ test("a plugin that throws on mount: the fallback list stands in (no error card)
   assert.match(html(container), /data-el="chats-fallback-error"/);
   assert.ok(!html(container).includes('data-el="plugin-error"'), "the fallback, not the error card");
   assert.match(html(container), /data-chat="m0"/);
-  assert.ok(!listOffers().some((p) => p.id === "app/chats"));
   fail = false;
   retry!();
   await waitFor("the plugin again", () => html(container).includes('data-el="chats-sidebar"') && html(container).includes('data-el="thread-main"'));
-  assert.ok(listOffers().some((p) => p.id === "app/chats"));
   root.unmount();
   await tick();
 });

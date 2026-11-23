@@ -16,18 +16,22 @@ import { createRoot } from "react-dom/client";
 import type { PluginApi } from "../../mountHost";
 import { keyNamed } from "../../store";
 import { ELEVENLABS_VOICE_KEY } from "../../appPlugins";
-import { saveSetting, setting } from "../../settings";
+import { onSettingsChanged, saveSetting, setting } from "../../settings";
 import { ElevenLabsVoicePanel } from "./Panel";
-import { createPanelView, type PanelView } from "./view";
+import { createPanelView, onPanelChanged, panelAct, panelParts, type PanelView } from "./view";
 
 /** The plugin's offers over its panel's view (exported for tests). */
 export function elevenLabsVoiceOffers(view: PanelView, emit: (event: string, data?: unknown) => void = () => {}) {
   const voice = () => ({ voiceId: setting("voice"), hasKey: !!keyNamed(ELEVENLABS_VOICE_KEY) });
   return {
+    watch: (fn: () => void) => {
+      const offs = [view.subscribe(fn), onPanelChanged(fn), onSettingsChanged(fn)];
+      return () => offs.forEach((f) => f());
+    },
     state: {
       panel: {
-        description: "The ElevenLabs voice panel on Carl's screen: open.",
-        read: () => ({ open: view.get() }),
+        description: "The ElevenLabs voice panel on Carl's screen: open, and its parts while drawn: voices (the account's voices: id, name, unfit?; voiceId chosen, loading, browsing the library, testing, error), health (the Voice health dialog open, pipeline ready, error, failure) and library (while browsing: query, anyUse, results and recommended voices (id, name, accent, gender, sample), playing, adding, loading, error).",
+        read: () => ({ open: view.get(), parts: panelParts() }),
       },
       voice: {
         description: "The voice ElevenLabs speaks with on every call (voiceId, the `voice` setting) and whether Keys holds the key ELEVENLABS_API_KEY (hasKey; without one calls use the local voice).",
@@ -38,38 +42,82 @@ export function elevenLabsVoiceOffers(view: PanelView, emit: (event: string, dat
       open: {
         description: "Open the ElevenLabs voice panel (the voice picker, the voice library, Test, voice health).",
         run: () => {
-          if (!view.get()) {
-            view.set(true);
-            emit("opened");
-          }
+          view.set(true);
           return { open: true };
         },
       },
       close: {
         description: "Close the panel.",
         run: () => {
-          if (view.get()) {
-            view.set(false);
-            emit("closed");
-          }
+          view.set(false);
           return { open: false };
+        },
+      },
+      test: {
+        description: "The panel's Test: the chosen voice says a short line on this laptop's speakers.",
+        run: async () => {
+          await panelAct("voices", "test");
+          return panelParts().voices ?? null;
+        },
+      },
+      browseLibrary: {
+        description: "Open (or close, open false) the voice library in the panel (its picker's Browse the voice library…).",
+        args: { type: "object", properties: { open: { type: "boolean" } }, additionalProperties: false },
+        run: (a: Record<string, unknown>) => {
+          if (a.open === false && panelParts().library) panelAct("library", "close");
+          else panelAct("voices", "browse", { open: a.open !== false });
+          return { browsing: a.open !== false };
+        },
+      },
+      searchLibrary: {
+        description: "Search the open voice library (its search box; anyUse: its any-use switch); the results are in parts.library.",
+        args: { type: "object", properties: { query: { type: "string" }, anyUse: { type: "boolean" } }, additionalProperties: false },
+        run: (a: Record<string, unknown>) => {
+          panelAct("library", "search", a);
+          return { query: a.query ?? null };
+        },
+      },
+      previewLibraryVoice: {
+        description: "Play (or stop) a library voice's sample on this laptop (its ▶).",
+        args: { type: "object", properties: { voiceId: { type: "string" } }, required: ["voiceId"], additionalProperties: false },
+        run: (a: Record<string, unknown>) => {
+          panelAct("library", "preview", a);
+          return { playing: (panelParts().library as { playing?: unknown } | undefined)?.playing ?? null };
+        },
+      },
+      addLibraryVoice: {
+        description: "Pick a library voice (its row): it is added to the account and becomes the voice. Only when Carl asks.",
+        args: { type: "object", properties: { voiceId: { type: "string" } }, required: ["voiceId"], additionalProperties: false },
+        run: async (a: Record<string, unknown>) => {
+          await panelAct("library", "add", a);
+          return voice();
+        },
+      },
+      openHealth: {
+        description: "Open (or close, open false) the panel's Voice health dialog.",
+        args: { type: "object", properties: { open: { type: "boolean" } }, additionalProperties: false },
+        run: (a: Record<string, unknown>) => {
+          panelAct("health", "open", { open: a.open !== false });
+          return { open: a.open !== false };
         },
       },
       setVoice: {
         description: "Set the voice ElevenLabs speaks with (an ElevenLabs voice id; null: the default). Only when Carl asks.",
         args: { type: "object", properties: { voiceId: { type: ["string", "null"] } }, required: ["voiceId"], additionalProperties: false },
         run: async (a: Record<string, unknown>) => {
-          const why = await saveSetting("voice", (a.voiceId ?? null) as string | null);
-          if (why) throw new Error(why);
+          // The picker's own choose when the panel is drawn (it checks the voice fits); else the same setting.
+          if (typeof a.voiceId === "string" && panelParts().voices) await panelAct("voices", "choose", { voiceId: a.voiceId });
+          else {
+            const why = await saveSetting("voice", (a.voiceId ?? null) as string | null);
+            if (why) throw new Error(why);
+          }
           emit("changed", { voiceId: setting("voice") });
           return voice();
         },
       },
     },
     events: {
-      opened: { description: "The panel opened." },
-      closed: { description: "The panel closed." },
-      changed: { description: "The agent changed the voice: voiceId." },
+      changed: { description: "The agent changed the voice: voiceId. Carl's own changes (the panel, its library, health): stateChanged." },
     },
   };
 }

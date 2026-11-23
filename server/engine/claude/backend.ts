@@ -28,7 +28,7 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { readWorkers, recentRows, type WorkerRow } from "./workers";
+import { readWorkers, recentRows, sessionDirs, type WorkerRow } from "./workers";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   ThreadUnknownError,
@@ -1224,6 +1224,13 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     const translator = this.live.get(parentThreadId)?.translator;
     const now = o.now ?? Date.now();
     return recentRows(readWorkers(this.o.paths.configDir, sessionId, (id) => translator?.taskView(id) ?? null, now), now, o.all);
+  }
+
+  /** The session's transcript dirs (its subagents/ dirs, else the session dir where they will appear): box:jobs' watch. */
+  workerDirs(parentThreadId: string): string[] {
+    const sessionId = this.threads[parentThreadId]?.sessionId;
+    if (!sessionId) return [];
+    return sessionDirs(this.o.paths.configDir, sessionId).map((d) => (existsSync(join(d, "subagents")) ? join(d, "subagents") : d));
   }
 
   /** A worker quiet for 10 min is said once in its chat (a quiet line; the agent decides: JobStatus, resume, stop). */

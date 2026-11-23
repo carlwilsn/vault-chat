@@ -136,6 +136,12 @@ export async function saveSetting(key: SettingKey, value: SettingValue): Promise
   return r.ok ? null : (r.error ?? "the box refused");
 }
 
+/** Hear any setting change here (a record from anywhere, or Carl's pick); returns the undo. */
+export function onSettingsChanged(fn: () => void): () => void {
+  subs.add(fn);
+  return () => void subs.delete(fn);
+}
+
 /** A setting, kept current (a record from anywhere re-renders the component). */
 export function useSetting(key: SettingKey): SettingValue {
   const [v, setV] = useState(shown(key));

@@ -41,6 +41,43 @@ function writeSubs(list: any[]): void {
   const p = subsPath();
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify(list, null, 2));
+  alertsChanged();
+}
+
+const alertFns = new Set<() => void>();
+/** Hear the alerts change (a line appended to a vault's notifications, a push subscription added or removed): box:alerts' watch. */
+export function onAlertsChanged(fn: () => void): () => void {
+  alertFns.add(fn);
+  return () => void alertFns.delete(fn);
+}
+function alertsChanged(): void {
+  for (const f of [...alertFns]) queueMicrotask(() => {
+    try {
+      f();
+    } catch {
+      /* a listener's own error */
+    }
+  });
+}
+/** The full endpoint of the one subscription whose endpoint is, or ends with, `tail` (null: none, or more than one). */
+export function pushEndpointEnding(tail: string): string | null {
+  if (!tail) return null;
+  const hits = readSubs().map((s) => String(s?.endpoint ?? "")).filter((e) => e === tail || e.endsWith(tail));
+  return hits.length === 1 ? hits[0]! : null;
+}
+
+/** The push subscriptions as the agent may see them: the push service's host and how often it refused, never the keys. */
+export function pushSubsShown(): { service: string; endpoint: string; refusals: number }[] {
+  return readSubs().map((s) => {
+    const ep = String(s?.endpoint ?? "");
+    let service = "";
+    try {
+      service = new URL(ep).host;
+    } catch {
+      service = "?";
+    }
+    return { service, endpoint: ep.slice(-16), refusals: Number(s?.refusals) || 0 };
+  });
 }
 
 /** voice_server.rs:1447 push_subs_add — replace by endpoint. */
@@ -90,6 +127,7 @@ export function notificationAppend(vault: string, line: string): void {
   const p = join(vault, ".vault-chat", "notifications.jsonl");
   mkdirSync(dirname(p), { recursive: true });
   appendFileSync(p, line.trim() + "\n");
+  alertsChanged();
 }
 
 export const phoneCommands: Record<string, CommandFn> = {

@@ -13,7 +13,8 @@ import { globalCutover } from '../convlog/globalCutover';
 // host calls.
 import { vaultPath } from "../vaultPath";
 import { conversationRoot } from "../context/config";
-import { chatVaults, ownerVault } from "../convlog/log";
+import { chatVaults, convLog, ownerVault } from "../convlog/log";
+import { all, folded, watchDir } from "../model/watch";
 import { appendFileSync, existsSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { LIVE_LIMITS, allowRate, liveAskText } from "../../src/liveBridge";
 import { holdRun, registerRun, unregisterRun } from "../../src/runRegistry";
@@ -1341,6 +1342,16 @@ export class Engine {
       },
       status: (id, tail) => this.agentWorker(threadId, id) ?? this.workerStatus(convId, id) ?? this.withExposed(id, jobStatus(this.d.jobEnv, { id, tail })),
       control: (id, op, text) => this.jobControl(convId, id, op, text),
+      watch: (fn) => {
+        const f = folded(fn);
+        const offs = [f.stop, watchDir(this.d.jobEnv.logDir, f.call), ...(threadId ? (this.d.backend.workerDirs?.(threadId) ?? []).map((d) => watchDir(d, f.call)) : [])];
+        try {
+          offs.push(convLog(this.d.vault).onRecord((r) => r.conv === convId && f.call()));
+        } catch {
+          /* no log here: the files alone */
+        }
+        return all(offs);
+      },
     };
   }
 
@@ -1394,6 +1405,13 @@ export class Engine {
         const r = await this.restoreAcrossVaults(id);
         return r.ok ? { ok: true, text: `Restored chat ${id}: it is back in Carl's lists.` } : { ok: false, text: `Not restored: ${r.error}.` };
       },
+      deleteProject: async (want, folder) => {
+        const p = findProject(want);
+        if (!p) return { ok: false, text: `No project "${want}". Nothing was deleted.` };
+        // The same intent as the list's ⋯ Delete (src/projects.ts deleteProject).
+        const r = await this.intent({ type: "deleteProject", slug: p.slug, ...(folder ? { folder: true } : {}), client: "agent" });
+        return r.ok ? { ok: true, text: `Deleted project ${p.name}${folder ? " and its folder" : " (its folder stays)"}; restoreProject brings it back.` } : { ok: false, text: `Not deleted: ${String(r.error)}.` };
+      },
       restoreProject: async (want) => {
         const r = await this.restoreProject(want);
         return r.ok ? { ok: true, text: `Restored project ${r.name}: its notes and its thread (${r.convId}) are back on his screens.` } : { ok: false, text: `Not restored: ${r.error}.` };
@@ -1428,6 +1446,18 @@ export class Engine {
         if (r?.error) return { ok: false, text: `Not posted: ${String(r.error)}` };
         const waiting = r?.queued === true || r?.steered === true;
         return { ok: true, text: `Posted to "${to.title}" (${target}); it ${waiting ? "has it waiting and will take it when its current turn ends" : "is taking its own turn"}. It will tell Carl itself, so do not wait or report for it.` };
+      },
+      watch: (fn) => {
+        const f = folded(fn, 300);
+        const offs = [f.stop];
+        for (const v of chatVaults(vault)) {
+          try {
+            offs.push(convLog(v).onRecord(() => f.call()));
+          } catch {
+            /* a vault whose log can't open: the others still say */
+          }
+        }
+        return all(offs);
       },
     };
   }

@@ -13,7 +13,7 @@ import React, { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
-import { installFakeTauri, makeTempVault } from "./fakes.ts";
+import { installFakeTauri, makeTempVault, withOffers } from "./fakes.ts";
 
 const vault = makeTempVault("vc-titlebarplugin-");
 const fake = installFakeTauri(vault);
@@ -108,7 +108,7 @@ test("mounted through the host, it draws the bar and declares its offers", async
   useStore.setState({ vaultPath: vault, leftCollapsed: false, rightCollapsed: false, popoutOpen: false, showSettings: false } as any);
   host = el();
   (root as any).append(host);
-  handle = mountPlugin(host, { name: "Title bar", module: bar }, { path: TITLEBAR_PLUGIN_ID, theme: () => THEME, host: appHostBackend });
+  handle = mountPlugin(host, { name: "Title bar", module: withOffers(bar, bar) }, { path: TITLEBAR_PLUGIN_ID, theme: () => THEME, host: appHostBackend });
   await handle.ready;
   await tick();
   assert.equal(handle.error, null);
@@ -118,9 +118,9 @@ test("mounted through the host, it draws the bar and declares its offers", async
   const d = listOffers().find((p: any) => p.id === "app/titlebar")!;
   assert.ok(d, "listed while it runs");
   assert.deepEqual(d.state.map((s: any) => s.name), ["update", "landed", "ready", "items", "window", "vault", "panels", "status"]);
-  assert.deepEqual(d.actions.map((a: any) => a.name), ["toggleLeftPanel", "toggleChatPanel", "toggleNotes", "toggleSettings", "popOutChat", "refreshTree", "openHiddenFiles", "closeHiddenFiles", "unhide", "openTerminal", "clickItem", "installUpdate", "dismissUpdate", "dismissLanded", "acceptReady", "laterReady", "minimize", "toggleMaximize"]);
+  assert.deepEqual(d.actions.map((a: any) => a.name), ["toggleNotes", "toggleSettings", "popOutChat", "refreshTree", "openHiddenFiles", "closeHiddenFiles", "unhide", "openTerminal", "clickItem", "installUpdate", "dismissUpdate", "dismissLanded", "acceptReady", "laterReady", "openSyncDetails", "openTailscale", "reloadPart", "diagnostics", "focusWindow", "closeWindow", "minimize", "toggleMaximize"]);
   assert.ok(!d.actions.some((a: any) => /close$/i.test(a.name) && a.name !== "closeHiddenFiles"), "no window close for the agent");
-  assert.deepEqual(d.events.map((e: any) => e.name), ["updateChanged", "readyChanged", "landedChanged", "itemAdded", "itemRemoved", "itemClicked", "refreshed", "unhidden", "windowChanged"]);
+  assert.deepEqual(d.events.map((e: any) => e.name), ["updateChanged", "readyChanged", "landedChanged", "itemAdded", "itemRemoved", "itemClicked", "refreshed", "unhidden", "windowChanged", "stateChanged"]);
 });
 
 test("read: the window, the vault and file, the panels, no items yet", async () => {
@@ -137,15 +137,16 @@ test("read: the window, the vault and file, the panels, no items yet", async () 
   assert.deepEqual(r.state.status.hiddenFiles, { open: false });
 });
 
-test("act: the panel toggles go through the host's layout, Settings, maximize and minimize; the screen follows", async () => {
-  let r = await actOffers("titlebar", "toggleLeftPanel", { open: false });
-  assert.equal(r.ok, true, r.error);
+test("act: the panels are the layout's ops (box:workspace, one route), Settings, maximize and minimize; the screen follows", async () => {
+  const { applyLayoutOps } = await import("../../src/layoutOps.ts");
+  const io = { openInPane: async () => ({ ok: false }), measure: () => ({ viewport: null, sizes: null }) } as never;
+  assert.equal((await applyLayoutOps([{ op: "closeLeftPanel" }], io)).ok, true);
   assert.equal(S().leftCollapsed, true);
   await tick();
   assert.match(html(host), /Show file panel \(Ctrl\+B\)/, "the bar's button follows");
-  r = await actOffers("titlebar", "toggleLeftPanel", {});
-  assert.equal(S().leftCollapsed, false, "no open: toggle");
-  r = await actOffers("titlebar", "toggleSettings", { open: true });
+  await applyLayoutOps([{ op: "openLeftPanel" }], io);
+  assert.equal(S().leftCollapsed, false);
+  let r = await actOffers("titlebar", "toggleSettings", { open: true });
   assert.equal(r.ok, true, r.error);
   assert.equal(S().showSettings, true);
   useStore.setState({ showSettings: false } as any);
@@ -158,9 +159,9 @@ test("act: the panel toggles go through the host's layout, Settings, maximize an
   assert.equal(win.closed, 0);
   win.minimized = false;
   useStore.setState({ popoutOpen: true } as any);
-  r = await actOffers("titlebar", "toggleChatPanel", {});
-  assert.equal(r.ok, false);
-  assert.match(r.error ?? "", /popped out/);
+  const pop = await applyLayoutOps([{ op: "openRightPanel" }], io);
+  assert.equal(pop.ok, false);
+  assert.match(pop.results[0]!.error ?? "", /popped out/);
   useStore.setState({ popoutOpen: false } as any);
 });
 
@@ -334,7 +335,6 @@ test("a bar that throws on mount: the built-in bar stands in (no error card), it
   fail = false;
   retry!();
   await waitFor("the plugin again", () => html(container).includes('data-el="titlebar"'));
-  assert.ok(listOffers().some((p: any) => p.id === "app/titlebar"));
   r.unmount();
   await tick();
 });

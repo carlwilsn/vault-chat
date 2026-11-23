@@ -111,9 +111,10 @@ test("app/viewer is a registered app plugin mounted by the viewer area; the pane
   assert.ok(APP_PLUGINS.includes(VIEWER_PLUGIN));
   for (const w of ["viewer", "Viewer", "app/viewer", "file viewer", "pdf viewer"]) assert.equal(appPluginNamed(w)?.id, "app/viewer", w);
   {
-    const src = fs.readFileSync("src/MarkdownArea.tsx", "utf8");
-    assert.match(src, /<PlaceMount place="viewer" \/>/);
-    assert.match(src, /placeModule\(VIEWER_PLUGIN, \(\) => viewerPlugin\)/);
+    // Its offers are headless, mounted in every layout (src/places.ts "offers", src/App.tsx), not by the viewer area.
+    const src = fs.readFileSync("src/App.tsx", "utf8");
+    assert.match(src, /<PlaceMount place="offers" \/>/);
+    assert.match(src, /placeModule\(VIEWER_PLUGIN, \(\) => viewerPlugin\.offers, "offers"\)/);
   }
   const pane = fs.readFileSync("src/plugins/viewer/Pane.tsx", "utf8");
   assert.doesNotMatch(pane, /<(PdfView|NotebookView|HtmlView|ImageView|VideoView|TexView|UnsupportedView|CodeView|MonacoEditor|LiveEditor)\b/, "the viewers are the registry's");
@@ -143,9 +144,9 @@ test("mounted through the host, app/viewer declares its offers and reads what is
   assert.equal(handle.error, null);
   const d = listOffers().find((p) => p.id === "app/viewer")!;
   assert.ok(d, "listed while it runs");
-  assert.deepEqual(d.state.map((s) => s.name), ["open", "viewers", "modes", "kept", "editing"]);
-  assert.deepEqual(d.actions.map((a) => a.name), ["open", "scrollTo", "find", "zoom", "setMode", "reloadFromDisk", "keepMine", "closePane", "use", "disable", "enable", "setOption"]);
-  assert.deepEqual(d.events.map((e) => e.name), ["opened", "scrolled", "modeChanged", "reloaded", "keptMine", "paneClosed", "saved", "changed"]);
+  assert.deepEqual(d.state.map((s) => s.name), ["videos", "capture", "pages", "outside", "open", "viewers", "modes", "kept", "editing"]);
+  assert.deepEqual(d.actions.map((a) => a.name), ["open", "scrollTo", "find", "zoom", "setMode", "reloadFromDisk", "keepMine", "video", "recompile", "type", "select", "capture", "grant", "stopMic", "pageText", "openOutside", "closePane", "use", "disable", "enable", "setOption"]);
+  assert.deepEqual(d.events.map((e) => e.name), ["opened", "scrolled", "modeChanged", "reloaded", "keptMine", "openedOutside", "paneClosed", "saved", "changed", "stateChanged"]);
   subscribeOffers("viewer", "*", (e) => events.push({ event: e.event, payload: e.payload }));
   const o = await read("open");
   assert.equal(o.length, 1);
@@ -300,7 +301,7 @@ test("find: the lines holding a phrase, then there; zoom: a viewer that zooms is
   await fails("find", { text: "  " }, /text is needed/);
   // Zoom: the open state shows it; in / a factor / reset; clamped to the viewer's range.
   assert.equal((await read("open"))[0].zoom, 1);
-  assert.equal((await ok("zoom", { zoom: "in" })).zoom, 1.25);
+  assert.equal((await ok("zoom", { zoom: "in" })).zoom, 1.1, "one step, as the viewer's + button");
   assert.equal((await ok("zoom", { zoom: 9 })).zoom, 4, "clamped to the viewer's max");
   assert.match(html(screen), /data-zoom="4"/);
   assert.equal((await read("open"))[0].zoom, 4);

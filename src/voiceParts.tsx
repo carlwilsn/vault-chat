@@ -110,7 +110,7 @@ function PlainMic() {
   const voiceMode = useStore((s) => s.voiceMode);
   const vaultPath = useStore((s) => s.vaultPath);
   return (
-    <button
+    <button data-offer="app/voice.start"
       onClick={() => toggleVoice("titlebar mic")}
       disabled={!vaultPath}
       data-el="voice-mic"
@@ -128,7 +128,7 @@ function PlainMute() {
   const muted = useStore((s) => s.voiceMicMuted);
   if (isPopout || !live) return null;
   return (
-    <button
+    <button data-offer="app/voice.mute"
       onClick={() => toggleVoiceMute()}
       data-el="voice-mute"
       data-plain="1"

@@ -289,9 +289,12 @@ export class FakeBox {
           }
           if (route === "GET /notes") return send(200, { notes: this.notes });
           if (route === "POST /notes") {
+            // The notes noun's add (server/model/notes.ts): its text, anchors, turns, and the id the app gave it.
             const b = raw ? JSON.parse(raw) : {};
-            this.notes.push(b.note);
-            return send(200, { ok: true });
+            const now = new Date().toISOString();
+            const note = b.note ?? { id: b.id, timestamp: now, last_updated: now, anchors: b.anchors ?? [], turns: b.turns ?? [], user_draft: b.text || null, status: "open" };
+            this.notes.push(note);
+            return send(200, { ok: true, id: note.id });
           }
           if (route === "POST /notes/write") {
             this.notes = (raw ? JSON.parse(raw) : {}).notes ?? [];

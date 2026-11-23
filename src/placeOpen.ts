@@ -49,6 +49,9 @@ const subscribe = (f: () => void) => {
   };
 };
 
+/** Hear any place opened or shut (the chat list's offers' watch). */
+export const placeOpenChanged = subscribe;
+
 /** Re-render when any place is opened or shut (a list that reads placeOpen for several). */
 export function usePlaceOpenVersion(): unknown {
   return useSyncExternalStore(subscribe, read, read);

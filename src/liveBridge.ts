@@ -36,6 +36,7 @@
 //          the page's manifest + content hash, asks Carl once (remembered per path + hash; a changed page asks again),
 //          has the box mint the token, and answers only that iframe's window (event.source, origin "null").
 
+import { noteMic, notePlayed, notePrompt, noteRequests } from "./livePagesState";
 import { pageFunctions, readNeed, serviceOfCap, servicesFor, toolAllowed } from "./liveServices";
 import { pluginIdOf } from "./pluginSupervisor";
 import { OFFER_TIMEOUT_MS, declareOffers, markPageMounted, type Offers, type OffersHandle } from "./pluginOffers";
@@ -309,6 +310,7 @@ vc.service=function(name){
 vc.play=function(src){
   return new Promise(function(res,rej){
     var url=typeof src==="string"?src:URL.createObjectURL(src),a=new Audio(url);
+    post({op:"played",what:typeof src==="string"?src.slice(0,200):"a recording ("+((src&&src.type)||"audio")+")"});
     a.onended=function(){if(typeof src!=="string")URL.revokeObjectURL(url);res();};
     a.onerror=function(){rej(new Error("audio could not play"));};
     a.play().catch(rej);
@@ -420,16 +422,21 @@ function askCarl(doc: Document, framesOf: () => HTMLIFrameElement[], page: strin
     }
     const row = doc.createElement("div");
     row.style.cssText = "display:flex;gap:8px;justify-content:flex-end";
+    // Its answer, from a button or from app/viewer's grant action (src/livePagesState.ts): the same one.
+    let unnote = () => {};
+    const answer = (ok: boolean) => {
+      clearInterval(watch);
+      box.remove();
+      unnote();
+      resolve(ok);
+    };
+    unnote = notePrompt(page, caps, answer);
     const mk = (label: string, primary: boolean, ok: boolean) => {
       const b = doc.createElement("button");
       b.textContent = label;
       b.setAttribute("data-el", ok ? "live-grant-allow" : "live-grant-deny");
       b.style.cssText = `border:1px solid hsl(var(--border,0 0% 30%));border-radius:8px;padding:4px 12px;font:inherit;cursor:pointer;background:${primary ? "hsl(var(--primary,0 0% 85%))" : "transparent"};color:${primary ? "hsl(var(--primary-foreground,0 0% 10%))" : "inherit"}`;
-      b.onclick = () => {
-        clearInterval(watch);
-        box.remove();
-        resolve(ok);
-      };
+      b.onclick = () => answer(ok);
       return b;
     };
     row.append(mk("Not now", false, false), mk("Allow", true, true));
@@ -621,6 +628,7 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
         // A new ask is the rate-limited thing (the box counts them too).
         if (method === "POST" && path === "/api/v1/side" && !allowRate(st.askTimes, LIVE_LIMITS.asksPerMinute)) return void fail(id, `vc.ask: at most ${LIVE_LIMITS.asksPerMinute} asks a minute`);
         st.active++;
+        noteRequests(page, 1);
         void (async () => {
           try {
             let g = await grantOf(f, st, page);
@@ -646,6 +654,7 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
             fail(id, String((err as Error)?.message ?? err));
           } finally {
             st.active--;
+            noteRequests(page, -1);
           }
         })();
         return;
@@ -657,6 +666,11 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
           if (!g?.caps.includes("mic")) return fail(id, "this page has not been allowed to use the microphone");
           return startMic(f, st, id, typeof d.mimeType === "string" ? d.mimeType : "", page, reply, fail);
         });
+        return;
+      }
+      case "played": {
+        // vc.play inside the page (its own audio): said to the host, for app/viewer's pages state.
+        notePlayed(page, typeof d.what === "string" ? d.what : "a sound");
         return;
       }
       case "mic-stop": {
@@ -793,10 +807,12 @@ async function startMic(
     stream.getTracks().forEach((t) => t.stop());
     badge.remove();
     st.mic = null;
+    noteMic(page, null);
     reply(f, { id, ev: "done", mimeType: type });
   };
   stopBtn.onclick = stop;
   st.mic = { id, stop };
+  noteMic(page, stop);
   // Chunks go out in order, and "done" only after the last one.
   let chain: Promise<void> = Promise.resolve();
   rec.ondataavailable = (ev) => {

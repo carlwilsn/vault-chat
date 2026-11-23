@@ -15,9 +15,10 @@
 import { createRoot } from "react-dom/client";
 import type { PluginApi } from "../../mountHost";
 import { useStore } from "../../store";
-import { listProjects, newChatInProject, openThread, renameProject, type ProjectInfo } from "../../projects";
+import { listProjects, openThread, type ProjectInfo } from "../../projects";
+import { newChatIn } from "../../chat-controller";
+import { placeOpenChanged } from "../../placeOpen";
 import { MAIN_ID, chatTitle, nextChatLevel, panelModel, projectOfThread, visibleChats, type PanelEntry } from "../../threads";
-import { canDeleteChat, deleteChats, renameChat, restoreChat } from "../../chatDelete";
 import { placeOpen, setPlaceOpen } from "../../placeOpen";
 import { ChatsOverlay, ChatsSidebarView } from "./ChatsList";
 import { chatLevels } from "./view";
@@ -25,10 +26,21 @@ import { chatLevels } from "./view";
 type Place = Extract<PanelEntry, { type: "main" | "project" }>;
 const S = () => useStore.getState();
 
-/** The list as the screen builds it (src/threads.ts panelModel), with the vault's projects read now. */
-async function model(): Promise<{ places: Place[]; projects: ProjectInfo[] }> {
+/** The vault's projects as last read (the state's reads use it: they run on every change, the box's /projects is read
+ *  again when a project changes, the vault changes, or an action asks). */
+let projectsKept: { vault: string | null; list: ProjectInfo[] } | null = null;
+async function projectsOf(fresh: boolean): Promise<ProjectInfo[]> {
+  const v = S().vaultPath;
+  if (!fresh && projectsKept && projectsKept.vault === v) return projectsKept.list;
+  const list = await listProjects(v);
+  projectsKept = { vault: v, list };
+  return list;
+}
+
+/** The list as the screen builds it (src/threads.ts panelModel), with the vault's projects (read now when `fresh`). */
+async function model(fresh = true): Promise<{ places: Place[]; projects: ProjectInfo[] }> {
   const s = S();
-  const projects = await listProjects(s.vaultPath);
+  const projects = await projectsOf(fresh);
   const { entries } = panelModel(
     s.conversations.map((c) => ({ id: c.id, title: c.title, kind: c.kind, project: c.project, lastActivityAt: c.lastActivityAt, running: c.status === "running", unread: c.unread })),
     projects,
@@ -90,11 +102,21 @@ const panel = () => {
 /** The plugin's offers (exported for tests). */
 export function chatsOffers() {
   return {
+    watch: (fn: () => void) => {
+      const onProjects = () => {
+        projectsKept = null;
+        fn();
+      };
+      const win = typeof window !== "undefined" && typeof window.addEventListener === "function" ? window : null;
+      win?.addEventListener("vc-projects-changed", onProjects);
+      const offs = [useStore.subscribe(fn), chatLevels.subscribe(fn), placeOpenChanged(fn), () => win?.removeEventListener("vc-projects-changed", onProjects)];
+      return () => offs.forEach((f) => f());
+    },
     state: {
       places: {
         description:
           "Main and each project, in the list's order: place (main or the project's slug), name, expanded, here (the open chat is in it), working, unseen, chats (how many), shown (the chats the list shows when expanded, newest first: id, title, open?, working?, unseen?), showMore (what the row under them says: more | all | null) and hidden.",
-        read: async () => (await model()).places.map(placeRow),
+        read: async () => (await model(false)).places.map(placeRow),
       },
       selected: {
         description: "The open chat: its id, title and place.",
@@ -164,56 +186,13 @@ export function chatsOffers() {
         },
       },
       newChat: {
-        description: "Start a fresh chat in a place (its bar's +): main by default, or a project. It opens in the chat pane.",
+        description: "Start a fresh, empty chat on screen (a place's +, the footer's New chat): in a place, or left out where Carl is. It opens in the chat pane. Renaming, deleting and restoring chats and projects, and a new chat with a first message, are box:chats.",
         args: { type: "object", properties: { place: PLACE.properties.place }, additionalProperties: false },
         run: async (a: Record<string, unknown>) => {
           const p = a.place === undefined ? null : await placeNamed(a.place);
-          const id = p && p.type === "project" ? newChatInProject(p.slug) : S().newConversation();
+          const id = newChatIn(p === null ? null : p.type === "project" ? p.slug : "main");
           if (S().rightCollapsed && !S().chatFullscreen) S().toggleRight();
-          return { created: id, place: p && p.type === "project" ? p.slug : "main" };
-        },
-      },
-      rename: {
-        description: "Rename a chat (its row's Rename). Main keeps its name; a project is renamed with renameProject.",
-        args: { type: "object", properties: { id: { type: "string" }, title: { type: "string" } }, required: ["id", "title"], additionalProperties: false },
-        run: async (a: Record<string, unknown>) => {
-          const c = chatNamed(a.id);
-          const why = await renameChat(c.id, String(a.title ?? ""));
-          if (why) throw new Error(why);
-          return { renamed: c.id, title: S().conversations.find((x) => x.id === c.id)?.title };
-        },
-      },
-      renameProject: {
-        description: "Rename a project (its bar's Rename): the name only; its folder and chats stay.",
-        args: { type: "object", properties: { place: PLACE.properties.place, name: { type: "string" } }, required: ["place", "name"], additionalProperties: false },
-        run: async (a: Record<string, unknown>) => {
-          const p = await placeNamed(a.place);
-          if (p.type !== "project") throw new Error("Main keeps its name");
-          const r = await renameProject(p.slug, String(a.name ?? ""));
-          if (!r.ok) throw new Error(r.error);
-          return { renamed: p.slug, name: r.name };
-        },
-      },
-      delete: {
-        description: "Delete a chat (its row's Delete chat; recoverable with restore). Main and a project's own thread are never deleted.",
-        args: ID,
-        run: async (a: Record<string, unknown>) => {
-          const id = String(a.id ?? "").trim();
-          if (!canDeleteChat(id)) throw new Error(`${id} is ${id === MAIN_ID ? "Main" : "a project's own thread"}: it is never deleted`);
-          chatNamed(id);
-          const why = await deleteChats([id]);
-          if (why) throw new Error(why);
-          return { deleted: id };
-        },
-      },
-      restore: {
-        description: "Bring back a deleted chat by its id (as it was, in its place).",
-        args: ID,
-        run: async (a: Record<string, unknown>) => {
-          const id = String(a.id ?? "").trim();
-          const why = await restoreChat(id);
-          if (why) throw new Error(why);
-          return { restored: id };
+          return { created: id, place: projectOfThread(id) ?? S().conversations.find((c) => c.id === id)?.project ?? "main" };
         },
       },
       openPanel: {
@@ -240,8 +219,10 @@ export function chatsOffers() {
   };
 }
 
+/** The offers, headless: mounted in every layout (src/places.ts "offers"), the overlay or the sidebar drawn or not. */
+export const offers = { mount: (_el: HTMLElement, api: PluginApi) => void api.offer(chatsOffers()) };
+
 function mountSurface(el: HTMLElement, api: PluginApi, surface: "overlay" | "sidebar"): () => void {
-  api.offer(chatsOffers());
   // A render error the list does not catch is the plugin's failure (src/ChatsPanel.tsx then shows its fallback).
   const root = createRoot(el, { onUncaughtError: (e) => api.error(e) });
   root.render(surface === "overlay" ? <ChatsOverlay /> : <ChatsSidebarView />);

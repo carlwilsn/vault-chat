@@ -153,7 +153,8 @@ export async function appendNote(vault: string, note: Note): Promise<void> {
   const { boxLinkFor, boxPost } = await import("./boxChat");
   const link = await boxLinkFor(vault);
   if (link) {
-    const r = await boxPost(link, "/notes", { note });
+    // The notes noun's add (box:notes), with what the composer captured: one path for every way a note is made.
+    const r = await boxPost(link, "/notes", { text: note.user_draft ?? "", anchors: note.anchors, turns: note.turns, id: note.id });
     if (!r.ok) throw new Error(r.error);
     return;
   }

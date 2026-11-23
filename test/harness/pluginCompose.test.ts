@@ -194,7 +194,7 @@ test("the shared context: publish, subscribe once per change with the keys, boun
   assert.equal(cp.error, null);
   const d = listOffers().find((x) => x.id === "app/context")!;
   assert.deepEqual(d.state.map((s) => s.name), ["selection", "hover", "focus", "file", "at"]);
-  assert.deepEqual(d.events.map((e) => e.name), ["changed"]);
+  assert.deepEqual(d.events.map((e) => e.name), ["changed", "stateChanged"]);
   publishContext({ focus: { plugin: "app/notes" } });
   await tick();
   const ack = await answerPluginSignal({ type: "plugin", id: "x", op: "read", plugin: "context" });
@@ -291,7 +291,7 @@ test("the app's publisher: runs only while someone listens; throttled; a caret i
   assert.ok(heard.length >= 4);
 });
 
-test("the example vault plugin: a selection becomes a note through app/notes' add, with no change to either", async () => {
+test("the example vault plugin: a selection becomes a note through the notes noun's add (api.host.notes), with no change to either", async () => {
   _resetOffers();
   _resetContext();
   const { useStore } = await import("../../src/store.ts");
@@ -320,15 +320,12 @@ test("the example vault plugin: a selection becomes a note through app/notes' ad
   // Its own offers say what it did; the agent reads them as any plugin's.
   const r = await pluginReach(() => true).read("Selection to note");
   assert.deepEqual(r.state, { kept: 2 });
-  assert.deepEqual(r.events!.map((e) => (e.payload as any).from), ["file", "message"]);
-
-  // Notes off: the next selection is an error result the plugin reports; both apps parts stand.
+  assert.deepEqual(r.events!.filter((e) => e.event === "kept").map((e) => (e.payload as any).from), ["file", "message"]);
+  // The notes are the model's, not the panel's: with the Notes panel off, a selection still becomes a note.
   nh.unmount();
   publishContext({ selection: { kind: "text", text: "one more" } });
-  await waitFor("its error toast", () => toasts.length === 1);
-  assert.match(toasts[0]!, /Selection to note: no plugin "app\/notes" is mounted here now/);
-  assert.equal(useStore.getState().notes.length, 2);
+  await waitFor("the third note", () => useStore.getState().notes.length === 3);
   assert.equal(vp.error, null);
-  assert.equal((await pluginReach(() => true).read("selection-to-note")).state!.kept, 2);
+  assert.deepEqual(toasts, []);
   vp.unmount();
 });

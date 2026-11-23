@@ -5,6 +5,7 @@
 // src/MarkdownView.tsx unchanged; src/MarkdownView.tsx mounts it through the plugin host (its props: the pane's id), and
 // draws this same component in the app's tree while the records are unknown or the plugin is off. Each pane registers
 // its Reload / Keep mine with ./panes.ts for the offers.
+import { registerAskOpener } from "../ask/view";
 import { noteSaved } from "../../editorState";
 import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ComponentPropsWithoutRef, MouseEvent as ReactMouseEvent } from "react";
@@ -27,7 +28,7 @@ import { applyDiskContent, pendingBoxText, registerDirty, setDiskChanged, useLiv
 import { flipNthTaskCheckbox, localPathFromUrl } from "../../mdPipeline";
 import { hit, shortcutHint } from "../../shortcuts";
 import { NotePre, useNoteSource } from "../../NoteWidget";
-import { registerPane } from "./panes";
+import { registerPane, emitPaneEvent } from "./panes";
 
 function resolveRelative(baseFile: string, rel: string): string {
   const sep = baseFile.includes("\\") ? "\\" : "/";
@@ -59,7 +60,7 @@ function SafeAnchor(props: ComponentPropsWithoutRef<"a"> & { node?: unknown }) {
       const el = document.getElementById(id);
       el?.scrollIntoView({ behavior: "smooth", block: "start" });
     };
-    return <a href={href} {...rest} onClick={onHash}>{children}</a>;
+    return <a data-offer="app/viewer.scrollTo" href={href} {...rest} onClick={onHash}>{children}</a>;
   }
   const onClick = (e: ReactMouseEvent<HTMLAnchorElement>) => {
     e.preventDefault();
@@ -69,10 +70,10 @@ function SafeAnchor(props: ComponentPropsWithoutRef<"a"> & { node?: unknown }) {
   };
   const isExternal = /^(https?:|mailto:)/i.test(href);
   if (isExternal) {
-    return <a href={href} {...rest} onClick={onClick}>{children}</a>;
+    return <a data-offer="app/viewer.open" href={href} {...rest} onClick={onClick}>{children}</a>;
   }
   return (
-    <a
+    <a data-offer="app/viewer.open"
       role="link"
       data-href={href}
       className="cursor-pointer text-primary underline underline-offset-2 hover:opacity-80"
@@ -343,6 +344,7 @@ export function Pane({ paneId }: Props) {
       lastUserValue.current = onDisk;
       editorWrites.discard(file);
       applyDiskContent(file, onDisk);
+      emitPaneEvent("reloaded", { file, paneId: paneId ?? null });
     } catch (e) {
       console.error("reload failed", e);
     }
@@ -358,6 +360,7 @@ export function Pane({ paneId }: Props) {
       lastUserValue.current = content;
       setDiskChanged(file, false);
       if (!isBoxPath(file)) noteEditedFile(file);
+      emitPaneEvent("keptMine", { file, paneId: paneId ?? null });
     } catch (e) {
       console.error("save failed", e);
     }
@@ -381,7 +384,7 @@ export function Pane({ paneId }: Props) {
     e.dataTransfer.effectAllowed = "move";
   };
 
-  // GFM task checkboxes render as <input type="checkbox" disabled> via
+  // GFM task checkboxes render as <input data-offer-exempt="a markdown checkbox's rendering (a GFM task box): ticking writes the file, which the agent edits as a file" type="checkbox" disabled> via
   // remark-gfm. We override the input component to make them interactive:
   // on toggle, locate the clicked checkbox's index among all rendered
   // checkboxes, flip the Nth task-list token in the source, and save.
@@ -398,7 +401,7 @@ export function Pane({ paneId }: Props) {
     (props: ComponentPropsWithoutRef<"input"> & { node?: unknown }) => {
       const { node: _node, type, disabled: _disabled, checked, onChange: _oc, ...rest } = props;
       if (type !== "checkbox") {
-        return <input type={type} disabled={_disabled} {...rest} />;
+        return <input data-offer-exempt="a markdown checkbox's rendering (a GFM task box): ticking writes the file, which the agent edits as a file" type={type} disabled={_disabled} {...rest} />;
       }
       const onFlip = (e: ReactMouseEvent<HTMLInputElement>) => {
         const scope = viewScrollRef.current;
@@ -417,7 +420,7 @@ export function Pane({ paneId }: Props) {
         startTransition(() => onChangeRef.current(next));
       };
       return (
-        <input
+        <input data-offer-exempt="a markdown checkbox (a GFM task box): ticking writes the file, which the agent edits as a file"
           type="checkbox"
           checked={!!checked}
           onChange={() => {}}
@@ -444,9 +447,7 @@ export function Pane({ paneId }: Props) {
     const { kind: k, ext: e2 } = fileKind(file);
     if (editing || k !== "markdown" || !isActive) return;
 
-    const onKey = (e: KeyboardEvent) => {
-      if (!hit(e, "edit.ask")) return;
-
+    const open = () => {
       const sel = window.getSelection();
       const selectionText = sel && !sel.isCollapsed ? sel.toString() : "";
 
@@ -486,7 +487,6 @@ export function Pane({ paneId }: Props) {
         before = content.slice(-6000);
       }
 
-      e.preventDefault();
       setInlineAsk({
         anchor,
         selection: selectionText,
@@ -495,9 +495,19 @@ export function Pane({ paneId }: Props) {
         language: e2,
       });
     };
+    const onKey = (e: KeyboardEvent) => {
+      if (!hit(e, "edit.ask")) return;
+      e.preventDefault();
+      open();
+    };
 
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // app/ask's open does what the key does (src/plugins/ask/view.ts).
+    const offOpener = registerAskOpener(file, open);
+    return () => {
+      offOpener();
+      window.removeEventListener("keydown", onKey);
+    };
   }, [editing, top, file, isActive, content]);
 
   // Ctrl+L ask (no context) for PDF, HTML, and image viewers. These don't
@@ -518,6 +528,9 @@ export function Pane({ paneId }: Props) {
       }
       if (!hit(e, "edit.ask")) return;
       e.preventDefault();
+      open();
+    };
+    const open = () =>
       setInlineAsk({
         anchor: {
           left: window.innerWidth * 0.5,
@@ -529,9 +542,12 @@ export function Pane({ paneId }: Props) {
         after: "",
         language: e2,
       });
-    };
+    const offOpener = registerAskOpener(file, open);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      offOpener();
+      window.removeEventListener("keydown", onKey);
+    };
   }, [file, isActive]);
 
   // ScrollTo (voice) on a rendered markdown file: its heading, id or a phrase; the tool hears the outcome.
@@ -606,7 +622,7 @@ export function Pane({ paneId }: Props) {
   };
 
   return (
-    <div
+    <div data-offer="box:workspace.focus"
       className={`h-full flex flex-col bg-background ${
         showActiveOutline ? "ring-1 ring-primary/40 ring-inset" : ""
       }`}
@@ -636,7 +652,7 @@ export function Pane({ paneId }: Props) {
           {diskChanged && (
             <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground" data-testid="disk-changed" draggable={false}>
               Changed by the agent —
-              <button
+              <button data-offer="app/viewer.reloadFromDisk"
                 onClick={(e) => {
                   e.stopPropagation();
                   void reloadFromDisk();
@@ -647,7 +663,7 @@ export function Pane({ paneId }: Props) {
                 Reload
               </button>
               ·
-              <button
+              <button data-offer="app/viewer.keepMine"
                 onClick={(e) => {
                   e.stopPropagation();
                   void keepMine();
@@ -660,7 +676,7 @@ export function Pane({ paneId }: Props) {
             </span>
           )}
           {showToggle && (
-            <button
+            <button data-offer="app/viewer.setMode"
               onClick={(e) => {
                 e.stopPropagation();
                 toggleHere();
@@ -689,7 +705,7 @@ export function Pane({ paneId }: Props) {
             </button>
           )}
           {paneId && (
-            <button
+            <button data-offer="app/viewer.closePane"
               onClick={(e) => {
                 e.stopPropagation();
                 closePane(paneId);

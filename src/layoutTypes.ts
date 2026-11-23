@@ -14,7 +14,8 @@ export type LayoutOp =
   | { op: "split"; on: boolean }
   | { op: "focus"; target: PaneSide | "chat" }
   | { op: "fullscreenChat"; on: boolean }
-  | { op: "chatSidebar"; open: boolean };
+  | { op: "chatSidebar"; open: boolean }
+  | { op: "resize"; leftPanel?: number; chat?: number };
 
 export type HostLayout = {
   /** Two files side by side or stacked. */

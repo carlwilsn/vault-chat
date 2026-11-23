@@ -41,7 +41,7 @@ export function TitlebarFallback({ info }: { info: PluginFallbackInfo }) {
   return (
     <div data-tauri-drag-region data-el="titlebar-fallback" className="h-9 flex items-center bg-titlebar border-b border-titlebar-border select-none shrink-0 relative">
       <div className="flex items-center gap-1 px-2">
-        <button onClick={toggleLeft} className={`${BTN} ${leftCollapsed ? "text-titlebar-muted" : "text-titlebar-foreground"}`} title={`${leftCollapsed ? "Show" : "Hide"} file panel (${shortcutHint("view.files")})`}>
+        <button data-offer="box:workspace.openLeftPanel" onClick={toggleLeft} className={`${BTN} ${leftCollapsed ? "text-titlebar-muted" : "text-titlebar-foreground"}`} title={`${leftCollapsed ? "Show" : "Hide"} file panel (${shortcutHint("view.files")})`}>
           <PanelLeft className="h-3.5 w-3.5" />
         </button>
         <VaultPicker />
@@ -51,14 +51,14 @@ export function TitlebarFallback({ info }: { info: PluginFallbackInfo }) {
       ) : (
         <div data-el="titlebar-fallback-error" className="flex items-center gap-2 px-3 min-w-0 text-[11.5px] text-titlebar-muted">
           <span className="truncate" title={info.error ?? ""}>The title bar stopped; a plain one until it is back.</span>
-          <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-titlebar-foreground">
+          <button data-offer="app/titlebar.reloadPart" type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-titlebar-foreground">
             Reload
           </button>
         </div>
       )}
       <div data-tauri-drag-region className="flex-1 h-full" />
       <div className="flex items-center">
-        <button
+        <button data-offer="box:workspace.openRightPanel"
           onClick={toggleRight}
           disabled={popoutOpen}
           className={`${BTN} mr-1 disabled:opacity-40 disabled:cursor-not-allowed ${rightCollapsed ? "text-titlebar-muted" : "text-titlebar-foreground"}`}
@@ -66,7 +66,7 @@ export function TitlebarFallback({ info }: { info: PluginFallbackInfo }) {
         >
           <PanelRight className="h-3.5 w-3.5" />
         </button>
-        <button onClick={() => setShowSettings(!showSettings)} className={`${BTN} text-titlebar-muted mr-1`} title="Settings">
+        <button data-offer="app/titlebar.toggleSettings" onClick={() => setShowSettings(!showSettings)} className={`${BTN} text-titlebar-muted mr-1`} title="Settings">
           <Settings className="h-3.5 w-3.5" />
         </button>
         <WindowControls onBar />

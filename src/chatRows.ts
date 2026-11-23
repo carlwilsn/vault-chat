@@ -310,7 +310,7 @@ export const CHAT_REVEAL_EVENT = "vc-chat-reveal";
 
 type Msg = {
   role?: string; content?: string; display?: string; mid?: string; hidden?: boolean; system?: boolean; working?: unknown;
-  job?: unknown; voice?: unknown; voiceAsk?: unknown; toolCalls?: { name?: string }[]; dividerSummary?: unknown;
+  job?: unknown; voice?: unknown; voiceAsk?: unknown; toolCalls?: { name?: string }[]; dividerSummary?: unknown; thinking?: string;
 };
 
 /** A message's row kind (the order the transcript always used: the divider first, then a job's end, ...). */
@@ -345,7 +345,7 @@ export function visibleRows(limit = 60): { total: number; shownFrom: number; row
     if (m.hidden) continue;
     const kind = kindOf(m, isDivider);
     const tools = (m.toolCalls ?? []).map((t) => String(t?.name ?? "")).filter(Boolean);
-    rows.push({ index: i, kind, renderer: rowChain(kind)[0]?.id ?? "fallback", ...(m.mid ? { mid: m.mid } : {}), text: one(String(m.display ?? m.content ?? ""), 140), ...(tools.length ? { tools } : {}) });
+    rows.push({ index: i, kind, renderer: rowChain(kind)[0]?.id ?? "fallback", ...(m.mid ? { mid: m.mid } : {}), text: one(String(m.display ?? m.content ?? ""), 140), ...(tools.length ? { tools } : {}), ...(m.thinking ? { thought: true } : {}) });
   }
   return { total: messages.length, shownFrom: windowStart, rows: rows.slice(-Math.max(1, limit)) };
 }

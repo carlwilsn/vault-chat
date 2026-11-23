@@ -1,5 +1,5 @@
 import { File as FileIcon, FolderOpen, ExternalLink } from "lucide-react";
-import { revealInFileExplorer, openPathWithDefaultApp } from "./opener";
+import { openOutside } from "./opener";
 
 export function UnsupportedView({ path }: { path: string }) {
   const name = path.split("/").pop() ?? path;
@@ -7,12 +7,12 @@ export function UnsupportedView({ path }: { path: string }) {
   const ext = dot > 0 ? name.slice(dot + 1).toUpperCase() : "";
 
   const reveal = () => {
-    revealInFileExplorer(path).catch((e) =>
+    openOutside(path, "explorer").catch((e) =>
       console.error("[opener] reveal failed:", e),
     );
   };
   const openWith = () => {
-    openPathWithDefaultApp(path).catch((e) =>
+    openOutside(path, "default").catch((e) =>
       console.error("[opener] open failed:", e),
     );
   };
@@ -37,13 +37,13 @@ export function UnsupportedView({ path }: { path: string }) {
           </div>
         </div>
         <div className="flex items-center gap-2 pt-2">
-          <button
+          <button data-offer="app/viewer.openOutside"
             onClick={openWith}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-border bg-card hover:bg-accent/60 text-[12px] text-foreground"
           >
             <ExternalLink className="h-3.5 w-3.5" /> Open with default app
           </button>
-          <button
+          <button data-offer="app/viewer.openOutside"
             onClick={reveal}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-border bg-card hover:bg-accent/60 text-[12px] text-foreground"
           >

@@ -17,6 +17,8 @@ import { buildViewportContextText } from "../../viewportContext";
 import { dispatchChatAction } from "../../sync";
 import { aiBlockedNow, chatGateOf } from "../../chatGate";
 
+import { splitFilesLine } from "../../filesLine";
+
 export type PendingImage = { imageDataUrl: string; sourcePath?: string; sourceAnchor?: string | null; capturedFilePath?: string };
 export type Mention = { rel: string; path: string; name: string; raw: string };
 export type MentionHit = { path: string; name: string; rel: string };
@@ -66,6 +68,44 @@ export function addAttached(rs: Awaited<ReturnType<typeof attachPath>>[]): void 
   if (ok.length) setFiles((prev) => [...prev, ...ok]);
   setAttachError(bad.length ? bad.join(" ") : null);
   if (bad.length) console.warn(`[attach] ${bad.join(" ")}`.slice(0, 300));
+  for (const f of ok) told(attachedFns, { name: f.name, kind: "file" });
+}
+
+/** Pictures into the draft (pasted, dropped, captured, read from a path): every way in is this one, so each says
+ *  `attached` (report 28: paste and drop skipped it). */
+export function attachImages(imgs: PendingImage[]): void {
+  if (!imgs.length) return;
+  setImages((prev) => [...prev, ...imgs]);
+  for (const i of imgs) told(attachedFns, { name: i.sourcePath?.split("/").pop() ?? "pasted image", kind: "image" });
+}
+
+/** An @-reference to a vault file (the @ menu's pick, the + menu, the agent's attach). `inline`: the @name is already in
+ *  the text (the @ menu typed it); otherwise it is added at the end. */
+export function addReference(m: Mention, inline = false): void {
+  if (!D().mentions.some((x) => x.path === m.path)) setMentions((prev) => [...prev, m]);
+  if (!inline) useDraft.setState((d) => ({ input: `${d.input}${d.input && !/\s$/.test(d.input) ? " " : ""}${m.raw} ` }));
+  told(attachedFns, { name: m.name, kind: "reference" });
+}
+
+/** Take one thing off the draft (the × on a picture or a file, or the agent's detach by name): an @-reference's
+ *  @name leaves the text too. Says `detached`. */
+export function detachItem(kind: "image" | "file" | "reference", index: number): string | null {
+  const d = D();
+  let name: string | null = null;
+  if (kind === "image" && d.images[index]) {
+    name = d.images[index]!.sourcePath?.split("/").pop() ?? "pasted image";
+    setImages((prev) => prev.filter((_, j) => j !== index));
+  } else if (kind === "file" && d.files[index]) {
+    name = d.files[index]!.name;
+    setFiles((prev) => prev.filter((_, j) => j !== index));
+  } else if (kind === "reference" && d.mentions[index]) {
+    const ref = d.mentions[index]!;
+    name = ref.name;
+    setMentions((prev) => prev.filter((m) => m !== ref));
+    setInput((prev) => prev.split(ref.raw).join("").replace(/ {2,}/g, " "));
+  }
+  if (name) told(detachedFns, { name, kind });
+  return name;
 }
 
 // ---- what happened, for the plugin's events ----------------------------------------------------------------------
@@ -73,12 +113,15 @@ type Sent = { text: string; images: number; files: string[]; references: string[
 type Attached = { name: string; kind: "image" | "file" | "reference" };
 const sentFns = new Set<(s: Sent) => void>();
 const attachedFns = new Set<(a: Attached) => void>();
-export function onDraftEvent(on: { sent?: (s: Sent) => void; attached?: (a: Attached) => void }): () => void {
+const detachedFns = new Set<(a: Attached) => void>();
+export function onDraftEvent(on: { sent?: (s: Sent) => void; attached?: (a: Attached) => void; detached?: (a: Attached) => void }): () => void {
   if (on.sent) sentFns.add(on.sent);
   if (on.attached) attachedFns.add(on.attached);
+  if (on.detached) detachedFns.add(on.detached);
   return () => {
     if (on.sent) sentFns.delete(on.sent);
     if (on.attached) attachedFns.delete(on.attached);
+    if (on.detached) detachedFns.delete(on.detached);
   };
 }
 const told = <T>(fns: Set<(x: T) => void>, x: T) => {
@@ -118,7 +161,7 @@ export async function attachPaths(paths: string[]): Promise<{ attached: Attached
           r.onerror = () => rej(r.error);
           r.readAsDataURL(new Blob([new Uint8Array(bytes)], { type: mime }));
         });
-        setImages((prev) => [...prev, { imageDataUrl: url, sourcePath: path }]);
+        attachImages([{ imageDataUrl: url, sourcePath: path }]);
         attached.push({ name, kind: "image" });
         continue;
       } catch (e) {
@@ -138,13 +181,10 @@ export async function attachPaths(paths: string[]): Promise<{ attached: Attached
     for (const r of rs) if (r.ok) attached.push({ name: r.file.name, kind: "file" });
     else errors.push(r.error);
   }
-  if (refs.length) {
-    const fresh = refs.filter((r) => !D().mentions.some((m) => m.path === r.path));
-    setMentions((prev) => [...prev, ...fresh]);
-    useDraft.setState((d) => ({ input: `${d.input}${d.input && !/\s$/.test(d.input) ? " " : ""}${refs.map((r) => r.raw).join(" ")} ` }));
-    for (const r of refs) attached.push({ name: r.name, kind: "reference" });
+  for (const r of refs) {
+    addReference(r);
+    attached.push({ name: r.name, kind: "reference" });
   }
-  for (const a of attached) told(attachedFns, a);
   return { attached, errors };
 }
 
@@ -236,7 +276,7 @@ export async function saveCaptureToDisk(vault: string, imageDataUrl: string): Pr
 
 /** A capture taken for the chat (the marquee): the thumbnail at once, its file on disk when saved. */
 export function addCapture(cap: { imageDataUrl: string; sourcePath?: string; sourceAnchor?: string | null }): void {
-  setImages((prev) => [...prev, { imageDataUrl: cap.imageDataUrl, sourcePath: cap.sourcePath, sourceAnchor: cap.sourceAnchor }]);
+  attachImages([{ imageDataUrl: cap.imageDataUrl, sourcePath: cap.sourcePath, sourceAnchor: cap.sourceAnchor }]);
   const vaultPath = useStore.getState().vaultPath;
   if (!vaultPath) return;
   void saveCaptureToDisk(vaultPath, cap.imageDataUrl).then((rel) => {
@@ -340,6 +380,24 @@ export async function sendDraft(): Promise<string | null> {
 
 /** Stop the running agent (Esc, or the button with nothing typed); held for the usage limit, cancel the pick-up. */
 export const stopAgent = () => dispatchChatAction({ kind: "stop" });
+
+/** A message sent while the agent works, not read yet (its row's Send now / Edit / Cancel). */
+export function queuedMessages(): { id: string; text: string }[] {
+  return useStore.getState().messages.filter((m) => m.waiting && m.mid).map((m) => ({ id: m.mid!, text: m.content.replace(/\n*\[attached:[^\]]*\]\s*$/, "") }));
+}
+/** Its row's Send now: cut the agent's current step, it answers this next. */
+export function sendQueuedNow(id: string): void {
+  const convId = useStore.getState().activeConversationId;
+  if (convId) dispatchChatAction({ kind: "sendNow", convId, id });
+}
+/** Its row's Cancel (taken back, not sent), or Edit (`edit`: taken back into the composer's text). */
+export function unqueue(id: string, edit = false): void {
+  const convId = useStore.getState().activeConversationId;
+  if (!convId) return;
+  const m = queuedMessages().find((q) => q.id === id);
+  dispatchChatAction({ kind: "unqueue", convId, id });
+  if (edit && m) window.dispatchEvent(new CustomEvent("vc-composer-insert", { detail: splitFilesLine(m.text).text }));
+}
 
 /** Tests: an empty draft. */
 export const _resetDraft = () => useDraft.setState({ ...EMPTY });

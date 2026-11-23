@@ -33,10 +33,28 @@ function load(stateDir: string): Store {
   return fresh;
 }
 
+const perfFns = new Set<() => void>();
+/** Hear a build's speeds change (a probe batch folded in): box:perf's watch. */
+export function onPerfChanged(fn: () => void): () => void {
+  perfFns.add(fn);
+  return () => void perfFns.delete(fn);
+}
 function save(stateDir: string, s: Store): void {
   const tmp = `${file(stateDir)}.tmp`;
   writeFileSync(tmp, JSON.stringify(s));
   renameSync(tmp, file(stateDir));
+  perfChanged();
+}
+
+/** Tell box:perf's watchers its state changed (a fold here; a launch report, server/hostBuild.ts). */
+export function perfChanged(): void {
+  for (const fn of [...perfFns]) queueMicrotask(() => {
+    try {
+      fn();
+    } catch {
+      /* a listener's own error */
+    }
+  });
 }
 
 function fold(s: Store, batch: Batch, at: string): void {

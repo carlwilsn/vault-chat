@@ -61,7 +61,7 @@ export function VoiceCockpit() {
       ) : chatOpen ? (
         <VoiceWaves />
       ) : (
-        <button
+        <button data-offer="app/voice.mute"
           type="button"
           data-el="voice-waves-mute"
           aria-pressed={muted}
@@ -152,7 +152,7 @@ export function VoiceMicGroup() {
         if (voiceMode) setKbArmed(true);
       }}
     >
-      <button
+      <button data-offer="app/voice.start"
         onClick={() => {
           // A second press with the prompt up puts it away rather than asking again.
           if (voiceSignIn) return askVoiceSignIn(false);
@@ -173,7 +173,7 @@ export function VoiceMicGroup() {
             voiceTextPanelOpen ? "max-w-7" : kbArmed ? "max-w-0 group-hover:max-w-7" : "max-w-0"
           }`}
         >
-          <button
+          <button data-offer="app/voice.openTextPanel"
             onClick={() => setVoiceTextPanelOpen(!voiceTextPanelOpen)}
             className={`h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover ${
               voiceTextPanelOpen ? "text-titlebar-foreground" : "text-titlebar-muted"
@@ -206,7 +206,7 @@ export function VoiceMuteButton() {
     );
   if (!live) return null;
   return (
-    <button
+    <button data-offer="app/voice.mute"
       onClick={() => toggleVoiceMute()}
       data-el="voice-mute"
       aria-pressed={muted}

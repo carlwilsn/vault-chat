@@ -284,23 +284,23 @@ function SignInFlow({ onDone }: { onDone?: () => void }) {
             </p>
             <div className="flex items-center gap-3 text-[10.5px] text-muted-foreground">
               {run.url && (
-                <button onClick={() => void openUrl(run.url!).catch(() => {})} className="underline hover:text-foreground" data-el="claude-signin-open-page">
+                <button data-offer-exempt="the Claude sign-in: it handles a credential, kept out of the agent's reach on purpose" onClick={() => void openUrl(run.url!).catch(() => {})} className="underline hover:text-foreground" data-el="claude-signin-open-page">
                   Browser didn't open? Open the sign-in page
                 </button>
               )}
-              <button onClick={() => void invoke("claude_signin_cancel").catch(() => {})} className="underline hover:text-foreground" data-el="claude-signin-cancel">
+              <button data-offer-exempt="the Claude sign-in: it handles a credential, kept out of the agent's reach on purpose" onClick={() => void invoke("claude_signin_cancel").catch(() => {})} className="underline hover:text-foreground" data-el="claude-signin-cancel">
                 Cancel
               </button>
             </div>
           </>
         ) : (
           <>
-            <Button size="sm" onClick={() => void signInHere()} data-el="claude-signin-auto">
+            <Button data-offer-exempt="the Claude sign-in: it handles a credential, kept out of the agent's reach on purpose" size="sm" onClick={() => void signInHere()} data-el="claude-signin-auto">
               {SIGN_IN_BUTTON}
             </Button>
             <p className="text-[10.5px] text-muted-foreground">
               Opens your browser: click Authorize there. Nothing to copy or paste.{" "}
-              <button onClick={() => setPasteChosen(true)} className="underline hover:text-foreground" data-el="claude-signin-paste-instead">
+              <button data-offer-exempt="the Claude sign-in: it handles a credential, kept out of the agent's reach on purpose" onClick={() => setPasteChosen(true)} className="underline hover:text-foreground" data-el="claude-signin-paste-instead">
                 Paste a token instead
               </button>
             </p>
@@ -316,7 +316,7 @@ function SignInFlow({ onDone }: { onDone?: () => void }) {
       {run.state === "failed" && (
         <p className="text-[11px] text-amber-500/90 break-words" data-el="claude-signin-auto-failed">
           Couldn't sign in automatically: {run.why}.{" "}
-          <button onClick={() => void signInHere()} className="underline hover:text-foreground" data-el="claude-signin-retry">
+          <button data-offer-exempt="the Claude sign-in: it handles a credential, kept out of the agent's reach on purpose" onClick={() => void signInHere()} className="underline hover:text-foreground" data-el="claude-signin-retry">
             Try again
           </button>{" "}
           or paste a token:
@@ -329,7 +329,7 @@ function SignInFlow({ onDone }: { onDone?: () => void }) {
         <code className="font-mono text-[11.5px] px-2 py-1 rounded border border-border/60 select-all break-all" data-el="claude-signin-command">
           {command}
         </code>
-        <button onClick={copy} className="text-[10.5px] text-muted-foreground hover:text-foreground underline" data-el="claude-signin-copy">
+        <button data-offer-exempt="the Claude sign-in: it handles a credential, kept out of the agent's reach on purpose" onClick={copy} className="text-[10.5px] text-muted-foreground hover:text-foreground underline" data-el="claude-signin-copy">
           {copied ? "Copied" : "Copy"}
         </button>
       </div>
@@ -346,7 +346,7 @@ function SignInFlow({ onDone }: { onDone?: () => void }) {
           className="font-mono text-[11.5px]"
           data-el="claude-signin-token"
         />
-        <Button size="sm" onClick={() => void save()} disabled={busy} data-el="claude-signin-save">
+        <Button data-offer-exempt="the Claude sign-in: it handles a credential, kept out of the agent's reach on purpose" size="sm" onClick={() => void save()} disabled={busy} data-el="claude-signin-save">
           {busy ? "Saving…" : SIGN_IN_BUTTON}
         </Button>
       </div>
@@ -359,7 +359,7 @@ function SignInFlow({ onDone }: { onDone?: () => void }) {
           ) : (
             <>
               There is no <code className="font-mono">claude</code> on this machine to run it with.{" "}
-              <button onClick={() => void getCli()} className="underline hover:text-foreground" data-el="claude-cli-get">
+              <button data-offer-exempt="the Claude sign-in: it handles a credential, kept out of the agent's reach on purpose" onClick={() => void getCli()} className="underline hover:text-foreground" data-el="claude-cli-get">
                 Get it
               </button>{" "}
               (about 350 MB, once).
@@ -418,7 +418,7 @@ export function ClaudeAccountLine() {
           <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" aria-hidden />
           <span className="text-foreground/90">Signed in to Claude</span>
           <span className="text-muted-foreground/50">·</span>
-          <button onClick={() => void out()} className="text-[11.5px] text-muted-foreground hover:text-foreground underline" data-el="claude-sign-out">
+          <button data-offer-exempt="the Claude sign-in: it handles a credential, kept out of the agent's reach on purpose" onClick={() => void out()} className="text-[11.5px] text-muted-foreground hover:text-foreground underline" data-el="claude-sign-out">
             Sign out
           </button>
         </div>

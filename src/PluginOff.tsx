@@ -8,7 +8,7 @@ export function PluginOff({ path, desired, className }: { path: string; desired:
   return (
     <span data-el="plugin-off" data-vc-plugin={path} className={["flex items-center gap-2 px-3 py-2 text-[12px] text-muted-foreground", className].filter(Boolean).join(" ")}>
       <span className="truncate">{offLine(path, desired)}</span>
-      <button
+      <button data-offer="box:pages.enable"
         type="button"
         data-el="plugin-turn-on"
         disabled={busy}

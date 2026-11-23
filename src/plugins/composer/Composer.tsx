@@ -25,10 +25,14 @@ import { ClaudeSignInPrompt } from "../../ClaudeCodeSignIn";
 import { useFittedPlaceholder } from "../../fitPlaceholder";
 import { useChatGate } from "../../chatGate";
 import { ChatFooterTools } from "../../ChatFooter";
+import { startCapture } from "../../capture";
 import { shortcutHint } from "../../shortcuts";
 import {
   addAttached,
   addCapture,
+  addReference,
+  attachImages,
+  detachItem,
   attachPaths,
   escapeRegExp,
   filterFilesForMention,
@@ -36,8 +40,6 @@ import {
   scrollHold,
   sendDraft,
   setAttachError,
-  setFiles,
-  setImages,
   setInputOnly,
   setMentions,
   stopAgent,
@@ -194,7 +196,7 @@ export function Composer() {
     if (blobs.length === 0 && others.length === 0 && inline.length === 0) return;
     e.preventDefault();
     scrollHold.hold();
-    if (inline.length) setImages((prev) => [...prev, ...inline.map((imageDataUrl) => ({ imageDataUrl }))]);
+    if (inline.length) attachImages(inline.map((imageDataUrl) => ({ imageDataUrl })));
     // A file copied in Explorer and pasted here: attached like a dropped one.
     if (others.length) void Promise.all(others.map((f) => attachBlob(f.name, f))).then(addAttached);
     Promise.all(
@@ -209,7 +211,7 @@ export function Composer() {
       ),
     ).then((urls) => {
       const additions = urls.filter(Boolean).map((u) => ({ imageDataUrl: u }));
-      if (additions.length > 0) setImages((prev) => [...prev, ...additions]);
+      attachImages(additions);
     });
   };
 
@@ -333,7 +335,7 @@ export function Composer() {
     // resolve basenames to their source even when two files share a name.
     const insertion = `@${hit.name} `;
     setInputOnly(`${before}${insertion}${after.replace(/^\s+/, "")}`);
-    setMentions((prev) => (prev.some((m) => m.path === hit.path) ? prev : [...prev, { rel: hit.rel, path: hit.path, name: hit.name, raw: `@${hit.name}` }]));
+    addReference({ rel: hit.rel, path: hit.path, name: hit.name, raw: `@${hit.name}` }, true);
     setFileMention(null);
     requestAnimationFrame(() => {
       const el = inputRef.current;
@@ -362,19 +364,8 @@ export function Composer() {
   const captureRegion = () => {
     setPlusOpen(false);
     if (!capturable) return;
-    const s = useStore.getState();
-    s.setEditPromptCapturePending(false);
-    s.setNoteCapturePending(false);
-    s.setVoiceCapturePending(false);
-    // Popout: the main window runs the marquee and bounces the image back.
-    if (isPopout) {
-      dispatchChatAction({ kind: "startCapture" });
-      return;
-    }
-    s.setChatPaneCapturePending(true);
-    // Fullscreen has no viewer: App.tsx shows the open file over the chat and
-    // starts the marquee there. Otherwise the marquee runs on the viewer.
-    window.dispatchEvent(new CustomEvent(chatFullscreen ? "vc-fullscreen-capture" : "vc-marquee-toggle"));
+    // The one capture start (src/capture.ts), as app/viewer's capture action.
+    startCapture("chat");
   };
   const mentionVaultFile = () => {
     setPlusOpen(false);
@@ -418,7 +409,7 @@ export function Composer() {
             const rest = dropped.filter((f) => !images.includes(f));
             for (const f of images) {
               const r = new FileReader();
-              r.onload = () => setImages((prev) => [...prev, { imageDataUrl: String(r.result), sourcePath: f.name }]);
+              r.onload = () => attachImages([{ imageDataUrl: String(r.result), sourcePath: f.name }]);
               r.readAsDataURL(f);
             }
             if (rest.length) void Promise.all(rest.map((f) => attachBlob(f.name, f))).then(addAttached);
@@ -470,8 +461,8 @@ export function Composer() {
                     {f.name}
                   </span>
                   <span className="text-[10.5px] text-muted-foreground">{sizeLabel(f.size)}</span>
-                  <button
-                    onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
+                  <button data-offer="app/composer.detach"
+                    onClick={() => detachItem("file", i)}
                     className="absolute -top-1.5 -right-1.5 h-4 w-4 flex items-center justify-center rounded-full bg-card border border-border text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
                     title="Remove"
                   >
@@ -485,7 +476,7 @@ export function Composer() {
             <div className="flex items-start gap-1.5 px-3 pt-2 text-[11px] text-destructive/90" data-el="attach-error">
               <AlertCircle className="h-3 w-3 mt-px shrink-0" />
               <span className="min-w-0 break-words">{attachError}</span>
-              <button onClick={() => setAttachError(null)} className="ml-auto shrink-0 text-muted-foreground hover:text-foreground" title="Dismiss">
+              <button data-offer="app/composer.attach" onClick={() => setAttachError(null)} className="ml-auto shrink-0 text-muted-foreground hover:text-foreground" title="Dismiss">
                 <X className="h-3 w-3" />
               </button>
             </div>
@@ -510,8 +501,8 @@ export function Composer() {
                         {img.sourceAnchor ? ` · ${img.sourceAnchor}` : ""}
                       </span>
                     )}
-                    <button
-                      onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
+                    <button data-offer="app/composer.detach"
+                      onClick={() => detachItem("image", i)}
                       className="absolute -top-1.5 -right-1.5 h-4 w-4 flex items-center justify-center rounded-full bg-card border border-border text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
                       title="Remove"
                     >
@@ -524,7 +515,7 @@ export function Composer() {
           )}
           <div className="relative flex items-end">
             <div className="absolute left-2 bottom-2 z-10">
-              <button
+              <button data-offer="app/composer.attach"
                 onClick={() => setPlusOpen((o) => !o)}
                 disabled={!ready}
                 data-el="composer-plus"
@@ -574,7 +565,7 @@ export function Composer() {
               <VoiceMuteButton />
               {chatFullscreen && <InlineVoiceWaves />}
               {chatFullscreen && (
-                <button
+                <button data-offer="app/voice.start"
                   // Voice runs in the main window (the popout's mic asks it).
                   onClick={isPopout ? () => dispatchChatAction({ kind: "toggleVoice" }) : () => toggleVoice("mic button")}
                   disabled={!vaultPath}
@@ -588,11 +579,11 @@ export function Composer() {
               {/* As in Claude Code: with something to send the button is Send (while the agent works too: it reads
                   the message at its next step); with nothing typed while it works, Stop. */}
               {(busy || held) && !hasDraft ? (
-                <Button size="icon" variant="secondary" onClick={stop} className="h-7 w-7 rounded-lg" title={held ? "Don't pick it up at the reset (Esc)" : "Stop the agent (Esc)"} data-el="composer-stop">
+                <Button data-offer="app/composer.stop" size="icon" variant="secondary" onClick={stop} className="h-7 w-7 rounded-lg" title={held ? "Don't pick it up at the reset (Esc)" : "Stop the agent (Esc)"} data-el="composer-stop">
                   <Square className="h-3 w-3 fill-current" />
                 </Button>
               ) : (
-                <Button size="icon" onClick={send} disabled={!ready || !hasDraft} className="h-7 w-7 rounded-lg" title={busy ? "Send — the agent reads it at its next step" : "Send"} data-el="composer-send">
+                <Button data-offer="app/composer.send" size="icon" onClick={send} disabled={!ready || !hasDraft} className="h-7 w-7 rounded-lg" title={busy ? "Send — the agent reads it at its next step" : "Send"} data-el="composer-send">
                   <ArrowUp className="h-3.5 w-3.5" />
                 </Button>
               )}
@@ -618,7 +609,7 @@ export function Composer() {
 
 function PlusItem({ icon, label, hint, disabled, onClick }: { icon: React.ReactNode; label: string; hint?: string; disabled?: boolean; onClick: () => void }) {
   return (
-    <button
+    <button data-offer-exempt="a UI primitive: each use names its own offer"
       onClick={onClick}
       disabled={disabled}
       title={hint}

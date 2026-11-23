@@ -10,7 +10,64 @@ import { PANE_SIDES, relToVault, sideOf } from "./paneLayout";
 import type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult, PaneSide } from "./layoutTypes";
 export type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult } from "./layoutTypes";
 
-export const LAYOUT_OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "split", "focus", "fullscreenChat", "chatSidebar"] as const;
+export const LAYOUT_OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "split", "focus", "fullscreenChat", "chatSidebar", "resize"] as const;
+
+/** The outer split's own resize (Allotment's, registered by src/App.tsx): what dragging a sash does, in pixels per column. */
+let outerResize: ((sizes: number[]) => void) | null = null;
+export function registerOuterResize(fn: (sizes: number[]) => void): () => void {
+  outerResize = fn;
+  return () => {
+    if (outerResize === fn) outerResize = null;
+  };
+}
+
+/**
+ * Tell the box the layout when it changes, whoever changed it (a sash dragged, a panel toggled, a file opened): the
+ * workspace noun's state and its watch (server/model/workspace.ts). Compared as read back; sent at most every 300 ms.
+ * Returns the undo.
+ */
+export function pushLayoutChanges(post: (layout: HostLayout) => void, measure: () => Pick<HostLayout, "viewport" | "sizes"> = domMeasure): () => void {
+  let last = "";
+  let t: ReturnType<typeof setTimeout> | null = null;
+  const check = () => {
+    t = null;
+    const l = readLayout(measure);
+    const j = JSON.stringify(l);
+    if (j === last) return;
+    const first = last === "";
+    last = j;
+    if (!first) post(l);
+  };
+  const soon = () => {
+    if (!t) t = setTimeout(check, 300);
+  };
+  try {
+    check();
+  } catch {
+    /* no screen to read here (a test, a headless app) */
+  }
+  const offStore = useStore.subscribe(soon);
+  const onWin = () => soon();
+  const win = typeof window !== "undefined" && typeof window.addEventListener === "function" ? window : null;
+  win?.addEventListener("resize", onWin);
+  const offSash = onSashMoved(soon);
+  return () => {
+    offStore();
+    offSash();
+    win?.removeEventListener("resize", onWin);
+    if (t) clearTimeout(t);
+  };
+}
+
+const sashFns = new Set<() => void>();
+/** The outer split's columns changed size (Allotment's onChange, src/App.tsx). */
+export function sashMoved(): void {
+  for (const f of [...sashFns]) f();
+}
+function onSashMoved(fn: () => void): () => void {
+  sashFns.add(fn);
+  return () => void sashFns.delete(fn);
+}
 
 /** What applying needs from outside the store: putting a file in a pane (it must be read; the agent's path syncs first). */
 export type LayoutIO = {
@@ -124,6 +181,16 @@ async function applyOne(op: LayoutOp, io: LayoutIO): Promise<{ ok: boolean; note
     case "chatSidebar": {
       if (st().chatSidebarOpen === !!op.open) return done(`the sidebar was already ${op.open ? "open" : "closed"}`);
       st().toggleChatSidebar();
+      return done();
+    }
+    case "resize": {
+      // As dragging the sashes: the file tree's and the chat's widths, the viewer takes the rest.
+      const m = (io.measure ?? domMeasure)();
+      if (!outerResize || !m.sizes || !m.viewport) return no("the columns can't be resized here (full-screen chat, or no split on screen)");
+      const left = typeof op.leftPanel === "number" ? Math.max(0, op.leftPanel) : m.sizes.leftPanel;
+      const chat = typeof op.chat === "number" ? Math.max(0, op.chat) : m.sizes.chat;
+      const total = m.sizes.leftPanel + m.sizes.viewer + m.sizes.chat;
+      outerResize([left, Math.max(340, total - left - chat), chat]);
       return done();
     }
     default:

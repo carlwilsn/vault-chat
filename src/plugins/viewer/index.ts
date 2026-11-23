@@ -29,11 +29,17 @@ import {
 } from "../../viewerRegistry";
 import { OFF, OPT, USE, keep, viewerPrefs } from "./prefs";
 import { followScroll, onScroll, scrollOf } from "./scroll";
-import { setZoomOf, zoomOf } from "./zoom";
-import { paneOf } from "./panes";
+import { onZoomMoved, setZoomOf, zoomOf } from "./zoom";
+import { onVideoChanged, videoNamed, videosNow } from "../../videoState";
+import { onTexChanged, recompileTex, texOf } from "../../texState";
+import { captureNow, startCapture, type CaptureFor } from "../../capture";
+import { answerPrompt, livePagesNow, onLivePagesChanged, stopPageMic } from "../../livePagesState";
+import { textOfFrame } from "../../pageSnap";
+import { onOutsideOpened, openOutside, outsideOpened, type OutsideHow } from "../../opener";
+import { onPaneEvent, paneOf } from "./panes";
 import { useLiveFiles } from "../../liveReload";
 import "./builtins"; // the app's own viewers register with the registry
-import { caretOf, onSaved } from "../../editorState";
+import { caretOf, editorOf, onEditorChanged, onSaved } from "../../editorState";
 import { editorWrites } from "../../saveBeforeSend";
 export { pane } from "./mountPane";
 
@@ -92,6 +98,7 @@ function describeOpen(o: Open) {
     changedOnDisk: changedOnDisk(o.file),
     ...(Object.keys(scroll).length ? { scroll } : {}),
     ...(zoomOf(o.file) !== null ? { zoom: zoomOf(o.file) } : {}),
+    ...(type === "tex" && texOf(o.file) ? { tex: texOf(o.file) } : {}),
     targets: TARGET_KEYS[type] ?? [],
   };
 }
@@ -168,13 +175,54 @@ export function describeEditing() {
 }
 const slashed = (p: string) => p.replace(/\\/g, "/");
 
+/** Select the first place showing `text` in the pane drawing `file` (a rendered note, an HTML page drawn in the app, a
+ *  PDF's text layer), as a drag would: the document's selection, which app/context publishes. */
+function selectOnScreen(file: string, text: string): boolean {
+  const root = [...document.querySelectorAll<HTMLElement>("[data-file]")].find((el) => el.dataset.file === file);
+  if (!root) return false;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const i = (n.nodeValue ?? "").indexOf(text);
+    if (i < 0) continue;
+    const r = document.createRange();
+    r.setStart(n, i);
+    r.setEnd(n, i + text.length);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(r);
+    (n.parentElement as HTMLElement | null)?.scrollIntoView?.({ block: "center" });
+    return true;
+  }
+  return false;
+}
+
 /** The plugin's offers (exported for tests). */
 export function viewerOffers(): Offers {
   return {
+    watch: (fn: () => void) => {
+      const offs = [onLivePagesChanged(fn), useStore.subscribe(fn), useLiveFiles.subscribe(fn), onScroll(() => fn()), subscribeViewers(fn), onZoomMoved(fn), onVideoChanged(fn), onTexChanged(fn), onEditorChanged(fn), onSaved(() => fn()), onOutsideOpened(() => fn())];
+      return () => offs.forEach((f) => f());
+    },
     state: {
+      videos: {
+        description: "The videos on screen (the viewer's, a chat message's): id (the vault path, or a chat video's address), where (viewer | chat), time and duration in seconds, playing, muted, fullscreen. Change one with video.",
+        read: () => videosNow(),
+      },
+      capture: {
+        description: "A region capture under way (Carl drags a box over the viewer): who the picture goes to (chat, voice, note, ask) or null. Start one with capture.",
+        read: () => ({ for: captureNow() }),
+      },
+      pages: {
+        description: "The live vault pages doing something beyond their own state: a capability prompt waiting for Carl (asking: what it wants), recording from the mic, requests in flight to the box (vc.ask, vc.fetch), the last sound it played. Answer a prompt with grant; stop a recording with stopMic. A page's own state: PluginRead {plugin: <its path>}; its text: pageText.",
+        read: () => livePagesNow(),
+      },
+      outside: {
+        description: "The files opened outside the app this session (the default app, File Explorer, the system video player): path, how, at.",
+        read: () => outsideOpened(),
+      },
       open: {
         description:
-          "The files open in the viewer: per pane (main, or left / right in a split) its path, type, the viewer drawing it (a viewer's id, \"editor\" = the source editor via Ctrl+E, \"fallback\" = plain text), mode (view | edit, null when the type has no edit mode), whether it is the active pane, where it is scrolled (ratio 0..1, page / totalPages for a PDF, line; lineApprox when read off the scroll position), its zoom when its viewer zooms (1 = fit) and the targets scrollTo takes for it.",
+          "The files open in the viewer: per pane (main, or left / right in a split) its path, type, the viewer drawing it (a viewer's id, \"editor\" = the source editor via Ctrl+E, \"fallback\" = plain text), mode (view | edit, null when the type has no edit mode), whether it is the active pane, where it is scrolled (ratio 0..1, page / totalPages for a PDF, line; lineApprox when read off the scroll position), its zoom when its viewer zooms (1 = fit), a .tex preview's compile (compiling, error log, pdf, at) and the targets scrollTo takes for it.",
         read: () => openNow().map(describeOpen),
       },
       viewers: {
@@ -255,7 +303,7 @@ export function viewerOffers(): Offers {
       },
       zoom: {
         description:
-          "Zoom an open PDF or image (path, or pane; the active one when left out): zoom is a factor (1 = fit the pane; a PDF takes 0.25..5, an image 0.2..8) or \"in\" / \"out\" (×1.25 / ÷1.25) or \"reset\". Answers the zoom now; the open state shows it.",
+          "Zoom an open PDF or image (path, or pane; the active one when left out): zoom is a factor (1 = fit the pane; a PDF takes 0.25..5, an image 0.2..8) or \"in\" / \"out\" (one step, ×1.1, as the viewer's + / − buttons) or \"reset\" (its % button). Answers the zoom now; the open state shows it.",
         args: {
           type: "object",
           properties: { zoom: { type: ["number", "string"], description: "A factor, or in / out / reset." }, path: { type: "string" }, pane: { type: "string", enum: ["main", "left", "right"] } },
@@ -294,7 +342,6 @@ export function viewerOffers(): Offers {
           const h = paneOf(o.file, o.paneId);
           if (!h) throw new Error(`${rel(o.file)} has no pane on screen`);
           await h.reloadFromDisk();
-          paneEvent("reloaded", { path: rel(o.file), pane: o.pane });
           return { path: rel(o.file), pane: o.pane, reloaded: true };
         },
       },
@@ -306,8 +353,105 @@ export function viewerOffers(): Offers {
           const h = paneOf(o.file, o.paneId);
           if (!h) throw new Error(`${rel(o.file)} has no pane on screen`);
           await h.keepMine();
-          paneEvent("keptMine", { path: rel(o.file), pane: o.pane });
           return { path: rel(o.file), pane: o.pane, kept: true };
+        },
+      },
+      video: {
+        description: "Control a video on screen (id from videos; left out: the viewer's), as its bar does: play true/false, seek (seconds), muted true/false, fullscreen true/false (the webview may refuse full screen without a click).",
+        args: { type: "object", properties: { id: { type: "string" }, play: { type: "boolean" }, seek: { type: "number", minimum: 0 }, muted: { type: "boolean" }, fullscreen: { type: "boolean" } }, additionalProperties: false },
+        run: (a) => {
+          const v = videoNamed(a.id);
+          const n = v.now();
+          if (typeof a.seek === "number") v.seekTo(a.seek);
+          if (typeof a.play === "boolean" && a.play !== n.playing) v.toggle();
+          if (typeof a.muted === "boolean" && a.muted !== n.muted) v.toggleMute();
+          if (typeof a.fullscreen === "boolean" && a.fullscreen !== n.fullscreen) v.toggleFull();
+          return videosNow().find((x) => x.id === v.id) ?? null;
+        },
+      },
+      recompile: {
+        description: "Compile an open .tex file's preview again (as saving it does): its compile state is in open (tex).",
+        args: PANE_ARGS,
+        run: (a) => {
+          const o = openFor(a);
+          if (!recompileTex(o.file)) throw new Error(`${rel(o.file)} has no TeX preview on screen (view mode shows it)`);
+          return { path: rel(o.file), compiling: true };
+        },
+      },
+      type: {
+        description: "Type text into an open file's editor at its caret (replacing what is selected), as Carl's keys do: it saves with the editor's autosave. Only what Carl asks for; to rewrite a file, edit the file. The file must be in the editor (mode edit, or a code file).",
+        args: { type: "object", properties: { text: { type: "string" }, path: { type: "string" }, pane: { type: "string", enum: ["main", "left", "right"] } }, required: ["text"], additionalProperties: false },
+        run: (a) => {
+          const o = openFor(a);
+          const ed = editorOf(o.file);
+          if (!ed) throw new Error(`${rel(o.file)} is not in an editor on screen (setMode edit first)`);
+          ed.type(String(a.text ?? ""));
+          return { path: rel(o.file), caret: caretOf(o.file) };
+        },
+      },
+      select: {
+        description: "Select text in an open file, as Carl's drag does: in an editor by line / col (1-based) to endLine / endCol (a caret when left out); in a rendered note, page or PDF, the first place showing `text` on screen. The selection is what app/context shows and a Ctrl+K box takes.",
+        args: { type: "object", properties: { line: { type: "integer", minimum: 1 }, col: { type: "integer", minimum: 1 }, endLine: { type: "integer", minimum: 1 }, endCol: { type: "integer", minimum: 1 }, text: { type: "string" }, path: { type: "string" }, pane: { type: "string", enum: ["main", "left", "right"] } }, additionalProperties: false },
+        run: (a) => {
+          const o = openFor(a);
+          const ed = editorOf(o.file);
+          if (ed && typeof a.line === "number") {
+            ed.select(a.line, Number(a.col ?? 1), typeof a.endLine === "number" ? a.endLine : undefined, typeof a.endCol === "number" ? a.endCol : undefined);
+            return { path: rel(o.file), caret: caretOf(o.file) };
+          }
+          if (typeof a.text !== "string" || !a.text) throw new Error(ed ? "line (and col / endLine / endCol) select in the editor" : "text: what to select on screen");
+          if (!selectOnScreen(o.file, a.text)) throw new Error(`"${a.text}" is not shown on screen in ${rel(o.file)} (scrollTo it first)`);
+          return { path: rel(o.file), selected: a.text };
+        },
+      },
+      capture: {
+        description: "Start a region capture, as the Capture buttons and Ctrl+M do: Carl drags a box over the viewer and the picture goes to for: chat (the composer), voice (the voice text panel), note (the note composer) or ask (a Ctrl+K box at the region).",
+        args: { type: "object", properties: { for: { type: "string", enum: ["chat", "voice", "note", "ask"] } }, required: ["for"], additionalProperties: false },
+        run: (a) => {
+          startCapture(a.for as CaptureFor);
+          return { capturing: a.for };
+        },
+      },
+      grant: {
+        description: "Answer a live page's capability prompt, as its Allow (allow true) or Not now (false). Only when Carl asks.",
+        args: { type: "object", properties: { page: { type: "string" }, allow: { type: "boolean" } }, required: ["page", "allow"], additionalProperties: false },
+        run: (a) => {
+          const page = String(a.page ?? "");
+          if (!answerPrompt(page, a.allow === true)) throw new Error(`no prompt waiting for ${page} (pages lists them)`);
+          return { page, allowed: a.allow === true };
+        },
+      },
+      stopMic: {
+        description: "Stop a live page's recording, as its red badge's Stop.",
+        args: { type: "object", properties: { page: { type: "string" } }, required: ["page"], additionalProperties: false },
+        run: (a) => {
+          if (!stopPageMic(String(a.page ?? ""))) throw new Error(`${String(a.page)} is not recording`);
+          return { stopped: a.page };
+        },
+      },
+      pageText: {
+        description: "The text an open HTML page shows now (any page, with or without vc.state): asked of the page itself in its frame (path, or the active pane's page). Cut to 12 000 characters.",
+        args: { type: "object", properties: { path: { type: "string" }, pane: { type: "string", enum: ["main", "left", "right"] } }, additionalProperties: false },
+        run: async (a) => {
+          const o = openFor(a);
+          if (fileKind(o.file).kind !== "html") throw new Error(`${rel(o.file)} is not an HTML page`);
+          const root = [...document.querySelectorAll<HTMLElement>("[data-file]")].find((el) => el.dataset.file === o.file);
+          const frame = root?.querySelector("iframe") ?? null;
+          if (!frame) throw new Error(`${rel(o.file)} is not drawn as a page on screen (view mode shows it)`);
+          const text = await textOfFrame(frame);
+          if (text === null) throw new Error("the page did not answer (an older bridge, or it is busy)");
+          return { path: rel(o.file), text: text.slice(0, 12_000) };
+        },
+      },
+      openOutside: {
+        description: "Open a vault file outside the app, as the viewer's buttons do: how default (its default app), explorer (show it in File Explorer) or video (the system video player). Only when Carl asks.",
+        args: { type: "object", properties: { path: { type: "string" }, how: { type: "string", enum: ["default", "explorer", "video"] } }, required: ["path", "how"], additionalProperties: false },
+        run: async (a) => {
+          const vault = (S().vaultPath ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
+          const r = String(a.path ?? "").replace(/\\/g, "/").replace(/^\.?\//, "");
+          const abs = r.startsWith(vault + "/") ? r : `${vault}/${r}`;
+          await openOutside(abs, a.how as OutsideHow);
+          return { opened: rel(abs), how: a.how };
         },
       },
       closePane: {
@@ -374,8 +518,9 @@ export function viewerOffers(): Offers {
       opened: { description: "A file was opened in the viewer (or into a pane): path, pane, type, viewer." },
       scrolled: { description: "An open file was scrolled (at most every 400 ms per file): path, ratio?, page?, totalPages?, line?." },
       modeChanged: { description: "An open file switched between view and edit: path, pane, mode." },
-      reloaded: { description: "reloadFromDisk showed a file as it is on disk: path, pane." },
-      keptMine: { description: "keepMine saved the version on screen over the one on disk: path, pane." },
+      reloaded: { description: "The header's Reload (Carl's click or reloadFromDisk) showed a file as it is on disk: path, pane." },
+      keptMine: { description: "The header's Keep mine (Carl's click or keepMine) saved the version on screen over the one on disk: path, pane." },
+      openedOutside: { description: "A file was opened outside the app (the default app, File Explorer, the system video player): path, how." },
       paneClosed: { description: "closePane closed a pane of the split: path, pane." },
       saved: { description: "Carl's typing in an open file reached the disk (its autosave): path. Wait for it before editing a file he is typing in." },
       changed: { description: "The viewers changed (a plugin's registered or removed, one turned on or off or chosen, an option set): the active viewer of each type after it." },
@@ -384,6 +529,9 @@ export function viewerOffers(): Offers {
 }
 
 const SCROLL_EVERY_MS = 400;
+
+/** Headless (the panes draw; this offers and follows them): mounted in every layout by the "offers" place. */
+export const offers = { mount };
 
 export function mount(_el: HTMLElement, api: PluginApi): () => void {
   const offers = api.offer(viewerOffers());
@@ -394,6 +542,8 @@ export function mount(_el: HTMLElement, api: PluginApi): () => void {
     if (paneEvent === toEvents) paneEvent = () => {};
   });
   offs.push(onSaved((path) => offers.emit("saved", { path: rel(path) })));
+  offs.push(onPaneEvent((name, d) => offers.emit(name, { path: rel(d.file), pane: openNow().find((o) => o.file === d.file && o.paneId === d.paneId)?.pane ?? "main" })));
+  offs.push(onOutsideOpened((o) => o && offers.emit("openedOutside", { path: rel(o.path), how: o.how })));
 
   // Opened / modeChanged: what is open, per pane, compared on each store change (reference checks first).
   const sig = (o: Open) => `${o.pane}\n${o.file}`;

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { waitAck, type Ack } from "./show";
 import { controlDown, laptopElsewhere, noteAnswer, unansweredNote, vaultName } from "./deviceLink";
 
-const OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "split", "focus", "fullscreenChat", "chatSidebar", "openChat"] as const;
+const OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "split", "focus", "fullscreenChat", "chatSidebar", "resize", "openChat"] as const;
 type Op = Record<string, unknown> & { op: string };
 
 export type LayoutDeps = {
@@ -46,6 +46,13 @@ function parseOps(a: Record<string, unknown>): Op[] | string {
     if (action === "chatSidebar") {
       if (typeof o.open !== "boolean") return "chatSidebar needs open: true or false.";
       op.open = o.open;
+    }
+    if (action === "resize") {
+      for (const k of ["leftPanel", "chat"] as const) if (o[k] !== undefined) {
+        if (typeof o[k] !== "number" || !Number.isFinite(o[k])) return `resize: ${k} is a width in pixels.`;
+        op[k] = o[k];
+      }
+      if (op.leftPanel === undefined && op.chat === undefined) return "resize needs leftPanel and/or chat (pixels).";
     }
     if (action === "openChat") {
       if (typeof o.id !== "string" || !o.id.trim()) return 'openChat needs id: a chat\'s id, "main", or "project-<slug>".';
@@ -102,6 +109,11 @@ function keep(layout: unknown, open: unknown): void {
   const was = kept ? JSON.stringify(kept.layout) : "";
   kept = { layout, at: Date.now(), ...(open !== undefined ? { open } : kept?.open !== undefined ? { open: kept.open } : {}) };
   if (JSON.stringify(layout) !== was || open !== undefined) for (const f of [...keptListeners]) f();
+}
+/** The laptop's own word that its layout changed (POST /api/v2/layout: Carl dragged a sash, toggled a panel, opened a
+ *  file): kept as the read-back, and the workspace noun's watchers hear it. */
+export function keepLaptopLayout(layout: unknown): void {
+  if (layout && typeof layout === "object") keep(layout, undefined);
 }
 /** Tests: forget it. */
 export function resetKeptLayout(): void {

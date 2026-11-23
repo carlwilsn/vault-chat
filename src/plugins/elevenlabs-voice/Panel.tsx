@@ -28,7 +28,7 @@ import {
   type SharedVoice,
   type VoiceDetail,
 } from "../../voiceLibraryBrowse";
-import type { PanelView } from "./view";
+import { panelChanged, registerPanelPart, type PanelView } from "./view";
 
 /** The panel: a dialog over the window while open (the chat's ⋯ menu "ElevenLabs voice", or the plugin's open action). */
 export function ElevenLabsVoicePanel({ view }: { view: PanelView }) {
@@ -47,7 +47,7 @@ export function ElevenLabsVoicePanel({ view }: { view: PanelView }) {
       <div className="w-[440px] max-w-[92vw] rounded-lg border border-border bg-card shadow-xl">
         <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-border">
           <span className="text-[13px] font-semibold">ElevenLabs voice</span>
-          <Button variant="ghost" size="icon" onClick={() => view.set(false)} data-el="elevenlabs-voice-close" title="Close">
+          <Button data-offer="app/elevenlabs-voice.close" variant="ghost" size="icon" onClick={() => view.set(false)} data-el="elevenlabs-voice-close" title="Close">
             <X className="h-3.5 w-3.5" />
           </Button>
         </div>
@@ -172,6 +172,25 @@ export function VoiceSection() {
   };
   useEffect(() => () => audioRef.current?.pause(), []);
 
+  // What it shows and its controls, for the plugin's offers (./view.ts): the same choose, Test and library button.
+  const liveRef = useRef({ choose, test, setBrowsing });
+  liveRef.current = { choose, test, setBrowsing };
+  const shownRef = useRef<Record<string, unknown>>({});
+  shownRef.current = { voiceId, voices: (voices ?? []).map((v) => ({ id: v.voice_id, name: v.name, ...(voiceUnfitReason(v) ? { unfit: voiceUnfitReason(v) } : {}) })), loading: !!key && !voices, browsing, testing, error };
+  useEffect(
+    () =>
+      registerPanelPart("voices", {
+        state: () => shownRef.current,
+        act: {
+          choose: (a) => liveRef.current.choose(String(a.voiceId ?? "")),
+          test: () => liveRef.current.test(),
+          browse: (a) => liveRef.current.setBrowsing(a.open !== false),
+        },
+      }),
+    [],
+  );
+  useEffect(() => panelChanged());
+
   const listed = visibleVoices(voices ?? [], hidden, voiceId);
   const hints = voiceHints(listed);
   const options: PickOption[] = listed.map((v) => {
@@ -207,7 +226,7 @@ export function VoiceSection() {
               />
             )}
           </div>
-          <Button size="sm" variant="outline" onClick={() => void test()} disabled={testing || !voiceId}>
+          <Button data-offer="app/elevenlabs-voice.test" size="sm" variant="outline" onClick={() => void test()} disabled={testing || !voiceId}>
             {testing ? "Playing…" : "Test"}
           </Button>
         </div>
@@ -235,25 +254,29 @@ function VoiceHealthRow() {
       alive = false;
     };
   }, [vault]);
+  const stRef = useRef({ st, healthOpen });
+  stRef.current = { st, healthOpen };
+  useEffect(() => registerPanelPart("health", { state: () => ({ open: stRef.current.healthOpen, pipeline: stRef.current.st?.pipeline ?? null, error: stRef.current.st?.error ?? null, failure: stRef.current.st?.failure?.code ?? null }), act: { open: (a) => setHealthOpen(a.open !== false) } }), []);
+  useEffect(() => panelChanged());
   if (!st) return null;
   return (
     <div className="flex items-start justify-between gap-3" data-el="voice-health">
       <span className="text-[12px] text-foreground/70 shrink-0 pt-1">Voice</span>
       <div className="min-w-0 flex-1 max-w-[62%] space-y-0.5">
         <div className="flex gap-1">
-          <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" data-el="voice-health-open" onClick={() => setHealthOpen(true)}>Health</Button>
+          <Button data-offer="app/elevenlabs-voice.openHealth" size="sm" variant="ghost" className="h-6 px-2 text-[11px]" data-el="voice-health-open" onClick={() => setHealthOpen(true)}>Health</Button>
         </div>
         <p className="text-[10.5px] text-muted-foreground px-0.5">
           {st.pipeline ? "The agent hears and speaks on the call itself." : "The box’s voice is setting up or unavailable."}
         </p>
         {st.error && <p role="status" data-el="voice-startup-error" className="text-[10.5px] text-destructive px-0.5">{st.error}</p>}
-        {healthOpen && <div role="dialog" aria-modal="true" aria-label="Voice health" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" onClick={() => setHealthOpen(false)}>
-          <div className="w-[420px] max-w-[90vw] rounded-lg border border-border bg-card p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+        {healthOpen && <div data-offer="app/elevenlabs-voice.openHealth" role="dialog" aria-modal="true" aria-label="Voice health" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" onClick={() => setHealthOpen(false)}>
+          <div data-offer="app/elevenlabs-voice.openHealth" className="w-[420px] max-w-[90vw] rounded-lg border border-border bg-card p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-sm font-semibold">Voice health</h3>
             <p className="text-xs text-muted-foreground">Microphone {useStore.getState().voiceMode ? "on" : "off"} · {st.pipeline ? "Pipeline ready" : "Pipeline unavailable"}</p>
             <p data-el="voice-health-status" className={`text-xs ${st.error ? "text-destructive" : "text-muted-foreground"}`}>{st.error || "No startup error reported."}</p>
             {st.failure && <p className="text-[10px] text-muted-foreground">{st.failure.code}</p>}
-            <Button size="sm" variant="outline" data-el="voice-health-close" onClick={() => setHealthOpen(false)}>Close</Button>
+            <Button data-offer="app/elevenlabs-voice.openHealth" size="sm" variant="outline" data-el="voice-health-close" onClick={() => setHealthOpen(false)}>Close</Button>
           </div>
         </div>}
       </div>
@@ -385,9 +408,43 @@ function LibraryPicker({
     onPicked(r.voiceId, v);
   };
 
+  const libRef = useRef({ setQuery, setAnyUse, play, pick, close, list, query, anyUse, loading, error, playing, adding, hasMore, recommended });
+  libRef.current = { setQuery, setAnyUse, play, pick, close, list, query, anyUse, loading, error, playing, adding, hasMore, recommended };
+  useEffect(
+    () =>
+      registerPanelPart("library", {
+        state: () => {
+          const l = libRef.current;
+          const brief = (v: SharedVoice) => ({ id: v.voice_id, name: v.name, ...(v.accent ? { accent: v.accent } : {}), ...(v.gender ? { gender: v.gender } : {}), sample: !!v.preview_url });
+          return { query: l.query, anyUse: l.anyUse, loading: l.loading, error: l.error, playing: l.playing, adding: l.adding, more: l.hasMore, results: l.list.slice(0, 30).map(brief), recommended: (l.recommended ?? []).slice(0, 10).map(brief) };
+        },
+        act: {
+          search: (a) => {
+            if (typeof a.query === "string") libRef.current.setQuery(a.query);
+            if (typeof a.anyUse === "boolean") libRef.current.setAnyUse(a.anyUse);
+          },
+          preview: (a) => {
+            const l = libRef.current;
+            const v = [...l.list, ...(l.recommended ?? [])].find((x) => x.voice_id === a.voiceId);
+            if (!v) throw new Error(`no voice ${String(a.voiceId)} in the library's list`);
+            l.play(v);
+          },
+          add: (a) => {
+            const l = libRef.current;
+            const v = [...l.list, ...(l.recommended ?? [])].find((x) => x.voice_id === a.voiceId);
+            if (!v) throw new Error(`no voice ${String(a.voiceId)} in the library's list`);
+            return l.pick(v);
+          },
+          close: () => libRef.current.close(),
+        },
+      }),
+    [],
+  );
+  useEffect(() => panelChanged());
+
   const row = (v: SharedVoice) => (
     <div key={v.voice_id} className="flex items-start gap-1.5 px-2 py-1.5 hover:bg-accent transition-colors" data-voice={v.voice_id}>
-      <button
+      <button data-offer="app/elevenlabs-voice.previewLibraryVoice"
         onClick={() => play(v)}
         disabled={!v.preview_url}
         title={playing === v.voice_id ? "Stop" : "Play a sample"}
@@ -395,7 +452,7 @@ function LibraryPicker({
       >
         {playing === v.voice_id ? <Square className="h-2.5 w-2.5" /> : <Play className="h-3 w-3" />}
       </button>
-      <button onClick={() => void pick(v)} className="flex-1 min-w-0 text-left" title={v.description ?? v.name}>
+      <button data-offer="app/elevenlabs-voice.addLibraryVoice" onClick={() => void pick(v)} className="flex-1 min-w-0 text-left" title={v.description ?? v.name}>
         <div className="text-[11px] text-foreground truncate">
           {v.name}
           <span className="ml-1.5 opacity-60 text-[10px]">{describeShared(v)}</span>
@@ -415,7 +472,7 @@ function LibraryPicker({
       </div>
       <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border border-border bg-card shadow-lg z-50 flex flex-col" data-voice-library>
         <div className="p-1.5 border-b border-border/60 flex items-center gap-2">
-          <input
+          <input data-offer="app/elevenlabs-voice.searchLibrary"
             ref={searchRef}
             type="search"
             value={query}
@@ -430,7 +487,7 @@ function LibraryPicker({
             className="flex-1 min-w-0 bg-transparent outline-none text-[11px] px-2 py-1 rounded border border-transparent focus:border-border placeholder:text-muted-foreground/60"
           />
           <label className="flex items-center gap-1 text-[10px] text-muted-foreground shrink-0 pr-1 cursor-pointer" title="Not only voices made for conversation">
-            <input type="checkbox" checked={anyUse} onChange={(e) => setAnyUse(e.target.checked)} className="h-3 w-3" />
+            <input data-offer="app/elevenlabs-voice.searchLibrary" type="checkbox" checked={anyUse} onChange={(e) => setAnyUse(e.target.checked)} className="h-3 w-3" />
             All uses
           </label>
         </div>

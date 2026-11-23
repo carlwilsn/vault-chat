@@ -11,7 +11,8 @@
 import { createRoot } from "react-dom/client";
 import type { PluginApi } from "../../mountHost";
 import { useStore } from "../../store";
-import { endVoiceCall, isVoiceSessionActive, sendVoiceUserText, setVoiceMicMuted, toggleVoice } from "../../voiceCall";
+import { onVoicePanelChanged, voicePanel } from "./panel";
+import { endVoiceCall, isVoiceSessionActive, sendVoiceUserText, toggleVoiceMute, toggleVoice } from "../../voiceCall";
 import { registerVoiceParts } from "../../voiceParts";
 import { InlineVoiceWaves, VoiceCockpit, VoiceMicGroup, VoiceMuteButton } from "./Controls";
 import { VoiceTextPanel } from "./TextPanel";
@@ -36,14 +37,18 @@ export function voiceOffers() {
     if (!isVoiceSessionActive()) throw new Error(S().voiceConnecting ? "the call is still connecting" : "no voice call is live (start one first)");
   };
   return {
+    watch: (fn: () => void) => {
+      const offs = [useStore.subscribe(fn), onVoicePanelChanged(fn)];
+      return () => offs.forEach((f) => f());
+    },
     state: {
       call: {
         description: "The voice call: on, connecting, listening, speaking, thinking, muted (the mic: nothing is sent), tool (what the voice agent runs now), error (why it failed), notice (voice moved to another device).",
         read: () => callOf(S()),
       },
       textPanel: {
-        description: "The box to type to the voice agent: open.",
-        read: () => ({ open: S().voiceTextPanelOpen }),
+        description: "The box to type to the voice agent: open, and while drawn its text, its captured picture (source, anchor) and whether it was moved.",
+        read: () => ({ open: S().voiceTextPanelOpen, ...(voicePanel()?.state() ?? {}) }),
       },
     },
     actions: {
@@ -70,7 +75,8 @@ export function voiceOffers() {
         args: { type: "object", properties: { muted: { type: "boolean" } }, additionalProperties: false },
         run: (a: Record<string, unknown>) => {
           needCall();
-          setVoiceMicMuted(typeof a.muted === "boolean" ? a.muted : !S().voiceMicMuted);
+          // The Mute button's and Ctrl+Shift+M's own toggle (src/voiceCall.ts toggleVoiceMute): one path.
+          if (typeof a.muted !== "boolean" || a.muted !== S().voiceMicMuted) toggleVoiceMute();
           return { muted: S().voiceMicMuted };
         },
       },
@@ -83,6 +89,15 @@ export function voiceOffers() {
           if (open && !s.voiceMode) throw new Error("voice is off (the text box is for a live call)");
           s.setVoiceTextPanelOpen(open);
           return { open: S().voiceTextPanelOpen };
+        },
+      },
+      removeImage: {
+        description: "Take the captured picture off the voice text box (its ×).",
+        run: () => {
+          const p = voicePanel();
+          if (!p) throw new Error("the voice text box is not open");
+          p.removeImage();
+          return p.state();
         },
       },
       say: {

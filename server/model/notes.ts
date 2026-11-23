@@ -79,13 +79,25 @@ export function notesNoun(vault: string): Noun {
     actions: {
       add: {
         description: "add a note (a short reminder or flag; a write-up is a vault .md file). To change a note, edit it: never add a second note to fix one",
-        args: { type: "object", properties: { text: { type: "string", description: "the note" }, source_path: { type: "string", description: "a vault file it points at" } }, required: ["text"], additionalProperties: false },
+        args: {
+          type: "object",
+          properties: {
+            text: { type: "string", description: "the note" },
+            source_path: { type: "string", description: "a vault file it points at" },
+            anchors: { type: "array", items: { type: "object" }, description: "what the note composer (Ctrl+N) captured: its anchors (source, selection, a captured picture)" },
+            turns: { type: "array", items: { type: "object" }, description: "a Ctrl+K exchange the note keeps" },
+            id: { type: "string", description: "the id the app already gave it (left out: a new one)" },
+          },
+          required: ["text"],
+          additionalProperties: false,
+        },
         run: (a) =>
           guard("add", async () => {
             const text = s(a.text).trim();
-            if (!text) return fail("add needs the note's text; nothing was saved.");
-            const anchors = s(a.source_path) ? [{ source_path: s(a.source_path), source_kind: "code" as const, source_anchor: null, primary: true }] : [];
-            const note = buildNote({ anchors, userDraft: text });
+            const anchors = Array.isArray(a.anchors) ? (a.anchors as never[]) : s(a.source_path) ? [{ source_path: s(a.source_path), source_kind: "code" as const, source_anchor: null, primary: true }] : [];
+            const turns = Array.isArray(a.turns) ? (a.turns as never[]) : [];
+            if (!text && !anchors.length && !turns.length) return fail("add needs the note's text; nothing was saved.");
+            const note = { ...buildNote({ anchors, userDraft: text || null, turns }), ...(s(a.id) && !all().some((n) => n.id === s(a.id)) ? { id: s(a.id) } : {}) };
             appendGlobalNote(vault, note);
             if (!all().some((n) => n.id === note.id)) return fail(`the note was written but is not in ${NOTES_FILE} when read back; it was not saved.`);
             return done(`Saved note ${note.id} in your global notes (${NOTES_FILE} on the box): every vault's Notes reads this same note.`);

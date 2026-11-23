@@ -161,8 +161,8 @@ test("the Ctrl+K box through the host: drawn from its props, its offers read and
   const d = listOffers().find((p: any) => p.id === "app/ask");
   assert.ok(d, "listed while it runs");
   assert.deepEqual(d.state.map((s: any) => s.name), ["open"]);
-  assert.deepEqual(d.actions.map((a: any) => a.name), ["type", "submit", "accept", "close", "sendToChat", "saveAsNote", "focus"]);
-  assert.deepEqual(d.events.map((e: any) => e.name), ["opened", "closed", "asked", "answered", "accepted", "rejected", "sentToChat", "savedAsNote"]);
+  assert.deepEqual(d.actions.map((a: any) => a.name), ["open", "mention", "capture", "removeImage", "move", "resize", "type", "submit", "accept", "close", "sendToChat", "saveAsNote", "focus"]);
+  assert.deepEqual(d.events.map((e: any) => e.name), ["opened", "closed", "asked", "answered", "accepted", "rejected", "sentToChat", "savedAsNote", "stateChanged"]);
   assert.deepEqual((await readOffers("app/ask", "open")).state.open, []);
   const nobox = await actOffers("app/ask", "type", { text: "x" });
   assert.equal(nobox.ok, false);
@@ -256,22 +256,29 @@ test("the viewer's pane through the host; its header's Reload / Keep mine / Clos
   assert.match(failing, /A line\./, "the file's text, read only");
 });
 
-test("the fullscreen frame through the host: the sidebar, the bar, the pane; frame / setSidebar / setFullscreen offers", async () => {
+test("the fullscreen frame through the host: the sidebar, the bar, the pane; its frame state (headless offers) and the layout's ops", async () => {
   _resetOffers();
   setBoth({ chatFullscreen: true, popoutOpen: false, chatSidebarOpen: false });
   const host = el();
   const h = mountPlugin(host, { name: "Chat pane", module: chat.frame }, { path: "app/chat", theme: () => THEME, host: appHostBackend });
+  // The offers are their own headless part (src/places.ts "offers"), mounted in every layout.
+  const ho = mountPlugin(el(), { name: "Chat pane", module: chat.offers }, { path: "app/chat", theme: () => THEME, host: appHostBackend });
+  await ho.ready;
   await h.ready;
   await waitFor("the frame", () => /data-el="chats-sidebar-open"/.test(html(host)));
   assert.equal(h.error, null);
   assert.deepEqual((await readOffers("app/chat", "frame")).state.frame, { fullscreen: true, popout: false, sidebar: false });
-  const side = await actOffers("app/chat", "setSidebar", { open: true });
-  assert.equal(side.ok, true, side.error);
+  // Fullscreen and its sidebar are box:workspace's ops (the layout's one route), as the frame's own buttons.
+  const { applyLayoutOps } = await import("../../src/layoutOps.ts");
+  const io = { openInPane: async () => ({ ok: false }), measure: () => ({ viewport: null, sizes: null }) };
+  const side = await applyLayoutOps([{ op: "chatSidebar", open: true }], io as never);
+  assert.equal(side.ok, true);
   assert.equal(S().chatSidebarOpen, true);
   await waitFor("the sidebar toggle gone", () => !/data-el="chats-sidebar-open"/.test(html(host)));
-  const leave = await actOffers("app/chat", "setFullscreen", { on: false });
-  assert.equal(leave.ok, true, leave.error);
+  const leave = await applyLayoutOps([{ op: "fullscreenChat", on: false }], io as never);
+  assert.equal(leave.ok, true);
   assert.equal(S().chatFullscreen, false);
+  ho.unmount();
   h.unmount();
   await tick();
   const failing = renderToStaticMarkup(createElement(FrameFallback, { info: { off: null, error: "frame broke", pending: false, retry() {} } }));

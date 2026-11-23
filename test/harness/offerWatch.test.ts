@@ -77,3 +77,24 @@ test("PluginRead {plugin, wait} on an app plugin is that watch, end to end over 
     leave();
   }
 });
+
+
+test("the generic stateChanged event: a part's state changing (its own watch says so) wakes a watch, whoever changed it", async () => {
+  const { STATE_CHANGED, checkOffersNow } = await import("../../src/pluginOffers.ts");
+  let v = 1;
+  const fns = new Set<() => void>();
+  declareOffers("app/generic", "Generic", { state: { v: { read: () => v } }, watch: (fn) => (fns.add(fn), () => fns.delete(fn)) });
+  await new Promise((r) => setTimeout(r, 30)); // its first read-back
+  const w = watchOffers("app/generic", undefined, 3000);
+  v = 2; // Carl's own change: no action ran
+  for (const f of fns) f();
+  const r = await w;
+  assert.equal(r.timedOut, false);
+  assert.equal(r.events![0]!.event, STATE_CHANGED);
+  assert.deepEqual(r.events![0]!.payload, { changed: ["v"] });
+  assert.deepEqual(r.state, { v: 2 });
+  // Nothing changed: no event.
+  await checkOffersNow();
+  const quiet = await watchOffers("app/generic", r.seq, 100);
+  assert.equal(quiet.timedOut, true);
+});

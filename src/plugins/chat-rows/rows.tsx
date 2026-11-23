@@ -17,7 +17,8 @@ import { soloWebImages } from "../../inlineWeb";
 import { localPathFromUrl } from "../../mdPipeline";
 import { planDone } from "../../planPlace";
 import { splitFilesLine } from "../../filesLine";
-import { dispatchChatAction } from "../../sync";
+import { sendQueuedNow, unqueue } from "../composer/draft";
+import { OpenRow } from "../../rowOpen";
 import { COMPACTION_DIVIDER_TEXT, isCompactionDivider, dividerSummary } from "../../chatContext";
 import { useStore, type ChatMessage, type TodoItem } from "../../store";
 import { cn } from "../../lib/utils";
@@ -216,23 +217,16 @@ function WaitingActions({ message }: { message: ChatMessage }) {
   if (!convId || !message.mid) return null;
   const id = message.mid;
   const btn = "h-5 px-1.5 rounded text-[10.5px] text-muted-foreground hover:text-foreground hover:bg-accent/60";
+  // The composer's own queued-message actions (app/composer sendQueuedNow / editQueued / cancelQueued): one path.
   return (
     <div className="flex items-center gap-0.5 opacity-0 group-hover/msg:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity" data-el="waiting-actions">
-      <button className={btn} onClick={() => dispatchChatAction({ kind: "sendNow", convId, id })} title="Interrupt the agent's current step and send this now" data-el="send-now">
+      <button data-offer="app/composer.sendQueuedNow" className={btn} onClick={() => sendQueuedNow(id)} title="Interrupt the agent's current step and send this now" data-el="send-now">
         Send now
       </button>
-      <button
-        className={btn}
-        onClick={() => {
-          dispatchChatAction({ kind: "unqueue", convId, id });
-          window.dispatchEvent(new CustomEvent("vc-composer-insert", { detail: splitFilesLine(stripAttachedFooter(message.content)).text }));
-        }}
-        title="Take it back into the composer"
-        data-el="waiting-edit"
-      >
+      <button data-offer="app/composer.editQueued" className={btn} onClick={() => unqueue(id, true)} title="Take it back into the composer" data-el="waiting-edit">
         Edit
       </button>
-      <button className={btn} onClick={() => dispatchChatAction({ kind: "unqueue", convId, id })} title="Take it back (not sent)" data-el="waiting-cancel">
+      <button data-offer="app/composer.cancelQueued" className={btn} onClick={() => unqueue(id)} title="Take it back (not sent)" data-el="waiting-cancel">
         Cancel
       </button>
     </div>
@@ -302,7 +296,7 @@ function NoticeRow({ message, index, onRetry }: RowProps) {
         {message.change?.offer && <ChangeLine change={message.change} />}
       </span>
       {message.retry && onRetry && (
-        <button type="button" data-el="retry" onClick={onRetry} className="shrink-0 ml-1 underline underline-offset-2 hover:text-foreground">
+        <button data-offer="app/chat.retry" type="button" data-el="retry" onClick={onRetry} className="shrink-0 ml-1 underline underline-offset-2 hover:text-foreground">
           Try again
         </button>
       )}
@@ -376,7 +370,7 @@ function AssistantBubble({ message, index, askLive = false, askChosen = "", onAs
   return (
     <div className="flex flex-col gap-1.5" data-message-id={message.mid} {...(message.waiting ? { "data-el": "waiting-message" } : {})} {...rowAttr(index)}>
         <div className="w-full space-y-2">
-          {message.thinking && <Thought text={message.thinking} />}
+          {message.thinking && <Thought text={message.thinking} index={index} />}
           {message.attachments && message.attachments.length > 0 && (
             <div className="flex flex-wrap gap-2" data-el="shown-images">
               {message.attachments.map((a, i) => (
@@ -393,7 +387,7 @@ function AssistantBubble({ message, index, askLive = false, askChosen = "", onAs
           </div>
           {onAsk && message.askOptions && message.askOptions.length > 0 && <AskOptions options={message.askOptions} live={askLive} chosen={askChosen} onPick={onAsk} />}
           {calls.length > 0 && (
-            <details className="group" data-el="tool-calls">
+            <OpenRow index={index} part="tools" className="group" attrs={{ "data-el": "tool-calls" }}>
               <summary className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer hover:text-foreground list-none select-none">
                 <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-0 -rotate-90" />
                 <Wrench className="h-3 w-3" />
@@ -404,7 +398,7 @@ function AssistantBubble({ message, index, askLive = false, askChosen = "", onAs
                   <ToolPart key={j} tool={t} index={index} message={message} />
                 ))}
               </div>
-            </details>
+            </OpenRow>
           )}
           {spawns && spawns.length > 0 && <Subagents list={spawns} variant="inline" onControl={onSubagent} onOpen={onOpenSubagent} openableThreadIds={openableThreadIds} />}
           <ReplyCost m={message} />
@@ -632,7 +626,7 @@ function VoiceAskRow({ ask, index }: { ask: NonNullable<ChatMessage["voiceAsk"]>
     );
   }
   return (
-    <details className="group" data-el="voice-ask" {...rowAttr(index)}>
+    <OpenRow index={index} part="voice-ask" className="group" attrs={{ "data-el": "voice-ask", ...rowAttr(index) }}>
       <summary className={cn("flex items-center gap-1.5 text-[11px] cursor-pointer hover:text-foreground list-none select-none min-w-0", ask.failed ? "text-destructive/90" : "text-muted-foreground")}>
         <ChevronDown className="h-3 w-3 shrink-0 transition-transform group-open:rotate-0 -rotate-90" />
         <Wrench className="h-3 w-3 shrink-0" />
@@ -647,7 +641,7 @@ function VoiceAskRow({ ask, index }: { ask: NonNullable<ChatMessage["voiceAsk"]>
           <Markdown source={ask.result || "(nothing came back)"} profile="chat" components={chatComponents} />
         </div>
       </div>
-    </details>
+    </OpenRow>
   );
 }
 
@@ -664,7 +658,7 @@ function JobRow({ job, index }: { job: NonNullable<ChatMessage["job"]>; index?: 
       </div>
     );
   return (
-    <details className="group" data-el="job-end" {...rowAttr(index)}>
+    <OpenRow index={index} part="job" className="group" attrs={{ "data-el": "job-end", ...rowAttr(index) }}>
       <summary className={cn("flex items-center gap-1.5 text-[11px] cursor-pointer hover:text-foreground list-none select-none min-w-0", job.failed ? "text-destructive/90" : "text-muted-foreground")} title={job.id}>
         <ChevronDown className="h-3 w-3 shrink-0 transition-transform group-open:rotate-0 -rotate-90" />
         <Wrench className="h-3 w-3 shrink-0" />
@@ -672,7 +666,7 @@ function JobRow({ job, index }: { job: NonNullable<ChatMessage["job"]>; index?: 
         <span className="truncate opacity-80">· {job.name}</span>
       </summary>
       <pre className="mt-2 pl-4 border-l border-border text-[11px] text-muted-foreground whitespace-pre-wrap break-all font-mono">{job.output || "(no output)"}</pre>
-    </details>
+    </OpenRow>
   );
 }
 
@@ -705,7 +699,7 @@ export function dividerLabel(m: ChatMessage): string {
 function CompactionDivider({ message, index }: { message: ChatMessage; index?: number }) {
   // A compaction and the box's roll-over read the same: earlier, summarized here.
   return (
-    <details className="group py-2" data-el="divider" {...rowAttr(index)}>
+    <OpenRow index={index} part="divider" className="group py-2" attrs={{ "data-el": "divider", ...rowAttr(index) }}>
       <summary className="flex items-center justify-center gap-2 text-[11px] text-muted-foreground cursor-pointer hover:text-foreground list-none select-none">
         <div className="h-px w-8 bg-border" />
         <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-0 -rotate-90" />
@@ -715,7 +709,7 @@ function CompactionDivider({ message, index }: { message: ChatMessage; index?: n
       <div className="mt-2 pl-4 border-l border-border prose-chat text-[12px] text-muted-foreground">
         <Markdown source={dividerSummary(message)} profile="chat" components={chatComponents} />
       </div>
-    </details>
+    </OpenRow>
   );
 }
 
@@ -729,7 +723,7 @@ export function AgentTodoList({ todos, done: whenDone = "line" }: { todos: TodoI
   if (planDone(todos) && whenDone === "hidden") return null;
   if (planDone(todos) && !open && whenDone === "line") {
     return (
-      <button
+      <button data-offer="app/chat-rows.toolRows"
         onClick={() => setOpen(true)}
         data-el="todos-done"
         className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"

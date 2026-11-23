@@ -13,10 +13,10 @@ import { openChatPopout } from "../../sync";
 import { VoiceCockpit, VoiceMicGroup } from "../../voiceParts";
 import { VaultPicker } from "../../VaultPicker";
 import { WindowControls } from "../../WindowControls";
-import { subscribeBoxSync, openTailscale, boxSyncNow, type BoxSyncState } from "../../vaultSync";
+import { subscribeBoxSync, type BoxSyncState } from "../../vaultSync";
 import { openTerminal, subscribeTerminalNote, terminalBoxName, terminalTitle } from "../../terminal";
 import { subscribeTitlebarItems, titlebarItems, type TitlebarItem, type TitlebarSide } from "../../titlebarItems";
-import { closeHidden, openHidden, refreshTree, toggleSelected, unhide, useBar } from "./model";
+import { closeHidden, openHidden, openTailscaleNow, refreshTree, setSyncOpen, toggleSelected, unhide, useBar } from "./model";
 import { shortcutHint } from "../../shortcuts";
 
 /** With the chat closed: "1 running" while the agent's background tasks work; a click opens the chat. */
@@ -24,7 +24,7 @@ function TasksRunning({ hidden, onOpen }: { hidden: boolean; onOpen: () => void 
   const n = useStore((s) => runningTaskCount(s.conversations));
   if (hidden || !n) return null;
   return (
-    <button onClick={onOpen} data-el="titlebar-tasks" title="Background tasks running — open the chat" className="h-6 mr-2 px-2 flex items-center gap-1.5 rounded-full border border-border/60 text-[11px] text-titlebar-muted hover:text-titlebar-foreground hover:bg-titlebar-hover">
+    <button data-offer="app/chat.openTask" onClick={onOpen} data-el="titlebar-tasks" title="Background tasks running — open the chat" className="h-6 mr-2 px-2 flex items-center gap-1.5 rounded-full border border-border/60 text-[11px] text-titlebar-muted hover:text-titlebar-foreground hover:bg-titlebar-hover">
       <span className="relative inline-flex h-1.5 w-1.5">
         <span className="absolute inset-0 rounded-full bg-primary opacity-60 animate-ping" />
         <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
@@ -73,7 +73,7 @@ export function Bar() {
     >
       <VoiceCockpit />
       <div className="flex items-center gap-1 px-2">
-        <button
+        <button data-offer="box:workspace.openLeftPanel"
           onClick={toggleLeft}
           className={`h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover ${leftCollapsed ? "text-titlebar-muted" : "text-titlebar-foreground"}`}
           title={`${leftCollapsed ? "Show" : "Hide"} file panel (${shortcutHint("view.files")})`}
@@ -83,7 +83,7 @@ export function Bar() {
         <VaultPicker />
         {vaultPath && (
           <>
-            <button
+            <button data-offer="app/titlebar.refreshTree"
               onClick={() => void refreshTree()}
               className="h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover text-titlebar-muted disabled:opacity-50"
               title="Refresh file tree"
@@ -91,14 +91,14 @@ export function Bar() {
             >
               <RefreshCw className={`h-3.5 w-3.5 ${refreshSpin ? "animate-spin" : ""}`} />
             </button>
-            <button
+            <button data-offer="app/titlebar.openHiddenFiles"
               onClick={() => void openHidden().catch((e) => console.error(e))}
               className="h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover text-titlebar-muted"
               title="Hidden files"
             >
               <Eye className="h-3.5 w-3.5" />
             </button>
-            {notesOn && <button
+            {notesOn && <button data-offer="app/titlebar.toggleNotes"
               onClick={() => setShowNotesPanel(!showNotesPanel)}
               className={`h-7 w-7 flex items-center justify-center rounded relative ${
                 showNotesPanel
@@ -127,7 +127,7 @@ export function Bar() {
       <TasksRunning hidden={!rightCollapsed || popoutOpen} onOpen={toggleRight} />
 
       <div className="flex items-center">
-        <button
+        <button data-offer="box:workspace.openRightPanel"
           onClick={toggleRight}
           disabled={popoutOpen}
           className={`h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover mr-1 disabled:opacity-40 disabled:cursor-not-allowed ${rightCollapsed ? "text-titlebar-muted" : "text-titlebar-foreground"}`}
@@ -139,7 +139,7 @@ export function Bar() {
         >
           <PanelRight className="h-3.5 w-3.5" />
         </button>
-        <button
+        <button data-offer="app/titlebar.popOutChat"
           onClick={() => openChatPopout().catch((err) => console.error("[popout] failed:", err))}
           disabled={popoutOpen}
           className="h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover text-titlebar-muted mr-1 disabled:opacity-40 disabled:cursor-not-allowed"
@@ -148,7 +148,7 @@ export function Bar() {
           <ExternalLink className="h-3.5 w-3.5" />
         </button>
         <TerminalButton vaultPath={vaultPath} />
-        <button
+        <button data-offer="app/titlebar.toggleSettings"
           onClick={() => setShowSettings(!showSettings)}
           className="h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover text-titlebar-muted mr-1"
           title="Settings"
@@ -183,7 +183,7 @@ export function Bar() {
                 key={line}
                 className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/60 cursor-pointer text-[12.5px]"
               >
-                <input
+                <input data-offer="app/titlebar.unhide"
                   type="checkbox"
                   checked={selected.has(line)}
                   onChange={() => toggleSelected(line)}
@@ -198,13 +198,13 @@ export function Bar() {
               {selected.size > 0 ? `${selected.size} selected` : ""}
             </div>
             <div className="flex gap-2">
-              <button
+              <button data-offer="app/titlebar.closeHiddenFiles"
                 className="px-3 py-1 rounded text-[12px] hover:bg-accent/60 text-foreground"
                 onClick={closeHidden}
               >
                 Close
               </button>
-              <button
+              <button data-offer="app/titlebar.unhide"
                 className="px-3 py-1 rounded text-[12px] bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed"
                 disabled={selected.size === 0}
                 onClick={() => void unhide().catch((e) => console.error(e))}
@@ -227,7 +227,10 @@ export function Bar() {
 // Amber, red after 10 minutes. Click for the details.
 function SyncChip() {
   const [st, setSt] = useState<BoxSyncState | null>(null);
-  const [open, setOpen] = useState(false);
+  // Open or closed and the Tailscale error are the bar's state (./model.ts), which its offers read and change.
+  const open = useBar((b) => b.syncOpen);
+  const tsError = useBar((b) => b.tailscaleError);
+  const setOpen = (u: boolean | ((o: boolean) => boolean)) => setSyncOpen(typeof u === "function" ? u(useBar.getState().syncOpen) : u);
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => subscribeBoxSync(setSt), []);
   const att = st?.attention ?? null;
@@ -249,19 +252,9 @@ function SyncChip() {
       window.removeEventListener("keydown", onKey);
     };
   }, [open]);
-  const [tsError, setTsError] = useState<string | null>(null);
   if (!att || !st) return null;
   const canOpenTs = att.kind === "tailscale" && !!st.tailscale?.canOpen;
-  const openTs = async () => {
-    setTsError(null);
-    try {
-      await openTailscale();
-      // Once it's connected the next cycle clears the chip; nudge one sooner.
-      window.setTimeout(() => void boxSyncNow(st.vault), 8000);
-    } catch (e) {
-      setTsError(String(e));
-    }
-  };
+  const openTs = () => openTailscaleNow(st.vault).catch(() => {});
   const kind = att.kind;
   const Icon = kind === "conflict" ? GitMerge : kind === "tailscale" ? WifiOff : kind === "offline" ? CloudOff : kind === "big" ? FileWarning : AlertTriangle;
   const color = att.level === "red" ? "text-destructive" : "text-amber-500";
@@ -281,6 +274,7 @@ function SyncChip() {
   return (
     <div ref={ref} className="relative mr-1 flex items-center">
       <button
+        data-offer="app/titlebar.openSyncDetails"
         onClick={() => setOpen((o) => !o)}
         className={`h-7 flex items-center gap-1.5 px-2 rounded hover:bg-titlebar-hover text-[11.5px] ${color}`}
         title="Vault sync needs attention"
@@ -290,6 +284,7 @@ function SyncChip() {
       </button>
       {canOpenTs && (
         <button
+          data-offer="app/titlebar.openTailscale"
           onClick={() => void openTs()}
           className="h-7 px-1.5 rounded hover:bg-titlebar-hover text-[11.5px] text-titlebar-foreground underline underline-offset-2"
           data-testid="open-tailscale"
@@ -350,7 +345,7 @@ function TerminalButton({ vaultPath }: { vaultPath: string | null }) {
           {note}
         </span>
       )}
-      <button
+      <button data-offer="app/titlebar.openTerminal"
         onClick={(e) => {
           void openTerminal({ shift: e.shiftKey }).catch((err) => console.error("[terminal] failed:", err));
         }}
@@ -380,7 +375,7 @@ function ButtonItem({ item }: { item: TitlebarItem }) {
   const svg = !!item.icon && /^\s*<svg[\s>]/i.test(item.icon);
   const name = item.title || item.label || item.id;
   return (
-    <button
+    <button data-offer="app/titlebar.clickItem"
       type="button"
       data-el="titlebar-item"
       data-item={item.key}

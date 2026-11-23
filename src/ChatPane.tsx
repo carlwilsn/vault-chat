@@ -18,8 +18,7 @@ import { createPortal } from "react-dom";
 import { useStore } from "./store";
 import { loadSkills } from "./skills";
 import { SettingsPane } from "./SettingsPane";
-import { CHAT_PLUGIN, CHAT_ROWS_PLUGIN } from "./appPlugins";
-import * as chatRowsPlugin from "./plugins/chat-rows";
+import { CHAT_PLUGIN } from "./appPlugins";
 import * as chatPlugin from "./plugins/chat";
 import { Transcript } from "./plugins/chat/Transcript";
 import { MessageBubble } from "./plugins/chat-rows/rows";
@@ -28,7 +27,6 @@ import { placeModule } from "./places";
 import { ComposerSlot } from "./ComposerPanel";
 
 // The built-in module(s) of the places below (src/places.ts).
-placeModule(CHAT_ROWS_PLUGIN, () => chatRowsPlugin);
 placeModule(CHAT_PLUGIN, () => chatPlugin.transcript, "transcript");
 
 /** The transcript's row (src/plugins/chat-rows/rows.tsx); exported here as it always was. */
@@ -106,8 +104,6 @@ function ChatPaneView() {
   if (showSettings) return <SettingsPane />;
   return (
     <>
-      {/* The transcript's rows as a plugin the agent reaches (offers only; it draws nothing of its own). */}
-      <PlaceMount place="chat.rows" />
       <TranscriptSlot />
     </>
   );
@@ -136,7 +132,7 @@ export function TranscriptFallback({ info }: { info: PluginFallbackInfo }) {
     <div className="h-full flex flex-col bg-card border-l border-border relative" data-el="transcript-fallback">
       <div data-el="transcript-fallback-error" className="shrink-0 flex items-center gap-2 px-3 h-8 text-[12px] text-muted-foreground">
         <span className="truncate" title={info.error ?? ""}>The chat stopped; a plain view until it is back.</span>
-        <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
+        <button data-offer="app/titlebar.reloadPart" type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
           Reload
         </button>
       </div>

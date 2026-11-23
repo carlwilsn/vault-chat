@@ -7,6 +7,7 @@
 // and writes them as `<vault>/.vault-chat/diag/diag-<time>.json` (machine-local,
 // gitignored). Everything is redacted again here (src/logRedact.ts): no key, no
 // token, no message or file contents.
+import { noteDiag } from "./partFailures";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "./store";
 import { APP_VERSION, vlog, vlogFlush, flushDebugLogToDisk } from "./debugLog";
@@ -118,10 +119,23 @@ export async function writeDiagBundle(minutes = DIAG_MINUTES): Promise<string | 
 /** Ctrl+Shift+D: write the bundle and say where. Also window.vcDiag(minutes?). */
 export function installDiagShortcut(): void {
   if (typeof window === "undefined") return;
-  const run = async (minutes?: number) => {
+  const run = runDiag;
+  (window as unknown as { vcDiag: typeof run }).vcDiag = run;
+  window.addEventListener("keydown", (e) => {
+    if (hit(e, "box.diag") && !e.repeat) {
+      e.preventDefault();
+      void run();
+    }
+  });
+}
+
+/** Ctrl+Shift+D's own run (app/titlebar's diagnostics action is this): the bundle written, its path said. */
+export async function runDiag(minutes?: number): Promise<string | null> {
+  {
     try {
       const p = await writeDiagBundle(minutes);
       if (!p) return null;
+      noteDiag(p);
       try {
         const { message } = await import("@tauri-apps/plugin-dialog");
         await message(`Saved the last ${minutes ?? DIAG_MINUTES} minutes of logs (laptop and box) to\n${p}`, { title: "Diagnostics" });
@@ -133,12 +147,5 @@ export function installDiagShortcut(): void {
       console.warn("[diag] failed:", e);
       return null;
     }
-  };
-  (window as unknown as { vcDiag: typeof run }).vcDiag = run;
-  window.addEventListener("keydown", (e) => {
-    if (hit(e, "box.diag") && !e.repeat) {
-      e.preventDefault();
-      void run();
-    }
-  });
+  }
 }

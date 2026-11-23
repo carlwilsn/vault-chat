@@ -10,6 +10,9 @@ const m = (plugin: string, part?: string): PlaceMountSpec => (part ? { plugin, p
 
 /** What each place mounts, in order. */
 export const PLACES: Readonly<Record<string, readonly PlaceMountSpec[]>> = {
+  // Every part's offers, headless, in every layout (fullscreen chat, docked, Settings open or not): the agent reaches a
+  // part whether or not it is drawn (report 28). Mounted once, with the overlays (src/App.tsx).
+  offers: [m("app/titlebar", "offers"), m("app/settings", "offers"), m("app/vaults", "offers"), m("app/filetree", "offers"), m("app/viewer", "offers"), m("app/chats", "offers"), m("app/chat", "offers"), m("app/chat-rows", "offers"), m("app/composer", "offers")],
   titlebar: [m("app/titlebar")],
   "titlebar.vaults": [m("app/vaults")],
   "left.tree": [m("app/filetree")],
@@ -19,12 +22,10 @@ export const PLACES: Readonly<Record<string, readonly PlaceMountSpec[]>> = {
   "chat.header": [m("app/chat")],
   "chat.bar": [m("app/chat", "bar")],
   "chat.frame": [m("app/chat", "frame")],
-  "chat.rows": [m("app/chat-rows")],
   "chat.transcript": [m("app/chat", "transcript")],
   "chat.composer": [m("app/composer")],
   settings: [m("app/settings")],
   voice: [m("app/voice")],
-  viewer: [m("app/viewer")],
   "viewer.pane": [m("app/viewer", "pane")],
   "ask.prompt": [m("app/ask", "prompt")],
 };

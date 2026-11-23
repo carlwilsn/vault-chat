@@ -3,18 +3,27 @@
 // the registry is (shortcuts.ts — the sheet lists exactly that table). Esc,
 // Ctrl+/ again or the backdrop closes it.
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
+import { create } from "zustand";
 import { SHORTCUTS, SHORTCUT_GROUPS, chordLabel, hit, type Shortcut } from "./shortcuts";
 
 export const OPEN_SHORTCUTS_EVENT = "vc-open-shortcuts";
 
+/** Whether the sheet is open: state the Settings part's offers read and change (app/settings shortcuts). */
+export const useShortcutSheet = create<{ open: boolean }>(() => ({ open: false }));
+const setOpen = (u: boolean | ((o: boolean) => boolean)) => useShortcutSheet.setState((s) => ({ open: typeof u === "function" ? u(s.open) : u }));
+
 /** Open the sheet from anywhere (the Settings item). */
 export function openShortcutSheet() {
-  window.dispatchEvent(new CustomEvent(OPEN_SHORTCUTS_EVENT));
+  setOpen(true);
+}
+/** Close it (Esc, Ctrl+/ again, the backdrop). */
+export function closeShortcutSheet() {
+  setOpen(false);
 }
 
 export function ShortcutSheet() {
-  const [open, setOpen] = useState(false);
+  const open = useShortcutSheet((s) => s.open);
 
   useEffect(() => {
     // Capture phase, so it opens from inside the editors too (CodeMirror and

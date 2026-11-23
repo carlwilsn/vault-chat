@@ -12,6 +12,17 @@ export type PaneHandle = {
 };
 
 const panes = new Map<string, PaneHandle[]>();
+
+type PaneEvent = (name: "reloaded" | "keptMine", data: { file: string; paneId: string | null }) => void;
+const paneFns = new Set<PaneEvent>();
+/** The header's Reload / Keep mine ran (Carl's click or the agent's action): the viewer's events. */
+export function onPaneEvent(fn: PaneEvent): () => void {
+  paneFns.add(fn);
+  return () => void paneFns.delete(fn);
+}
+export function emitPaneEvent(...a: Parameters<PaneEvent>): void {
+  for (const f of [...paneFns]) f(...a);
+}
 const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
 
 /** A pane showing `file`; the off when it stops showing it. */

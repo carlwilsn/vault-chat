@@ -1,4 +1,4 @@
-import { setCaret } from "./editorState";
+import { setCaret, registerEditor } from "./editorState";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Annotation, EditorSelection, EditorState } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
@@ -366,6 +366,22 @@ export function LiveEditor({
       parent: hostRef.current,
     });
     viewRef.current = view;
+    // Typing and selecting as Carl's keys do, for app/viewer's type / select actions.
+    const offHandle = registerEditor(currentFileRef.current, {
+      type: (text) => view.dispatch(view.state.replaceSelection(text), { userEvent: "input.type", scrollIntoView: true }),
+      ask: () => setInlineEdit(buildInlineEditContext(view, "md")),
+      select: (line, col, endLine, endCol) => {
+        const doc = view.state.doc;
+        const at = (l: number, c: number) => {
+          const ln = doc.line(Math.max(1, Math.min(doc.lines, l)));
+          return Math.min(ln.to, ln.from + Math.max(0, c - 1));
+        };
+        const anchor = at(line, col);
+        const head = endLine ? at(endLine, endCol ?? 1) : anchor;
+        view.dispatch({ selection: { anchor, head }, scrollIntoView: true, userEvent: "select" });
+        view.focus();
+      },
+    });
     // Seed the file path so the very first decoration build (which
     // runs synchronously inside EditorState.create) sees a non-null
     // baseFile. Without this, images render once with baseFile=null
@@ -382,6 +398,7 @@ export function LiveEditor({
       });
     }
     return () => {
+      offHandle();
       view.destroy();
       viewRef.current = null;
     };

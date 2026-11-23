@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, X as XIcon, Camera } from "lucide-react";
 import { useStore } from "./store";
-import { buildNote, anchorImages, type NoteAnchor } from "./notes";
+import { anchorImages, type NoteAnchor } from "./notes";
 import { fileKind } from "./fileKind";
+import { addNoteAnchor, captureForNote, removeNoteAnchor, removeNoteImage, saveNoteComposer, seedNoteComposer, setNoteComposerText, useNoteComposer } from "./noteComposer";
 import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
 
@@ -24,17 +25,6 @@ type NotePopupProps = {
   onSaved?: () => void;
 };
 
-function kindOf(path: string): NoteAnchor["source_kind"] {
-  if (!path) return "none";
-  const { kind } = fileKind(path);
-  if (kind === "markdown") return "markdown";
-  if (kind === "pdf") return "pdf";
-  if (kind === "html") return "html";
-  if (kind === "image") return "image";
-  if (kind === "notebook") return "notebook";
-  return "code";
-}
-
 export function NotePopup({
   open,
   onClose,
@@ -46,10 +36,11 @@ export function NotePopup({
   const currentFile = useStore((s) => s.currentFile);
   const files = useStore((s) => s.files);
   const vaultPath = useStore((s) => s.vaultPath);
-  const addNote = useStore((s) => s.addNote);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const pickerRef = useRef<HTMLInputElement | null>(null);
-  const [anchors, setAnchors] = useState<NoteAnchor[]>([]);
+  // What it holds is the note composer's own state (src/noteComposer.ts), which the agent reads and changes too.
+  const anchors = useNoteComposer((s) => s.anchors);
+  const text = useNoteComposer((s) => s.text);
   const [pickerQuery, setPickerQuery] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerIdx, setPickerIdx] = useState(0);
@@ -60,23 +51,10 @@ export function NotePopup({
   // after a save starts fresh.
   useEffect(() => {
     if (!open) return;
-    if (initialAnchors && initialAnchors.length > 0) {
-      setAnchors(initialAnchors);
-    } else if (currentFile) {
-      setAnchors([
-        {
-          source_path: currentFile,
-          source_kind: kindOf(currentFile),
-          source_anchor: null,
-          primary: true,
-        },
-      ]);
-    } else {
-      setAnchors([]);
-    }
+    seedNoteComposer(initialDraft, initialAnchors, useStore.getState().currentFile);
     setPickerOpen(false);
     setPickerQuery("");
-  }, [open, initialAnchors, currentFile]);
+  }, [open, initialAnchors, initialDraft]);
 
   useEffect(() => {
     if (!open) return;
@@ -126,67 +104,14 @@ export function NotePopup({
     return hits.slice(0, 6).map(({ score: _s, ...h }) => h);
   }, [pickerOpen, pickerQuery, files, vaultPath, anchors]);
 
-  const addAnchor = (hit: { path: string; name: string; rel: string; is_dir: boolean }) => {
-    const kind: NoteAnchor["source_kind"] = hit.is_dir
-      ? "code" /* dirs don't have their own kind; reuse */
-      : kindOf(hit.path);
-    const isPrimary = anchors.length === 0;
-    setAnchors([
-      ...anchors,
-      {
-        source_path: hit.path,
-        source_kind: kind,
-        source_anchor: null,
-        primary: isPrimary,
-      },
-    ]);
+  const addAnchor = (hit: { path: string; is_dir: boolean }) => {
+    addNoteAnchor(hit.path, hit.is_dir);
     setPickerOpen(false);
     setPickerQuery("");
   };
-
-  const removeAnchor = (path: string) => {
-    setAnchors((prev) => {
-      const next = prev.filter((a) => a.source_path !== path);
-      // If we removed the primary, promote the first remaining.
-      if (next.length > 0 && !next.some((a) => a.primary)) {
-        next[0] = { ...next[0], primary: true };
-      }
-      return next;
-    });
-  };
-
-  // Hide the popup, trigger marquee on the current viewer, then let
-  // the viewer reopen the popup with the captured image attached.
-  const captureRegion = () => {
-    const draft = textareaRef.current?.value ?? "";
-    const s = useStore.getState();
-    // Clear rival pending capture flags so they don't steal the
-    // marquee meant for this note.
-    s.setChatPaneCapturePending(false);
-    s.setEditPromptCapturePending(false);
-    s.stashNoteForCapture({
-      draft,
-      anchors,
-      turns: initialTurns,
-    });
-    // Toggle marquee on whichever viewer is currently mounted.
-    window.dispatchEvent(new CustomEvent("vc-marquee-toggle"));
-  };
-
-  const removeImage = (path: string, index: number) => {
-    setAnchors((prev) =>
-      prev.map((a) => {
-        if (a.source_path !== path) return a;
-        const list = anchorImages(a);
-        const next = list.filter((_, i) => i !== index);
-        return {
-          ...a,
-          image_data_url: next[0] ?? null,
-          images: next,
-        };
-      }),
-    );
-  };
+  const removeAnchor = removeNoteAnchor;
+  const captureRegion = captureForNote;
+  const removeImage = removeNoteImage;
 
   // Gate the Capture button on what's currently in the viewer, not
   // on the note's primary anchor — the user might be anchored to a
@@ -200,16 +125,7 @@ export function NotePopup({
   if (!open) return null;
 
   const save = async () => {
-    const ref = textareaRef.current;
-    const draft = ref?.value.trim() ?? "";
-    // Allow empty-text saves — anchor-only "bookmark" notes are valid.
-    const note = buildNote({
-      anchors,
-      turns: initialTurns,
-      userDraft: draft || null,
-    });
-    await addNote(note);
-    onClose();
+    await saveNoteComposer();
     onSaved?.();
   };
 
@@ -262,6 +178,7 @@ export function NotePopup({
                 </span>
               )}
               <button
+                data-offer="app/notes.removeComposerFile"
                 onClick={() => removeAnchor(a.source_path)}
                 className="shrink-0 h-4 w-4 flex items-center justify-center rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive opacity-60 group-hover:opacity-100"
                 title="Remove anchor"
@@ -273,7 +190,7 @@ export function NotePopup({
 
           {pickerOpen ? (
             <div className="rounded border border-border bg-background p-1.5 space-y-1">
-              <input
+              <input data-offer="app/notes.addComposerFile"
                 ref={pickerRef}
                 type="search"
                 autoFocus
@@ -332,6 +249,7 @@ export function NotePopup({
           ) : (
             <div className="flex items-center gap-4">
               <button
+                data-offer="app/notes.addComposerFile"
                 onClick={() => setPickerOpen(true)}
                 className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
               >
@@ -340,6 +258,7 @@ export function NotePopup({
               </button>
               {currentCanMarquee && (
                 <button
+                  data-offer="app/notes.captureForComposer"
                   onClick={captureRegion}
                   className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
                   title="Hide this popup, draw a region in the current viewer, then come back with the image attached"
@@ -365,6 +284,7 @@ export function NotePopup({
                       className="max-h-[90px] rounded border border-border/60"
                     />
                     <button
+                      data-offer="app/notes.removeComposerImage"
                       onClick={() => removeImage(a.source_path, i)}
                       className="absolute -top-1.5 -right-1.5 h-5 w-5 flex items-center justify-center rounded-full bg-card border border-border text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
                       title="Remove image"
@@ -386,7 +306,8 @@ export function NotePopup({
 
         <Textarea
           ref={textareaRef}
-          defaultValue={initialDraft}
+          value={text}
+          onChange={(e) => setNoteComposerText(e.target.value)}
           placeholder="What are you stuck on? (empty is fine — the anchor alone is a bookmark.)"
           onKeyDown={onTextareaKey}
           className="min-h-[96px] text-[13px]"
@@ -412,10 +333,10 @@ export function NotePopup({
         )}
 
         <div className="flex justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={onClose}>
+          <Button variant="ghost" size="sm" onClick={onClose} data-offer="app/notes.closeComposer">
             Cancel
           </Button>
-          <Button size="sm" onClick={save}>
+          <Button size="sm" onClick={save} data-offer="app/notes.saveComposer">
             Save note
           </Button>
         </div>

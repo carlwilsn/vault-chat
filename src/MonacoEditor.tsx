@@ -1,4 +1,4 @@
-import { setCaret } from "./editorState";
+import { setCaret, registerEditor } from "./editorState";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import type * as monaco from "monaco-editor";
@@ -33,6 +33,7 @@ export function MonacoEditor({
   const language = extToMonacoLang[ext.toLowerCase()] ?? "plaintext";
 
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const openInlineRef = useRef<() => void>(() => {});
   const [inlineEdit, setInlineEdit] = useState<MonacoInlineEdit | null>(null);
 
   // Scroll-to-anchor on "Open anchor" from the Notes panel. Matches
@@ -98,6 +99,17 @@ export function MonacoEditor({
     monacoNs: typeof monaco,
   ) => {
     editorRef.current = editor;
+    // Typing and selecting as Carl's keys do, for app/viewer's type / select actions.
+    const offHandle = registerEditor(caretPathRef.current, {
+      type: (text) => editor.trigger("keyboard", "type", { text }),
+      ask: () => openInlineRef.current(),
+      select: (line, col, endLine, endCol) => {
+        editor.setSelection({ startLineNumber: line, startColumn: col, endLineNumber: endLine ?? line, endColumn: endLine ? (endCol ?? 1) : col });
+        editor.revealLineInCenter(line);
+        editor.focus();
+      },
+    });
+    editor.onDidDispose(offHandle);
     // Where Carl's caret is (src/editorState.ts: app/viewer's `editing`).
     editor.onDidChangeCursorSelection((e) => {
       const s = e.selection;
@@ -152,6 +164,7 @@ export function MonacoEditor({
       });
     };
 
+    openInlineRef.current = openInline;
     editor.addCommand(monacoKeys("edit.inline", monacoNs), () => openInline());
     editor.addCommand(monacoKeys("edit.ask", monacoNs), () => openInline());
 

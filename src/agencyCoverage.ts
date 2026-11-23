@@ -28,7 +28,7 @@ export const COVERAGE: Record<string, Coverage> = {
   "src/plugins/filetree": { state: ["app/filetree"] },
   "src/plugins/notes": { state: ["app/notes", "box:notes"] },
   "src/plugins/settings": { state: ["app/settings", "box:settings"] },
-  "src/plugins/titlebar": { state: ["app/titlebar"], gap: "the sync chip is read-only (no action on a conflict)" },
+  "src/plugins/titlebar": { state: ["app/titlebar", "box:workspace"] },
   "src/plugins/vaults": { state: ["app/vaults", "box:links"] },
   "src/plugins/viewer": { state: ["app/viewer"] },
   "src/plugins/voice": { state: ["app/voice"] },
@@ -44,7 +44,7 @@ export const COVERAGE: Record<string, Coverage> = {
   "src/ChatPane.tsx": { state: ["app/chat"] },
   "src/ChatsPanel.tsx": { state: ["app/chats"] },
   "src/ChatWindow.tsx": { state: ["app/chat"] },
-  "src/ClaudeCodeSignIn.tsx": { screenOnly: "the sign-in flow (it handles a credential, so it stays out of the state on purpose)" },
+  "src/ClaudeCodeSignIn.tsx": { none: "the Claude sign-in flow: it handles a credential, kept out of the agent's reach on purpose (its controls are exempt with that reason)" },
   "src/CodeView.tsx": { state: ["app/viewer"] },
   "src/ComposerPanel.tsx": { state: ["app/composer"] },
   "src/FileTree.tsx": { state: ["app/filetree"] },
@@ -52,9 +52,9 @@ export const COVERAGE: Record<string, Coverage> = {
   "src/HtmlView.tsx": { state: ["app/viewer", "page"] },
   "src/ImageView.tsx": { state: ["app/viewer"] },
   "src/InlineEditPrompt.tsx": { state: ["app/ask"] },
-  "src/InlineHtmlFrame.tsx": { state: ["page"], gap: "drawn as a labelled box by Screen" },
-  "src/InlineWebPage.tsx": { screenOnly: "a web page shown inline in the chat: no state, no picture" },
-  "src/laptopReleaseHealth.tsx": { screenOnly: "the release health line (LaptopBuild reads the build, not this line)" },
+  "src/InlineHtmlFrame.tsx": { state: ["page", "app/chat-rows"] },
+  "src/InlineWebPage.tsx": { state: ["app/chat-rows"] },
+  "src/laptopReleaseHealth.tsx": { none: "draws nothing (the release probe returns null; LaptopBuild reads the build)" },
   "src/LiveEditor.tsx": { state: ["app/viewer"] },
   "src/main.tsx": { none: "the entry point" },
   "src/MarkdownArea.tsx": { state: ["app/viewer"] },
@@ -70,38 +70,37 @@ export const COVERAGE: Record<string, Coverage> = {
   "src/PdfView.tsx": { state: ["app/viewer"] },
   "src/PluginMount.tsx": { none: "hosts a plugin or page listed elsewhere" },
   "src/PluginOff.tsx": { state: ["app/changes"] },
-  "src/ProjectChip.tsx": { state: ["app/chats"] },
-  "src/SearchPicker.tsx": { screenOnly: "the quick file picker: its query and matches" },
+  "src/ProjectChip.tsx": { none: "the chat list's project hooks; its chip is not mounted" },
+  "src/SearchPicker.tsx": { none: "the picker primitive (Settings, the ElevenLabs panel): each use names its own offer" },
   "src/SettingsPane.tsx": { state: ["app/settings", "box:settings"] },
-  "src/ShortcutSheet.tsx": { screenOnly: "the shortcut sheet: whether it is open" },
+  "src/ShortcutSheet.tsx": { state: ["app/settings"] },
   "src/TexView.tsx": { state: ["app/viewer"] },
   "src/Titlebar.tsx": { state: ["app/titlebar"] },
   "src/ui.tsx": { none: "UI primitives" },
   "src/UnsupportedView.tsx": { state: ["app/viewer"] },
   "src/UpdateBanner.tsx": { state: ["app/titlebar"] },
-  "src/UsagePopover.tsx": { screenOnly: "the plan usage popover (Cost reads spend, not this)" },
+  "src/UsagePopover.tsx": { state: ["app/composer"] },
   "src/VaultPicker.tsx": { state: ["app/vaults"] },
   "src/VaultPluginHost.tsx": { state: ["page"] },
-  "src/VideoPlayer.tsx": { state: ["app/viewer"], gap: "playback position" },
-  "src/VideoView.tsx": { state: ["app/viewer"], gap: "playback position" },
+  "src/VideoPlayer.tsx": { state: ["app/viewer"] },
+  "src/VideoView.tsx": { state: ["app/viewer"] },
   "src/voiceParts.tsx": { state: ["app/voice"] },
   "src/VoiceSlot.tsx": { state: ["app/voice"] },
   "src/WindowControls.tsx": { state: ["app/titlebar"] },
 
   // ---------------------------------------------------------------- the box: things Carl sees that no UI file owns
-  "box/alerts": { screenOnly: "the in-app alerts list (Notify writes it; nothing reads it back as state yet)" },
-  "box/release-health": { screenOnly: "release health after a ship (LaptopBuild reads builds, not this)" },
+  "box/alerts": { state: ["box:alerts"] },
   "box/queue": { state: ["box:queue"] },
   "box/history": { state: ["box:history"] },
   "box/notes-to-agent": { state: ["box:notes"] },
 
   // ---------------------------------------------------------------- phone
-  "phone/src/App.tsx": { state: ["box:notes"], gap: "the phone is notifications + notes only (phonelite): its notes are box:notes; its notifications list is not state yet" },
+  "phone/src/App.tsx": { state: ["box:notes", "box:alerts", "box:links"] },
   "phone/src/main.tsx": { none: "the entry point" },
 };
 
 /** State ids that are not app plugins: the change lines, vault pages' records, the box's own offers. */
-export const OTHER_STATE = ["app/changes", "page", "box:settings", "box:notes", "box:jobs", "box:links", "box:logs", "box:history", "box:queue"];
+export const OTHER_STATE = ["app/changes", "page", "box:settings", "box:notes", "box:alerts", "box:pages", "box:workspace", "box:jobs", "box:chats", "box:links", "box:logs", "box:perf", "box:history", "box:queue"];
 
 /** The share of rows whose thing on screen is state (a row with a gap counts half), of the rows that draw something. */
 export function coveragePercent(rows: Record<string, Coverage> = COVERAGE, prefix = ""): number {
@@ -116,61 +115,21 @@ export function coveragePercent(rows: Record<string, Coverage> = COVERAGE, prefi
 }
 
 /**
- * Controls on screen (buttons, inputs, clickable elements) that do not yet say which offer reaches them, per file, as
- * counted when this ratchet started (server/test/agencyControls.ts). A count may only go down: a new control must
- * carry data-offer="<part>.<action>" (an action its part declares) or data-offer-exempt="<why>". Lower a number when
- * you annotate or remove controls; never raise one.
+ * Why a control on screen may have no offer (data-offer-exempt="<one of these>"): the only reasons there are. Every
+ * other button, input, select, textarea and clickable element names the model action it runs (data-offer=
+ * "app/<part>.<action>" or "box:<noun>.<action>"), and server/test/agencyCoverage.test.ts fails on one that names
+ * neither (report 28: no control may bypass the model). Add a reason only with Carl's word.
  */
-export const UNMAPPED_CONTROLS: Record<string, number> = {
- "src/ChangeLine.tsx": 1,
- "src/ChatFooter.tsx": 2,
- "src/ChatHeader.tsx": 2,
- "src/ChatModelPicker.tsx": 4,
- "src/ChatPane.tsx": 1,
- "src/ChatsPanel.tsx": 4,
- "src/ClaudeCodeSignIn.tsx": 9,
- "src/ComposerPanel.tsx": 3,
- "src/FileTree.tsx": 2,
- "src/FullscreenChat.tsx": 1,
- "src/InlineEditPrompt.tsx": 2,
- "src/InlineHtmlFrame.tsx": 4,
- "src/InlineWebPage.tsx": 11,
- "src/MarkdownView.tsx": 1,
- "src/MasterSection.tsx": 1,
- "src/NewProjectForm.tsx": 1,
- "src/NotePopup.tsx": 7,
- "src/PdfView.tsx": 5,
- "src/PluginOff.tsx": 1,
- "src/ProjectChip.tsx": 7,
- "src/SearchPicker.tsx": 4,
- "src/SettingsPane.tsx": 3,
- "src/TexView.tsx": 1,
- "src/Titlebar.tsx": 4,
- "src/UnsupportedView.tsx": 2,
- "src/UsagePopover.tsx": 1,
- "src/VaultPicker.tsx": 3,
- "src/VideoPlayer.tsx": 4,
- "src/VideoView.tsx": 3,
- "src/WindowControls.tsx": 3,
- "src/chatExtras.tsx": 7,
- "src/plugins/ask/Prompt.tsx": 8,
- "src/plugins/chat-rows/rows.tsx": 5,
- "src/plugins/chat-rows/tail.tsx": 1,
- "src/plugins/chat/Frame.tsx": 1,
- "src/plugins/chat/Header.tsx": 3,
- "src/plugins/chat/Transcript.tsx": 3,
- "src/plugins/chats/ChatsList.tsx": 20,
- "src/plugins/composer/Composer.tsx": 8,
- "src/plugins/elevenlabs-voice/Panel.tsx": 10,
- "src/plugins/filetree/Tree.tsx": 24,
- "src/plugins/notes/NotesPanel.tsx": 19,
- "src/plugins/settings/Pane.tsx": 20,
- "src/plugins/titlebar/Bar.tsx": 15,
- "src/plugins/vaults/Picker.tsx": 13,
- "src/plugins/viewer/Pane.tsx": 11,
- "src/plugins/viewer/builtins.tsx": 2,
- "src/plugins/voice/Controls.tsx": 4,
- "src/plugins/voice/TextPanel.tsx": 5,
- "src/ui.tsx": 6,
- "src/voiceParts.tsx": 2,
-};
+export const EXEMPT_REASONS: readonly string[] = [
+  "the Claude sign-in: it handles a credential, kept out of the agent's reach on purpose",
+  "Keys: a key is a secret, never state the agent reads or sets",
+  "pushes this laptop's keys to the box again: keys are secrets",
+  "a UI primitive: each use names its own offer",
+  "ProjectChip's chip is not mounted anywhere (only its hooks are used)",
+  "an AskUser answer card (left out of report 28: the agent's own question back to Carl)",
+  "Undo of a change line (left out of report 28: Undo is the change flow's own)",
+  "a markdown checkbox's rendering (a GFM task box): ticking writes the file, which the agent edits as a file",
+  "a markdown checkbox (a GFM task box): ticking writes the file, which the agent edits as a file",
+  "a menu's container: it only keeps a click from reaching the tree (its items name their offers)",
+  "copies the phone's link to this laptop's clipboard (the link is the box's, box:links shows the phone)",
+];

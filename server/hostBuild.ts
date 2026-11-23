@@ -13,6 +13,7 @@
 import { describeSwitchBack, failedPromotions } from "./serverSwitches";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { perfChanged } from "./perfLog";
 import { dirname, join } from "node:path";
 import { RotatingLog } from "./boxLogs";
 import { renameRetry } from "./atomic";
@@ -147,6 +148,7 @@ export function recordHostBuild(stateDir: string, raw: unknown, o: { now?: numbe
     /* the log below still has it */
   }
   log(stateDir).append({ ...rec, newBuild, nativeTransport: !!o.nativeTransport });
+  perfChanged();
   let woke = 0;
   if (b.surface === "tauri-production") {
     const watches = readWatches(stateDir);

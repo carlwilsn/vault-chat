@@ -85,6 +85,7 @@ export const PAGE_SNAP_BRIDGE = `<script>(function(){
   addEventListener('message', function(e){
     var d = e.data;
     if (d && d.__vc_snap && e.source === parent) snap(d.__vc_snap);
+    if (d && d.__vc_text && e.source === parent) { try { parent.postMessage({ __vc_text_result: { id: d.__vc_text, text: (document.body && document.body.innerText) || '' } }, '*'); } catch(_) {} }
   });
 })();</script>`;
 
@@ -120,6 +121,33 @@ export function snapFrame(frame: FrameLike, ms = 3000, win: WinLike = window as 
     t = setTimeout(() => finish(null), ms);
     try {
       target.postMessage({ __vc_snap: id }, "*");
+    } catch {
+      finish(null);
+    }
+  });
+}
+
+/** Ask a page frame for the text it shows (PAGE_SNAP_BRIDGE's __vc_text): app/viewer's pageText. Null: no answer. */
+export function textOfFrame(frame: FrameLike, ms = 3000, win: WinLike = window as unknown as WinLike): Promise<string | null> {
+  const target = frame.contentWindow;
+  if (!target) return Promise.resolve(null);
+  const id = `text-${Date.now().toString(36)}-${++seq}`;
+  return new Promise((resolve) => {
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const finish = (v: string | null) => {
+      if (t) clearTimeout(t);
+      win.removeEventListener("message", onMsg);
+      resolve(v);
+    };
+    const onMsg = (e: MessageEvent) => {
+      const r = (e.data as { __vc_text_result?: { id?: string; text?: unknown } } | null)?.__vc_text_result;
+      if (!r || r.id !== id || e.source !== (target as unknown)) return;
+      finish(typeof r.text === "string" ? r.text.slice(0, 200_000) : null);
+    };
+    win.addEventListener("message", onMsg);
+    t = setTimeout(() => finish(null), ms);
+    try {
+      target.postMessage({ __vc_text: id }, "*");
     } catch {
       finish(null);
     }

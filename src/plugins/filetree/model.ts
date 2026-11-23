@@ -60,6 +60,8 @@ export function onTreeEvent(fn: Listener): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }
+/** A tree event from the drawn tree (an OS drop's copy). */
+export const notifyTree = (name: string, data: Record<string, unknown>) => tell(name, data);
 const tell = (name: string, data: Record<string, unknown>) => {
   for (const f of [...listeners]) {
     try {
@@ -498,4 +500,26 @@ export async function unhide(lines: string[]): Promise<string[]> {
   await loadHidden(vault);
   tell("unhidden", { lines: gone });
   return gone;
+}
+
+/** Upload files from this laptop's disk into a vault folder (the tree's Upload…, its dialog's picks): each copied
+ *  with collision-renaming (the Rust copy_into_vault), the tree re-listed, one commit. The agent's upload action is
+ *  this. Returns the vault paths made. */
+export async function uploadInto(parent: string, sources: string[]): Promise<string[]> {
+  const vault = vaultNow();
+  if (!vault) throw new Error("no vault is open");
+  if (parent !== vault) setExpanded((prev) => new Set(prev).add(parent));
+  const copied: string[] = [];
+  for (const src of sources) {
+    try {
+      copied.push(await invoke<string>("copy_into_vault", { dstDir: parent, src }));
+    } catch (e) {
+      console.error("[upload] copy failed:", src, e);
+    }
+  }
+  if (!copied.length) return [];
+  await refreshFiles();
+  commitFsAction(vault, copied.length === 1 ? `upload ${relOf(copied[0]!, vault)}` : `upload ${copied.length} items`).catch(() => {});
+  tell("uploaded", { paths: copied.map((p) => relOf(p, vault)) });
+  return copied;
 }

@@ -30,13 +30,15 @@ const phone = files(PHONE).map((f) => [`phone/${f.slice(PHONE.length + 1)}`, rea
 function uiSettingsActions(): { actions: Set<string>; exempt: string[] } {
   const actions = new Set<string>();
   const exempt: string[] = [];
-  for (const [f, s] of source) {
+  for (const [f, s] of [...source, ...phone]) {
     for (const m of s.matchAll(/(?<!function )saveSetting\(\s*("([^"]+)"|([A-Za-z_.]+))/g)) {
       if (m[2]) actions.add(`set:${m[2]}`);
       // A key the user picks from the whole list (the Settings plugin's change action): every setting.
       else if (f.startsWith("plugins/settings/")) for (const k of SETTING_KEYS) actions.add(`set:${k}`);
       else throw new Error(`${f}: saveSetting with a computed key (${m[3]}): name it, or add it here`);
     }
+    // The phone's automatic-push switch (POST /push/preferences → the noun's set of pushAutomatic).
+    if (f.startsWith("phone/") && /"\/push\/preferences", \{ method: "POST"/.test(s)) actions.add("set:pushAutomatic");
     // The composer's model picker: model and effort, through the engine (it also restarts the running session).
     if (/boxPost\([^)]*"\/api\/v1\/model"/.test(s)) ["model", "effort"].forEach((k) => actions.add(`set:${k}`));
     for (const m of s.matchAll(/boxPost\([^,]+,\s*"\/api\/v2\/settings",\s*\{\s*(\w+)/g)) {
@@ -47,6 +49,9 @@ function uiSettingsActions(): { actions: Set<string>; exempt: string[] } {
   }
   return { actions, exempt };
 }
+
+/** Settings the app has no control for (each named, with why). */
+const SETTINGS_MODEL_ONLY: Record<string, string> = { corePublish: "the box's core building: set by asking the agent (box:settings); the Ready card shows its effect" };
 
 /** Every way the app and the phone change a note, as the notes noun's action names, read from their source. */
 const ROUTE: Record<string, string[]> = { "/notes/edit": ["edit"], "/notes/status": ["resolve", "reopen"], "/notes/delete": ["delete"], "/notes/clear-resolved": ["clearResolved"] };
@@ -136,7 +141,7 @@ describe("the model's settings noun", () => {
     const set = noun("settings", deps)!.actions.set!.args as { properties: { key: { enum: string[] } } };
     const model = new Set(set.properties.key.enum.map((k) => `set:${k}`));
     expect([...actions].filter((a) => !model.has(a)), "app actions the model lacks").toEqual([]);
-    expect([...model].filter((a) => !actions.has(a)), "model actions the app lacks").toEqual([]);
+    expect([...model].filter((a) => !actions.has(a) && !SETTINGS_MODEL_ONLY[a.slice(4)]), "model actions the app lacks").toEqual([]);
     expect(Object.keys(noun("settings", deps)!.actions)).toEqual(["set"]);
     expect(exempt.length).toBeLessThanOrEqual(1);
   });
@@ -181,7 +186,8 @@ describe("the model's notes noun", () => {
     const model = new Set(Object.keys(noun("notes", deps)!.actions));
     expect([...actions].filter((a) => !model.has(a)), "app actions the model lacks").toEqual([]);
     expect([...model].filter((a) => !actions.has(a)), "model actions the app lacks").toEqual([]);
-    expect(new Set(exempt).size).toBeLessThanOrEqual(Object.keys(NOTE_WRITES_EXEMPT).length + Object.keys(HOST_NOTES_EXEMPT).length);
+    // Each exemption is one of the named ones (the reformat control may sit in more than one file of the part).
+    expect(new Set(exempt.map((e) => e.replace(/^plugins\/notes\/[^:]+: /, "plugins/notes: "))).size).toBeLessThanOrEqual(Object.keys(NOTE_WRITES_EXEMPT).length + Object.keys(HOST_NOTES_EXEMPT).length);
   });
 
   it("is box:notes: added, edited in place, resolved, cleared, and watched without re-reading", async () => {
@@ -301,6 +307,7 @@ describe("the model's jobs noun", () => {
     list: (all: boolean) => `- job-1: running${all ? " (all)" : ""}`,
     status: (id: string) => `${id}: running, 3 tool calls`,
     control: async (id: string, op: "stop" | "steer", text?: string) => (calls.push(`${op}:${id}${text ? `:${text}` : ""}`), { ok: true, text: `${op} ${id}` }),
+    watch: () => () => {},
   });
 
   it("parity: the chip's Stop and Steer are exactly the model's changing actions; the old tools are gone", () => {
@@ -357,6 +364,11 @@ describe("the model's chats noun", () => {
   /** What only the agent does, on Carl's ask (each named, with why). */
   const AGENT_ONLY: Record<string, string> = {
     restoreProject: "the app's Undo toast after a project delete, a transient control",
+    deleteProject: "the list's ⋯ Delete on a project (src/projects.ts deleteProject posts the same deleteProject intent; checked below)",
+    rename: "a chat's Rename (src/chatDelete.ts renameChat, the same box path; the chat list's offers leave it to box:chats)",
+    renameProject: "a project's Rename (src/projects.ts renameProject posts the same renameProject intent)",
+    delete: "a chat's Delete (src/chatDelete.ts deleteChats, the same box path)",
+    restore: "a deleted chat's Restore (src/chatDelete.ts restoreChat, the same box path)",
     openProject: "Carl's spoken / typed ask to move his screens and call to a project",
     post: "handing work to the chat that owns it",
     compact: "the chat's own Compact (its header menu, the compact intent), not the chat list's",
@@ -375,6 +387,8 @@ describe("the model's chats noun", () => {
     delete: async (ids: string[]) => (calls.push(`delete:${ids.join(",")}`), { ok: true, text: "deleted" }),
     restore: ok("restore"),
     restoreProject: ok("restoreProject"),
+    deleteProject: async (p: string, folder: boolean) => (calls.push(`deleteProject:${p}:${folder}`), { ok: true, text: "deleted" }),
+    watch: () => () => {},
     openProject: ok("openProject"),
     post: ok("post"),
     compact: ok("compact"),
@@ -406,5 +420,72 @@ describe("the model's chats noun", () => {
     await actBoxOffer(d, "box:chats", "delete", { ids: ["c-1"] });
     expect(calls).toEqual(["rename:c-self:Bench", "start:do X:Physics", "delete:c-1"]);
     expect((await actBoxOffer(d, "box:chats", "post", { id: "c-1" })).text).toMatch(/needs text\. Nothing was run/);
+  });
+});
+
+
+// ---------------------------------------------------------------- the gate: every noun and box offer says when it changes
+describe("every box offer's watch is a real event (report 28)", () => {
+  const MODEL = join(__dirname, "..", "model");
+  it("no noun or box offer re-reads on a timer: no setInterval in server/model or server/boxOffers.ts", () => {
+    for (const f of readdirSync(MODEL)) expect(readFileSync(join(MODEL, f), "utf8"), `server/model/${f}`).not.toMatch(/setInterval\(/);
+    expect(readFileSync(join(__dirname, "..", "boxOffers.ts"), "utf8")).not.toMatch(/setInterval\(|everyMs/);
+  });
+  it("every box offer declares a watch", async () => {
+    const { boxOffers } = await import("../boxOffers");
+    const jobs = { turn: true, list: () => "", status: () => "", control: async () => ({ ok: true, text: "" }), watch: () => () => {} };
+    const all = boxOffers({ vault: root, stateDir: root, jobs, chats: { watch: () => () => {} } as never });
+    for (const o of all) expect(typeof o.watch, o.id).toBe("function");
+    expect(all.map((o) => o.id)).toEqual(expect.arrayContaining(["box:settings", "box:notes", "box:alerts", "box:links", "box:queue", "box:perf", "box:logs", "box:jobs", "box:chats"]));
+  });
+  it("box:alerts: an alert appended wakes a watch; markRead, hide and clear are the phone's routes", async () => {
+    const d = { vault: root };
+    const watched = watchBoxOffer(d, "box:alerts", 5_000);
+    const { notificationAppend } = await import("../commands/phone");
+    notificationAppend(root, JSON.stringify({ id: "n1", title: "Hi", body: "there", ts: Date.now() }));
+    const w = await watched;
+    expect(w.changed).toBe(true);
+    expect((w.state!.list as any).alerts[0]).toMatchObject({ id: "n1", read: false });
+    expect((await actBoxOffer(d, "box:alerts", "markRead", { id: "n1" })).ok).toBe(true);
+    expect(((await readBoxOffer(d, "box:alerts")).state!.list as any).alerts[0].read).toBe(true);
+    expect((await actBoxOffer(d, "box:alerts", "hide", { id: "nope" })).ok).toBe(false);
+    const http = readFileSync(join(__dirname, "..", "http.ts"), "utf8");
+    for (const a of ["markRead", "hide", "clear", "subscribe", "unsubscribe", "test"]) expect(http, `the phone's route for ${a} calls the noun`).toMatch(new RegExp(`alertsNoun\\(vault\\)\\.actions(\\.${a}|\\[)`));
+  });
+  it("box:links: a device's link coming up is an event, not a re-read", async () => {
+    const { linkOpened, resetLinks } = await import("../deviceLink");
+    resetLinks();
+    const watched = watchBoxOffer({ vault: root }, "box:links", 5_000);
+    await new Promise((r) => setTimeout(r, 20));
+    const done = linkOpened(root, "laptop");
+    const w = await watched;
+    done();
+    expect(w.changed).toBe(true);
+    expect((w.state!.devices as any).laptop.control).toBe("up");
+  });
+  it("deleting a project is the list's own intent", () => {
+    const s = source.find(([f]) => f === "projects.ts")![1];
+    expect(s).toMatch(/type: "deleteProject"/);
+    expect(readFileSync(join(__dirname, "..", "engine", "engine.ts"), "utf8")).toMatch(/intent\(\{ type: "deleteProject"/);
+  });
+});
+
+describe("box terminals (box:links terminals)", () => {
+  it("an sshd session with a pty is a box terminal; anything else is not", async () => {
+    const { boxTerminals } = await import("../boxTerminals");
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const proc = join(root, "proc");
+    const p = (pid: number, cmd: string) => {
+      mkdirSync(join(proc, String(pid)), { recursive: true });
+      writeFileSync(join(proc, String(pid), "cmdline"), cmd.split(" ").join("\0") + "\0");
+      writeFileSync(join(proc, String(pid), "stat"), `${pid} (sshd) S ${"0 ".repeat(18)}12345 0 0`);
+    };
+    mkdirSync(proc, { recursive: true });
+    writeFileSync(join(proc, "stat"), "cpu 0\nbtime 1700000000\n");
+    p(10, "sshd-session: carlwilsn@pts/3");
+    p(11, "sshd-session: carlwilsn [priv]");
+    p(12, "sshd: other@pts/4");
+    p(13, "node server.js");
+    expect(boxTerminals(proc).map((t) => [t.pid, t.user, t.tty])).toEqual([[10, "carlwilsn", "pts/3"], [12, "other", "pts/4"]]);
   });
 });

@@ -44,7 +44,7 @@ export function FileTreeFallback({ info }: { info: PluginFallbackInfo }) {
       ) : (
         <div data-el="file-tree-fallback-error" className="flex items-center gap-2 px-3 py-2 border-b border-border/50 shrink-0 text-[11.5px] text-muted-foreground">
           <span className="truncate" title={info.error ?? ""}>The file tree stopped; a plain one until it is back.</span>
-          <button type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
+          <button data-offer="app/titlebar.reloadPart" type="button" data-el="plugin-reload" onClick={info.retry} className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11.5px] hover:text-foreground">
             Reload
           </button>
         </div>
@@ -55,7 +55,7 @@ export function FileTreeFallback({ info }: { info: PluginFallbackInfo }) {
           if (it.kind !== "row") return null;
           const f = it.f;
           return (
-            <div
+            <div data-offer="app/filetree.open"
               key={f.path}
               data-el="file-tree-fallback-row"
               data-tree-path={f.path}

@@ -80,10 +80,10 @@ test("mounted: a chat menu entry opens its panel (the voice picker); offers pane
   assert.equal(item!.label, "ElevenLabs voice");
   const d = listOffers().find((p: any) => p.id === ELEVENLABS_VOICE_PLUGIN_ID)!;
   assert.deepEqual(d.state.map((s: any) => s.name), ["panel", "voice"]);
-  assert.deepEqual(d.actions.map((a: any) => a.name), ["open", "close", "setVoice"]);
+  assert.deepEqual(d.actions.map((a: any) => a.name), ["open", "close", "test", "browseLibrary", "searchLibrary", "previewLibraryVoice", "addLibraryVoice", "openHealth", "setVoice"]);
   let r = await readOffers(ELEVENLABS_VOICE_PLUGIN_ID);
   assert.equal(r.ok, true, r.error);
-  assert.deepEqual(r.state.panel, { open: false });
+  assert.deepEqual(r.state.panel, { open: false, parts: {} });
   assert.equal(r.state.voice.hasKey, false);
   assert.equal(typeof r.state.voice.voiceId, "string");
   // The key is an ordinary key, asked for by name: added the generic way it is there, removed it is gone (calls local).
@@ -98,7 +98,8 @@ test("mounted: a chat menu entry opens its panel (the voice picker); offers pane
   assert.match(html(host), /data-el="elevenlabs-voice-section"/);
   assert.match(html(host), /Needs the key ELEVENLABS_API_KEY/, "no key: it says so, and calls stay local");
   r = await readOffers(ELEVENLABS_VOICE_PLUGIN_ID);
-  assert.deepEqual(r.state.panel, { open: true });
+  assert.equal(r.state.panel.open, true);
+  assert.ok(r.state.panel.parts.voices, "its voice section says what it shows");
   r = await actOffers(ELEVENLABS_VOICE_PLUGIN_ID, "close", {});
   assert.deepEqual(r.result, { open: false });
   await waitFor("closed", () => !html(host).includes("elevenlabs-voice-panel"));

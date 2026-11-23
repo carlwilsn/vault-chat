@@ -86,7 +86,7 @@ test("no OpenRouter key is asked for anywhere in the box section", () => {
   // The old gate, in the two shapes it had: a sentence to paste a key first, and
   // a Sync button disabled without one.
   assert.ok(!/under Keys first/i.test(src));
-  const sync = src.match(/<Button size="sm" onClick=\{\(\) => void sync\(\)\} disabled=\{([^}]*)\}/);
+  const sync = src.match(/<Button (?:data-offer="[^"]*" )?size="sm" onClick=\{\(\) => void sync\(\)\} disabled=\{([^}]*)\}/);
   assert.ok(sync, "the Sync button is still there to check");
   assert.equal(sync![1], 'busy === "sync"', "syncing waits on nothing but itself");
 });

@@ -6,7 +6,8 @@ import { join } from "node:path";
 
 export type Control = { file: string; tag: string; offer: string | null; exempt: string | null };
 
-const CTRL = /<(?:button|input|select|textarea)\b[^>]*>|<[A-Za-z][\w.]*\b(?=[^>]*\bonClick=)[^>]*>/gs;
+// A tag runs to its first ">" that is not an arrow's "=>" (an onClick={() => …} inside it).
+const CTRL = /<(?:button|input|select|textarea)\b(?:=>|[^>])*>|<[A-Za-z][\w.]*\b(?=(?:=>|[^>])*\bonClick=)(?:=>|[^>])*>/gs;
 
 /** The UI source files whose controls count: src/*.tsx, everything under src/plugins, phone/src/*.tsx. */
 export function uiControlFiles(root: string): string[] {

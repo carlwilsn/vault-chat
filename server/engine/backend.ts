@@ -304,6 +304,8 @@ export type EngineBackend = {
   endedChild?(childId: string): { state: string; endedAt: number } | null;
   /** The conversation's Agent-tool workers as their transcripts and notices say (running / waiting / idle / finished / interrupted ...). */
   workerReport?(parentThreadId: string, o?: { all?: boolean; now?: number }): import("./claude/workers").WorkerRow[];
+  /** Where that conversation's Agent-tool workers write their transcripts (box:jobs watches them). */
+  workerDirs?(parentThreadId: string): string[];
 
   /**
    * The engine is out of headroom on Carl's subscription until this moment, so
