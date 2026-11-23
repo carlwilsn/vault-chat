@@ -79,7 +79,7 @@ describe.skipIf(process.platform !== "linux")("a hand-over with a background wor
     if (home) cleanup(home);
   });
 
-  it("the old server hands over at once; the next one takes the worker up in a fresh work session, and the chat gets a line, no turn", async () => {
+  it("the old server hands over at once; the next one gives the chat a turn that resumes the worker by name in its own session", async () => {
     home = tmp();
     const vault = makeVault(join(home, "vault"));
     const secrets = await makeKeyStore(join(home, "secrets"), { "service.claude-code": "sk-ant-oat01-canary-not-real" });
@@ -92,8 +92,10 @@ describe.skipIf(process.platform !== "linux")("a hand-over with a background wor
     api.respond = (body) => {
       const mine = firstUser(body);
       const result = lastToolResult(body);
-      if (chatText({ messages: body.messages.slice(-1) }).includes("Resume each of these Agent-tool workers")) {
-        freshWith = chatText({ messages: body.messages.slice(-1) });
+      // The resume reaches the chat's own conversation: in its newest messages (Claude Code may put a reminder after it).
+      const recent = chatText({ messages: body.messages.slice(-3) });
+      if (!mine.includes("WORKER-TASK") && recent.includes("Resume each of these Agent-tool workers")) {
+        freshWith = recent;
         return { text: "Resumed the slow worker." };
       }
       if (mine.includes("WORKER-TASK")) {
@@ -159,7 +161,8 @@ describe.skipIf(process.platform !== "linux")("a hand-over with a background wor
     chatCallsAtRestart = chatCalls();
     // Right after it takes over, B gives the chat a turn that resumes the worker by name, in the same session.
     await waitFor(() => !!freshWith, 90_000, 200).catch((e) => {
-      throw new Error(`${e.message}\n${b.logs().slice(-4000)}`);
+      const last = api!.calls.slice(-3).map((c) => [firstUser(c).slice(0, 80), (c.messages ?? []).slice(-3).map((m: any) => [m.role, chatText({ messages: [m] }).slice(0, 400)])]);
+      throw new Error(`${e.message}\n${b.logs().slice(-4000)}\nlast calls: ${JSON.stringify(last)}`);
     });
     expect(freshWith).toContain("SendMessage");
     expect(freshWith).toContain("(slow worker)");
