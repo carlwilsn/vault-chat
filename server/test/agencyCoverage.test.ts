@@ -63,3 +63,29 @@ describe("every new control on screen names the offer that reaches it", () => {
 
   // A control's data-offer is checked against the offers the parts really build: test/harness/offerParity.test.ts.
 });
+
+// Pages (the "page" state above): what Carl does in ANY vault page, the viewer's or a chat's inline copy, is state the
+// agent reads and watches (PluginRead {plugin: <page>}), whether or not the page's author saved anything. 2026-11-23:
+// an inline page without a manifest had no window.vc, and one with it waited on a grant, so Carl's pick was unreadable.
+describe("every page's input is state the agent reads, with no code in the page", () => {
+  it("the views that show a page make every vault page live (no manifest needed)", () => {
+    for (const f of ["src/HtmlView.tsx", "src/InlineHtmlFrame.tsx"]) {
+      const src = readFileSync(join(ROOT, f), "utf8");
+      expect(src, `${f} decides with pageIsLive`).toMatch(/pageIsLive\(/);
+      expect(src, `${f} must not gate window.vc on a manifest`).not.toMatch(/declaresServices\(/);
+    }
+    for (const f of ["server/http.ts", "server/pageLink.ts"]) expect(readFileSync(join(ROOT, f), "utf8"), f).toMatch(/inlineHtmlDocument\([^\n]*live: true/);
+  });
+
+  it("a plain page gets window.vc, its state and log with no grant, and the script records Carl's input", async () => {
+    const { inlineHtmlDocument } = await import("../../src/inlineHtml");
+    const { PAGE_INPUT_KEY, pageIsLive } = await import("../../src/liveBridge");
+    const { servicesFor } = await import("../../src/liveServices");
+    expect(pageIsLive(".vault-chat/local/pages/pick.html", "/v")).toBe(true);
+    const doc = inlineHtmlDocument("<button>pick</button>", { css: "", live: true });
+    expect(doc).toContain("data-vc-live-script");
+    expect(doc).toContain(JSON.stringify(PAGE_INPUT_KEY));
+    for (const ev of ['"click"', '"change"', '"input"']) expect(doc).toContain(`addEventListener(${ev}`);
+    expect(servicesFor([]).map((s) => s.name)).toEqual(expect.arrayContaining(["state", "log"]));
+  });
+});

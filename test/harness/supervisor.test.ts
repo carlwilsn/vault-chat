@@ -223,7 +223,7 @@ test("iframe: when its plugin stops, the live bridge lets go of what it held for
   };
   (window as any).MutationObserver ??= class { observe() {} disconnect() {} };
   (window as any).getComputedStyle ??= () => ({ getPropertyValue: () => "" });
-  const host = { post: async (path: string) => ({ status: 200, json: path.endsWith("manifest") ? { caps: [], refused: ["x"], hash: "h" } : {} }) };
+  const host = { post: async (path: string) => ({ status: 200, json: path.endsWith("manifest") ? { caps: [], refused: ["x"], hash: "h" } : { token: "t", exp: Date.now() + 600_000 } }) };
   const uninstall = installLiveBridge(host as any, document as any);
   for (const f of frames) {
     window.dispatchEvent(Object.assign(new (window as any).Event("message"), { data: { "vc-live": 1, op: "hello" }, origin: "null", source: f.contentWindow }));

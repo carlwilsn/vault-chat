@@ -12,8 +12,8 @@
 // src/pluginOffers.ts answerPluginSignal (src/boxChat.ts), acked over POST /api/v1/show/<id>/ack. The result is only
 // ever that ack, or an honest "offline" / "didn't answer". Full trust: no grant.
 //
-// Vault pages (a vault .html with `<meta name="vc-capabilities" content="state, log">`) keep their vc.state and vc.log
-// as records in the box's one log (server/pluginState.ts), so PluginRead reads them from the box whether or not the
+// Vault pages (any vault .html, in the viewer or inline in a chat: no manifest needed) keep their vc.state and vc.log,
+// and the page script's own record of Carl's input (PAGE_INPUT_KEY: form fields, last clicks), as records in the box's one log (server/pluginState.ts), so PluginRead reads them from the box whether or not the
 // page is open anywhere: {plugin: <its vault path, file name or title>} answers its saved state, its last change and its
 // recent log (and, while it is mounted and declares offers with vc.offer, its live offers too); the list names every
 // page with records, whether it is mounted now and when it last changed. `after` + `wait` waits for its next record:
@@ -26,7 +26,7 @@ import { controlDown, controlLive, noteAnswer } from "./deviceLink";
 import { actBoxOffer, boxOffers, describeBoxOffer, isBoxWord, readBoxOffer, watchBoxOffer, type BoxOfferDeps } from "./boxOffers";
 import { awaitPluginRecords, pagesWithRecords, readPluginRecords, readPluginState, setPluginState, type PluginActivity } from "./pluginState";
 import { vaultFor, type NamedVault } from "./vaultRefs";
-import { parseLiveNeeds } from "../src/liveBridge";
+import { PAGE_INPUT_KEY } from "../src/liveBridge";
 import type { PluginState } from "../src/pluginRecords";
 import type { OfferAnswer, OffersDescription } from "../src/pluginOffers";
 
@@ -42,7 +42,7 @@ export const pluginOfferToolSpecs = [
     description:
       "Reach any plugin running in Carl's app (the Notes panel, his vault plugins, in-process pages): each declares what it offers: state you can read, actions you can run (with their args), events it emits. " +
       "No plugin: lists every live plugin with its offers (use it first to learn a plugin's actions and args), the vault pages whose state the box keeps, and the box's own state (box:settings, box:notes, box:alerts: his alerts and push devices, box:pages: the plugins in this vault and the app's parts, each on or off (what plugins Carl has), box:workspace: what is on his laptop screen (panes and their files, the file tree, the chat panel), box:jobs: this chat's background workers and StartJob jobs, box:chats: Carl's chats and projects in every vault, box:links: each device's link and open vault, box:perf: the laptop's speed per build, box:logs, box:history: what Carl did (in the app, on every surface) and every thread's full transcript, searchable), which the box answers with no device online. plugin (its id, e.g. app/notes, or its name): reads its state (all of it, or the one `state` named) and its recent events, from the screen now. " +
-      "A vault .html page that uses vc.state / vc.log (plugin: its vault path, file name or title; vault: another registered vault's name, or an absolute path) is read from the box even when it is closed: its saved state, last change and recent log records; after (the seq it showed) + wait (seconds, at most 25) waits for its next change, to follow what Carl does in it. " +
+      "Any vault .html page, inline in a chat or in the viewer (plugin: its vault path, file name or title; vault: another registered vault's name, or an absolute path), is read from the box even when it is closed: what Carl clicked, picked and typed in it (state _input: its fields and his last clicks, recorded with no code in the page; never passwords), what it saved with vc.state / vc.log, last change, recent log; after (the seq it showed) + wait (seconds, at most 25) waits for its next change, to follow what Carl does in it. " +
       "Any other plugin too: wait (seconds, at most 25) holds the answer until it emits its next event (after: the seq a watch showed; left out: from now; every part emits stateChanged when its state changes, whoever changed it), then gives its state and the new events, so you follow what Carl does instead of reading again and again. " +
       "app/context holds what Carl has selected, hovers and is focused in now. Use it to see a plugin's state or before PluginAct. Plugins run in the laptop app (the phone app hosts none). Only plugins mounted there now are reachable; a plugin that is off or not open says so.",
     inputSchema: {
@@ -211,12 +211,9 @@ function pageRecordsText(vault: string, vaultName: string | null, id: string, r:
   const title = titleOf(html);
   const head = `${id}${title ? ` "${title}"` : ""}${vaultName ? ` (vault ${vaultName})` : ""}: kept on the box (readable whether or not the page is open); ${mounted}.`;
   if (!r.seq) {
-    const caps = html ? parseLiveNeeds(html).caps : [];
     const why = !html
       ? "and no such page is in the vault"
-      : caps.includes("state")
-        ? "it declares the state service but has not saved anything yet (nothing set since Carl opened it)"
-        : 'it does not declare the state service, so what Carl does in it stays in the page: to make it readable, the page needs <meta name="vc-capabilities" content="state, log"> and vc.state.set(key, value) as he answers';
+      : `Carl has not clicked, picked or typed in it since it was opened (his input is recorded as the ${PAGE_INPUT_KEY} key by itself, and whatever it saves with vc.state; the page must be open on his laptop for that)`;
     return `${head}\nNo saved state or log records yet: ${why}.`;
   }
   const logs = r.logs.length ? [`recent log (${r.logs.length} of ${r.logCount}, oldest first): ${json(r.logs.map((l) => ({ seq: l.seq, at: when(l.at), record: l.record })))}`] : ["log: no records"];

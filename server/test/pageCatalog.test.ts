@@ -58,7 +58,8 @@ const expected = [
   { id: ".vault-chat/visuals/html-lab.html", name: "HTML lab", mount: "iframe", needs: ["ask", "mic", "voice-lab"], refused: [] },
   { id: "Apps/browser.html", name: "Plugin browser", mount: "iframe", needs: ["catalog"], refused: [] },
   { id: "Apps/clock.html", name: "clock.html", mount: "in-process", needs: [], refused: [] },
-  { id: "Apps/counter.html", name: "counter.html", mount: "iframe", needs: ["state"], refused: [] },
+  // state is every page's (no grant): declared, it is still a plugin page, needing nothing.
+  { id: "Apps/counter.html", name: "counter.html", mount: "iframe", needs: [], refused: [] },
 ];
 
 describe("the catalog", () => {
@@ -91,7 +92,7 @@ describe("the catalog", () => {
     // A page added now is in the next answer: the vault is read each time.
     put("late.html", '<meta name="vc-capabilities" content="log, fs">');
     const again = (await (await fetch(srv.base + "/api/v2/plugin/catalog")).json()) as any;
-    expect(again.plugins.at(-1)).toEqual({ id: "late.html", name: "late.html", mount: "iframe", needs: ["log"], refused: ["fs"] });
+    expect(again.plugins.at(-1)).toEqual({ id: "late.html", name: "late.html", mount: "iframe", needs: [], refused: ["fs"] });
     expect((await fetch(srv.base + "/api/v2/plugin/catalog", { method: "POST" })).status).not.toBe(200);
   });
 
@@ -101,9 +102,9 @@ describe("the catalog", () => {
     expect(got.status).toBe(200);
     expect(got.json.plugins.slice(0, 4)).toEqual(expected);
     expect(got.json.services.at(-1).name).toBe("catalog");
-    // Only that one read: nothing else of the box, and no write.
+    // Only that one read (and its own state, every page's): nothing else of the box, and no write.
     expect((await call(browser, "POST", "/api/v2/plugin/catalog", "{}")).status).toBe(403);
-    expect((await call(browser, "GET", "/api/v2/plugin/state")).status).toBe(403);
+    expect((await call(browser, "GET", "/api/v2/plugin/state")).status).toBe(200);
     expect((await call(browser, "GET", "/api/v2/conversations")).status).toBe(403);
     expect((await call(browser, "POST", "/api/v1/side", '{"text":"hi"}')).status).toBe(403);
     const counter = await token("Apps/counter.html");

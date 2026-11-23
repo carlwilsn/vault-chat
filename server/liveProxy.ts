@@ -3,7 +3,7 @@
 // token scoped to (page path, content hash, capabilities); every call the page makes arrives at /api/v2/live/fetch
 // with that token and is allowed only if the token's capabilities cover it. No path prefix list: the token is the scope.
 //
-//   POST /api/v2/live/manifest {path}                 → {caps, hash}   (the file as it is now; 404: not a live page)
+//   POST /api/v2/live/manifest {path}                 → {caps, hash}   (the file as it is now, any vault .html; 404: none)
 //   POST /api/v2/live/token {path, hash, caps}        → {token, exp}   (refused if the file changed since `hash`)
 //   POST /api/v2/live/revoke {path}                   → {ok}           (that page's tokens stop working at once)
 //   POST /api/v2/live/fetch {token, path, method, headers?, bodyBase64?} → {ok, status, headers, bodyBase64}
@@ -15,7 +15,8 @@
 // conversation, no chat-list entry, no writes; `persist` is refused), and reading/stopping the sessions that token
 // started. Nothing else is reachable with it.
 // What `state` and `log` cover (change 1.2, server/pluginState.ts): GET/POST /api/v2/plugin/state and POST
-// /api/v2/plugin/log, always for the token's own page (the plugin id), never another; records in the one log.
+// /api/v2/plugin/log, always for the token's own page (the plugin id), never another; records in the one log. Every
+// page has them, with no manifest and no grant (its token carries no caps then): Carl's input in any page is state.
 // What `converse` covers (change 1.3, src/pluginConverse.ts): POST /api/v2/intent of type start or send only (made into
 // the box's own send intent, marked as the page's), GET /api/v2/conversations and GET /api/v2/conversations/<id>/events.
 // What `catalog` covers (change 1.4, server/pluginCatalog.ts): GET /api/v2/plugin/catalog, the services and plugins.
@@ -23,7 +24,7 @@ import { createHmac, createHash, randomBytes, randomUUID, timingSafeEqual } from
 import { readFileSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { LIVE_LIMITS, LIVE_REQUEST_HEADERS, allowRate, parseLiveNeeds } from "../src/liveBridge";
-import { LIVE_SERVICES, serviceOfCap, type LiveService } from "../src/liveServices";
+import { ALWAYS_BOX_SERVICES, LIVE_SERVICES, serviceOfCap, type LiveService } from "../src/liveServices";
 import { loadConfig } from "./config";
 import { phoneToken } from "./auth";
 import { withinVault } from "./phoneData";
@@ -44,7 +45,8 @@ const sessions = new Map<string, Set<string>>();
 const b64 = (b: Buffer | string) => Buffer.from(b).toString("base64url");
 const sign = (payload: string) => createHmac("sha256", SECRET).update(payload).digest("base64url");
 
-/** A vault page's manifest and content hash as it is now; `refused`: service names it declares that no registry entry knows. */
+/** A vault page's manifest and content hash as it is now; `refused`: service names it declares that no registry entry knows.
+ *  Every vault .html is a live page (caps may be empty): it reaches the services every page has (state, log) unasked. */
 export function liveManifest(vault: string, rel: unknown): { caps: string[]; hash: string; refused?: string[] } | null {
   if (typeof rel !== "string" || !/\.html?$/i.test(rel)) return null;
   const full = withinVault(vault, rel);
@@ -53,7 +55,6 @@ export function liveManifest(vault: string, rel: unknown): { caps: string[]; has
     if (statSync(full).size > 8 * 1024 * 1024) return null;
     const html = readFileSync(full, "utf8");
     const { caps, refused } = parseLiveNeeds(html);
-    if (!caps.length && !refused.length) return null;
     const hash = createHash("sha256").update(html).digest("hex");
     return refused.length ? { caps, hash, refused } : { caps, hash };
   } catch {
@@ -66,7 +67,7 @@ export function liveToken(vault: string, b: { path?: unknown; hash?: unknown; ca
   const caps = Array.isArray(b.caps) ? b.caps.map(String).sort() : [];
   const unknown = caps.find((c) => !serviceOfCap(c));
   if (unknown) return { status: 403, body: { error: `no such service: ${unknown}` } };
-  if (!m || !m.caps.length) return { status: 404, body: { error: "not a live page" } };
+  if (!m) return { status: 404, body: { error: "not a live page" } };
   if (b.hash !== m.hash || caps.join(",") !== m.caps.join(",")) return { status: 409, body: { error: "the page changed since it was allowed" } };
   // A stopped plugin (change 1.6, server/supervisor.ts) gets nothing from the box.
   if (pluginStopped(vault, String(b.path))) return { status: 403, body: { error: "this page is turned off" } };
@@ -252,10 +253,11 @@ const catalogHandler: Handler = async ({ vault, method, path }) => (method === "
 /** The box side of every registered box service that opens routes (src/liveServices.ts). */
 export const HANDLERS: Readonly<Record<string, Handler>> = { ask: askHandler, "voice-lab": voiceLabHandler, state: stateHandler, log: logHandler, converse: converseHandler, catalog: catalogHandler };
 
-/** The services a call may go to: granted by the token, opened by the box, with a declared route matching the call. */
+/** The services a call may go to: granted by the token (or every page's: state, log), opened by the box, with a declared
+ *  route matching the call. */
 function servicesTaking(c: Claims, method: "GET" | "POST", path: string): LiveService[] {
   return LIVE_SERVICES.filter(
-    (s) => s.supplier === "box" && s.grantable && c.c.some((cap) => s.owns(cap)) && s.routes.some((r) => r.methods.includes(method) && r.path.test(path)),
+    (s) => s.supplier === "box" && s.grantable && (ALWAYS_BOX_SERVICES.includes(s) || c.c.some((cap) => s.owns(cap))) && s.routes.some((r) => r.methods.includes(method) && r.path.test(path)),
   );
 }
 

@@ -377,7 +377,7 @@ export const visualScenarios: Scenario[] = [
     title: "Page state — a counter page keeps its number in the box's log (vc.state): the chat's copy and the viewer show one counter",
     group: "Chat",
     notes:
-      "The page declares state, log. After the one-time Allow, +1 in the chat's inline copy sets the count through vc.state.set; Open in viewer mounts a second view that reads the same state; +1 there, close the viewer, and the chat's copy shows the new number (vc.state.subscribe).",
+      "The page declares state, log (every page has them: no Allow prompt). +1 in the chat's inline copy sets the count through vc.state.set; Open in viewer mounts a second view that reads the same state; +1 there, close the viewer, and the chat's copy shows the new number (vc.state.subscribe).",
     build: (ctx: BuildCtx) => {
       ctx.write(".vault-chat/visuals/counter.html", STATE_HTML);
       ctx.conversations([{

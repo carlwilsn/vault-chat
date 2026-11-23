@@ -44,10 +44,10 @@ test("base64 round trips bytes; an ask names its page and carries the system tex
   assert.ok(t.includes('"a/b.html"') && t.includes("Be brief.") && t.endsWith("\n\nhi"));
 });
 
-test("a document gets window.vc only when it is live, and the script is valid and idempotent", () => {
+test("a document gets window.vc when it is live (a vault page, manifest or not), and the script is valid and idempotent", () => {
   assert.ok(!inlineHtmlDocument("<p>x</p>", { css: "" }).includes("data-vc-live-script"));
   const doc = inlineHtmlDocument('<!doctype html><html><head><meta name="vc-capabilities" content="ask"></head><body>x</body></html>', { css: "", live: true });
-  assert.ok(!inlineHtmlDocument("<p>x</p>", { css: "", live: true }).includes("data-vc-live-script"), "no manifest, no window.vc");
+  assert.ok(inlineHtmlDocument("<p>x</p>", { css: "", live: true }).includes("data-vc-live-script"), "a vault page with no manifest still gets window.vc (its state, Carl's input)");
   assert.ok(doc.includes("data-vc-live-script"));
   assert.ok(doc.indexOf("data-vc-live-script") < doc.indexOf("vc-inline-html-size"));
   const src = /<script data-vc-live-script>([\s\S]*?)<\/script>/.exec(liveScript())![1]!;
@@ -67,7 +67,7 @@ test("the gateway: a token is minted only for the page as it is, and scopes ever
   const vault = join(dir, "v");
   const m = liveManifest(vault, "a.html")!;
   assert.deepEqual(m.caps, ["ask"]);
-  assert.equal(liveManifest(vault, "b.html"), null);
+  assert.deepEqual(liveManifest(vault, "b.html")?.caps, [], "a page with no manifest is live too: nothing to grant");
   assert.equal(liveManifest(vault, "../x.html"), null);
   assert.equal(liveToken(vault, { path: "a.html", hash: "wrong", caps: ["ask"] }).status, 409);
   assert.equal(liveToken(vault, { path: "a.html", hash: m.hash, caps: ["ask", "mic"] }).status, 409);
@@ -288,7 +288,7 @@ test("the registry: one entry per service, every box route has a handler, every 
   assert.equal(serviceOfCap("tool:voice-lab.tts")?.name, "voice-lab");
   assert.equal(serviceOfCap("tool:other.thing"), null);
   assert.equal(serviceNamed("voice-lab")?.name, "voice-lab");
-  assert.deepEqual(servicesFor(["ask", "tool:voice-lab.tts"]).map((s) => s.name), ["ask", "voice-lab", "theme"]);
+  assert.deepEqual(servicesFor(["ask", "tool:voice-lab.tts"]).map((s) => s.name), ["ask", "voice-lab", "theme", "state", "log"]);
   // The page script has every function the registry points at.
   const src = /<script data-vc-live-script>([\s\S]*?)<\/script>/.exec(liveScript())![1]!;
   const win: any = { innerWidth: 300, innerHeight: 200, document: { documentElement: { style: { setProperty() {} } } }, parent: { postMessage() {} } };
@@ -315,7 +315,7 @@ test("an unknown service is refused: dropped from the grant, reported to the pag
     writeFileSync(join(vault, "m.html"), '<meta name="vc-capabilities" content="ask, calendar">');
     const u = liveManifest(vault, "u.html")!;
     assert.deepEqual([u.caps, u.refused], [[], ["calendar"]]);
-    assert.equal(liveToken(vault, { path: "u.html", hash: u.hash, caps: [] }).status, 404, "nothing to grant");
+    assert.equal(liveToken(vault, { path: "u.html", hash: u.hash, caps: [] }).status, 200, "nothing to grant: a token for the services every page has");
     assert.equal(liveToken(vault, { path: "u.html", hash: u.hash, caps: ["calendar"] }).status, 403, "no token for an unknown service");
     const m = liveManifest(vault, "m.html")!;
     assert.deepEqual([m.caps, m.refused], [["ask"], ["calendar"]]);
@@ -356,7 +356,7 @@ test("vc.service(name) returns the same functions as vc.ask/vc.tool/vc.mic; vc.s
   assert.equal(vc.services.map((s: any) => s.name).join(), "ask,voice-lab,theme");
 });
 
-test("the host: the prompt lists the registry's lines, the grant is remembered per path + hash, a page of unknown services is told without a prompt", async () => {
+test("the host: the prompt lists the registry's lines, the grant is remembered per path + hash, a page of unknown services is told without a prompt and gets only every page's services", async () => {
   const { installLiveBridge } = await import("../../src/liveBridge.ts");
   const listeners: Record<string, (e: any) => void> = {};
   const prompts: any[] = [];
@@ -399,7 +399,7 @@ test("the host: the prompt lists the registry's lines, the grant is remembered p
   await tick();
   const env = lab.posted.find((m: any) => m.ev === "env");
   assert.deepEqual(env.caps, ["ask", "mic", "tool:voice-lab.*"]);
-  assert.deepEqual(env.services.map((s: any) => s.name), ["ask", "mic", "voice-lab", "theme"]);
+  assert.deepEqual(env.services.map((s: any) => s.name), ["ask", "mic", "voice-lab", "theme", "state", "log"]);
   assert.deepEqual(env.refused, []);
   assert.deepEqual(JSON.parse(store["vc-live-grants"]!), { "lab.html|h1": ["ask", "mic", "tool:voice-lab.*"] }, "remembered as before");
   stop();
@@ -411,30 +411,27 @@ test("the host: the prompt lists the registry's lines, the grant is remembered p
   await tick();
   assert.equal(prompts.length, 1, "no second prompt for the same page and hash");
   assert.ok(again.posted.some((m: any) => m.ev === "env"));
-  // Only unknown services: told so, no prompt, no token, no calls.
+  // Only unknown services: told so, no prompt; its token reaches only every page's services (state, log), not ask.
   const u = mkFrame("u.html");
   frames.push(u);
   hello(u);
   await tick();
   assert.equal(prompts.length, 1, "nothing to allow");
   const uenv = u.posted.find((m: any) => m.ev === "env");
-  assert.deepEqual([uenv.caps, uenv.refused, uenv.services.map((s: any) => s.name)], [[], ["calendar"], ["theme"]]);
-  listeners.message({ data: { "vc-live": 1, op: "fetch", id: 1, path: "/api/v1/side", method: "GET" }, origin: "null", source: u.cw });
-  await tick();
-  assert.match(u.posted.find((m: any) => m.id === 1)?.error ?? "", /not been allowed/);
+  assert.deepEqual([uenv.caps, uenv.refused, uenv.services.map((s: any) => s.name)], [[], ["calendar"], ["theme", "state", "log"]]);
   stop();
 });
 
 // ---- change 1.2: the state and log services ----
 
-test("state and log are registered services: declared, described, granted under their names", async () => {
+test("state and log are registered services every page has: named in a manifest is fine, never in the grant (no prompt)", async () => {
   const { parseLiveNeeds, describeCap } = await import("../../src/liveBridge.ts");
   const { serviceNamed, servicesFor } = await import("../../src/liveServices.ts");
-  assert.deepEqual(parseLiveNeeds('<meta name="vc-capabilities" content="state, log, ask">'), { caps: ["ask", "log", "state"], refused: [] });
-  assert.deepEqual(parseLiveNeeds('<meta name="vc-capabilities" content="State">'), { caps: ["state"], refused: [] });
+  assert.deepEqual(parseLiveNeeds('<meta name="vc-capabilities" content="state, log, ask">'), { caps: ["ask"], refused: [] });
+  assert.deepEqual(parseLiveNeeds('<meta name="vc-capabilities" content="State">'), { caps: [], refused: [] });
   assert.equal(describeCap("state"), "Keep its own saved state on the box (the same in every place the page is open)");
   assert.equal(describeCap("log"), "Add records of what it does to your vault's log");
-  assert.deepEqual(servicesFor(["state"]).map((s) => s.name), ["theme", "state"]);
+  assert.deepEqual(servicesFor([]).map((s) => s.name), ["theme", "state", "log"]);
   const state = serviceNamed("state")!;
   const ok = (m: "GET" | "POST", p: string) => state.routes.some((r) => r.methods.includes(m) && r.path.test(p));
   assert.ok(ok("GET", "/api/v2/plugin/state") && ok("GET", "/api/v2/plugin/state?after=3&wait=20000") && ok("POST", "/api/v2/plugin/state"));
@@ -512,8 +509,8 @@ test("converse is a registered service: declared, described, granted under its n
   // The older `persist` is unchanged: its own word, not converse.
   assert.deepEqual(parseLiveNeeds('<meta name="vc-capabilities" content="persist">'), { caps: ["persist"], refused: [] });
   assert.equal(describeCap("converse"), "Start conversations in your chat list, send messages to them, and read your chats");
-  assert.deepEqual(servicesFor(["converse"]).map((s) => s.name), ["theme", "converse"]);
-  assert.deepEqual(servicesFor(["persist"]).map((s) => s.name), ["persist", "theme"]);
+  assert.deepEqual(servicesFor(["converse"]).map((s) => s.name), ["theme", "state", "log", "converse"]);
+  assert.deepEqual(servicesFor(["persist"]).map((s) => s.name), ["persist", "theme", "state", "log"]);
   const conv = serviceNamed("converse")!;
   assert.ok(conv.grantable && conv.supplier === "box");
   const ok = (m: "GET" | "POST", p: string) => conv.routes.some((r) => r.methods.includes(m) && r.path.test(p));
@@ -599,7 +596,7 @@ test("catalog is a registered service: declared, described, granted under its na
   assert.deepEqual(parseLiveNeeds('<meta name="vc-capabilities" content="Catalog, ask">'), { caps: ["ask", "catalog"], refused: [] });
   assert.deepEqual(parseLiveNeeds('<meta name="vc-capabilities" content="catalogue, catalog:x">'), { caps: [], refused: ["catalog:x", "catalogue"] });
   assert.match(describeCap("catalog"), /services pages can use and the plugin pages in your vault/);
-  assert.deepEqual(servicesFor(["catalog"]).map((s) => s.name), ["theme", "catalog"]);
+  assert.deepEqual(servicesFor(["catalog"]).map((s) => s.name), ["theme", "state", "log", "catalog"]);
   const cat = serviceNamed("catalog")!;
   assert.ok(cat.grantable && cat.supplier === "box" && cat.page === "catalog");
   const ok = (m: "GET" | "POST", p: string) => cat.routes.some((r) => r.methods.includes(m) && r.path.test(p));
@@ -683,8 +680,88 @@ test("the box's catalog walks the vault: pages in folders and .vault-chat/visual
     assert.deepEqual(c.plugins, [
       { id: ".vault-chat/visuals/html-lab.html", name: "HTML lab", mount: "iframe", needs: ["ask", "voice-lab"], refused: [] },
       { id: "Apps/clock.htm", name: "clock.htm", mount: "in-process", needs: [], refused: [] },
-      { id: "a.html", name: "a.html", mount: "iframe", needs: ["catalog", "state"], refused: [] },
+      { id: "a.html", name: "a.html", mount: "iframe", needs: ["catalog"], refused: [] },
     ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- parity for pages (constitution 1.2): Carl's input in any page is state, with no code in the page ----
+
+test("the page script records Carl's input by itself: clicks, picks and typing as the _input state, never a password; only once the host answers", async () => {
+  const { parseHTML } = await import("linkedom");
+  const { PAGE_INPUT_KEY, PAGE_INPUT_LIMITS } = await import("../../src/liveBridge.ts");
+  const { document, window } = parseHTML(
+    `<!doctype html><html><body><div class="opt" id="o2"><span>White + blue</span></div><button id="go">Go</button>` +
+      `<select id="theme"><option value="a">Light</option><option value="b">Dark</option></select><input type="password" id="pw">` +
+      `<input id="nm" name="nick"><input id="token" name="api_token"><div data-vc-private><input id="note"></div><input type="checkbox" id="cb"></body></html>`,
+  );
+  const src = /<script data-vc-live-script>([\s\S]*?)<\/script>/.exec(liveScript())![1]!;
+  let onMsg: ((e: any) => void) | null = null;
+  const parent = { postMessage() {} };
+  const add = (k: string, f: any, c?: any) => (k === "message" ? (onMsg = f) : document.addEventListener(k, f, c));
+  // The span's parent shows a pointer: the click names the option, not the span inside it.
+  const style = (el: any) => ({ cursor: el?.classList?.contains("opt") ? "pointer" : "auto" });
+  const ctx: any = { document, parent, setInterval: () => 1, clearInterval() {}, setTimeout, clearTimeout, addEventListener: add, innerWidth: 300, innerHeight: 200, Promise, Symbol, JSON, Headers: class {}, Response: class {}, Blob: class {}, TextEncoder, getComputedStyle: style, getSelection: () => null };
+  ctx.window = ctx;
+  vm.runInNewContext(src, ctx);
+  assert.equal(ctx.vc, ctx.window.vc, "vc is a global and window.vc");
+  const sets: [string, any][] = [];
+  ctx.vc.state.set = async (k: string, v: unknown) => (sets.push([k, JSON.parse(JSON.stringify(v))]), sets.length);
+  const fire = (el: any, type: string) => {
+    const e = new (window as any).Event(type, { bubbles: true });
+    Object.defineProperty(e, "isTrusted", { value: true });
+    el.dispatchEvent(e);
+  };
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  fire(document.getElementById("go"), "click");
+  await wait(500);
+  assert.equal(sets.length, 0, "nothing is written before the host answers");
+  onMsg!({ source: parent, data: { "vc-live": 1, ev: "env", caps: [], services: [], refused: [] } });
+  await wait(20);
+  assert.equal(sets.length, 1, "what happened before is written once the host answers");
+  assert.equal(sets[0]![0], PAGE_INPUT_KEY);
+  assert.deepEqual(sets[0]![1].recent.map((r: any) => [r.what, r.el, r.id, r.text]), [["click", "button", "go", "Go"]]);
+  document.querySelector("#theme option[value=b]")!.setAttribute("selected", "");
+  fire(document.getElementById("theme"), "change");
+  (document.getElementById("pw") as any).value = "hunter2";
+  fire(document.getElementById("pw"), "input");
+  (document.getElementById("token") as any).value = "sk-123";
+  fire(document.getElementById("token"), "input");
+  (document.getElementById("note") as any).value = "private";
+  fire(document.getElementById("note"), "input");
+  (document.getElementById("nm") as any).value = "Carl";
+  fire(document.getElementById("nm"), "input");
+  fire(document.querySelector("span"), "click");
+  await wait(1000);
+  const last = sets.at(-1)![1];
+  assert.deepEqual(last.recent.map((r: any) => [r.what, r.id, r.text ?? r.value]).slice(1), [["change", "theme", "Dark (b)"], ["input", "nm", "Carl"], ["click", "o2", "White + blue"]]);
+  assert.equal(last.fields.theme, "Dark (b)");
+  assert.equal(last.fields.nick ?? last.fields.nm, "Carl");
+  assert.equal(last.fields.cb, false);
+  const all = JSON.stringify(sets);
+  for (const secret of ["hunter2", "sk-123", "private"]) assert.ok(!all.includes(secret), `never recorded: ${secret}`);
+  assert.ok(!("pw" in last.fields) && !("api_token" in last.fields) && !("note" in last.fields));
+  // Bounded: only the last N interactions.
+  for (let i = 0; i < PAGE_INPUT_LIMITS.recent + 5; i++) fire(document.getElementById("go"), "click");
+  await wait(500);
+  assert.equal(sets.at(-1)![1].recent.length, PAGE_INPUT_LIMITS.recent);
+});
+
+test("every vault page is live with no manifest: its token reaches only its own state and log, and no prompt is asked", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "live-plain-"));
+  const vault = join(dir, "v");
+  mkdirSync(vault);
+  try {
+    writeFileSync(join(vault, "plain.html"), "<button>pick</button>");
+    writeFileSync(join(vault, "other.html"), "<p>other</p>");
+    const m = liveManifest(vault, "plain.html")!;
+    assert.deepEqual(m.caps, []);
+    const tok = (liveToken(vault, { path: "plain.html", hash: m.hash, caps: [] }).body as { token: string }).token;
+    assert.ok(tok);
+    const g = (path: string, method = "GET", body?: unknown) => liveGateway(vault, null, { token: tok, path, method, ...(body ? { bodyBase64: Buffer.from(JSON.stringify(body)).toString("base64") } : {}) });
+    for (const p of ["/api/v1/side", "/api/v2/intent", "/api/v2/plugin/catalog", "/api/v2/lab/tts"]) assert.equal((await g(p, "POST")).status, 403, p);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

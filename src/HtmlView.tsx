@@ -6,7 +6,7 @@ import { isUnreadableAsText } from "./fileKind";
 import { openUrl, isExternalHref } from "./opener";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { useStore } from "./store";
-import { declaresServices, insideVault, liveScript, parseLiveMount, vaultRelative } from "./liveBridge";
+import { insideVault, liveScript, pageIsLive, parseLiveMount, vaultRelative } from "./liveBridge";
 import { PluginMount } from "./PluginMount";
 import { PluginOff } from "./PluginOff";
 import { usePluginDesired } from "./pluginSupervisorApp";
@@ -363,9 +363,10 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
   // (relative URLs in markup, CSS and script alike); the markup rewrite only
   // for absolute paths, or for a page with no base.
   const base = usePageBase(path);
-  // A page inside the vault is a live page: window.vc (src/liveBridge.ts), answered by the app.
+  // A page inside the vault is a live page, manifest or not: window.vc (src/liveBridge.ts), answered by the app, so its
+  // state and Carl's input in it reach the agent.
   const vaultRoot = useStore((s) => s.vaultPath);
-  const live = insideVault(path, vaultRoot) && declaresServices(content);
+  const live = pageIsLive(path, vaultRoot);
   // A page that declares an in-process mount runs in the app itself (src/mountHost.ts), not in a frame.
   const inProcess = parseLiveMount(content) === "in-process";
   // A vault page is a plugin (its id: its vault path): the supervisor may have it stopped (src/pluginSupervisorApp.ts).

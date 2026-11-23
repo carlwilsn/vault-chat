@@ -11,7 +11,7 @@ import { useStore } from "./store";
 import { readChatImage } from "./chatImage";
 import { localPathFromUrl } from "./mdPipeline";
 import { boxLinkFor, fetchBoxFile } from "./boxChat";
-import { insideVault, parseLiveMount } from "./liveBridge";
+import { pageIsLive, parseLiveMount } from "./liveBridge";
 import { PluginMount } from "./PluginMount";
 import { PluginOff } from "./PluginOff";
 import { usePluginDesired } from "./pluginSupervisorApp";
@@ -237,8 +237,9 @@ function LiveInlineHtml({ src, alt, sizeHint, placement = "inline", foldInViewer
     return () => window.removeEventListener("message", onMsg);
   }, [media]);
 
-  // A page in the vault (a relative path, no ..) may be a live page (src/liveBridge.ts): it needs a manifest too.
-  const pagePath = (() => { const p = localPathFromUrl(src); return insideVault(p, vaultPath) ? p : null; })();
+  // A page in the vault (a relative path, no ..) is a live page (src/liveBridge.ts), manifest or not: window.vc, its
+  // state, and Carl's input in it recorded for the agent (PluginRead {plugin: <its path>}).
+  const pagePath = (() => { const p = localPathFromUrl(src); return pageIsLive(p, vaultPath) ? p : null; })();
   const live = state?.key === key ? state : null;
   const doc = useMemo(() => (live?.html != null ? inlineHtmlDocument(live.html, { css: live.css, theme: themeNow(), pageTheme: appPageTheme(), live: pagePath !== null }) : null), [live, pagePath]);
   const name = src.split(/[\\/]/).pop()?.split(/[?#]/)[0] ?? src;

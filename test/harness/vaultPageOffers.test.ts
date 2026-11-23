@@ -19,7 +19,7 @@ test("the page script: vc.offer posts its declaration once the page is ready, an
   let onMsg: (e: any) => void = () => {};
   const parent = { postMessage: (m: any) => posted.push(m) };
   const win: any = { innerWidth: 300, innerHeight: 200, document: { title: "Video style quiz", documentElement: { style: { setProperty() {} } } }, parent };
-  vm.runInNewContext(src, { window: win, parent, document: win.document, innerWidth: 300, innerHeight: 200, setInterval: () => 1, clearInterval() {}, setTimeout, addEventListener: (_k: string, fn: any) => (onMsg = fn), Promise, Symbol, JSON, Object, String, Error, Headers: class {}, Response: class {}, Blob: class {}, TextEncoder });
+  vm.runInNewContext(src, { window: win, parent, document: win.document, innerWidth: 300, innerHeight: 200, setInterval: () => 1, clearInterval() {}, setTimeout, addEventListener: (k: string, fn: any) => k === "message" && (onMsg = fn), Promise, Symbol, JSON, Object, String, Error, Headers: class {}, Response: class {}, Blob: class {}, TextEncoder });
   const vc = win.vc;
   assert.equal(typeof vc.offer, "function");
   const answers: Record<string, string> = {};

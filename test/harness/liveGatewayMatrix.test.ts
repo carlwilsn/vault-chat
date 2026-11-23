@@ -1,7 +1,9 @@
 // Live pages: the gateway's whole allow/deny matrix (server/liveProxy.ts) and the manifest parser, against a snapshot
 // recorded from the code before the service registry (src/liveServices.ts). Every row must come out exactly as it did:
 // which token, method and path is allowed, what status it gets, what reaches the box's own routes or the voice lab, and
-// which request headers get through. Regenerate only on purpose: LIVE_MATRIX_WRITE=1.
+// which request headers get through. Regenerate only on purpose: LIVE_MATRIX_WRITE=1. (Regenerated 2026-11-23 on purpose:
+// state and log became every page's services, so every token reaches its own page's state/log and manifests no longer
+// list them; nothing else moved.)
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage } from "node:http";

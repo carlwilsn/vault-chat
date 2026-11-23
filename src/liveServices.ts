@@ -49,6 +49,9 @@ const voiceLabCap = (cap: string) => TOOL_CAP_RE.test(cap) && (cap.slice(5).star
 
 /** A service named by one word, granted under that same word. */
 const named = (s: Omit<LiveService, "capOf" | "owns">): LiveService => ({ ...s, capOf: (w) => (w === s.name ? s.name : null), owns: (c) => c === s.name });
+/** A service every page has without declaring or granting it: naming it in a manifest is fine, it is never in the grant
+ *  (so it never asks Carl), and no token needs to carry it. */
+const always = (s: Omit<LiveService, "capOf" | "owns" | "always">): LiveService => ({ ...s, always: true, capOf: () => null, owns: () => false });
 
 export const LIVE_SERVICES: readonly LiveService[] = [
   named({
@@ -88,22 +91,20 @@ export const LIVE_SERVICES: readonly LiveService[] = [
     capOf: (w) => (w === "voice-lab" ? "tool:voice-lab.*" : voiceLabCap(w) ? w : null),
     owns: voiceLabCap,
   },
-  {
-    ...named({
-      name: "theme",
-      description: "Follow the app's light or dark theme and its colours",
-      supplier: "host",
-      routes: [],
-      grantable: true,
-      always: true,
-      page: "onTheme",
-    }),
-    // Every live page follows the theme: naming it is fine, it needs no grant.
-    capOf: () => null,
-    owns: () => false,
-  },
+  // Every live page follows the theme: naming it is fine, it needs no grant.
+  always({
+    name: "theme",
+    description: "Follow the app's light or dark theme and its colours",
+    supplier: "host",
+    routes: [],
+    grantable: true,
+    page: "onTheme",
+  }),
   // The page's own state, kept as records in the one log (src/pluginRecords.ts): every view of the page reads the same.
-  named({
+  // Every vault page has it, declared or not and with no grant (parity, constitution 1.2: what Carl does in a page is
+  // state the agent reads and watches): it only ever reaches the page's own records. The page script also keeps Carl's
+  // input there by itself (the `_input` key, src/liveBridge.ts), so a page that saves nothing is still readable.
+  always({
     name: "state",
     description: "Keep its own saved state on the box (the same in every place the page is open)",
     supplier: "box",
@@ -112,7 +113,7 @@ export const LIVE_SERVICES: readonly LiveService[] = [
     grantable: true,
     page: "state",
   }),
-  named({
+  always({
     name: "log",
     description: "Add records of what it does to your vault's log",
     supplier: "box",
@@ -144,6 +145,9 @@ export const LIVE_SERVICES: readonly LiveService[] = [
     page: "catalog",
   }),
 ];
+
+/** The box services every page's token reaches, granted or not (state, log). */
+export const ALWAYS_BOX_SERVICES: readonly LiveService[] = LIVE_SERVICES.filter((s) => s.always && s.supplier === "box" && s.grantable);
 
 /** The service a grant entry belongs to, if any is registered. */
 export function serviceOfCap(cap: string): LiveService | null {

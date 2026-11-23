@@ -106,10 +106,10 @@ describe("PluginRead reaches a vault page's vc.state from the box", () => {
     expect(idle.text).toMatch(/nothing new since seq/);
   });
 
-  it("a page that keeps nothing says why (no state service: its answers stay in the page)", async () => {
+  it("a page with nothing recorded yet says why (Carl's input is recorded by itself once he clicks or types in it)", async () => {
     const r = await tool.pluginOfferTool(noLaptop, "PluginRead", { plugin: "video/plain.html" });
     expect(r.ok).toBe(true);
-    expect(r.text).toMatch(/No saved state or log records yet: it does not declare the state service/);
+    expect(r.text).toMatch(/No saved state or log records yet: Carl has not clicked, picked or typed in it/);
   });
 
   it("a page in another registered vault, by vault name or by absolute path; an unknown vault is refused", async () => {

@@ -169,16 +169,18 @@ describe("a page's log service", () => {
   });
 });
 
-describe("what a page was not granted", () => {
-  it("a page with only state cannot append to the log, a page with only log cannot read state, and ask pages reach neither", async () => {
+describe("what a page reaches", () => {
+  it("every page reaches its own state and log, declared or not (Carl's input in it is state); only their declared methods and paths", async () => {
     const s = page("only-state.html", "state");
     const l = page("only-log.html", "log");
     const a = page("only-ask.html", "ask");
-    expect((await call(s, "POST", "/api/v2/plugin/log", { x: 1 })).status).toBe(403);
-    expect((await call(l, "GET", "/api/v2/plugin/state")).status).toBe(403);
-    expect((await call(l, "POST", "/api/v2/plugin/state", { key: "k", value: 1 })).status).toBe(403);
-    for (const [m, p] of [["GET", "/api/v2/plugin/state"], ["POST", "/api/v2/plugin/state"], ["POST", "/api/v2/plugin/log"]] as const)
-      expect((await call(a, m, p, m === "POST" ? { key: "k", value: 1 } : undefined)).status).toBe(403);
+    const none = page("no-manifest.html", "");
+    for (const t of [s, l, a, none])
+      for (const [m, p] of [["GET", "/api/v2/plugin/state"], ["POST", "/api/v2/plugin/state"], ["POST", "/api/v2/plugin/log"]] as const)
+        expect((await call(t, m, p, m === "POST" ? { key: "k", value: 1 } : undefined)).status).toBe(200);
+    // Each its own: the no-manifest page's state is not the ask page's.
+    await call(none, "POST", "/api/v2/plugin/state", { key: "mine", value: 1 });
+    expect((await call(a, "GET", "/api/v2/plugin/state")).json.state).toEqual({ k: 1 });
     // Only the declared methods and paths.
     expect((await call(s, "GET", "/api/v2/plugin/state/x")).status).toBe(403);
     expect((await call(l, "GET", "/api/v2/plugin/log")).status).toBe(403);

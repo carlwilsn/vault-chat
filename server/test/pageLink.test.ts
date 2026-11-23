@@ -139,7 +139,7 @@ describe("a page's own link, /p/<id>/", () => {
     expect(plain.status).toBe(200);
     const doc = srcdoc(await plain.text());
     expect(doc).toContain("<p>just a page</p>");
-    expect(doc).not.toContain("data-vc-live-script"); // no services declared: no window.vc
+    expect(doc).toContain("data-vc-live-script"); // no services declared: window.vc all the same (its state, Carl's input)
   });
 
   it("no such page, outside the vault, not a page: 404 (with the identity)", async () => {
@@ -152,7 +152,7 @@ describe("a page's own link, /p/<id>/", () => {
     const page = "pages/counter.html";
     const m = await post("/api/v2/live/manifest", { path: page });
     expect(m.status).toBe(200);
-    expect(m.json.caps).toEqual(["ask", "state"]);
+    expect(m.json.caps).toEqual(["ask"]); // state: every page's, never in the grant
     const t = await post("/api/v2/live/token", { path: page, hash: m.json.hash, caps: m.json.caps });
     expect(t.status).toBe(200);
     const call = async (method: "GET" | "POST", path: string, body?: unknown) => {

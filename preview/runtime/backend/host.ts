@@ -672,12 +672,13 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     }
     // Live pages (server/liveProxy.ts): the manifest from the vault's file, a token, and the side protocol through the gateway.
     if (path === "/api/v2/live/manifest" || path === "/api/v2/live/token") {
-      const html = fs.readText(`${laptopVault}/${String(b.path ?? "")}`) ?? "";
+      const html = fs.readText(`${laptopVault}/${String(b.path ?? "")}`);
+      // Every vault page is live, manifest or not (as on the box): its state and log need no grant.
+      if (html === null || !/\.html?$/i.test(String(b.path ?? ""))) return { status: 404, body: JSON.stringify({ error: "not a live page" }) };
       const { caps, refused } = parseLiveNeeds(html);
       let h = 0;
       for (let i = 0; i < html.length; i++) h = (h * 31 + html.charCodeAt(i)) | 0;
       const isManifest = path.endsWith("manifest");
-      if (!caps.length && !(isManifest && refused.length)) return { status: 404, body: JSON.stringify({ error: "not a live page" }) };
       // The token names its page (the plugin id the box takes from a real token's claims).
       return { status: 200, body: JSON.stringify(isManifest ? { caps, hash: String(h), ...(refused.length ? { refused } : {}) } : { token: `preview-token|${String(b.path ?? "")}`, exp: Date.now() + 900_000 }) };
     }

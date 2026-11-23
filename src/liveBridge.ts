@@ -37,7 +37,7 @@
 //          has the box mint the token, and answers only that iframe's window (event.source, origin "null").
 
 import { noteMic, notePlayed, notePrompt, noteRequests } from "./livePagesState";
-import { pageFunctions, readNeed, serviceOfCap, servicesFor, toolAllowed } from "./liveServices";
+import { pageFunctions, readNeed, serviceNamed, serviceOfCap, servicesFor, toolAllowed } from "./liveServices";
 import { pluginIdOf } from "./pluginSupervisor";
 import { OFFER_TIMEOUT_MS, declareOffers, markPageMounted, type Offers, type OffersHandle } from "./pluginOffers";
 
@@ -62,6 +62,21 @@ export const LIVE_LIMITS = {
   micSeconds: 120,
   micChunkBytes: 1024 * 1024,
   tokenSeconds: 900,
+} as const;
+
+/** Carl's input in a page, recorded by the page script itself (no code in the page needed) under this state key: the
+ *  page's form fields now and his last clicks, picks and typing (PluginRead {plugin: <page>} reads it, `wait` follows it).
+ *  Never a password, hidden, one-time-code or card field, nor anything inside [data-vc-private]. */
+export const PAGE_INPUT_KEY = "_input";
+export const PAGE_INPUT_LIMITS = {
+  /** The last interactions kept. */
+  recent: 12,
+  /** The most form fields in one record. */
+  fields: 40,
+  /** An element's text, at most. */
+  text: 80,
+  /** A field's value (or a text selection), at most. */
+  value: 200,
 } as const;
 
 /** The CSS variables the app defines (src/App.css): a page's `vc.theme.vars` (HSL triples) and `--name` on its root. */
@@ -102,10 +117,17 @@ export function parseLiveManifest(html: string): string[] {
   return parseLiveNeeds(html).caps;
 }
 
-/** Whether a page declares services at all (granted or refused): it gets window.vc, so it can see what it was refused. */
+/** Whether a page declares services at all (granted or refused). Every vault page gets window.vc whether or not it
+ *  does (pageIsLive): this only tells a page with a manifest (a plugin, src/pluginCatalog.ts) from one without. */
 export function declaresServices(html: string): boolean {
   const n = parseLiveNeeds(html);
   return n.caps.length > 0 || n.refused.length > 0;
+}
+
+/** Whether a page in a frame gets window.vc (a global `vc` too) and so its state, log and the record of Carl's input:
+ *  every page inside the vault, the viewer's and a chat's inline copy alike, declared or not. */
+export function pageIsLive(path: string | null | undefined, vault: string | null | undefined): boolean {
+  return insideVault(path, vault);
 }
 
 export { toolAllowed };
@@ -131,7 +153,7 @@ export function parseLiveMount(html: string): LiveMount {
 
 /** One line per grant entry, for the grant prompt: the registered service's description. */
 export function describeCap(cap: string): string {
-  return serviceOfCap(cap)?.description ?? `Use ${cap.startsWith("tool:") ? `the tool ${cap.slice(5)}` : cap}`;
+  return (serviceOfCap(cap) ?? serviceNamed(cap))?.description ?? `Use ${cap.startsWith("tool:") ? `the tool ${cap.slice(5)}` : cap}`;
 }
 
 export const LIVE_REQUEST_HEADERS = ["content-type", "accept"];
@@ -170,7 +192,7 @@ export type LiveHost = { post(path: string, body: unknown): Promise<{ status: nu
 const PAGE_SCRIPT = String.raw`(function(){
 if(window.vc)return;
 var M=${JSON.stringify(LIVE)},FNS=${JSON.stringify(pageFunctions())},seq=0,wait={},themeFns=[],sizeFns=[],readyFn,helloTimer,tries=0;
-var ready=new Promise(function(r){readyFn=r;});
+var ready=new Promise(function(r){readyFn=r;}),flushInput=function(){};
 var vc={path:"",caps:[],services:[],refused:[],theme:{mode:"dark",vars:{}},size:{w:innerWidth,h:innerHeight},ready:ready,live:false};
 function post(m,tr){m[M]=1;parent.postMessage(m,"*",tr||[]);}
 function call(m,tr,on){var id=++seq;m.id=id;wait[id]=on;post(m,tr);return id;}
@@ -179,7 +201,7 @@ function apply(m){
   if(m.mode){vc.theme.mode=m.mode;}
   if(m.vars){vc.theme.vars=m.vars;var s=document.documentElement.style;for(var k in m.vars)s.setProperty("--"+k,m.vars[k]);}
   if(m.w){vc.size.w=m.w;vc.size.h=m.h;}
-  clearInterval(helloTimer);readyFn(vc);
+  clearInterval(helloTimer);readyFn(vc);flushInput();
   for(var i=0;i<themeFns.length;i++)try{themeFns[i](vc.theme);}catch(e){}
   for(var j=0;j<sizeFns.length;j++)try{sizeFns[j](vc.size);}catch(e){}
 }
@@ -316,6 +338,98 @@ vc.play=function(src){
     a.play().catch(rej);
   });
 };
+// Carl's input, kept by itself (src/liveBridge.ts PAGE_INPUT_KEY): the form fields and his last clicks, picks and
+// typing, one state write after each burst. Capture phase, so a page that stops events still has them recorded.
+(function(){
+var KEY=${JSON.stringify(PAGE_INPUT_KEY)},L=${JSON.stringify(PAGE_INPUT_LIMITS)},recent=[],dirty=false,timer=0,lastSel="";
+var SECRET=/pass|secret|token|api.?key|otp|\bpin\b|cvv|cvc|ssn|card.?num|credit/i,FIELD={INPUT:1,SELECT:1,TEXTAREA:1};
+var CLICKABLE="a,button,input,select,textarea,label,summary,option,[role=button],[role=option],[role=tab],[role=radio],[role=checkbox],[role=menuitem],[role=link],[onclick],[data-value],[tabindex]";
+function txt(v,n){v=String(v==null?"":v).replace(/\s+/g," ").trim();return v.length>n?v.slice(0,n)+"…":v;}
+function secret(el){
+  if(!el||el.nodeType!==1)return true;
+  if(el.closest&&el.closest("[data-vc-private]"))return true;
+  var t=String(el.getAttribute("type")||"").toLowerCase();
+  if(t==="password"||t==="hidden")return true;
+  if(/password|one-time-code|cc-/i.test(el.getAttribute("autocomplete")||""))return true;
+  return SECRET.test((el.getAttribute("name")||"")+" "+(el.id||""));
+}
+function labelOf(el){
+  try{if(el.labels&&el.labels.length)return txt(el.labels[0].innerText||el.labels[0].textContent,L.text);}catch(e){}
+  var a=el.getAttribute("aria-label")||el.getAttribute("title")||el.getAttribute("placeholder");
+  return a?txt(a,L.text):"";
+}
+function valueOf(el){
+  var t=String(el.type||"").toLowerCase();
+  if(el.tagName==="SELECT"){var o=[].filter.call(el.selectedOptions||el.querySelectorAll("option"),function(x){return x.selected||x.hasAttribute("selected");}).map(function(x){var s=txt(x.text||x.textContent,L.text);return s&&s!==x.value?s+" ("+txt(x.value,L.text)+")":txt(x.value,L.value);});return el.multiple?o:(o.length?o[0]:"");}
+  if(t==="checkbox")return !!el.checked;
+  if(t==="radio")return el.checked?txt(el.value,L.value):undefined;
+  if(t==="file")return [].slice.call(el.files||[]).map(function(f){return f.name;}).join(", ");
+  if(t==="submit"||t==="button"||t==="reset"||t==="image")return undefined;
+  if(el.tagName==="INPUT"||el.tagName==="TEXTAREA")return String(el.value).length>L.value?String(el.value).slice(0,L.value)+"…":String(el.value);
+  return undefined;
+}
+function fields(){
+  var out={},n=0,els=document.querySelectorAll("input,select,textarea");
+  for(var i=0;i<els.length&&n<L.fields;i++){
+    var el=els[i];if(secret(el))continue;var v=valueOf(el);if(v===undefined)continue;
+    var k=(String(el.type).toLowerCase()==="radio"&&el.getAttribute("name"))||el.id||el.getAttribute("name")||(el.tagName.toLowerCase()+(i+1));
+    out[k]=v;n++;
+  }
+  return out;
+}
+function target(el){
+  if(el&&el.nodeType!==1)el=el.parentElement;
+  if(!el||!el.closest)return null;
+  var c=el.closest(CLICKABLE);if(c)return c;
+  var best=null,x=el;
+  for(var i=0;x&&x!==document.body&&x!==document.documentElement&&i<8;i++,x=x.parentElement){try{if(getComputedStyle(x).cursor==="pointer")best=x;}catch(e){}}
+  return best||el;
+}
+function describe(el){
+  var d={el:el.tagName.toLowerCase()};
+  if(el.id)d.id=el.id;
+  var nm=el.getAttribute("name");if(nm)d.name=nm;
+  var cls=typeof el.className==="string"?el.className.trim().split(/\s+/).slice(0,3).join(" "):"";if(cls)d.class=cls;
+  var t=FIELD[el.tagName]||secret(el)?"":txt(el.innerText||el.textContent,L.text);if(t)d.text=t;
+  var l=labelOf(el);if(l&&l!==t)d.label=l;
+  var dv=el.getAttribute("data-value");if(dv)d.data=txt(dv,L.text);
+  return d;
+}
+function flush(){
+  if(!dirty||!vc.live)return;
+  dirty=false;
+  var rec={fields:fields(),recent:recent.slice(),at:new Date().toISOString()};if(lastSel)rec.selection=lastSel;
+  vc.state.set(KEY,rec).catch(function(){});
+}
+flushInput=flush;
+function note(what,el,extra){
+  var r=describe(el);r.what=what;if(extra)for(var k in extra)r[k]=extra[k];r.at=new Date().toISOString();
+  var last=recent[recent.length-1];
+  if(last&&what==="input"&&last.what==="input"&&last.el===r.el&&last.id===r.id&&last.name===r.name)recent[recent.length-1]=r;else recent.push(r);
+  if(recent.length>L.recent)recent.splice(0,recent.length-L.recent);
+  dirty=true;clearTimeout(timer);timer=setTimeout(flush,what==="input"?800:400);
+}
+addEventListener("click",function(e){
+  if(!e.isTrusted)return;var el=target(e.target);
+  // A field speaks through its change (its value); a click into it is only focus.
+  if(!el||FIELD[el.tagName])return;
+  note("click",el,null);
+},true);
+addEventListener("change",function(e){var el=e.target;if(!el||el.nodeType!==1||secret(el))return;var v=valueOf(el);note("change",el,v===undefined?null:{value:v});},true);
+addEventListener("input",function(e){
+  var el=e.target;if(!el||el.nodeType!==1||secret(el))return;
+  var t=String(el.type||"").toLowerCase();if(el.tagName==="SELECT"||t==="checkbox"||t==="radio")return;
+  var v=valueOf(el);note("input",el,v===undefined?null:{value:v});
+},true);
+addEventListener("submit",function(e){var el=e.target;if(el&&el.nodeType===1&&!secret(el))note("submit",el,null);},true);
+function selection(){
+  var g=getSelection&&getSelection(),s=g?txt(String(g),L.value):"";
+  if(!s||s===lastSel)return;lastSel=s;
+  var n=g.anchorNode;note("selectText",n&&n.nodeType===1?n:(n&&n.parentElement)||document.body,{selected:s});
+}
+addEventListener("mouseup",function(){setTimeout(selection,0);},true);
+addEventListener("keyup",function(e){if(e.shiftKey)selection();},true);
+})();
 window.vc=vc;
 })();`;
 
@@ -518,10 +632,10 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
     const caps: string[] = Array.isArray(m.json?.caps) ? m.json.caps : [];
     const hash = String(m.json?.hash ?? "");
     const refused: string[] = Array.isArray(m.json?.refused) ? m.json.refused.map(String) : [];
-    // Only unknown services: nothing to ask Carl or the box for, but the page hears what it was refused.
-    if (m.status === 200 && !caps.length && refused.length && hash) return { caps: [], refused, token: "", exp: Date.now() + LIVE_LIMITS.tokenSeconds * 1000 };
-    if (m.status !== 200 || !caps.length || !hash) return null;
-    if (!grantedFor(page, hash, caps)) {
+    if (m.status !== 200 || !hash) return null;
+    // Nothing to grant (no manifest, or only the services every page has: state, log, theme): no prompt, the token
+    // reaches only those. Otherwise Carl's one-time yes for what it declares.
+    if (caps.length && !grantedFor(page, hash, caps)) {
       const key = grantKey(page, hash);
       if ((st.denied || declined.has(key)) && !fresh) return null;
       if (fresh) declined.delete(key);
