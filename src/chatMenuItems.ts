@@ -1,7 +1,7 @@
 // The chat's ⋯ menu's slot for plugins' entries (a "Summarize this chat", an "Export", a link to a page): a vault plugin
 // adds one live with api.host.chat.menuItem({...}) (src/hostApi.ts), and it is gone when the plugin stops (an effect of
-// its run) or when it calls the returned off. The chat pane plugin (src/plugins/chat, app/chat) draws them under its own
-// entries (Memory) and offers them to the agent (state menu, action clickItem). A throwing click is the adding plugin's
+// its run) or when it calls the returned off. The chat pane plugin (src/plugins/chat, app/chat) draws them (the ⋯ menu shows only
+// when there is one) and offers them to the agent (state menu, action clickItem). A throwing click is the adding plugin's
 // failure, not the menu's: the host's guard takes that plugin down, and its entries with it.
 //
 // No imports from the app and no React here: the registry is plain data the menu, the offers and the tests share.

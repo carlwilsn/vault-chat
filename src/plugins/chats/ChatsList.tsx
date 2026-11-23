@@ -1,13 +1,13 @@
 // The chat list (Stage 2, Track 1: the second part of the app to become a plugin; src/plugins/chats/index.tsx mounts
 // it): Main and the projects as places that open into their chats, "Show more", spinners and the unseen dot, the
-// right-click menus (rename, delete, Memory) and "+ New project". Two surfaces show the same list: the overlay from the
+// right-click menus (rename, delete) and "+ New project". Two surfaces show the same list: the overlay from the
 // chat pane's chats button (ChatsOverlay) and fullscreen chat's left sidebar (ChatsSidebarView).
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MessageSquare, Plus, X as XIcon, Folder, PanelLeftClose, Home, ChevronRight } from "lucide-react";
 import { useStore } from "../../store";
 import { useProjects } from "../../ProjectChip";
 import { newChatIn } from "../../chat-controller";
-import { createProjectThread, deleteProject, MEMORY_SLUG, openProjectNotes, openThread, projectName, renameProject } from "../../projects";
+import { createProjectThread, deleteProject, openThread, projectName, renameProject } from "../../projects";
 import { panelModel, visibleChats, nextChatLevel, type PanelChat, type PanelEntry } from "../../threads";
 import { canDeleteChat, deleteChats, renameChat } from "../../chatDelete";
 import { cn } from "../../lib/utils";
@@ -187,7 +187,6 @@ export function ThreadsList({
               newChatIn("main");
               focusChat();
             }}
-            onNotes={() => void openProjectNotes(MEMORY_SLUG, "Memory").then(() => onPicked?.())}
           />
         </div>
         <div className="border-t border-border/60" />
@@ -220,7 +219,6 @@ export function ThreadsList({
                 newChatIn(e.slug);
                 focusChat();
               }}
-              onNotes={() => void openProjectNotes(e.slug, e.title).then(() => onPicked?.())}
               onRename={async (to) => {
                 const r = await renameProject(e.slug, to);
                 setErr(r.ok ? null : r.error);
@@ -241,9 +239,9 @@ export function ThreadsList({
 /**
  * Main (a home, a stronger name) or a project (a folder). At rest and on hover the bar shows only its chevron,
  * icon, name and "+" (Carl's option B, 2026-11-08: no hover icons): while the place works a small spinner takes
- * the icon's spot; finished unseen, a dot at the end. Right-click opens its menu: Memory, then for a project
- * Rename (the row becomes its name, Enter keeps it) and "Delete project…" (asked once, right under the row).
- * Main's menu is Memory only.
+ * the icon's spot; finished unseen, a dot at the end. Right-click opens a project's menu: Rename (the row
+ * becomes its name, Enter keeps it) and "Delete project…" (asked once, right under the row). Main has no menu (its
+ * Memory entry went, Carl 11-23: the agent keeps memory with its file tools).
  *
  * The header bar only shows or hides the place's chats (Carl: clicking it does nothing else — it neither opens
  * the project nor switches chat); a chat is opened from its own row. "+" at the header's right end starts a new
@@ -254,7 +252,6 @@ export function ThreadRow({
   name,
   onOpenChat,
   onNewChat,
-  onNotes,
   onRename,
   onDelete,
   deleteOne,
@@ -265,7 +262,6 @@ export function ThreadRow({
   onOpenChat?: (id: string, title: string) => void;
   /** Start a fresh chat in this place. */
   onNewChat?: () => void;
-  onNotes?: () => void;
   onRename?: (name: string) => Promise<void>;
   /** `folder`: Carl's second choice — the folder goes too. */
   onDelete?: (folder: boolean) => Promise<void>;
@@ -298,7 +294,7 @@ export function ThreadRow({
   const [busy, setBusy] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const canEdit = !isMain && !!(onRename || onDelete);
-  const hasMenu = !!onNotes || canEdit;
+  const hasMenu = canEdit;
   const press = useLongPress(() => setMenu(true), hasMenu);
   useEffect(() => {
     if (!menu) return;
@@ -392,17 +388,6 @@ export function ThreadRow({
       </button>
       {hasMenu && menu && (
         <div ref={menuRef} data-el="project-menu-list" className="absolute right-2 top-full -mt-1 z-30 min-w-[150px] p-1 rounded-lg border border-border bg-popover shadow-lg text-[12px]">
-          {onNotes && (
-            <MenuItem data-offer="app/chat.openMemory"
-              el="project-memory-item"
-              onClick={() => {
-                setMenu(false);
-                onNotes();
-              }}
-            >
-              Memory
-            </MenuItem>
-          )}
           {canEdit && (
             <>
               <MenuItem data-offer="box:chats.renameProject"

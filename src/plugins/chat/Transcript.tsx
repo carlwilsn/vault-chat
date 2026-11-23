@@ -313,7 +313,7 @@ export function Transcript() {
 
   return (
     <div className="h-full flex flex-col bg-card border-l border-border relative" data-el="chat-transcript">
-      {/* The pane's header (the chat's name, the cost, the ⋯ menu with Memory): this plugin's header part, with a
+      {/* The pane's header (the chat's name, the cost, the ⋯ menu): this plugin's header part, with a
           built-in fallback (src/ChatHeader.tsx). Fullscreen chat and the popout draw it in their top bar instead. */}
       {!inOwnBar && <ChatHeaderSlot />}
       <div

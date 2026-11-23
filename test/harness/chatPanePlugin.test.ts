@@ -100,62 +100,24 @@ test("mounted through the host, it draws the header and declares its offers", as
   await tick();
   assert.equal(handle.error, null);
   assert.match(html(host), /data-el="chat-header"/);
-  assert.match(html(host), /data-el="chat-menu-button"/);
+  assert.doesNotMatch(html(host), /data-el="chat-menu-button"/, "no entries: no ⋯ (Carl 11-23: no Memory entry)");
   assert.match(html(host), />Main</);
   const d = listOffers().find((p: any) => p.id === "app/chat")!;
   assert.ok(d, "listed while it runs");
-  assert.deepEqual(d.state.map((s: any) => s.name), ["chat", "view", "scroll", "tasks", "ongoing", "frame", "menu", "memory"]);
-  assert.deepEqual(d.actions.map((a: any) => a.name), ["openMenu", "openMemory", "clickItem", "scrollToBottom", "showOlder", "openParent", "openTask", "stopTask", "steerTask", "openBoxSettings", "retry"]);
-  assert.deepEqual(d.events.map((e: any) => e.name), ["menuOpened", "memoryOpened", "itemClicked", "itemAdded", "itemRemoved", "scrolled", "olderShown", "jumped", "tasksChanged", "stateChanged"]);
+  assert.deepEqual(d.state.map((s: any) => s.name), ["chat", "view", "scroll", "tasks", "ongoing", "frame", "menu"]);
+  assert.deepEqual(d.actions.map((a: any) => a.name), ["openMenu", "clickItem", "scrollToBottom", "showOlder", "openParent", "openTask", "stopTask", "steerTask", "openBoxSettings", "retry"]);
+  assert.deepEqual(d.events.map((e: any) => e.name), ["menuOpened", "itemClicked", "itemAdded", "itemRemoved", "scrolled", "olderShown", "jumped", "tasksChanged", "stateChanged"]);
 });
 
-test("read: the open chat, the view, which memory Memory opens (Main's, or the project's)", async () => {
-  let r = await readOffers("app/chat");
+test("read: the open chat, the view, the menu", async () => {
+  const r = await readOffers("app/chat");
   assert.equal(r.ok, true, r.error);
   assert.equal(r.state.chat.id, "main");
   assert.equal(r.state.chat.kind, "main");
   assert.equal(r.state.view.settings, false);
-  assert.deepEqual(r.state.memory, { kind: "main", file: ".vault-chat/MEMORY.md" });
+  assert.equal(r.state.memory, undefined, "no memory entry any more");
   assert.deepEqual(r.state.menu, { open: false, items: [] });
   assert.equal(r.state.scroll, null, "no pane registered: no chat on screen");
-  useStore.setState({ conversations: [conv("main"), conv("c1", { kind: "separate", project: "physics" }), conv("project-algebra", { kind: "project", project: "algebra" })], activeConversationId: "c1" } as any);
-  r = await readOffers("app/chat", "memory");
-  assert.deepEqual(r.state.memory, { kind: "project", slug: "physics", name: "Physics" });
-  useStore.setState({ activeConversationId: "project-algebra" } as any);
-  r = await readOffers("app/chat", "memory");
-  assert.equal(r.state.memory.slug, "algebra", "a project's thread: its project's memory");
-  useStore.setState({ conversations: [conv("main"), conv("c2", { kind: "separate" })], activeConversationId: "c2" } as any);
-  r = await readOffers("app/chat", "memory");
-  assert.equal(r.state.memory.kind, "main", "a chat in no project: Main's memory");
-});
-
-test("the ⋯ menu: one Memory entry; opening it from the menu or the agent opens the memory file in the viewer", async () => {
-  useStore.setState({ activeConversationId: "main", currentFile: null, chatFullscreen: false } as any);
-  let r = await actOffers("app/chat", "openMenu", {});
-  assert.equal(r.ok, true, r.error);
-  assert.equal(useChatMenu.getState().open, true);
-  await tick();
-  assert.match(html(host), /data-el="chat-menu"/);
-  const entries = (host as any).querySelectorAll('[data-el="chat-menu"] button');
-  assert.equal(entries.length, 1, "one entry");
-  assert.match(entries[0].textContent, /Memory/);
-  click((host as any).querySelector('[data-el="chat-menu-memory"]'));
-  await waitFor("the memory open", () => S().currentFile === `${vault}/.vault-chat/MEMORY.md`);
-  assert.ok(fs.existsSync(`${vault}/.vault-chat/MEMORY.md`), "made with its heading when missing");
-  assert.equal(useChatMenu.getState().open, false, "the menu closes");
-  useStore.setState({ currentFile: null } as any);
-  r = await actOffers("app/chat", "openMemory", {});
-  assert.equal(r.ok, true, r.error);
-  assert.equal(r.result.kind, "main");
-  assert.equal(S().currentFile, `${vault}/.vault-chat/MEMORY.md`);
-  // A chat in a project: the project's memory (no box here: the local project.md).
-  useStore.setState({ conversations: [conv("main"), conv("c1", { kind: "separate", project: "physics" })], activeConversationId: "c1" } as any);
-  r = await actOffers("app/chat", "openMemory", {});
-  assert.equal(r.ok, true, r.error);
-  assert.deepEqual([r.result.kind, r.result.project], ["project", "physics"]);
-  assert.match(S().currentFile ?? "", /physics\/project\.md$/);
-  r = await actOffers("app/chat", "openMenu", { open: false });
-  assert.equal(r.result.open, false);
 });
 
 test("scroll: through the pane's handle; none registered, a plain error", async () => {
@@ -210,13 +172,16 @@ test("a vault plugin puts an entry in the ⋯ menu live; the agent sees and clic
   await actOffers("app/chat", "openMenu", { open: true });
   await tick();
   const btn = (host as any).querySelector('[data-item=".vault-chat/plugins/entry.js#sum"]');
-  assert.ok(btn, "drawn under Memory");
+  assert.ok(btn, "drawn in the ⋯ menu, its only entry");
+  assert.equal((host as any).querySelectorAll('[data-el="chat-menu"] button').length, 1);
   click(btn);
   assert.equal(G.__sumClicks, 2, "Carl's click runs the same");
   assert.equal(useChatMenu.getState().open, false);
   p.unmount();
   await tick();
   assert.deepEqual(chatMenuItems(), [], "stopped: its entry is gone");
+  await tick();
+  assert.doesNotMatch(html(host), /data-el="chat-menu-button"/, "and the ⋯ with it");
   r = await actOffers("app/chat", "clickItem", { item: "sum" });
   assert.equal(r.ok, false);
   assert.match(r.error ?? "", /no plugin has put one there/);
@@ -255,12 +220,11 @@ const desire = (state: "running" | "stopped") => {
   rec.changed();
 };
 
-test("ChatHeaderSlot / ChatBarSlot: unknown, the header itself; running, the plugin; turned off, a plain header with Memory and Turn on", () => {
+test("ChatHeaderSlot / ChatBarSlot: unknown, the header itself; running, the plugin; turned off, a plain header with Turn on", () => {
   Object.assign(useStore.getInitialState(), { vaultPath: vault });
   _appReconciler(false);
   const pending = renderToStaticMarkup(createElement(ChatHeaderSlot));
   assert.match(pending, /data-el="chat-header"/);
-  assert.match(pending, /data-el="chat-menu-button"/);
   assert.ok(!/chat-header-fallback|plugin-off/.test(pending));
   assert.match(renderToStaticMarkup(createElement(ChatBarSlot)), /data-el="chat-title"/);
   _appReconciler(true);
@@ -270,7 +234,7 @@ test("ChatHeaderSlot / ChatBarSlot: unknown, the header itself; running, the plu
     assert.match(off, /data-el="chat-header-fallback"/);
     assert.match(off, /data-el="plugin-off"/);
     assert.match(off, /data-el="plugin-turn-on"/);
-    assert.match(off, /data-el="chat-memory-fallback"/, "Memory stays");
+    assert.ok(!/chat-memory-fallback|>Memory</.test(off), "no Memory button");
     assert.match(off, /data-el="chat-title"/);
     assert.ok(!/chat-menu-button/.test(off), "plain");
   }
@@ -278,7 +242,7 @@ test("ChatHeaderSlot / ChatBarSlot: unknown, the header itself; running, the plu
   assert.match(renderToStaticMarkup(createElement(ChatHeaderSlot)), /data-vc-plugin="app\/chat"/);
 });
 
-test("a header that throws on mount: the plain header stands in (no error card), its Memory works, Reload brings the header back", async () => {
+test("a header that throws on mount: the plain header stands in (no error card), Reload brings the header back", async () => {
   _resetOffers();
   useStore.setState({ vaultPath: vault, conversations: [conv("main")], activeConversationId: "main", currentFile: null } as any);
   let fail = true;
@@ -304,11 +268,9 @@ test("a header that throws on mount: the plain header stands in (no error card),
   await waitFor("the plain header", () => html(container).includes('data-el="chat-header-fallback"'));
   assert.match(html(container), /The chat header stopped/);
   assert.ok(!html(container).includes('data-el="plugin-error"'), "the fallback, not the error card");
-  click((container as any).querySelector('[data-el="chat-memory-fallback"]'));
-  await waitFor("the memory open", () => S().currentFile === `${vault}/.vault-chat/MEMORY.md`);
   fail = false;
   retry!();
-  await waitFor("the plugin again", () => html(container).includes('data-el="chat-menu-button"'));
+  await waitFor("the plugin again", () => html(container).includes('data-el="chat-header"') && !html(container).includes("chat-header-fallback"));
   // (Its offers are the headless part's, src/places.ts "offers": mounted apart from the drawn header.)
   r.unmount();
   await tick();

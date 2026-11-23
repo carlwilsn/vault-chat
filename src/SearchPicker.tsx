@@ -1,6 +1,5 @@
 // The search-and-scroll menu as a field (the chat pane's model menu, as one tight row): open it and type to search, or
-// scroll. Shared by Settings (the box's vault picker) and the ElevenLabs voice plugin's voice picker
-// (src/plugins/elevenlabs-voice).
+// scroll. Used by Settings (the box's vault picker).
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 

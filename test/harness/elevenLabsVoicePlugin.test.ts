@@ -1,9 +1,7 @@
 // The ElevenLabs voice plugin (src/plugins/elevenlabs-voice, app/elevenlabs-voice): the voice picker that was Settings'
-// Voice section. Settings has no voice section (the core voice is local: Kokoro, af_heart). The plugin is an app plugin
-// in the overlay place; it puts "ElevenLabs voice" in the chat's ⋯ menu, which opens its panel (the picker,
-// the library, Test, voice health); its offers read and set the same `voice` setting record box:settings' "voice"
-// key sets (Carl's pick is unchanged). Turned off, its panel and menu entry go, and the box speaks locally
-// (server/voiceProvider.ts reads the same plugin id).
+// Voice section, now drawing nothing (Carl 11-23: its panel and ⋯ menu entry went). The plugin is an app plugin in the
+// overlay place; its offers read and set the same `voice` setting record box:settings' "voice" key sets. Turned off, the
+// box speaks locally (server/voiceProvider.ts reads the same plugin id).
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -65,7 +63,7 @@ test("ElevenLabs voice is a registered app plugin, in the overlay place, the id 
   assert.deepEqual(ELEVENLABS_VOICE_PLUGIN.keys, ["ELEVENLABS_API_KEY"], "it asks for its key by name");
 });
 
-test("mounted: a chat menu entry opens its panel (the voice picker); offers panel and voice; off, everything goes", async () => {
+test("mounted: it draws nothing and puts no ⋯ menu entry (Carl 11-23); offers the voice (box:settings' voice); off, it goes", async () => {
   _resetOffers();
   useStore.setState({ vaultPath: vault, voiceMode: false } as any);
   useStore.setState({ keys: {} } as any);
@@ -74,16 +72,14 @@ test("mounted: a chat menu entry opens its panel (the voice picker); offers pane
   await h.ready;
   await tick();
   assert.equal(h.error, null);
-  assert.doesNotMatch(html(host), /elevenlabs-voice-panel/, "closed until asked");
-  const item = chatMenuItems().find((i) => i.by === ELEVENLABS_VOICE_PLUGIN_ID);
-  assert.ok(item, "an entry in the chat's ⋯ menu");
-  assert.equal(item!.label, "ElevenLabs voice");
+  assert.equal(html(host).replace(/<[^>]*>/g, "").trim(), "", "no panel");
+  assert.equal(chatMenuItems().find((i) => i.by === ELEVENLABS_VOICE_PLUGIN_ID), undefined, "no ⋯ menu entry");
+  assert.ok(!fs.existsSync("src/plugins/elevenlabs-voice/Panel.tsx"));
   const d = listOffers().find((p: any) => p.id === ELEVENLABS_VOICE_PLUGIN_ID)!;
-  assert.deepEqual(d.state.map((s: any) => s.name), ["panel", "voice"]);
-  assert.deepEqual(d.actions.map((a: any) => a.name), ["open", "close", "test", "browseLibrary", "searchLibrary", "previewLibraryVoice", "addLibraryVoice", "openHealth", "setVoice"]);
+  assert.deepEqual(d.state.map((s: any) => s.name), ["voice"]);
+  assert.deepEqual(d.actions.map((a: any) => a.name), ["setVoice"]);
   let r = await readOffers(ELEVENLABS_VOICE_PLUGIN_ID);
   assert.equal(r.ok, true, r.error);
-  assert.deepEqual(r.state.panel, { open: false, parts: {} });
   assert.equal(r.state.voice.hasKey, false);
   assert.equal(typeof r.state.voice.voiceId, "string");
   // The key is an ordinary key, asked for by name: added the generic way it is there, removed it is gone (calls local).
@@ -92,23 +88,7 @@ test("mounted: a chat menu entry opens its panel (the voice picker); offers pane
   useStore.setState({ keys: { OTHER_API_KEY: "fake-not-a-key" } } as any);
   assert.equal((await readOffers(ELEVENLABS_VOICE_PLUGIN_ID)).state.voice.hasKey, false);
   useStore.setState({ keys: {} } as any);
-
-  item!.onClick();
-  await waitFor("the panel", () => html(host).includes('data-el="elevenlabs-voice-panel"'));
-  assert.match(html(host), /data-el="elevenlabs-voice-section"/);
-  assert.match(html(host), /Needs the key ELEVENLABS_API_KEY/, "no key: it says so, and calls stay local");
-  r = await readOffers(ELEVENLABS_VOICE_PLUGIN_ID);
-  assert.equal(r.state.panel.open, true);
-  assert.ok(r.state.panel.parts.voices, "its voice section says what it shows");
-  r = await actOffers(ELEVENLABS_VOICE_PLUGIN_ID, "close", {});
-  assert.deepEqual(r.result, { open: false });
-  await waitFor("closed", () => !html(host).includes("elevenlabs-voice-panel"));
-  r = await actOffers(ELEVENLABS_VOICE_PLUGIN_ID, "open", {});
-  assert.deepEqual(r.result, { open: true });
-  await waitFor("open again", () => html(host).includes("elevenlabs-voice-panel"));
-
   h.unmount();
   await tick();
-  assert.equal(chatMenuItems().find((i) => i.by === ELEVENLABS_VOICE_PLUGIN_ID), undefined, "its menu entry goes with it");
   assert.equal(listOffers().find((p: any) => p.id === ELEVENLABS_VOICE_PLUGIN_ID), undefined);
 });

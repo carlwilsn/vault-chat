@@ -149,7 +149,7 @@ export type HostApi = {
      *  "compaction", "notice") into the messages it shows, live, until the plugin stops (or the returned off): add a type
      *  the app has no translator for, or override its own. Return null to hand an event on. Throws on a bad type. */
     translate(type: string, fn: ChatTranslator): () => void;
-    /** Put an entry in the chat's ⋯ menu (beside Memory), live, until the plugin stops (or the returned off):
+    /** Put an entry in the chat's ⋯ menu, live, until the plugin stops (or the returned off):
      *  {id, label, onClick, title?, order?}. The same id again replaces it. A throw in its click is this plugin's
      *  failure. Throws on a bad spec. */
     menuItem(spec: ChatMenuItemSpec): () => void;

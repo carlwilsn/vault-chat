@@ -113,13 +113,13 @@ export const VIEWER_PLUGIN: AppPluginInfo = {
 
 export const CHAT_PLUGIN_ID = "app/chat";
 
-/** The chat pane's shell (src/plugins/chat): its header (the chat's name, the ⋯ menu with Memory and plugins' entries) and the pane's scroll. Off or failed, a plain header with Memory stands in. */
+/** The chat pane's shell (src/plugins/chat): its header (the chat's name, the ⋯ menu with plugins' entries) and the pane's scroll. Off or failed, a plain header stands in. */
 export const CHAT_PLUGIN: AppPluginInfo = {
   id: CHAT_PLUGIN_ID,
   name: "Chat pane",
   mount: "panel",
   description:
-    "The chat pane: its header (the chat's name and project, the cost, the ⋯ menu with Memory, which opens Main's memory or the chat's project memory, and entries vault plugins put there) and the pane around the transcript (which chat, docked or full screen, scrolled to the bottom or up, older messages shown, the way back to a worker's parent), and fullscreen chat's and the popout's frame (the chats sidebar, the top bar; enter or leave fullscreen, open or close the sidebar).",
+    "The chat pane: its header (the chat's name and project, the cost, the ⋯ menu with the entries vault plugins put there, shown only when there is one) and the pane around the transcript (which chat, docked or full screen, scrolled to the bottom or up, older messages shown, the way back to a worker's parent), and fullscreen chat's and the popout's frame (the chats sidebar, the top bar; enter or leave fullscreen, open or close the sidebar).",
   words: ["chat", "chat pane", "chat-pane", "chatpane", "the chat", "chat header", "chat menu", "chat's menu", "chat window", "conversation pane"],
 };
 
@@ -175,13 +175,14 @@ export const ELEVENLABS_VOICE_PLUGIN_ID = "app/elevenlabs-voice";
 export const ELEVENLABS_VOICE_KEY = "ELEVENLABS_API_KEY";
 
 /** ElevenLabs voice (src/plugins/elevenlabs-voice): the core voice is local (Kokoro, af_heart); on, with the key
- *  ELEVENLABS_API_KEY in Keys, calls speak and hear with ElevenLabs (server/voiceProvider.ts), and its panel picks the voice. */
+ *  ELEVENLABS_API_KEY in Keys, calls speak and hear with ElevenLabs (server/voiceProvider.ts). It draws nothing: the voice
+ *  is box:settings' voice. */
 export const ELEVENLABS_VOICE_PLUGIN: AppPluginInfo = {
   id: ELEVENLABS_VOICE_PLUGIN_ID,
   name: "ElevenLabs voice",
   mount: "panel",
   description:
-    "ElevenLabs voice: on, with the key ELEVENLABS_API_KEY in Keys, calls speak and hear with ElevenLabs instead of the free local voice (Kokoro, af_heart); its panel (the chat's ⋯ menu, ElevenLabs voice) picks the voice from the account or the ElevenLabs voice library, plays a test line and shows the box's voice health. Off: calls use the local voice.",
+    "ElevenLabs voice: on, with the key ELEVENLABS_API_KEY in Keys, calls speak and hear with ElevenLabs instead of the free local voice (Kokoro, af_heart), with the voice box:settings' voice names (read and set it here too). Draws nothing. Off: calls use the local voice.",
   words: ["elevenlabs", "elevenlabs voice", "elevenlabs-voice", "eleven labs", "eleven labs voice", "voice picker", "voice library", "elevenlabs voices"],
   keys: [ELEVENLABS_VOICE_KEY],
 };

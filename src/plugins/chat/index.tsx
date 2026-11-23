@@ -1,12 +1,12 @@
 // The chat pane plugin (Track 1; src/appPlugins.ts CHAT_PLUGIN_ID): the pane's header (./Header.tsx: the chat's name,
-// the cost, the ⋯ menu with Memory and plugins' entries) and its transcript (./Transcript.tsx: the box starting / no-box
+// the cost, the ⋯ menu with plugins' entries, drawn only when a plugin put one there) and its transcript (./Transcript.tsx: the box starting / no-box
 // screens, the window of messages, jump-to-latest, the background-task strip, the ongoing-work line), mounted through
 // the plugin host under the supervisor's records like the title bar and the composer. src/ChatHeader.tsx mounts the
 // header: docked, as the pane's top row (`mount`); in fullscreen chat and the popout, in the window's top bar (`bar`).
 // src/ChatPane.tsx mounts the transcript (`transcript`), which holds the docked header's slot; src/FullscreenChat.tsx
 // mounts fullscreen chat's (and the popout's) frame (`frame`, ./Frame.tsx: the chats sidebar, the top bar, the pane;
 // drawn in the app's tree while the records are unknown or the plugin is off, a plain frame if it fails). Turned off or failing,
-// a plain header stands in (the chat's name and a Memory button, with Turn on / Reload); the transcript is drawn in the
+// a plain header stands in (the chat's name, with Turn on / Reload); the transcript is drawn in the
 // app's tree while the records are unknown or the plugin is off, and a plain one stands in if it fails. The
 // transcript's rows are app/chat-rows; the composer is app/composer.
 //
@@ -15,7 +15,7 @@
 //
 // It declares what it offers (api.offer, src/pluginOffers.ts): the open chat, the view (docked, full screen, popped out;
 // Settings in its place; the box starting or out of reach), the scroll, the running background tasks, the ongoing-work
-// line, the menu and which memory Memory opens as state; open / close the menu, open the memory, click a plugin's entry,
+// line and the menu as state; open / close the menu, click a plugin's entry,
 // scroll to the newest, show older messages, go back to a worker's parent, open / stop / steer a background task and
 // open Settings → Box as actions; what happened as events. Each mounted part declares them (the newest answers).
 import { createRoot } from "react-dom/client";
@@ -34,7 +34,7 @@ import { boxRetry, boxSubagent } from "../../boxChat";
 import { BarTitle, DockHeader } from "./Header";
 import { Transcript, openBoxSettings } from "./Transcript";
 import { Frame } from "./Frame";
-import { emitChatEvent, memoryTarget, onChatEvent, onPaneScroll, openChatMemory, paneScroll, setMenuOpen, useChatMenu } from "./model";
+import { emitChatEvent, onChatEvent, onPaneScroll, paneScroll, setMenuOpen, useChatMenu } from "./model";
 
 const shownItem = (i: ChatMenuItem) => ({ key: i.key, id: i.id, by: i.by, label: i.label, ...(i.title ? { title: i.title } : {}) });
 const OPEN = { type: "object", properties: { open: { type: "boolean", description: "true: open it, false: close it; left out: toggle." } }, additionalProperties: false };
@@ -127,15 +127,8 @@ export function chatOffers() {
         },
       },
       menu: {
-        description: "The ⋯ menu: open, and the entries vault plugins put there (api.host.chat.menuItem): key, id, by, label, title. Memory is always first.",
+        description: "The ⋯ menu: open, and the entries vault plugins put there (api.host.chat.menuItem): key, id, by, label, title.",
         read: () => ({ open: useChatMenu.getState().open, items: chatMenuItems().map(shownItem) }),
-      },
-      memory: {
-        description: "Which memory the menu's Memory opens for this chat: kind main (.vault-chat/MEMORY.md, for Main and chats in no project) or project (slug, name: the project's memory).",
-        read: () => {
-          const t = memoryTarget();
-          return t.kind === "main" ? { kind: "main", file: t.file } : { kind: "project", slug: t.slug, name: t.name };
-        },
       },
     },
     actions: {
@@ -147,13 +140,6 @@ export function chatOffers() {
           return { open: useChatMenu.getState().open };
         },
       },
-      openMemory: {
-        description: "Open this chat's memory in the viewer (as the menu's Memory): Main's, or the chat's project's. Fullscreen chat leaves for the viewer.",
-        run: async () => {
-          const { target, path } = await openChatMemory();
-          return { kind: target.kind, ...(target.kind === "project" ? { project: target.slug } : {}), path };
-        },
-      },
       clickItem: {
         description: "Click a plugin's entry in the ⋯ menu (its key, or its id or label when that names one entry).",
         args: { type: "object", properties: { item: { type: "string" } }, required: ["item"], additionalProperties: false },
@@ -161,7 +147,7 @@ export function chatOffers() {
           const it = chatMenuItemNamed(String(a.item ?? ""));
           if (!it) {
             const all = chatMenuItems();
-            throw new Error(`no menu entry "${String(a.item ?? "")}"${all.length ? ` (entries: ${all.map((i) => i.key).join(", ")})` : " (no plugin has put one there; Memory is openMemory)"}`);
+            throw new Error(`no menu entry "${String(a.item ?? "")}"${all.length ? ` (entries: ${all.map((i) => i.key).join(", ")})` : " (no plugin has put one there)"}`);
           }
           setMenuOpen(false);
           it.onClick();
@@ -237,7 +223,6 @@ export function chatOffers() {
     },
     events: {
       menuOpened: { description: "The ⋯ menu opened." },
-      memoryOpened: { description: "Memory was opened: kind (main, project), project, path." },
       itemClicked: { description: "A plugin's menu entry was clicked: key, by." },
       itemAdded: { description: "A plugin put an entry in the menu: key, by, label." },
       itemRemoved: { description: "An entry left the menu (its plugin stopped or removed it): key, by." },

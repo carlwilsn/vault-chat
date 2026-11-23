@@ -79,7 +79,7 @@ describe("the catalog", () => {
       { id: "app/filetree", name: "File tree", mount: "panel", description: expect.stringContaining("file tree") },
       { id: "app/titlebar", name: "Title bar", mount: "panel", description: expect.stringContaining("title bar") },
       { id: "app/viewer", name: "Viewer", mount: "panel", description: expect.stringContaining("viewer") },
-      { id: "app/chat", name: "Chat pane", mount: "panel", description: expect.stringContaining("Memory") },
+      { id: "app/chat", name: "Chat pane", mount: "panel", description: expect.stringContaining("⋯ menu") },
       { id: "app/settings", name: "Settings", mount: "panel", description: expect.stringContaining("Settings pane") },
       { id: "app/voice", name: "Voice", mount: "panel", description: expect.stringContaining("mic") },
       { id: "app/context", name: "Context", mount: "panel", description: expect.stringContaining("shared context") },

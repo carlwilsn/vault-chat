@@ -1,16 +1,16 @@
 // The chat pane's header (app/chat): the chat's name (and its project), the total cost when that is shown here, and the
-// ⋯ menu: Memory (one entry: Main's memory, or the project's memory for a project's thread or a chat in a project), then
-// the entries vault plugins put there (api.host.chat.menuItem, src/chatMenuItems.ts). Docked, it is a slim row at the top
+// ⋯ menu: the entries vault plugins put there (api.host.chat.menuItem, src/chatMenuItems.ts), drawn only when there
+// is one (Carl 11-23: its Memory and ElevenLabs voice entries went). Docked, it is a slim row at the top
 // of the pane (DockHeader); in fullscreen chat and the popout it sits in the window's own top bar (BarTitle).
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import { BookOpen, MoreHorizontal } from "lucide-react";
+import { MoreHorizontal } from "lucide-react";
 import { useStore } from "../../store";
 import { useProjects } from "../../ProjectChip";
 import { projectName } from "../../projects";
 import { uiChoice } from "../../uiChoices";
 import { formatCost } from "../../ongoingWork";
 import { chatMenuItems, subscribeChatMenuItems } from "../../chatMenuItems";
-import { emitChatEvent, memoryTarget, openChatMemory, setMenuOpen, useChatMenu } from "./model";
+import { emitChatEvent, setMenuOpen, useChatMenu } from "./model";
 
 function useTitle(): { title: string; project: string } {
   const conv = useStore((s) => s.conversations.find((c) => c.id === s.activeConversationId));
@@ -33,7 +33,6 @@ function useTotalCost(): string | undefined {
 export function ChatMenu({ align = "right" }: { align?: "left" | "right" }) {
   const open = useChatMenu((s) => s.open);
   const items = useSyncExternalStore(subscribeChatMenuItems, chatMenuItems, chatMenuItems);
-  const projects = useProjects();
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -50,8 +49,8 @@ export function ChatMenu({ align = "right" }: { align?: "left" | "right" }) {
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
-  const names = (slug: string) => projectName(slug, projects);
-  const mem = memoryTarget(names);
+  // Nothing to offer: no ⋯ at all.
+  if (!items.length && !open) return null;
   const row = "flex items-center gap-2 w-full text-left px-3 py-1.5 text-[12px] hover:bg-accent transition-colors";
   return (
     <div className="relative pointer-events-auto" ref={ref}>
@@ -62,24 +61,12 @@ export function ChatMenu({ align = "right" }: { align?: "left" | "right" }) {
         aria-expanded={open}
         onClick={() => setMenuOpen(!open)}
         className={`h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 ${open ? "text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-        title="More: Memory and more"
+        title="More"
       >
         <MoreHorizontal className="h-3.5 w-3.5" />
       </button>
       {open && (
         <div data-el="chat-menu" className={`absolute top-full mt-1 ${align === "right" ? "right-0" : "left-0"} w-56 rounded-lg border border-border bg-card shadow-lg z-50 py-1`}>
-          <button data-offer="app/chat.openMemory"
-            type="button"
-            data-el="chat-menu-memory"
-            className={row}
-            title={mem.kind === "main" ? "Open the agent's memory (.vault-chat/MEMORY.md)" : `Open ${mem.name}'s memory: what the agent keeps for this project`}
-            onClick={() => void openChatMemory(names)}
-          >
-            <BookOpen className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="flex-1 truncate">Memory</span>
-            {mem.kind === "project" && <span className="text-[11px] text-muted-foreground truncate max-w-[45%]">{mem.name}</span>}
-          </button>
-          {items.length > 0 && <div className="my-1 h-px bg-border/60" />}
           {items.map((i) => (
             <button data-offer="app/chat.clickItem"
               key={i.key}

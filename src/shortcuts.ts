@@ -91,7 +91,6 @@ export const SHORTCUTS = [
       "src/ProjectChip.tsx",
       "src/plugins/settings/Pane.tsx",
       "src/SearchPicker.tsx",
-      "src/plugins/elevenlabs-voice/Panel.tsx",
       "src/ChatModelPicker.tsx",
       "src/UsagePopover.tsx",
       "src/plugins/composer/Composer.tsx",

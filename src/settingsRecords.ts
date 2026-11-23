@@ -63,7 +63,7 @@ export const SETTINGS = {
     pattern: /^[A-Za-z0-9]{8,40}$/,
     hint: "an ElevenLabs voice id",
     default: "nPczCjzI2devNBz1zQrb",
-    description: "The voice ElevenLabs speaks with on every call while the ElevenLabs voice plugin (app/elevenlabs-voice) is on with a key: an ElevenLabs voice id, picked in that plugin's panel. The core local voice (Kokoro, af_heart) has no setting.",
+    description: "The voice ElevenLabs speaks with on every call while the ElevenLabs voice plugin (app/elevenlabs-voice) is on with a key: an ElevenLabs voice id (set it here; the plugin draws nothing). The core local voice (Kokoro, af_heart) has no setting.",
     legacy: { where: "box", key: "vault_chat_elevenlabs_voice" },
   },
   pushAutomatic: {

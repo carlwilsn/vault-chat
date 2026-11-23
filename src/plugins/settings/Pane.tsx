@@ -29,7 +29,7 @@ import { Picker, type PickOption } from "../../SearchPicker";
 
 // The Claude sign-in on one line at the top, then the sections: Keys, vault-chat folder, Box, Appearance; then Keyboard
 // shortcuts (the Ctrl+/ sheet). There is no voice section: the core voice is local (Kokoro, af_heart) with nothing to
-// pick, and the ElevenLabs voice and its picker are the ElevenLabs voice plugin's (src/plugins/elevenlabs-voice).
+// pick, and the ElevenLabs voice is box:settings' voice (the ElevenLabs voice plugin draws nothing).
 //
 // The sign-in is at the TOP and is one line, because it is the first thing to
 // settle on a fresh install and the only thing the AI features wait on. It used
