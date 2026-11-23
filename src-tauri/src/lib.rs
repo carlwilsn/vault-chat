@@ -1,4 +1,5 @@
 mod claude_cli;
+mod tracked_open;
 mod git_bridge;
 mod claude_login;
 mod claude_signin;
@@ -5797,6 +5798,8 @@ pub fn run() {
             schedules_write_all,
             open_terminal,
             open_box_terminal,
+            tracked_open::tracked_open,
+            tracked_open::tracked_close,
             claude_login::claude_setup_token_cli,
             claude_signin::claude_signin_available,
             claude_signin::claude_signin_run,

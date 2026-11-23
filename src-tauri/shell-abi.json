@@ -307,6 +307,14 @@
   "sig": "tailscale_open()->Result<(),String>",
   "v": "95ff3f59"
  },
+ "tracked_close": {
+  "sig": "tracked_close(id:String)->Result<(),String>",
+  "v": "6db228f7"
+ },
+ "tracked_open": {
+  "sig": "tracked_open(kind:String,target:String)->Result<TrackedOpen,String>",
+  "v": "7675b2b5"
+ },
  "vault_box_config": {
   "sig": "vault_box_config(vault:String)->Option<BoxConfigOut>",
   "v": "b76e7d7a"

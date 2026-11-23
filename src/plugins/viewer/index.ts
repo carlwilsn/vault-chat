@@ -35,6 +35,7 @@ import { onTexChanged, recompileTex, texOf } from "../../texState";
 import { captureNow, startCapture, type CaptureFor } from "../../capture";
 import { answerPrompt, livePagesNow, onLivePagesChanged, stopPageMic } from "../../livePagesState";
 import { textOfFrame } from "../../pageSnap";
+import { closeTracked } from "../../trackedOpen";
 import { onOutsideOpened, openOutside, outsideOpened, type OutsideHow } from "../../opener";
 import { onPaneEvent, paneOf } from "./panes";
 import { useLiveFiles } from "../../liveReload";
@@ -217,7 +218,7 @@ export function viewerOffers(): Offers {
         read: () => livePagesNow(),
       },
       outside: {
-        description: "The files opened outside the app this session (the default app, File Explorer, the system video player): path, how, at.",
+        description: "The files opened outside the app this session (the default app, File Explorer, the system video player): path, how, at, and while the shell follows its program's window: id, open (closeOutside closes it).",
         read: () => outsideOpened(),
       },
       open: {
@@ -441,6 +442,14 @@ export function viewerOffers(): Offers {
           const text = await textOfFrame(frame);
           if (text === null) throw new Error("the page did not answer (an older bridge, or it is busy)");
           return { path: rel(o.file), text: text.slice(0, 12_000) };
+        },
+      },
+      closeOutside: {
+        description: "Close a file opened outside the app (outside: its id while open), as closing its program's window does. Only when Carl asks.",
+        args: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
+        run: async (a) => {
+          await closeTracked(String(a.id ?? ""));
+          return { closed: a.id };
         },
       },
       openOutside: {

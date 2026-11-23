@@ -31,6 +31,7 @@ import { closeHidden, emitBarEvent, followWindow, onBarEvent, openHidden, openTa
 import { onTerminalsChanged, terminalsOpened } from "../../terminal";
 import { diagNow, onPartFailures, partFailures, retryPart } from "../../partFailures";
 import { runDiag } from "../../diag";
+import { closeTracked } from "../../trackedOpen";
 
 const shownItem = (i: TitlebarItem) => ({
   key: i.key,
@@ -99,7 +100,7 @@ export function titlebarOffers(_api: Pick<PluginApi, "host">, sync: () => BoxSyn
         read: panels,
       },
       status: {
-        description: "The bar's indicators: runningTasks (the agent's background tasks), sync (the attention chip's kind, text and level, its details open, what they say, whether Open Tailscale shows, its last error; or null), hiddenFiles (the Hidden files list open, and its lines), refreshing, terminals (the terminals opened from the bar this session: where, at; the box's own sessions: box:links terminals), crashed (app parts that failed and show Reload: part, error), diagnostics (the last bundle written: path, at).",
+        description: "The bar's indicators: runningTasks (the agent's background tasks), sync (the attention chip's kind, text and level, its details open, what they say, whether Open Tailscale shows, its last error; or null), hiddenFiles (the Hidden files list open, and its lines), refreshing, terminals (the terminals opened from the bar this session: where, at; a laptop one's id and open while the shell follows it; the box's own sessions: box:links terminals), crashed (app parts that failed and show Reload: part, error), diagnostics (the last bundle written: path, at).",
         read: () => {
           const s = useStore.getState();
           const b = useBar.getState();
@@ -244,6 +245,14 @@ export function titlebarOffers(_api: Pick<PluginApi, "host">, sync: () => BoxSyn
           if (!(st?.attention?.kind === "tailscale" && st.tailscale?.canOpen)) throw new Error("Open Tailscale is not offered now");
           await openTailscaleNow(st.vault);
           return { opened: true };
+        },
+      },
+      closeTerminal: {
+        description: "Close a laptop terminal opened from the bar (status.terminals: its id, while open), as closing its window does. A box terminal: box:links closeTerminal. Only when Carl asks.",
+        args: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
+        run: async (a: Record<string, unknown>) => {
+          await closeTracked(String(a.id ?? ""));
+          return { closed: a.id };
         },
       },
       reloadPart: {

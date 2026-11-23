@@ -3,6 +3,7 @@ import {
   openPath as pluginOpenPath,
   revealItemInDir as pluginRevealItemInDir,
 } from "@tauri-apps/plugin-opener";
+import { onTrackedChanged, openTracked, trackedNow } from "./trackedOpen";
 
 // Thin wrappers around @tauri-apps/plugin-opener. Using the typed JS
 // bindings rather than raw invoke() because the raw invoke name changed
@@ -35,16 +36,29 @@ const openedFns = new Set<(o: Opened | null) => void>();
 /** Open `path` outside the app: its default app, File Explorer at it, or the system video player (its default app).
  *  app/viewer's openOutside action and every such button call this; what happens in that program is the OS's. */
 export async function openOutside(path: string, how: OutsideHow): Promise<void> {
+  let id: string | null = null;
   if (how === "explorer") await revealInFileExplorer(path);
-  else await openPathWithDefaultApp(path);
-  const o = { path, how, at: new Date().toISOString() };
+  else {
+    // Followed until its program's window closes when the shell can (src/trackedOpen.ts).
+    id = await openTracked("open", path);
+    if (!id) await openPathWithDefaultApp(path);
+  }
+  const o = { path, how, at: new Date().toISOString(), ...(id ? { id } : {}) };
   opened.push(o);
   if (opened.length > 10) opened.shift();
   for (const f of [...openedFns]) f(o);
 }
 /** The files opened outside this session, newest last. */
-export const outsideOpened = () => opened.slice();
+export const outsideOpened = () =>
+  opened.map((o) => {
+    const t = o.id ? trackedNow(o.id) : null;
+    return { ...o, ...(t ? { open: t.open, ...(t.quick ? { note: "its program took it into a window already open, so when it closes can't be told" } : {}) } : {}) };
+  });
 export function onOutsideOpened(fn: (o: Opened | null) => void): () => void {
   openedFns.add(fn);
-  return () => void openedFns.delete(fn);
+  const off = onTrackedChanged(() => fn(null));
+  return () => {
+    openedFns.delete(fn);
+    off();
+  };
 }

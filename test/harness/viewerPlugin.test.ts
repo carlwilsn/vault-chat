@@ -145,7 +145,7 @@ test("mounted through the host, app/viewer declares its offers and reads what is
   const d = listOffers().find((p) => p.id === "app/viewer")!;
   assert.ok(d, "listed while it runs");
   assert.deepEqual(d.state.map((s) => s.name), ["videos", "capture", "pages", "outside", "open", "viewers", "modes", "kept", "editing"]);
-  assert.deepEqual(d.actions.map((a) => a.name), ["open", "scrollTo", "find", "zoom", "setMode", "reloadFromDisk", "keepMine", "video", "recompile", "type", "select", "capture", "grant", "stopMic", "pageText", "openOutside", "closePane", "use", "disable", "enable", "setOption"]);
+  assert.deepEqual(d.actions.map((a) => a.name), ["open", "scrollTo", "find", "zoom", "setMode", "reloadFromDisk", "keepMine", "video", "recompile", "type", "select", "capture", "grant", "stopMic", "pageText", "closeOutside", "openOutside", "closePane", "use", "disable", "enable", "setOption"]);
   assert.deepEqual(d.events.map((e) => e.name), ["opened", "scrolled", "modeChanged", "reloaded", "keptMine", "openedOutside", "paneClosed", "saved", "changed", "stateChanged"]);
   subscribeOffers("viewer", "*", (e) => events.push({ event: e.event, payload: e.payload }));
   const o = await read("open");

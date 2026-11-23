@@ -7,6 +7,7 @@
 // - The box unreachable, or an older server that doesn't report user/path →
 //   the laptop terminal, with a quiet note.
 import { invoke } from "@tauri-apps/api/core";
+import { onTrackedChanged, openTracked, trackedNow } from "./trackedOpen";
 import { useStore } from "./store";
 import { boxName, readBoxConfig } from "./vaultSync";
 import { boxGet, boxLinkFor } from "./boxChat";
@@ -79,7 +80,10 @@ function note(text: string): void {
   for (const fn of noteListeners) fn(text);
 }
 
+/** The laptop terminal, followed until its window closes when the shell can (src/trackedOpen.ts); its id, or null. */
 async function openLaptop(cwd: string | null): Promise<string | null> {
+  const id = cwd ? await openTracked("terminal", cwd) : null;
+  if (id) return id;
   await invoke("open_terminal", { cwd: cwd ?? undefined });
   return null;
 }
@@ -91,10 +95,18 @@ const opened: { where: "box" | "laptop"; at: string; id?: string }[] = [];
 const openedFns = new Set<() => void>();
 /** The terminals opened this session: a laptop one with whether it is still open (when the shell follows it), a box
  *  one by when (box:links terminals has the box's sessions, open or closed). */
-export const terminalsOpened = () => opened.slice(-5).map((t) => ({ where: t.where, at: t.at }));
+export const terminalsOpened = () =>
+  opened.slice(-5).map((t) => {
+    const tr = t.id ? trackedNow(t.id) : null;
+    return { where: t.where, at: t.at, ...(tr ? { id: t.id, open: tr.open } : {}) };
+  });
 export function onTerminalsChanged(fn: () => void): () => void {
   openedFns.add(fn);
-  return () => void openedFns.delete(fn);
+  const off = onTrackedChanged(fn);
+  return () => {
+    openedFns.delete(fn);
+    off();
+  };
 }
 function noteOpened(where: "box" | "laptop", id?: string | null): void {
   opened.push({ where, at: new Date().toISOString(), ...(id ? { id } : {}) });
