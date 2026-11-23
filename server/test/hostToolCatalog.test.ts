@@ -21,15 +21,15 @@ afterAll(() => { rig?.engine.stop(); cleanup(rig?.root); });
 
 describe("current host loadout policy", () => {
   it("uses current built-in definitions on every resolution; a folder in .vault-chat/tools is not a tool", async () => {
-    own("shadow-review", "SubmitChange"); own("shadow-read", "read");
+    own("shadow-review", "AskUser"); own("shadow-read", "read");
     own("custom", "CalendarFixture");
     const all = await catalog("conversation");
     expect(all.some(t => t.name === "ReadyForReview")).toBe(false);
-    expect(all.find((t) => t.name === "SubmitChange")).toEqual(agentToolSpecs().find((t) => t.name === "SubmitChange"));
-    expect(all.filter((t) => t.name === "SubmitChange")).toHaveLength(1);
+    expect(all.find((t) => t.name === "AskUser")).toEqual(agentToolSpecs().find((t) => t.name === "AskUser"));
+    expect(all.filter((t) => t.name === "AskUser")).toHaveLength(1);
     expect(all.find((t) => t.name === "read")).toBeUndefined(); // filesystem is bound independently
     expect(all.some((t) => t.name === "CalendarFixture")).toBe(false);
-    expect(all.find((t) => t.name === "SubmitChange")!.inputSchema.required).toContain("branch");
+    expect(all.find((t) => t.name === "AskUser")!.inputSchema.required).toContain("question");
   });
 
   it("keeps read-only, voice and conversation authority separate; a vault tools folder adds nothing", async () => {
@@ -41,7 +41,6 @@ describe("current host loadout policy", () => {
     for (const loadout of ["voiceRead", "voiceAct"] as const) {
       const selected = await catalog(loadout);
       expect(selected).toEqual(voiceSideToolSpecs(loadout === "voiceAct"));
-      expect(selected.some((t) => t.name === "SubmitChange")).toBe(false);
       expect(selected.some((t) => t.name === "AskUser")).toBe(false);
     }
   });

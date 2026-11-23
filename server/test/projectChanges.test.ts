@@ -1,4 +1,4 @@
-// Native SubmitChange cutover on the real engine/fake pi provider, real temporary git.
+// A gated project on the real engine/fake pi provider, real temporary git: the agent ships with bin/submit (D2 step 3).
 // Historical cards remain settleable; no new native ReadyForReview or mandatory Keep wait.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "node:child_process";
@@ -78,7 +78,8 @@ describe("a git project: service proof owns main; legacy cards remain readable",
     await waitFor(() => or.calls.some((c) => JSON.stringify(c).includes("GATE-1")), 30_000);
     const sent = JSON.stringify(or.calls.find((c) => JSON.stringify(c).includes("GATE-1")));
     expect(sent).toContain("SITE-AGENTS: keep the font at 16px.");
-    expect(sent).toContain("then call SubmitChange");
+    expect(sent).toContain("bin/submit");
+    expect(sent).toContain("IN THE BACKGROUND");
     expect(sent).not.toContain("only his Keep merges your branch into it");
     const said = (m: any) => (typeof m.content === "string" ? m.content : (m.content ?? []).map((b: any) => b?.text ?? "").join("\n"));
     const m = /You work in your own clone of it, ([^ ]+?)\/: relative/.exec((JSON.parse(sent).messages ?? []).map(said).join("\n"));
@@ -99,12 +100,12 @@ describe("a git project: service proof owns main; legacy cards remain readable",
     expect(mainSha()).toBe(start);
   });
 
-  it("publishes SubmitChange rather than ReadyForReview in the actual provider catalog", async () => {
+  it("publishes neither SubmitChange nor ReadyForReview in the actual provider catalog", async () => {
     const native = agentToolSpecs();
     expect(native.some(t => t.name === "ReadyForReview")).toBe(false);
-    expect(native.find(t => t.name === "SubmitChange")?.inputSchema.required).toContain("branch");
+    expect(native.some(t => t.name === "SubmitChange")).toBe(false);
     const names = or.calls.flatMap((c: any) => (c.tools ?? []).map((t: any) => t.function?.name ?? t.name));
-    expect(names).toContain("mcp__vault_chat__SubmitChange");
+    expect(names).not.toContain("mcp__vault_chat__SubmitChange");
     expect(names).not.toContain("mcp__vault_chat__ReadyForReview");
     expect(await asking()).toBe(false);
   });

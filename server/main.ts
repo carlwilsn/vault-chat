@@ -481,10 +481,9 @@ async function main(): Promise<void> {
   // Behind the front: every request comes here from now on.
   if (cfg.backend) promote(cfg.stateDir, cfg.port);
 
-  // Ship results are no longer delivered to project-vault-chat one by one (every lane's result woke that long
-  // chat: ~650k tokens each). An agent that needs one says so with WaitFor; the engine's ledger tick reads
-  // ship-results itself and starts a fresh session for that ask (server/engine/ledger.ts, reports/19-stateless).
-  // VC_KEEP_GOING=1 brings the old delivery back.
+  // Ship results are not delivered to project-vault-chat one by one (every lane's result woke that long chat:
+  // ~650k tokens each). The session that submitted waits for its own result in the background (Claude Code wakes it
+  // when the wait ends). VC_KEEP_GOING=1 brings the old delivery back.
   const vcVault = vaultRefs().find((v) => v.name === "vault-chat");
   if (vcVault && process.env.VC_KEEP_GOING === "1") {
     (await import("./keepGoing")).startKeepGoing({

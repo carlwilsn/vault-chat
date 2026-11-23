@@ -1,10 +1,9 @@
 // An update never loses running agent work. On 2026-11-17 22:28 the updater waited 2 h for six background workers
 // (Agent-tool subagents of live chats), then stopped the old server: every Claude Code process exited 143 and the
 // workers were gone with nothing said. Now the old server hands over with workers running: its shutdown saves them
-// as a durable wake per chat (Engine.saveCutWork), and the next server, right after it takes over, takes each cut
-// worker up in a FRESH work session (its ask in the ledger, what it was asked and what its transcript shows) and
-// says so in one line in the chat, without a model turn there (reports/19-stateless: the old way, the chat
-// resuming each worker by SendMessage, re-read the whole long chat and every worker's context cold).
+// as a durable wake per chat (Engine.saveCutWork), and the next server, right after it takes over, gives that chat
+// a turn that resumes each cut worker itself, in its own Claude Code session (SendMessage resumes a worker from its
+// transcript): the harness's own way (Carl 11-22), no work list and no fresh session.
 //
 // This runs the real thing: two real servers in the blue-green slots, the real Claude Code CLI against the scripted
 // API, a real background worker in the middle of a long command when the old server goes.
@@ -15,7 +14,6 @@ import { join } from "node:path";
 import { tmp, cleanup, makeVault, makeKeyStore, startServer, waitFor, freePort, type Running } from "./helpers";
 import { fakeAnthropic, chatText, lastToolResult, type FakeApi } from "./claudeFakeApi";
 import { cutShown, cutText } from "../engine/engine";
-import { readLedger } from "../engine/ledger";
 
 const UNIT = (port: number) => `/user.slice/user-1000.slice/user@1000.service/app.slice/vault-chat-server@${port}.service`;
 const descendants = (pid: number): number[] => {
@@ -94,9 +92,9 @@ describe.skipIf(process.platform !== "linux")("a hand-over with a background wor
     api.respond = (body) => {
       const mine = firstUser(body);
       const result = lastToolResult(body);
-      if (chatText(body).includes("A fresh work session")) {
-        freshWith = chatText(body);
-        return { text: "Taken up: checked the branch, finished the step." };
+      if (chatText({ messages: body.messages.slice(-1) }).includes("Resume each of these Agent-tool workers")) {
+        freshWith = chatText({ messages: body.messages.slice(-1) });
+        return { text: "Resumed the slow worker." };
       }
       if (mine.includes("WORKER-TASK")) {
         if (!called(body, "Bash")) return { toolCall: { name: "Bash", args: { command: `'${process.execPath}' -e 'setTimeout(() => {}, 600000)' ${MARK}`, description: "a long step", timeout: 600000 } } };
@@ -109,7 +107,7 @@ describe.skipIf(process.platform !== "linux")("a hand-over with a background wor
       return { text: "Started it." };
     };
     // The chat's own requests (a fresh session's "you" layer also names Carl's message, so it is told apart by its brief).
-    const chatCalls = () => api!.calls.filter((c) => firstUser(c).includes("Start the slow worker") && !chatText(c).includes("A fresh work session")).length;
+    const chatCalls = () => api!.calls.filter((c) => firstUser(c).includes("Start the slow worker")).length;
 
     // Slot A serves, as the unit's own server (systemd started it, on its own port): its hand-over ends its unit's
     // processes, Claude Code and the worker's command with them, exactly as on the box.
@@ -159,20 +157,15 @@ describe.skipIf(process.platform !== "linux")("a hand-over with a background wor
     expect(b.logs()).toContain("[owner] took over");
 
     chatCallsAtRestart = chatCalls();
-    // Right after it takes over, B takes the worker up in a fresh session: what it was asked, from its transcript.
+    // Right after it takes over, B gives the chat a turn that resumes the worker by name, in the same session.
     await waitFor(() => !!freshWith, 90_000, 200).catch((e) => {
       throw new Error(`${e.message}\n${b.logs().slice(-4000)}`);
     });
-    expect(freshWith).toContain('cut the background worker "slow worker"');
-    expect(freshWith).toContain("WORKER-TASK: run the long step");
-    expect(freshWith).toContain(`Its last tool call: Bash`);
-    // The ledger holds the ask; the chat got one line and no model turn.
-    const ledger = readLedger(join(home, "state", "work", "work.jsonl"));
-    expect(ledger).toEqual([expect.objectContaining({ words: "slow worker", origin: expect.objectContaining({ conv: "main" }), sessions: ["work-slow-worker-1"] })]);
+    expect(freshWith).toContain("SendMessage");
+    expect(freshWith).toContain("(slow worker)");
+    // It is the chat's own conversation that resumes it (its first message is Carl's), not a fresh session.
+    expect(chatCalls()).toBeGreaterThan(chatCallsAtRestart);
     expect(b.logs()).toMatch(/wake w-[\w-]+ → main: The box restarted \(an update\) while background work ran/);
-    expect(b.logs()).toMatch(/cut work of main: 1 fresh session\(s\) work-slow-worker-1/);
     expect(a.logs()).toMatch(/1 background task\(s\) of main ended with their process: wake w-[\w-]+ takes them up/);
-    await new Promise((r) => setTimeout(r, 1500));
-    expect(chatCalls()).toBe(chatCallsAtRestart);
   }, 240_000);
 });

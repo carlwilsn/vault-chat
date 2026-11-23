@@ -14,7 +14,7 @@ import { globalCutover } from '../convlog/globalCutover';
 import { vaultPath } from "../vaultPath";
 import { conversationRoot } from "../context/config";
 import { chatVaults, ownerVault } from "../convlog/log";
-import { appendFileSync, existsSync, readFileSync, rmSync, statSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { LIVE_LIMITS, allowRate, liveAskText } from "../../src/liveBridge";
 import { holdRun, registerRun, unregisterRun } from "../../src/runRegistry";
 import type { BackendEvent, CutWork, EngineBackend, ToolSpec, HostLoadout, Interaction } from "./backend";
@@ -42,19 +42,13 @@ import { workerWorktree } from "../workerWorktree";
 import type { JobsCtl } from "../model/jobs";
 import { MAIN_ID, projectOfThread, projectThreadId, threadKindOf } from "../../src/threads";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
-import { askText, CLOSED, getAsk, ledgerText, readLedger, readShipResult, upsertAsk, wakeBrief, workFile, type LedgerEntry, type LedgerPatch } from "./ledger";
-import { gitContains, waitKind, type WaitContext } from "./waiters";
-import { shipAuto, type ShipAutoDeps } from "./shipAuto";
-import { readPluginRecords } from "../pluginState";
-import { lastHostBuild } from "../hostBuild";
-import { storedCores, coreStateDir } from "../coreBundles";
 import { pdfPagesAnswer, pdfPagesSpec, pdfRead, webFetch, webFetchSpec } from "./extraTools";
 import { show, SHOW_DESCRIPTION, SHOW_SCHEMA } from "../show";
 import { pluginOfferTool, pluginOfferToolSpecs } from "../pluginOffersTool";
 import { screenTool, SCREEN_DESCRIPTION, SCREEN_SCHEMA } from "../screenTool";
 import { laptopBuildTool, LAPTOP_BUILD_DESCRIPTION, LAPTOP_BUILD_SCHEMA } from "../hostBuild";
 import { supervisorOf } from "../supervisor";
-import { coreRepo, coreVault } from "../coreBundles";
+import { coreVault } from "../coreBundles";
 import { CORE_PART } from "../../src/coreBundle";
 import { SERVER_REV as BOX_SERVER_REV } from "../config";
 import { surfaceOff } from "../surfaces";
@@ -71,7 +65,7 @@ import { proposeEditSpec } from "./proposeEdit";
 import { PLUGIN_WRITE_TOOL, pluginWrite, pluginWriteSpec } from "../pluginWriteTool";
 import { capabilitiesOf, capabilityNote } from "./capabilities";
 import { randomUUID } from "node:crypto";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { projectFolderOf, reviveFolder } from "../projectFolders";
 import { deleteFolder, folderOpsWalls } from "../folderOps";
 import { answerReview, cloneDirOf, ensureClone, isGatedProject, pendingReview } from "../projectChanges";
@@ -88,7 +82,6 @@ import { PiFeed, type Expected, type UserRequest } from "./piFeed";
 import { READ_ONLY_TOOLS, type ModelChoice, type SideLog, type SideState } from "./backend";
 import { TurnRecorder, type TurnLine } from "./turnLog";
 import { SERVER_VERSION } from "../config";
-import { submitChangeJob, SUBMIT_CHANGE_SCHEMA } from "../submitChange";
 import { isClaudeModel, isEffort, type Effort } from "./claude/models";
 import { SIGN_IN_AGAIN } from "./claude/auth";
 
@@ -106,16 +99,6 @@ export type EngineDeps = {
   notify: (n: EngineNotice) => Promise<string | null>;
   /** One-line log. */
   log?: (s: string) => void;
-  /** Where ship results land (default ~/agent-work/vault-chat/ship-results): the work list's waits read them. */
-  shipResults?: string;
-  /** The box's work list (default <state>/work/work.jsonl). */
-  workFile?: string;
-  /** What the waiter reads (tests replace parts of it). */
-  waitContext?: Partial<WaitContext>;
-  /** The box's own handling of failed ship results (tests replace git and the paths). */
-  shipAuto?: Partial<ShipAutoDeps>;
-  /** A work session's own checkout of a git project (tests replace it). */
-  workTree?: typeof workerWorktree;
   /** The engine of the vault at this path (the owner of a chat this vault's log does not hold). */
   engineAt?: (path: string) => Promise<Engine | null>;
   /** A vault-level signal on /poll (notifications, show, layout). */
@@ -311,64 +294,6 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
-    name: "SubmitChange",
-    description: "After checking the change and recording its real UI, push your agent/<name> branch to the configured remote, then submit that branch here. One separately installed box script runs the seven baseline/candidate gates and fast-forwards main if there are no new named failures or lost test coverage. Returns an existing background job. Acceptance is not Shipped: laptop sync, CI, actual box and authenticated laptop health follow. Never merge or push main.",
-    inputSchema: SUBMIT_CHANGE_SCHEMA,
-  },
-  {
-    type: "function",
-    name: "Ledger",
-    description:
-      "Carl's work list, one for the whole box, kept as history: his open asks, each with his words, project, owner/branch/worktree, status (open, working, waiting, question, blocked, done, dropped), next step, last result, a handoff note (at most ~20 lines for the next session) and links. The work's state lives here and in git, not in a long chat. action list (default): the open asks; get {id}; set {id?, words?, ...}: makes an entry (give words; project: the project it is work in) or changes one. status done or blocked tells Carl the outcome (`last`) once, in the chat he asked in; status question with question {text, options} asks him without keeping any session waiting. answer {id, answer}: Carl's answer to an ask's question (a fresh session takes it up). cancel {id}: Carl changed his mind: the ask is dropped, its waiting ship request taken back, its running session stopped.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        action: { type: "string", enum: ["list", "get", "set", "answer", "cancel"] },
-        id: { type: "string" },
-        words: { type: "string", description: "Carl's ask, in his words (to make an entry)." },
-        project: { type: "string", description: "The project's slug it is work in (e.g. vault-chat)." },
-        owner: { type: "string" },
-        branch: { type: "string" },
-        ship: { type: "string", description: "The ship request in flight (ship-requests/<ship>.req)." },
-        status: { type: "string", enum: ["open", "working", "waiting", "question", "blocked", "done", "dropped"] },
-        next: { type: "string" },
-        last: { type: "string" },
-        handoff: { type: "string" },
-        question: { type: "string" },
-        options: { type: "array", items: { type: "string" } },
-        answer: { type: "string" },
-        links: { type: "array", items: { type: "string" } },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "WaitFor",
-    description:
-      "Let the box wait instead of you: never sleep, poll, loop or Monitor. Name ONE thing to wait for: ship (a ship request's name: ship-results/<name>.result), branch (any ship result for it), githubRun + repo (a GitHub Actions run), core (a commit: the box has built a core bundle containing it), laptop (a commit: Carl's laptop runs a core containing it), box (a commit: the box server runs it), watch (a vault page: its next change of state or log; the durable form of PluginRead wait). Give the work-list ask (ask: its id, or Carl's words to make one) and a brief: what the next session does with the event. Then END YOUR TURN. When it holds (or after timeout, default 6h), the box starts a fresh short session with only the entry, the brief and the event.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        ask: { type: "string", description: "The work-list ask's id, or Carl's words to make a new entry." },
-        project: { type: "string", description: "For a new ask: the project it is work in." },
-        ship: { type: "string" },
-        branch: { type: "string" },
-        githubRun: { type: "string" },
-        repo: { type: "string", description: "owner/name, for githubRun." },
-        core: { type: "string" },
-        laptop: { type: "string" },
-        box: { type: "string" },
-        watch: { type: "string", description: "A vault page (its vault path, as PluginRead names it): the next change of its state or log." },
-        brief: { type: "string", description: "What the next session does with the event (it has no other context)." },
-        timeout: { type: "string", description: "e.g. \"90m\", \"6h\" (default 6h, at most 48h)." },
-      },
-      required: ["ask", "brief"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
     name: "ScheduleWake",
     description:
       "Schedule ONE future turn of this conversation (survives restarts), only when Carl asks for a reminder or a later check. Give `in` (e.g. \"2m\", \"1h30m\") or `at` (ISO time), and the reason you will read when woken. Then end your turn.",
@@ -492,7 +417,7 @@ export const handoffSpec = {
   },
 };
 /** The agent's tools a side thread can't use: they belong to a turn (its question, plan, job, wake). */
-const TURN_ONLY_TOOLS = new Set(["AskUser", "SubmitChange", "StartJob", "ScheduleWake"]);
+const TURN_ONLY_TOOLS = new Set(["AskUser", "StartJob", "ScheduleWake"]);
 /** Voice's Ask (server/voice.ts), a side thread: a question has the read-only tools and Show; an action every tool a
  *  side thread can use (Show, the notes …), with pi's own file tools (sideStart). */
 export function voiceSideToolSpecs(act: boolean): ToolSpec[] {
@@ -748,7 +673,8 @@ export class Engine {
     void this.scoped(() => this.ensureThreads()).catch((e) => this.log(`threads: ${(e as Error).message}`));
     this.timers.push(setInterval(() => this.scoped(() => void this.tickWakes()), 2_000));
     this.timers.push(setInterval(() => this.scoped(() => void this.tickJobs()), 15_000));
-    this.timers.push(setInterval(() => this.scoped(() => void this.tickLedger()), 15_000));
+    // Notes Carl addresses to the agent (his phone, his Notes): each is a turn in Main.
+    this.timers.push(setInterval(() => this.scoped(() => void this.notesToAgent()), 15_000));
     // A project's folder that came back without the engine (moved back by hand): its thread back on every list.
     this.timers.push(setInterval(() => void this.scoped(() => this.ensureThreads()).catch(() => {}), 15_000));
   }
@@ -2368,7 +2294,6 @@ export class Engine {
   private async prepareFolder(conv: EngineConv): Promise<void> {
     const f = this.folderOf(conv);
     if (!f || !("git" in f) || !f.git) return;
-    if (this.workOf(conv.id) && f.git.clone !== cloneDirOf(this.d.vault, this.projectSlugOf(conv)!).split(sep).join("/")) return;
     const slug = this.projectSlugOf(conv)!;
     const r = await ensureClone(this.d.vault, slug, f.git.folder);
     if ("error" in r) this.log(`project ${slug}: ${r.error}`);
@@ -2383,10 +2308,7 @@ export class Engine {
     if ("error" in chosen) return { error: `the folder chosen for this project can't be used: ${chosen.error}` };
     if (chosen && isGatedProject(chosen.abs) && !this.inVault(chosen.abs)) {
       // A git repo: the agent works in its clone, on an agent/ branch; the folder itself is service-owned (proof-gated acceptance).
-      // A work session works in its ask's own worktree (startWorkSession), never in the project thread's clone.
-      const ask = this.workOf(conv.id);
-      const own = ask ? getAsk(ask, this.workFile())?.worktree : undefined;
-      const clone = own && existsSync(own) ? own : cloneDirOf(this.d.vault, p.slug);
+      const clone = cloneDirOf(this.d.vault, p.slug);
       return { abs: clone, rel: chosen.abs.split(sep).join("/"), outside: true, git: { folder: chosen.abs.split(sep).join("/"), clone: clone.split(sep).join("/") } };
     }
     const rel = relative(resolve(this.d.vault), chosen.abs).split(sep).join("/");
@@ -2414,11 +2336,7 @@ export class Engine {
     // A runtime that is given the vault's memory by its own means (Claude Code
     // imports it in the session) must not be told it again in front of the turn.
     const ownMemory = !!this.d.backend.carriesMemory?.(threadId);
-    // The asks Carl made in this chat, as the work list has them now: what finished, what needs him, what runs. Sent
-    // when it changes, so "did X land?" has an answer here without a turn being spent on telling it.
-    const asks = this.workOf(conv.id) ? [] : readLedger(this.workFile()).filter((e) => e.origin?.conv === conv.id && this.mine(e) && Date.now() - e.updatedAt < 2 * 86_400_000);
-    const work = { key: "work", text: asks.length ? `<work>Your asks from this chat in Carl's work list (the box runs them in fresh sessions; Ledger reads and changes them):\n${asks.map((e) => `- ${e.id} [${e.status}] ${e.words.slice(0, 120)}${e.last ? ` — ${e.last.slice(0, 200)}` : ""}${e.question ? ` — question: ${e.question.text.slice(0, 200)}` : ""}`).join("\n")}</work>` : sent.get("work") ? "<work>(no asks from this chat in the work list now)</work>" : "" };
-    for (const x of [...turnSections(conv as any, { folder: this.folderOf(conv) }), files, ...(work.text ? [work] : [])]) {
+    for (const x of [...turnSections(conv as any, { folder: this.folderOf(conv) }), files]) {
       if (ownMemory && x.key === "memory") continue;
       if (sent.get(x.key) === x.text) continue;
       sent.set(x.key, x.text);
@@ -3021,74 +2939,10 @@ export class Engine {
       }
       if (name === HANDOFF_TOOL && side) return text(await this.handoff(side.convId, a, p.signal));
       switch (name) {
-        case "SubmitChange": {
-          const r = await submitChangeJob({ vault, convId, slug: this.projectSlugOf(conv), byCarl: !!this.live.get(convId)?.byCarl, jobs: this.d.jobEnv, results: this.shipResultsDir() }, a);
-          if (r.job) this.updateSubagent(convId, r.job.id, { kind: "job", title: r.job.name, task: r.job.command.slice(0, 300), status: "running", state: "running", startedAt: r.job.startedAt, background: true, activity: "checking published branch" });
-          // The job writes its outcome as a ship result naming the branch (it retries a live-data capture race itself):
-          // wait on the branch, never on a ship name (there is no .req for it).
-          return text(r.job ? `${r.text}\nTo wait for its outcome: WaitFor {branch: "${a.branch}", ask, brief}, then end your turn.` : r.text);
-        }
         case "AskUser": {
-          // A work session never waits on Carl: its question goes in the work list, and his answer starts a new session.
-          if (this.workOf(convId)) return text(`Not asked: a work session does not wait. Ledger {action: "set", id: "${this.workOf(convId)}", status: "question", question, options}, then end your turn; Carl's answer starts a fresh session.`);
           const opts = Array.isArray(a.options) ? a.options.map(String).filter(Boolean).slice(0, 6) : [];
           const ans = await this.waitForAnswer(p.threadId, String(a.question ?? "").trim() || "?", opts, p.signal);
           return text(`Carl answered: ${ans}`);
-        }
-        case "Ledger": {
-          const act = String(a.action ?? (a.words || a.status || a.next || a.last ? "set" : a.id ? "get" : "list"));
-          if (act === "list") return text(ledgerText(readLedger(this.workFile())));
-          const id = a.id ? String(a.id).trim() : undefined;
-          const prev = id ? getAsk(id, this.workFile()) : null;
-          if (act === "get") return text(prev ? askText(prev) : `No ask "${id ?? ""}" in the work list. Ledger {action: "list"} lists them.`);
-          if (act === "cancel") return text(prev ? await this.cancelAsk(prev, convId) : `No ask "${id ?? ""}".`);
-          if (act === "answer") {
-            if (!prev) return text(`No ask "${id ?? ""}".`);
-            const answer = String(a.answer ?? "").trim();
-            if (!answer) return text("Give answer: Carl's answer, in his words.");
-            const r = upsertAsk(prev.id, { answer, status: "open" }, { file: this.workFile(), by: convId });
-            if ("error" in r) return text(r.error);
-            const s = await this.startWorkSession(r.entry, `Carl answered${prev.question ? ` "${prev.question.text}"` : ""}: ${answer}`, `answer:${r.entry.updatedAt}`);
-            return text(`Recorded; a fresh session (${s}) takes it up. Nothing more to do here.`);
-          }
-          if (act !== "set") return text("action is list, get, set, answer or cancel.");
-          const patch: LedgerPatch = {};
-          for (const k of ["words", "project", "owner", "branch", "ship", "status", "next", "last", "handoff"] as const) if (a[k] !== undefined) (patch as Record<string, unknown>)[k] = String(a[k]);
-          if (a.links !== undefined) patch.links = Array.isArray(a.links) ? a.links.map(String) : [String(a.links)];
-          if (a.question !== undefined) patch.question = { text: String(a.question).slice(0, 600), ...(Array.isArray(a.options) ? { options: a.options.map(String).slice(0, 6) } : {}) };
-          if (patch.question && !patch.status) patch.status = "question";
-          if (patch.status === "question" && !patch.question && !prev?.question) return text("A question needs question (and options when they help).");
-          // A new ask belongs to the chat Carl asked in (a fresh work session passes its own origin on, never itself).
-          if (!prev) patch.origin = this.originOf(convId);
-          const r = upsertAsk(id, patch, { file: this.workFile(), by: convId });
-          if ("error" in r) return text(r.error);
-          await this.askChanged(prev, r.entry);
-          return text(`${r.created ? "Added" : "Updated"}:\n${askText(r.entry)}`);
-        }
-        case "WaitFor": {
-          const brief = String(a.brief ?? "").trim();
-          const given = (["ship", "branch", "githubRun", "core", "laptop", "box", "watch"] as const).filter((k) => String(a[k] ?? "").trim());
-          if (given.length !== 1) return text("Name exactly one thing to wait for: ship, branch, githubRun (with repo), core, laptop, box or watch (a vault page).");
-          const given0 = given[0]!;
-          const kind = given0 === "watch" ? "page" : given0;
-          const v = String(a[given0]).trim();
-          const args: Record<string, string> =
-            kind === "ship" ? { name: v.replace(/\.(req|result)$/, "") } : kind === "branch" ? { branch: v } : kind === "githubRun" ? { run: v, repo: String(a.repo ?? "").trim() } : kind === "page" ? { plugin: v, after: String(readPluginRecords(vault, v).seq) } : { commit: v };
-          if (kind === "githubRun" && !/^[\w.-]+\/[\w.-]+$/.test(args.repo!)) return text("githubRun needs repo (owner/name).");
-          if ((kind === "core" || kind === "laptop" || kind === "box") && !/^[0-9a-f]{7,40}$/i.test(v)) return text(`${kind} takes a commit (7-40 hex).`);
-          if (!brief) return text("Give a brief: what the next session should do with the event (it starts with nothing else).");
-          const ms = Math.min(parseDelay(a.timeout ?? "6h") ?? 6 * 3_600_000, 48 * 3_600_000);
-          const askArg = String(a.ask ?? "").trim();
-          const have = getAsk(askArg, this.workFile());
-          const now = Date.now();
-          const wait = { kind, args, since: now - 5 * 60_000, until: now + ms, brief: brief.slice(0, 1500) };
-          const patch: LedgerPatch = have ? { wait } : { words: askArg, origin: this.originOf(convId), ...(a.project ? { project: String(a.project) } : this.workOf(convId) ? {} : {}), wait };
-          if (kind === "branch" && !have?.branch) patch.branch = v;
-          if (kind === "ship") patch.ship = args.name!;
-          const r = upsertAsk(have?.id, patch, { file: this.workFile(), by: convId });
-          if ("error" in r) return text(r.error);
-          this.log(`work: ${r.entry.id} waits on ${kind} ${Object.values(args).join(" ")}`);
-          return text(`The box waits for it (ask ${r.entry.id}); a fresh session gets the entry, your brief and the event when it lands, or at ${new Date(wait.until).toISOString()}. End your turn now: do not sleep, poll or check again.`);
         }
         case "ScheduleWake": {
           const reason = String(a.reason ?? "").trim() || "scheduled check";
@@ -3318,12 +3172,8 @@ export class Engine {
       return;
     }
     if (w.cut) {
-      // The old way (VC_CUT_RESUME=chat): the long chat resumes each worker itself, re-reading its whole context.
-      if (process.env.VC_CUT_RESUME === "chat") {
-        await this.run(w.conv, cutText(w.cut), "resume", { byCarl: !!w.byCarl, shown: w.reason, ownTurn: true }).catch((e) => this.log(`taking up cut work failed: ${e}`));
-        return;
-      }
-      await this.takeUpCut(w.conv, w.cut).catch((e) => this.log(`taking up cut work failed: ${e}`));
+      // The chat that ran them takes its cut workers up itself, in its own Claude Code session.
+      await this.run(w.conv, cutText(w.cut), "resume", { byCarl: !!w.byCarl, shown: w.reason, ownTurn: true }).catch((e) => this.log(`taking up cut work failed: ${e}`));
       return;
     }
     if (w.retry) {
@@ -3335,266 +3185,21 @@ export class Engine {
 
   // ---------------------------------------------------------------- the work list (reports/19-stateless, 20-design-review)
 
-  private workFile(): string {
-    return this.d.workFile ?? workFile();
-  }
-
-  /** The ask a fresh work session serves (its conversation id: work-<ask>-<n>), or null for Carl's own chats. */
-  private workOf(convId: string): string | null {
-    const m = /^work-(.+)-\d+$/.exec(convId);
-    return m ? m[1]! : null;
-  }
-
-  /** Where an ask made in this chat came from: this chat, or, from a work session, its ask's own origin. */
-  private originOf(convId: string): { vault: string; conv: string } {
-    const ask = this.workOf(convId);
-    const e = ask ? getAsk(ask, this.workFile()) : null;
-    return e?.origin ?? { vault: this.d.vault, conv: convId };
-  }
-
-  /** An ask whose work runs in this vault's engine (the vault Carl asked in). */
-  private mine(e: LedgerEntry): boolean {
-    return resolve(e.origin?.vault ?? this.d.vault) === resolve(this.d.vault);
-  }
-
-  /** The project a conversation works in: a project's thread, or a work session of an ask with a project. */
   private projectSlugOf(conv: { id: string; project?: string }): string | null {
-    return projectOfThread(conv.id) ?? (this.workOf(conv.id) && conv.project ? conv.project : null);
+    return projectOfThread(conv.id);
   }
 
-  /** An ask reached done, blocked or a question: said once, in the chat Carl asked in (a line, no model turn), and in his alerts. */
-  private async askChanged(prev: LedgerEntry | null, e: LedgerEntry): Promise<void> {
-    const tell = e.status === "done" || e.status === "blocked" || e.status === "question";
-    if (!tell || (prev && prev.status === e.status && prev.last === e.last && prev.question?.text === e.question?.text)) return;
-    const what = e.words.replace(/\s+/g, " ").slice(0, 80);
-    const said =
-      e.status === "done"
-        ? `Done: ${what}${e.last ? ` — ${e.last}` : ""}`
-        : e.status === "blocked"
-          ? `Needs you: ${what}${e.last ? ` — ${e.last}` : ""}`
-          : `Question (${e.id}): ${e.question?.text ?? ""}${e.question?.options?.length ? ` — ${e.question.options.join(" / ")}` : ""}. Answer here and it is passed on.`;
-    const conv = e.origin?.conv;
-    if (conv && this.mine(e) && (await readConv(this.d.vault, conv))) await this.notice(conv, said, e.status === "done" ? "info" : "warn");
-    await this.d
-      .notify({ kind: "info", title: said.slice(0, 90), body: (e.status === "question" ? `${e.question?.text ?? ""}\n${(e.question?.options ?? []).join("\n")}` : e.last ?? "").slice(0, 2000), convId: conv ?? "", why: e.status === "done" ? "finished" : "failed", byCarl: true, trigger: "Notify" })
-      .catch(() => null);
-  }
-
-  /** Carl changed his mind: the ask is dropped, a ship request not yet taken is taken back, its session stopped. */
-  async cancelAsk(e: LedgerEntry, by: string): Promise<string> {
-    const said: string[] = [];
-    if (e.ship) {
-      const results = this.shipResultsDir();
-      const req = join(dirname(results), "ship-requests", `${e.ship}.req`);
-      const taken = [".taken", ".running", ".result"].some((x) => existsSync(join(results, `${e.ship}${x}`)));
-      if (existsSync(req) && !taken) {
-        try {
-          rmSync(req);
-          said.push(`its ship request ${e.ship} was taken back`);
-        } catch (err) {
-          said.push(`its ship request ${e.ship} could not be taken back (${(err as Error).message})`);
-        }
-      } else if (taken) said.push(`its ship request ${e.ship} is already with the ship gate and runs on (if it is accepted, ask for it to be put back)`);
-    }
-    const conv = e.lease?.conv;
-    if (conv && this.live.get(conv) && !this.live.get(conv)!.finished) {
-      await this.interrupt(conv, false).catch(() => false);
-      said.push(`its session ${conv} was stopped`);
-    }
-    const r = upsertAsk(e.id, { status: "dropped", last: `cancelled${said.length ? `: ${said.join("; ")}` : ""}` }, { file: this.workFile(), by });
-    if ("error" in r) return r.error;
-    this.log(`work: ${e.id} cancelled by ${by}`);
-    return `Cancelled ${e.id}${said.length ? `: ${said.join("; ")}` : ""}.`;
-  }
-
-  private shipResultsDir(): string {
-    return this.d.shipResults ?? join(process.env.HOME ?? "", "agent-work", "vault-chat", "ship-results");
-  }
-
-  private waitCtx(now: number): WaitContext {
-    const state = coreStateDir() ?? process.env.VC_STATE_DIR ?? join(process.env.HOME ?? "", ".local", "state", "vault-chat-server");
-    const base: WaitContext = {
-      now,
-      shipResults: this.shipResultsDir(),
-      fetchJson: async (u) => (await fetch(u, { headers: { accept: "application/vnd.github+json", "user-agent": "vault-chat-box" }, signal: AbortSignal.timeout(15_000) })).json(),
-      contains: gitContains(coreRepo()),
-      coreCommit: () => storedCores(state).map((c) => c.manifest).sort((a, b) => b.commitTime - a.commitTime)[0]?.commit ?? null,
-      laptopCommit: () => {
-        const b = lastHostBuild(state);
-        return b ? { commit: b.core?.commit ?? (/^[0-9a-f]{7,40}$/.test(b.revision) ? b.revision : null), at: Date.parse(b.at) || 0 } : null;
-      },
-      boxRevision: () => BOX_SERVER_REV || null,
-      page: (plugin) => {
-        try {
-          const r = readPluginRecords(this.d.vault, plugin);
-          return { seq: r.seq, at: r.at, state: r.state, logs: r.logs.map((l) => l.record) };
-        } catch {
-          return null;
-        }
-      },
-    };
-    return { ...base, ...(this.d.waitContext ?? {}) };
-  }
-
-  private ledgerBusy = false;
-  private checkedAt = new Map<string, number>();
-  /** When what an ask waits on holds, a fresh short session takes it up (never a turn in a long chat); a stalled ask is restarted. */
-  async tickLedger(now = Date.now()): Promise<void> {
-    if (shuttingDown || this.ledgerBusy) return;
-    if (this.d.backend.usageLimit?.()) return;
-    this.ledgerBusy = true;
-    try {
-      const ctx = this.waitCtx(now);
-      for (const e of readLedger(this.workFile())) {
-        if (!this.mine(e) || CLOSED.includes(e.status)) continue;
-        const w = e.wait;
-        if (w) {
-          const k = waitKind(w.kind);
-          let ev: { id: string; text: string } | null = null;
-          const key = `${e.id}:${w.kind}`;
-          if (k && now - (this.checkedAt.get(key) ?? 0) >= (k.every ?? 0)) {
-            this.checkedAt.set(key, now);
-            ev = await Promise.resolve(k.check(w, ctx)).catch(() => null);
-            if (ev && e.handled?.includes(ev.id)) ev = null;
-          }
-          if (!k) ev = { id: `unknown:${w.kind}:${w.since}`, text: `The box does not know how to wait on "${w.kind}". Decide another way to go on.` };
-          if (!ev && now >= w.until) ev = { id: `timeout:${w.until}`, text: `Timed out: ${w.kind} ${Object.values(w.args).join(" ")} did not happen by ${new Date(w.until).toISOString()}. Check it yourself once, then decide (wait again, or set the ask blocked).` };
-          if (ev && ev.id.startsWith("ship:") && this.shipByItself(e, w, ev)) continue;
-          if (ev) await this.startWorkSession(e, ev.text, ev.id);
-          continue;
-        }
-        // A session that ended (or died) without saying where the ask stands: restarted, twice at most, then Carl is told.
-        const lease = e.lease;
-        if (e.status === "working" && lease && now >= lease.until && !(this.live.get(lease.conv) && !this.live.get(lease.conv)!.finished)) {
-          if ((e.reaps ?? 0) >= 2) {
-            const r = upsertAsk(e.id, { status: "blocked", lease: null, last: "stalled: three sessions ended without recording where it stands" }, { file: this.workFile(), by: "box" });
-            if (!("error" in r)) await this.askChanged(e, r.entry);
-            continue;
-          }
-          upsertAsk(e.id, { reaps: (e.reaps ?? 0) + 1 }, { file: this.workFile(), by: "box" });
-          await this.startWorkSession(getAsk(e.id, this.workFile())!, `The last session on this ask (${lease.conv}) ended without recording where it stands. Re-check reality (its worktree, branch, ship-results) and go on from there.`, `reap:${lease.conv}`);
-        }
-      }
-      await this.notesToAgent();
-    } catch (err) {
-      this.log(`work: ${(err as Error).message}`);
-    } finally {
-      this.ledgerBusy = false;
-    }
-  }
-
-  /**
-   * Background work a restart cut (reports/21-design): the chat is NOT woken to resume its workers (a cold
-   * re-read of a long context, then each worker's). Each cut worker that had not finished becomes an ask in the work list
-   * (or its open one) and gets a fresh short session with what it was asked and what its transcript shows; the
-   * chat gets one line, no model turn.
-   */
-  async takeUpCut(convId: string, cut: CutWork): Promise<string[]> {
-    const vault = this.d.vault;
-    const conv = await readConv(vault, convId);
-    const rows = conv?.threadId ? this.d.backend.workerReport?.(conv.threadId, { all: true }) ?? [] : [];
-    const started: string[] = [];
-    const done: string[] = [];
-    for (const wk of cut.workers) {
-      const row = rows.find((r) => r.id === wk.id);
-      if (row?.facts.endedClean) {
-        done.push(wk.title);
-        continue;
-      }
-      const have = readLedger(this.workFile()).find((e) => !CLOSED.includes(e.status) && (e.owner ?? "").includes(wk.id));
-      const r = have ? { entry: have } : upsertAsk(undefined, { words: wk.title, owner: `worker ${wk.id}`, origin: this.originOf(convId), ...(this.projectSlugOf({ id: convId, project: conv?.project }) ? { project: this.projectSlugOf({ id: convId, project: conv?.project })! } : {}) }, { file: this.workFile(), by: "box" });
-      if ("error" in r) continue;
-      const f = row?.facts;
-      const event = [
-        `The box restarted (an update) and cut the background worker "${wk.title}" (${wk.id}) that was doing this ask. Its process is gone; you take the work up fresh.`,
-        f?.task ? `What it was asked:\n${f.task}` : "",
-        f?.lastTool ? `Its last tool call: ${f.lastTool.name} ${f.lastTool.brief}` : "",
-        f?.files.length ? `Files it wrote: ${f.files.slice(-8).join(", ")}` : "",
-        f?.lastSaid ? `Its last words: ${f.lastSaid}` : "",
-        "Re-check reality first (its worktree's git status and log, the branch, ship-results, running processes); then finish what is left, never redo what is done.",
-      ]
-        .filter(Boolean)
-        .join("\n\n");
-      started.push(await this.startWorkSession(r.entry, event, `cut:${wk.id}`));
-    }
-    const parts = [
-      started.length ? `${started.length} background worker${started.length > 1 ? "s" : ""} taken up by fresh work sessions (${titles(cut.workers.filter((x) => !done.includes(x.title)))})` : "",
-      done.length ? `${done.length} had already finished` : "",
-      cut.commands.length ? `${cut.commands.length} background command${cut.commands.length > 1 ? "s" : ""} ended (${titles(cut.commands)})` : "",
-    ].filter(Boolean);
-    if (parts.length) await this.notice(convId, `The box restarted (an update) while background work ran: ${parts.join("; ")}.`.slice(0, 500));
-    this.log(`cut work of ${convId}: ${started.length} fresh session(s) ${started.join(", ")}`);
-    return started;
-  }
-
-  /** A failed ship result the box deals with alone (a flake, a moved main): resubmitted, the wait moved on, no model woken. */
-  private shipByItself(e: LedgerEntry, w: NonNullable<LedgerEntry["wait"]>, ev: { id: string; text: string }): boolean {
-    const name = ev.id.split(":")[1]!.replace(/\.result$/, "");
-    const results = this.shipResultsDir();
-    const body = readShipResult(results, name)?.body ?? "";
-    const r = shipAuto(
-      { name, body, title: e.words, tries: e.autoShips ?? 0, results },
-      { requests: join(dirname(results), "ship-requests"), repo: coreRepo(), scratch: join(dirname(this.workFile()), "scratch"), ...(this.d.shipAuto ?? {}) },
-    );
-    if (!r.done) return false;
-    const now = Date.now();
-    upsertAsk(e.id, { wait: { ...w, kind: "ship", args: { name: r.name }, since: now, until: now + 6 * 3_600_000 }, ship: r.name, autoShips: (e.autoShips ?? 0) + 1, handled: [...(e.handled ?? []), ev.id], last: r.what }, { file: this.workFile(), by: "box" });
-    this.log(`work: ${e.id}: ${r.what}`);
-    return true;
-  }
-
-  /** A note addressed to the agent (server/noteWake.ts) becomes an ask and wakes a fresh session, once; its
-   *  outcome is told in Main. */
+  /** Notes Carl addresses to the agent (src/noteWake): each becomes a turn in Main, the one conversation every surface continues. */
   async notesToAgent(): Promise<void> {
+    if (shuttingDown) return;
     // Notes are the box's, one set for every vault: only the main vault's engine answers them.
     if (resolve(this.d.vault) !== resolve(loadConfig().vault)) return;
     const { newNotesForAgent } = await import("../noteWake");
     const notes = (await (await import("../../src/notes")).readNotes(this.d.vault).catch(() => [])) as never[];
     for (const n of newNotesForAgent(this.d.vault, notes)) {
-      const r = upsertAsk(undefined, { words: n.ask, origin: { vault: this.d.vault, conv: MAIN_ID }, links: [`note ${n.id}`] }, { file: this.workFile(), by: "note" });
-      if ("error" in r) continue;
-      this.log(`ledger: note ${n.id} asks the agent → ${r.entry.id}`);
-      await this.startWorkSession(r.entry, `Carl left you a note (note ${n.id}, in his Notes; maybe from his phone): "${n.ask}". Do what it asks; when done, resolve the note (PluginAct box:notes resolve) and set the ask done with one line for him.`);
+      this.log(`note ${n.id} asks the agent → Main`);
+      await this.message({ convId: MAIN_ID, text: `Carl left you a note (note ${n.id}, in his Notes; maybe from his phone): "${n.ask}". Do what it asks; when done, resolve the note (PluginAct box:notes resolve) and tell him in one line.`, via: "note", queue: true }).catch((e) => this.log(`note ${n.id}: ${e}`));
     }
-  }
-
-  /** A fresh conversation for one ask (work-<ask>-<n>, a chat of its project): the entry and the event are its whole input. */
-  async startWorkSession(e: LedgerEntry, event: string, eventId?: string): Promise<string> {
-    const n = (e.sessions?.length ?? 0) + 1;
-    const id = `work-${e.id}-${n}`;
-    // Its own checkout, kept across sessions: a git project's work never shares the project thread's clone.
-    let worktree = e.worktree && existsSync(e.worktree) ? e.worktree : undefined;
-    if (!worktree && e.project) {
-      const chosen = projectFolderOf(this.d.vault, e.project);
-      if (chosen && !("error" in chosen) && isGatedProject(chosen.abs) && !this.inVault(chosen.abs)) {
-        worktree = await (this.d.workTree ?? workerWorktree)({ vault: this.d.vault, slug: e.project, source: chosen.abs, parentCwd: cloneDirOf(this.d.vault, e.project) }).catch((err: Error) => {
-          this.log(`work: ${e.id}: no worktree (${err.message})`);
-          return undefined;
-        });
-      }
-    }
-    // The wait is over (and the event taken) before the session starts: a crash in between never fires it twice.
-    const r = upsertAsk(
-      e.id,
-      { wait: null, status: "working", owner: id, lease: { conv: id, until: Date.now() + 3 * 3_600_000 }, sessions: [...(e.sessions ?? []), id], ...(eventId ? { handled: [...(e.handled ?? []), eventId] } : {}), ...(worktree ? { worktree } : {}) },
-      { file: this.workFile(), by: "box" },
-    );
-    if ("error" in r) return id;
-    const title = `Work: ${e.words.replace(/\s+/g, " ").slice(0, 50)}`;
-    if (!logOf(this.d.vault).has(id)) await createConv(this.d.vault, { kind: "separate", title, ...(e.project ? { project: e.project } : {}) } as Partial<EngineConv>, title, id);
-    this.log(`work: ${e.id} → fresh session ${id}: ${event.split("\n")[0]!.slice(0, 120)}`);
-    void this.run(id, wakeBrief(r.entry, event, e.wait?.brief), "wake", { via: "ledger", ownTurn: true })
-      .then(() => this.turnEnd(id))
-      .then(() => this.sessionEnded(e.id, id))
-      .catch((err) => this.log(`work session ${id}: ${err}`));
-    return id;
-  }
-
-  /** A work session's turn ended: its lease ends; one that recorded nothing is restarted by the next tick. */
-  private sessionEnded(ask: string, conv: string): void {
-    const e = getAsk(ask, this.workFile());
-    if (!e || e.lease?.conv !== conv) return;
-    upsertAsk(ask, e.status === "working" ? { lease: { conv, until: Date.now() } } : { lease: null }, { file: this.workFile(), by: "box" });
   }
 
   /** A job that ended wakes the conversation that started it. */

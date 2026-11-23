@@ -9,7 +9,7 @@ import { chatText, fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 import { readEntries } from "../convlog/piSession";
 
 describe("cross-surface native API startup contract", () => {
-  it("keeps context separate, literal tagged user text visible, one native session and the reset's thin SubmitChange schema", async () => {
+  it("keeps context separate, literal tagged user text visible, one native session and a thin native tool schema", async () => {
     const home = tmp("vc-native-api-"), vault = makeVault(join(home, "vault"));
     const state = join(home, "state"), canary = "COMBINED_NATIVE_CONTEXT_CANARY";
     mkdirSync(join(vault, ".vault-chat"), { recursive: true });
@@ -73,8 +73,8 @@ globalThis.fetch=(input,init)=>{
       expect(provider.calls).toHaveLength(2);
       for (const call of provider.calls) {
         expect(chatText(call).split(canary).length - 1).toBe(1);
-        const submit = call.tools.find((t: any) => t.name === "mcp__vault_chat__SubmitChange");
-        expect(Object.keys(submit.input_schema.properties).sort()).toEqual(["branch", "title"]);
+        const ask = call.tools.find((t: any) => t.name === "mcp__vault_chat__AskUser");
+        expect(Object.keys(ask.input_schema.properties).sort()).toEqual(["options", "question"]);
       }
       const feed = await (await fetch(base + "/poll?after=0")).json();
       expect(JSON.stringify(feed.events)).not.toContain(canary);

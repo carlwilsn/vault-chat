@@ -95,7 +95,7 @@ export const APP_ONLY_TOOLS: readonly string[] = [
 export const OWN_TOOLS: readonly string[] = CLAUDE_BUILTINS_OFF.filter((n) => !APP_ONLY_TOOLS.includes(n));
 
 /** Conversation tools a worker never gets: they belong to the turn that started it. */
-const NOT_FOR_WORKERS = new Set(["AskUser", "SubmitChange", "ScheduleWake"]);
+const NOT_FOR_WORKERS = new Set(["AskUser", "ScheduleWake"]);
 
 /** A background worker (background()): its own Claude Code session, run to one result. */
 type Worker = {

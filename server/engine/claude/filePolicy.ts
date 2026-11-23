@@ -254,19 +254,19 @@ export function ruleOnToolUse(tool: string, input: Record<string, unknown>, wall
 }
 
 /**
- * Waiting is the box's (reports/19-stateless): a session that sleeps, loops or Monitors on a ship result or a
- * CI run keeps a long context alive (and re-read) for nothing. Such a call is refused with the way to do it:
- * WaitFor, then end the turn. Reading a result once (cat, ls, gh run view) still runs.
+ * Waiting is Claude Code's own (Carl 11-22: trust the harness): a wait on a ship result or a CI run runs in the
+ * background (Bash with run_in_background, or Monitor), and Claude Code wakes the session when it ends; the backend
+ * keeps a session with background work running warm. Only a FOREGROUND loop is refused: it would hold the turn, and
+ * Carl could not talk to the chat meanwhile. Reading a result once (cat, ls, gh run view) still runs.
  */
 const WAITED_ON = /ship-results|\bgh\s+(run|pr)\s+(watch|checks|view)\b|actions\/runs/;
 const LOOPS = /\b(sleep|until|while|watch|inotifywait)\b|\bgh\s+run\s+watch\b|--watch\b/;
 export const WAIT_LOOP_REASON =
-  "vault-chat: the box waits on ship results and CI runs, not your session. Call WaitFor {ask, ship | branch | githubRun + repo, brief} " +
-  "(the mcp__vault_chat__WaitFor tool; load it with ToolSearch if needed), then end your turn: a fresh session gets the ledger entry and the result when it lands. " +
-  "Reading a result once (cat, ls) is fine.";
+  "vault-chat: run this wait in the background (Bash with run_in_background: true, or Monitor), not in the foreground: " +
+  "Claude Code wakes you when it ends, and Carl can still talk to this chat meanwhile. Reading a result once (cat, ls) is fine.";
 export function waitLoopReason(tool: string, input: Record<string, unknown>): string | null {
-  const text = tool === "Bash" || tool === "Monitor" ? [input.command, input.script].filter((x) => typeof x === "string").join("\n") : "";
-  if (!text || !WAITED_ON.test(text)) return null;
-  if (tool === "Monitor" || LOOPS.test(text)) return WAIT_LOOP_REASON;
-  return null;
+  if (tool !== "Bash" || input.run_in_background === true) return null;
+  const text = [input.command, input.script].filter((x) => typeof x === "string").join("\n");
+  if (!text || !WAITED_ON.test(text) || !LOOPS.test(text)) return null;
+  return WAIT_LOOP_REASON;
 }

@@ -4,9 +4,9 @@
 import { describe, expect, it } from "vitest";
 import { agentToolSpecs } from "../engine/engine";
 
-/** The agent's tool count after the six note tools left (box:notes), with the work ledger's Ledger and WaitFor
- *  (stateless-1, d0d19b67). Lower it when a tool goes; never raise it. */
-const CEILING = 43;
+/** The agent's tool count after the model's nouns (report 24 §4), Claude Code's own TodoWrite (D) and the work list's
+ *  Ledger, WaitFor and SubmitChange left (D2 step 3). Lower it when a tool goes; never raise it. */
+const CEILING = 14;
 
 describe("the tool count only goes down", () => {
   it(`the agent has at most ${CEILING} tools`, () => {
@@ -16,5 +16,10 @@ describe("the tool count only goes down", () => {
   it("notes are state, not tools", () => {
     const names = agentToolSpecs().map((t) => t.name);
     for (const n of ["ListNotes", "CreateNote", "UpdateNote", "ResolveNote", "ReopenNote", "DeleteNote"]) expect(names).not.toContain(n);
+  });
+  it("waiting is Claude Code's own: no work list, no box-side waits, no SubmitChange (ScheduleWake stays: restart-safe)", () => {
+    const names = agentToolSpecs().map((t) => t.name);
+    for (const n of ["Ledger", "WaitFor", "SubmitChange"]) expect(names).not.toContain(n);
+    expect(names).toContain("ScheduleWake");
   });
 });
