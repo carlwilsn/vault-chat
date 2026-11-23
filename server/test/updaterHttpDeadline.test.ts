@@ -16,7 +16,7 @@ async function cases(...names: string[]) {
 
 // Each stdlib scenario owns its process/servers, retaining the original 20s
 // process ceiling and all strict inner HTTP/start/cancellation deadlines.
-it.each([
+it.concurrent.each([
   "test_actual_entry_binary_fallback_never_invokes_source_recovery_and_suppresses_retry",
   "test_actual_updater_entry_uses_http_check_and_records_failure",
   "test_alive_startup_process_never_opens_http",

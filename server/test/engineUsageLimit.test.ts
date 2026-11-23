@@ -97,7 +97,7 @@ let addWake: (v: string, w: any) => any;
 const engines: any[] = [];
 const logs: string[] = [];
 
-function makeEngine(prefix: string) {
+function makeEngine(prefix: string, wakeTickMs?: number) {
   const backend = withPiSessions(new FakeBackend(prefix), join(root, `pi-${prefix}`));
   const engine = new Engine({
     vault,
@@ -110,6 +110,7 @@ function makeEngine(prefix: string) {
     notify: async () => "sent",
     broadcast: () => {},
     log: (m: string) => logs.push(m),
+    wakeTickMs,
   });
   engines.push(engine);
   engine.start();
@@ -149,6 +150,9 @@ const until = async (fn: () => Promise<boolean> | boolean, ms = 10_000) => {
   }
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** The wake tick the repeat tests run on, and how long "nothing fired" waits there: three ticks (the real-clock test waits 1.25 of its 2 s ticks). */
+const FAST_TICK_MS = 200;
+const QUIET_MS = 3 * FAST_TICK_MS;
 const holds = (convId: string) => readWakes(vault).filter((w) => w.conv === convId && w.limit);
 /** The reset has come: the hold is due now (the tick fires it within ~2 s). */
 const due = (convId: string) =>
@@ -204,6 +208,9 @@ describe("Carl's usage limit", () => {
   });
 
   it("the retry failing on the limit again waits for the next reset, never in a loop; unknown reset backs off", async () => {
+    // From here the same tick timing is repeated on a quicker clock (the test above keeps the real 2 s tick).
+    engine.stop();
+    ({ engine, backend } = makeEngine("f", FAST_TICK_MS));
     const convId = `sep-${Math.random().toString(36).slice(2, 10)}`;
     backend.limit = null; // no reset named
     const t0 = Date.now();
@@ -220,14 +227,14 @@ describe("Carl's usage limit", () => {
     [h] = holds(convId);
     expect(h.limit.tries).toBe(2);
     expect(h.at - t1).toBeGreaterThanOrEqual(10 * 60_000 - 1000); // doubled
-    await sleep(2500);
+    await sleep(QUIET_MS);
     expect(backend.turns.length).toBe(before + 1); // nothing fired again
     // With a reset named, the next retry is at that reset.
     const reset = Date.now() + 3600_000;
     backend.limit = { resetsAt: reset, kind: "five_hour" };
     due(convId);
     // ...but the tick holds every wake while the limit stands (the limit still says no).
-    await sleep(2500);
+    await sleep(QUIET_MS);
     expect(backend.turns.length).toBe(before + 1);
     backend.limit = null;
     await until(() => backend.turns.length === before + 2, 8_000);
@@ -250,7 +257,7 @@ describe("Carl's usage limit", () => {
     // Due while the limit stands: it stays in wakes.json and nothing runs.
     backend.limit = { resetsAt: Date.now() + 3600_000, kind: "five_hour" };
     addWake(vault, { conv: convId, at: Date.now() - 1, reason: "check the run" });
-    await sleep(2500);
+    await sleep(QUIET_MS);
     expect(backend.turns.length).toBe(before + 1);
     expect(readWakes(vault).some((w) => w.conv === convId && w.reason === "check the run")).toBe(true);
     // The runtime had not said so yet: the wake fires and is refused — and is held, not lost.
@@ -290,12 +297,12 @@ describe("Carl's usage limit", () => {
     await until(() => backend.turns.length === before + 1);
     expect(backend.turns[before].texts.join("\n")).toMatch(/Back now\?/);
     due(convId); // due while his turn runs: it waits, and his turn takes it all
-    await sleep(2500);
+    await sleep(QUIET_MS);
     expect(backend.turns.length).toBe(before + 1);
     backend.complete(backend.turns[before].threadId);
     await until(async () => (await readConv(vault, convId))?.state === "idle");
     expect(holds(convId)).toHaveLength(0);
-    await sleep(2500);
+    await sleep(QUIET_MS);
     expect(backend.turns.length).toBe(before + 1);
     c = await readConv(vault, convId);
     expect(c.messages.some((m: any) => /failed/.test(m.content ?? ""))).toBe(false);
@@ -343,7 +350,7 @@ describe("a reply that failed on something passing (the API overloaded)", () => 
     await until(async () => (await readConv(vault, convId))?.state === "idle");
     expect(retries(convId)).toHaveLength(0);
     const n = backend.turns.length;
-    await sleep(2500);
+    await sleep(QUIET_MS);
     expect(backend.turns.length).toBe(n);
   });
 
@@ -377,7 +384,7 @@ describe("a reply that failed on something passing (the API overloaded)", () => 
     backend.limit = { resetsAt: Date.now() + 3600_000, kind: "five_hour" };
     const n = backend.turns.length;
     dueRetry(conv3);
-    await sleep(2500);
+    await sleep(QUIET_MS);
     expect(backend.turns.length).toBe(n);
     expect(retries(conv3)).toHaveLength(1);
     backend.limit = null;
@@ -403,12 +410,12 @@ describe("a reply that failed on something passing (the API overloaded)", () => 
     await engine.message({ text: "Still there?", convId });
     await until(() => backend.turns.length === before + 1);
     dueRetry(convId); // due while his turn runs: it waits, and his turn takes it up
-    await sleep(2500);
+    await sleep(QUIET_MS);
     expect(backend.turns.length).toBe(before + 1);
     backend.complete(backend.turns[before].threadId);
     await until(async () => (await readConv(vault, convId))?.state === "idle");
     expect(retries(convId)).toHaveLength(0);
-    await sleep(2500);
+    await sleep(QUIET_MS);
     expect(backend.turns.length).toBe(before + 1);
     c = await readConv(vault, convId);
     expect(c.messages.some((m: any) => /try again by itself in 1 min/.test(m.content ?? ""))).toBe(true);

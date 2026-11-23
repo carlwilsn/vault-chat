@@ -83,7 +83,7 @@ describe("the WebM writer", () => {
 
 const browser = !!findBrowser();
 
-describe.skipIf(!browser)("a real recording", () => {
+describe.skipIf(!browser)("a real recording", { concurrent: true }, () => {
   let dir: string;
   beforeAll(() => {
     dir = tmp("vc-rec-");

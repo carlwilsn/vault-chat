@@ -121,6 +121,8 @@ export type EngineDeps = {
   shell?: () => string[] | null | undefined;
   /** How long Ctrl+L's Handoff waits for the chat it started before it reports by an alert instead (tests). */
   handoffWaitMs?: number;
+  /** How often due wakes are checked (default 2 s; tests that repeat a timing on a quicker clock). */
+  wakeTickMs?: number;
 };
 
 /** What the engine raises: a question (kind "ask") or a line for Carl (kind "info"), with what the
@@ -671,7 +673,7 @@ export class Engine {
     b.start?.();
     // Main and every project's thread exist from the start (src/threads.ts): every surface opens one.
     void this.scoped(() => this.ensureThreads()).catch((e) => this.log(`threads: ${(e as Error).message}`));
-    this.timers.push(setInterval(() => this.scoped(() => void this.tickWakes()), 2_000));
+    this.timers.push(setInterval(() => this.scoped(() => void this.tickWakes()), this.d.wakeTickMs ?? 2_000));
     this.timers.push(setInterval(() => this.scoped(() => void this.tickJobs()), 15_000));
     // Notes Carl addresses to the agent (his phone, his Notes): each is a turn in Main.
     this.timers.push(setInterval(() => this.scoped(() => void this.notesToAgent()), 15_000));

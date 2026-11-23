@@ -51,20 +51,16 @@ export default defineConfig({
     testTimeout: 180_000,
     hookTimeout: 180_000,
     // Each file runs in its own process and boots its own servers on free ports, so files run in
-    // parallel. The few whose assertions race the clock run afterwards, one at a time, on a quiet
-    // machine.
+    // parallel. The few whose assertions race the clock run afterwards, one file at a time, on a quiet
+    // machine (updaterHttpDeadline's own cases run side by side there: each owns its temp dir, ports
+    // and processes).
     //
-    // THREE, not six. Each worker boots a real server and the real Claude Code
-    // CLI, and some drive a real browser; six of those is more than this box
-    // has. Measured on the ship host's own gate run of main 7f2f775c: a load
-    // average of 178 with ~1,375 processes, the journal reporting memory
-    // pressure and the whole machine stalling for 42s and then 89s at a time
-    // ("time jump detected, probably wake from sleep") — and the gate run died
-    // mid-suite. In its baseline, 14 turn-driven tests across convlogServer,
-    // claudeBackend, attachments and crossSurfaceNativeAPI timed out while
-    // passing locally, so the gate was comparing two red runs. Starving the
-    // suite to make it finish sooner cost more than it saved.
-    maxWorkers: 3,
+    // One worker per core of the ship host (12). Measured 2026-11-23 on a quiet box, main 8d3bd22a, the
+    // ship's own sandbox, 2 runs each, all 1185 tests green every run: 3 workers 336/334 s, 4: 280/280 s,
+    // 6: 234/229 s, 12: 184/184 s (load average at most 8.8 of 12, 9.4 GB memory still free). The
+    // earlier overload at 6 workers (gate run of main 7f2f775c: load average 178, ~1,375 processes,
+    // 14 turn-driven tests timed out) did not recur in any of these runs. Lower it if anything flakes.
+    maxWorkers: 12,
     projects: [
       { extends: true, test: { name: "parallel", include: ["server/test/**/*.test.ts"], exclude: [...SERIAL, "**/node_modules/**"], sequence: { groupOrder: 0 } } },
       { extends: true, test: { name: "serial", include: SERIAL, poolOptions: { forks: { singleFork: true } }, sequence: { groupOrder: 1 } } },
