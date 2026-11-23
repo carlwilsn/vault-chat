@@ -52,6 +52,16 @@ describe("box sync loop", () => {
     expect(sync.status.steps.commit?.detail).toMatch(/committed 1 file/);
   });
 
+  it("a client pre-push hook in the working copy (git-lfs's, where it is installed globally) never blocks the push to the hub", async () => {
+    // git-lfs's own hook fails on the hub's path remote ("batch request: missing protocol"); any client hook stands in.
+    writeFileSync(join(box, ".git", "hooks", "pre-push"), "#!/bin/sh\necho 'batch request: missing protocol' >&2\nexit 1\n", { mode: 0o755 });
+    writeFileSync(join(box, "notes", "after-hook.md"), "pushed anyway\n");
+    await sync.runOnce();
+    expect(sync.status.lastError).toBeNull();
+    expect(sync.status.ok).toBe(true);
+    expect(bareRef("refs/heads/box")).toBe(head(box));
+  });
+
   it("never commits the conversation log, nor an older conversation file (kept, never deleted)", async () => {
     // An older conversation file already in git, then changed; the log written beside it.
     mkdirSync(join(box, ".vault-chat", "conversations"), { recursive: true });

@@ -358,7 +358,11 @@ exit 0
   private async pushBox(): Promise<void> {
     const s = this.status;
     try {
-      const r = await runGit(this.vault, ["push", "-q", this.bare, `refs/heads/${this.BRANCH}:refs/heads/${BOX_BRANCH}`], {
+      // --no-verify: a local push to the box's own hub, whose LFS objects are this working copy's store (server/lfs.ts).
+      // Where git-lfs is installed globally its filter-process wins over the box's filter and drops its pre-push hook
+      // here, which fails on a path remote ("batch request: missing protocol") and wedged every push carrying a file
+      // over 50 MB. Client hooks only: the hub's pre-receive ownership guard still runs.
+      const r = await runGit(this.vault, ["push", "-q", "--no-verify", this.bare,`refs/heads/${this.BRANCH}:refs/heads/${BOX_BRANCH}`], {
         env: { VC_PUSHER: "box" },
       });
       if (r.code !== 0) throw new Error(`git push ${this.BRANCH === BOX_BRANCH ? BOX_BRANCH : `${this.BRANCH} → ${BOX_BRANCH}`} (exit ${r.code}): ${r.stderr.trim()}`);
