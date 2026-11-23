@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { firstPaintTheme, keepTheme } from "./firstTheme";
+import { firstPaintTheme, keepTheme, type Theme } from "./firstTheme";
 import { isPopout } from "./windowKind";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
@@ -285,7 +285,7 @@ function persistActiveConvId(vault: string | null, id: string | null): void {
     /* localStorage unavailable — non-fatal */
   }
 }
-export type Theme = "graphite" | "light";
+export type { Theme } from "./firstTheme";
 
 function loadTheme(): Theme {
   return firstPaintTheme();

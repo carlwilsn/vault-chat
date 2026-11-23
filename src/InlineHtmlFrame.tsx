@@ -18,6 +18,7 @@ import { usePluginDesired } from "./pluginSupervisorApp";
 import { isNewestEmbed, newestEmbed, registerEmbed, subscribeEmbeds } from "./inlineEmbeds";
 import { changedRev, useChangedFiles } from "./liveReload";
 import { appPageTheme, PAGE_FRAME_ATTR } from "./pageTheme";
+import { isTheme } from "./firstTheme";
 import { embedRelativeImages, joinPagePath, relativeAssetRefs, planPageAssets, pageMediaRequest, assetMime, PAGE_MEDIA_MSG, frameHeight, inlineHtmlCollapses, inlineHtmlDocument, inlineHtmlReport, parseFrameHint, parseFrameHintFromHtml, HTML_MAX_H, HTML_MIN_FRAME_H, type FrameHint, type FrameReport } from "./inlineHtml";
 
 let appStyles: Promise<string> | null = null;
@@ -54,7 +55,7 @@ export function appStylesText(): Promise<string> {
   return appStyles;
 }
 
-const themeNow = () => (document.documentElement.dataset.theme === "light" ? "light" : "graphite");
+const themeNow = () => { const t = document.documentElement.dataset.theme; return isTheme(t) ? t : "graphite"; };
 
 /** The frame's height (src/inlineHtml.ts frameHeight): the page's request (meta / markdown title), else a 16:10 default
  *  that a full-height page keeps and a short content-sized page shrinks from; a drag overrides all of it. */

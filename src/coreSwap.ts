@@ -14,6 +14,7 @@
 // so the small differences of the drawing never show as a jump. The theme rides along (src/firstTheme.ts): the first
 // frame is never the wrong colour.
 import { useStore, type Pane, type SplitDirection } from "./store";
+import { isTheme, type Theme } from "./firstTheme";
 
 /** index.html reads this key by name before any script loads: keep the two in step. */
 export const SWAP_KEY = "vc.coreSwap";
@@ -32,7 +33,7 @@ const PANE_TEXT_MAX = 1_500_000;
 export type SwapState = {
   at: number;
   /** The theme the window shows (index.html paints its first frame in it). */
-  theme?: "graphite" | "light";
+  theme?: Theme;
   vault: string | null;
   conv: string | null;
   scroll: { top: number; atBottom: boolean } | null;
@@ -64,7 +65,7 @@ export function swapStateNow(draft: SwapState["draft"], now = Date.now()): SwapS
   const el = chatScroller();
   return {
     at: now,
-    theme: s.theme === "light" ? "light" : "graphite",
+    theme: isTheme(s.theme) ? s.theme : "graphite",
     vault: s.vaultPath,
     conv: s.activeConversationId,
     scroll: el ? { top: el.scrollTop, atBottom: el.scrollHeight - el.scrollTop - el.clientHeight < 40 } : null,

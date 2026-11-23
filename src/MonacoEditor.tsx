@@ -29,7 +29,7 @@ export function MonacoEditor({
   path?: string;
 }) {
   const theme = useStore((s) => s.theme);
-  const monacoTheme = theme === "light" ? "vault-light" : "vault-graphite";
+  const monacoTheme = theme === "light" ? "vault-light" : theme === "contrast" ? "hc-black" : "vault-graphite";
   const language = extToMonacoLang[ext.toLowerCase()] ?? "plaintext";
 
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);

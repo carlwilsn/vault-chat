@@ -4,13 +4,16 @@
 // Kept twice: in sessionStorage (its own quota, and it survives the reload of a core swap, src/coreSwap.ts) and in
 // localStorage (it survives a restart). A full localStorage (the box-log replica once filled it) used to lose the
 // copy, and a light-theme window then painted its first frame dark: the flash on every core swap.
-export type Theme = "graphite" | "light";
+import { THEMES } from "./settingsRecords";
+
+export type Theme = (typeof THEMES)[number];
+export const isTheme = (t: unknown): t is Theme => (THEMES as readonly unknown[]).includes(t);
 /** sessionStorage key; index.html reads it by name. */
 export const THEME_SESSION = "vc.theme";
 /** localStorage key (the setting's old home); index.html reads it by name. */
 export const THEME_LOCAL = "vault_chat_theme";
 
-const norm = (t: unknown): Theme | null => (t === "light" ? "light" : t === "graphite" ? "graphite" : null);
+const norm = (t: unknown): Theme | null => (isTheme(t) ? t : null);
 
 /** The theme to paint first: this window's own copy, else the laptop's, else graphite. Never throws. */
 export function firstPaintTheme(): Theme {

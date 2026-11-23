@@ -59,6 +59,7 @@ describe("the fold", () => {
 
   it("checks values: kinds, patterns, the box's own check", () => {
     expect(settingProblem("theme", "light")).toBeNull();
+    expect(settingProblem("theme", "contrast")).toBeNull();
     expect(settingProblem("theme", 3)).toMatch(/theme takes "graphite" \| "light"/);
     expect(settingProblem("pushAutomatic", "true")).toMatch(/true \| false/);
     expect(settingProblem("voice", "x y")).toMatch(/ElevenLabs voice id/);

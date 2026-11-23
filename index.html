@@ -15,12 +15,12 @@
           if (sw) t = JSON.parse(sw).theme || null;
         } catch (e) {}
         try {
-          if (t !== "light" && t !== "graphite") t = sessionStorage.getItem("vc.theme");
+          if (t !== "light" && t !== "graphite" && t !== "contrast") t = sessionStorage.getItem("vc.theme");
         } catch (e) {}
         try {
-          if (t !== "light" && t !== "graphite") t = localStorage.getItem("vault_chat_theme");
+          if (t !== "light" && t !== "graphite" && t !== "contrast") t = localStorage.getItem("vault_chat_theme");
         } catch (e) {}
-        document.documentElement.dataset.theme = t === "light" ? "light" : "graphite";
+        document.documentElement.dataset.theme = t === "light" || t === "contrast" ? t : "graphite";
       })();
     </script>
     <style>
@@ -38,6 +38,10 @@
       html[data-theme="light"], html[data-theme="light"] body {
         background: hsl(0 0% 98%);
         color: hsl(0 0% 12%);
+      }
+      html[data-theme="contrast"], html[data-theme="contrast"] body {
+        background: #000;
+        color: #fff;
       }
       #root { height: 100%; }
       html.vc-swapping #vault-splash { display: none; }
@@ -74,6 +78,10 @@
       html[data-theme="light"] #vault-splash {
         background: hsl(0 0% 100%);
         color: hsl(0 0% 42%);
+      }
+      html[data-theme="contrast"] #vault-splash {
+        background: #000;
+        color: #d0d0d0;
       }
       #vault-splash.hidden {
         opacity: 0;

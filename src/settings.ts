@@ -10,7 +10,7 @@
 // Moving the laptop's own old values: once, when the box has no record for a setting this laptop kept itself
 // (the theme, the fullscreen chat's sidebar), the laptop sends its value (POST {migrate}: set only where no record is).
 
-import { keepTheme } from "./firstTheme";
+import { isTheme, keepTheme } from "./firstTheme";
 import { useEffect, useState } from "react";
 import { useStore } from "./store";
 import { boxGet, boxLinkFor, boxPost, type Link } from "./boxChat";
@@ -56,7 +56,7 @@ export function setting<K extends SettingKey>(key: K): SettingValue {
 /** The local copy (what first paint reads) for the settings that have one. */
 function cache(key: SettingKey, v: SettingValue): void {
   try {
-    if (key === "theme") keepTheme(v === "light" ? "light" : "graphite");
+    if (key === "theme") keepTheme(isTheme(v) ? v : "graphite");
     else if (key === "chatSidebar") localStorage.setItem("vc_chat_sidebar", v ? "1" : "0");
     else if (key === "voice") localStorage.setItem("vault_chat_elevenlabs_voice", String(v));
   } catch {
@@ -76,7 +76,7 @@ function apply(key: SettingKey, v: SettingValue): void {
 function show(key: SettingKey, was: SettingValue): void {
   const v = shown(key);
   const st = useStore.getState();
-  if (key === "theme" && (v === "graphite" || v === "light") && st.theme !== v) st.applyTheme(v);
+  if (key === "theme" && isTheme(v) && st.theme !== v) st.applyTheme(v);
   if (key === "chatSidebar" && typeof v === "boolean" && st.chatSidebarOpen !== v) useStore.setState({ chatSidebarOpen: v });
   if ((key === "model" || key === "effort") && was !== v && st.vaultPath) void import("./chatModels").then((m) => m.refreshChatModels(st.vaultPath!)).catch(() => {});
   if (was !== v) for (const f of [...subs]) f();

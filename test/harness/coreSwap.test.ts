@@ -98,6 +98,10 @@ test("the swap keeps the theme, and the first frame's theme never depends on a f
     assert.equal(T.firstPaintTheme(), "light", "a full localStorage: the window's own copy carries it");
     useStore.setState({ theme: "light" } as any);
     assert.equal(S.swapStateNow(null).theme, "light");
+    T.keepTheme("contrast");
+    assert.equal(T.firstPaintTheme(), "contrast", "the high-contrast theme paints first too");
+    useStore.setState({ theme: "contrast" } as any);
+    assert.equal(S.swapStateNow(null).theme, "contrast", "and survives a swap");
   } finally {
     G.localStorage = was;
     mem.delete(T.THEME_SESSION);

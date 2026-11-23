@@ -99,6 +99,54 @@
     --tex-esc: 275 70% 40%;
   }
 
+  /* High contrast (Carl's pick, 11-23: "White + Blue fill"): pure black, white text and 1px white borders, white
+     accents; selection, active items, the user's bubbles and primary buttons filled solid blue (#0057ff, white text
+     5.5:1); code on dark blue (#002a80). */
+  [data-theme="contrast"] {
+    --background: 0 0% 0%;
+    --foreground: 0 0% 100%;
+
+    --card: 0 0% 0%;
+    --card-foreground: 0 0% 100%;
+
+    --popover: 0 0% 0%;
+    --popover-foreground: 0 0% 100%;
+
+    --primary: 219.5 100% 50%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220.3 100% 25.1%;
+    --secondary-foreground: 0 0% 100%;
+
+    --muted: 220.3 100% 25.1%;
+    --muted-foreground: 0 0% 81.6%;
+
+    --accent: 219.5 100% 50%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 1.8 79.2% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 0 0% 100%;
+    --input: 0 0% 100%;
+    --ring: 0 0% 100%;
+
+    --focus-border: hsl(0, 0%, 100%);
+
+    --titlebar: var(--card);
+    --titlebar-foreground: var(--foreground);
+    --titlebar-muted: var(--muted-foreground);
+    --titlebar-hover: var(--accent) / 0.6;
+    --titlebar-border: var(--border);
+
+    --tex-body: 185 90% 70%;
+    --tex-cmd: 320 90% 80%;
+    --tex-brace: 0 0% 82%;
+    --tex-sub: 25 100% 70%;
+    --tex-num: 50 100% 70%;
+    --tex-esc: 280 90% 84%;
+  }
+
   * { @apply border-border; }
 
   html, body, #root {
@@ -569,3 +617,11 @@ input[type="number"]::-webkit-outer-spin-button {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* High contrast: blue text on black is 3.8:1, so text accents are white (blue stays a fill); muted text on a blue fill
+   turns white (#d0d0d0 on #0057ff is 3.6:1); selections fill blue; code in the user's blue bubble sits on dark blue. */
+[data-theme="contrast"] .text-primary { color: hsl(var(--foreground)); }
+[data-theme="contrast"] ::selection { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }
+[data-theme="contrast"] :is(.bg-accent, .bg-primary, [class*="bg-accent/"], [class*="bg-primary/"]) .text-muted-foreground,
+[data-theme="contrast"] :is([class*="hover:bg-accent"], [class*="hover:bg-primary"]):hover .text-muted-foreground { color: hsl(var(--foreground)); }
+[data-theme="contrast"] .prose-user :is(code, pre) { background: hsl(var(--muted)); }

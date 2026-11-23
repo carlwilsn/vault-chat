@@ -74,7 +74,7 @@ export type Scenario = {
   notes: string;
   /** ISO start time of the scenario clock. */
   clock?: string;
-  theme?: "graphite" | "light";
+  theme?: "graphite" | "light" | "contrast";
   /** Chat model for the desktop pane (localStorage vault_chat_model). */
   model?: string;
   localStorage?: Record<string, string>;

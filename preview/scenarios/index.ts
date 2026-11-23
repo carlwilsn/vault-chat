@@ -252,8 +252,8 @@ function boxConnectScenarios(): Scenario[] {
       localStorage: { "vc.landedAck": "a".repeat(40) },
       open: [{ sleep: 1500 }],
     })),
-    ...(["graphite", "light"] as const).map((theme) => ({
-      id: theme === "light" ? "core-ready-light" : "core-ready",
+    ...(["graphite", "light", "contrast"] as const).map((theme) => ({
+      id: theme === "graphite" ? "core-ready" : `core-ready-${theme}`,
       theme,
       title: "Ready — a new core waits for OK",
       group: "Settings",
@@ -410,6 +410,16 @@ export const scenarios: Scenario[] = [
     group: "Basics",
     theme: "light",
     notes: "Same as Home, light theme (Alt+L toggles).",
+    build: (c) => world(c),
+    activeConversation: "c-spectral",
+    open: deskOpen(NOTE, "c-spectral"),
+  },
+  {
+    id: "contrast",
+    title: "Home in the high-contrast theme",
+    group: "Basics",
+    theme: "contrast",
+    notes: "Same as Home, high-contrast theme (Settings > Appearance > High contrast): black, white borders, blue fills.",
     build: (c) => world(c),
     activeConversation: "c-spectral",
     open: deskOpen(NOTE, "c-spectral"),

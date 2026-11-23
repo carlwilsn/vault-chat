@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, X, Plus } from "lucide-react";
-import { useStore } from "../../store";
+import { useStore, type Theme } from "../../store";
 import { Button, Input, MenuSelect } from "../../ui";
 import { cleanKeyName } from "../../keychain";
 import {
@@ -214,12 +214,13 @@ function AppearanceSection() {
       <SectionHead title="Appearance" />
       <MenuSelect
         value={theme}
-        onChange={(v) => setTheme(v as "graphite" | "light")}
+        onChange={(v) => setTheme(v as Theme)}
         groups={[
           {
             options: [
               { value: "graphite", label: "Graphite (default)" },
               { value: "light", label: "Light" },
+              { value: "contrast", label: "High contrast" },
             ],
           },
         ]}

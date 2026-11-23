@@ -13,6 +13,9 @@
 
 export const SETTING = "setting";
 
+/** The app's colour themes (src/App.css: `:root` is graphite, the rest `[data-theme="<id>"]`). */
+export const THEMES = ["graphite", "light", "contrast"] as const;
+
 type Kind =
   | { kind: "enum"; options: readonly (string | null)[] }
   | { kind: "boolean" }
@@ -32,9 +35,9 @@ export const SETTINGS = {
   theme: {
     applies: "window",
     kind: "enum",
-    options: ["graphite", "light"],
+    options: THEMES,
     default: "graphite",
-    description: "The app's colour theme (laptop app and its pages): graphite (dark, the default) or light.",
+    description: "The app's colour theme (laptop app and its pages): graphite (dark, the default), light, or contrast (high contrast: black, white borders, blue selection).",
     legacy: { where: "laptop", key: "vault_chat_theme" },
   },
   model: {
