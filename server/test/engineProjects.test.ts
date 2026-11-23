@@ -94,16 +94,19 @@ describe("projects: only Carl decides what is a project", () => {
 });
 
 describe("direct action, sized to the ask, read back", () => {
-  it("every thread is told: small asks in place (git is the undo), do it now (no missions), read back before claiming", async () => {
+  it("every thread is told: the constitution, small asks in place (git is the undo), long work in the background, read back before claiming", async () => {
     const s = await rig.start("Make the section 7 figure clearer in course-notes.html.");
     const instr = String(rig.backend.threads.at(-1).instructions);
-    expect(instr).toContain("A small ask (an edit, a fix, a note, a quick question) is done now, directly, in the real file, in place: no copy of the file, no sandbox, no plan or progress files, no test suite, browser checks or hashes.");
-    expect(instr).toContain("The vault autosaves to git, so git is the undo.");
-    expect(instr).toContain('Do it now. When Carl asks for something, do it in this turn: not as a mission, a schedule or a background job ("no a mission, do it rn").');
-    expect(instr).toContain("Read back before you claim. After any edit, confirm it from the tool's own output or by re-reading the file");
-    expect(instr).toContain("finish by reading back what you changed and saying what you checked");
-    // No ceremony tools or modes: no keep-going, no Done verifier, no project tools.
-    expect(instr).not.toMatch(/KeepWorking|keep-going|\bDone\b|\bBlocked\b|Done means proved|SetProject|ProjectMemory|plan\.md/);
+    expect(instr).toContain("# vault-chat's constitution");
+    expect(instr).toContain("Workers are the biggest token lever: one worker per change, no fan-out unless Carl asks.");
+    expect(instr).toContain("A small vault ask (an edit, a fix, a note, a quick question) is done now, directly, in the real file, in place: no copy of the file, no sandbox, no plan or progress files, no test suite, browser checks or hashes");
+    expect(instr).toContain("the vault autosaves to git, so git is the undo.");
+    expect(instr).toContain("Long work runs in the background, never inside your turn");
+    expect(instr).toContain("Read back before you claim: confirm an edit from the tool's output or by re-reading the file");
+    // One rule each: no "not as a background job" against "over half a minute → background"; no removed tools.
+    expect(instr).not.toMatch(/not as a mission, a schedule or a background job|WaitFor|Ledger|Delegate|PluginWrite|quick fan-out|headless/);
+    // No ceremony tools or modes: no keep-going, no Done verifier, no project tools ("Done means …" is the constitution's).
+    expect(instr).not.toMatch(/KeepWorking|keep-going|\bDone\b(?! means)|\bBlocked\b|Done means proved|SetProject|ProjectMemory|plan\.md/);
     await settle(s);
   });
 
@@ -148,7 +151,7 @@ describe("notes: one thing, editable in place, on pi and on voice", () => {
     for (const t of ["PluginRead", "PluginAct"]) expect(names).toContain(t);
     for (const t of ["ListNotes", "CreateNote", "UpdateNote", "ResolveNote", "ReopenNote", "DeleteNote"]) expect(names).not.toContain(t);
     expect(String(rig.backend.threads.at(-1).instructions)).toContain(".vault-chat/notes.jsonl");
-    expect(String(rig.backend.threads.at(-1).instructions)).toContain('PluginAct {plugin: "box:notes"');
+    expect(String(rig.backend.threads.at(-1).instructions)).toContain("the box's noun box:notes (PluginRead reads them; PluginAct add");
     const added = await rig.backend.call(s.tid, "PluginAct", { plugin: "box:notes", action: "add", args: { text: "buy chalk" } });
     expect(added.ok).toBe(true);
     const read = out(await rig.backend.call(s.tid, "PluginRead", { plugin: "box:notes" }));
