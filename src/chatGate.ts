@@ -18,7 +18,10 @@ export type ChatGateCore = {
   starting: boolean;
   /** No box: nothing to chat with. */
   noBox: boolean;
-  /** The box out of reach: the composer is off (with the reason) and the feed retries. */
+  /** Connecting to the box (the app just opened, or a failed poll within the grace: src/boxChat.ts connectTiming):
+   *  said calmly, and a message sent now waits and goes the moment the box answers. */
+  connecting: boolean;
+  /** The box out of reach past the grace: Send is off (with the reason) and the feed retries. */
   boxDown: boolean;
   /** The box's own words for why it is out of reach. */
   reason: string;
@@ -40,12 +43,13 @@ export function chatGateOf(s: Pick<StoreState, "vaultPath" | "boxChat" | "conver
   const starting = !!vaultPath && boxChat?.starting === true;
   const noBox = !!vaultPath && boxChat?.on === false && !starting;
   const boxDown = !!boxChat?.on && boxChat.reachable === false;
+  const connecting = !!boxChat?.on && boxChat.reachable === null;
   const older = !!activeConv && !isArchivedThread(activeConv) && isOlderChat(activeConv);
   const archived = !!activeConv && (isArchivedThread(activeConv) || older);
   const ready = Boolean(vaultPath && boxChat?.on) && !boxDown && !archived;
   const last = s.messages[s.messages.length - 1];
   const held = !s.busy && activeConv?.state === "sleeping" && !!last?.mid?.startsWith("limit:");
-  return { starting, noBox, boxDown, reason: boxChat?.reason ?? "", older, archived, ready, held };
+  return { starting, noBox, connecting, boxDown, reason: boxChat?.reason ?? "", older, archived, ready, held };
 }
 
 /** Signed out of Claude, known now (code that cannot use the hook). */

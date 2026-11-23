@@ -91,12 +91,12 @@ export function chatOffers() {
         },
       },
       view: {
-        description: "How the chat is shown: where (docked, fullscreen, popout, hidden), settings (Settings drawn in its place), gate (ready, starting, noBox, boxDown with why, archived: an older chat, read only).",
+        description: "How the chat is shown: where (docked, fullscreen, popout, hidden), settings (Settings drawn in its place), gate (ready, connecting (the box not answered yet: a message waits for it; why: the last failed attempt), starting, noBox, boxDown with why (still out of reach past the grace), archived: an older chat, read only).",
         read: () => {
           const s = S();
           const where = isPopout ? "popout" : s.popoutOpen ? "popout" : s.chatFullscreen ? "fullscreen" : s.rightCollapsed ? "hidden" : "docked";
           const g = chatGateOf(s);
-          return { where, settings: s.showSettings, gate: g.starting ? "starting" : g.noBox ? "noBox" : g.boxDown ? "boxDown" : g.archived ? "archived" : "ready", ...(g.boxDown && g.reason ? { why: g.reason } : {}) };
+          return { where, settings: s.showSettings, gate: g.starting ? "starting" : g.noBox ? "noBox" : g.boxDown ? "boxDown" : g.archived ? "archived" : g.connecting ? "connecting" : "ready", ...((g.boxDown || g.connecting) && g.reason ? { why: g.reason } : {}) };
         },
       },
       scroll: {

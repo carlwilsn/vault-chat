@@ -18,7 +18,7 @@ import { toggleVoice } from "../../voiceCall";
 import { InlineVoiceWaves, VoiceMuteButton } from "../../voiceParts";
 import { Button, Textarea } from "../../ui";
 import { cn } from "../../lib/utils";
-import { ATTACH_MAX_BYTES, BOX_UNREACHABLE } from "../../boxChat";
+import { ATTACH_MAX_BYTES, BOX_UNREACHABLE, CONNECTING } from "../../boxChat";
 import { ARCHIVED_THREAD, OLDER_CHAT } from "../../conversations";
 import { ChatModelPicker } from "../../ChatModelPicker";
 import { ClaudeSignInPrompt } from "../../ClaudeCodeSignIn";
@@ -74,7 +74,7 @@ export function Composer() {
   const voiceMode = useStore((s) => s.voiceMode);
   const voiceError = useStore((s) => s.voiceError);
   const voiceNotice = useStore((s) => s.voiceNotice);
-  const { ready, aiBlocked, archived, older, boxDown, downWhy, held, reason } = useChatGate();
+  const { ready, aiBlocked, archived, older, connecting, boxDown, downWhy, held, reason } = useChatGate();
 
   const input = useDraft((d) => d.input);
   const pendingImages = useDraft((d) => d.images);
@@ -160,7 +160,7 @@ export function Composer() {
   // One line at any width, cut with an ellipsis (src/fitPlaceholder.ts).
   const placeholder = useFittedPlaceholder(
     inputRef,
-    archived ? (older ? OLDER_CHAT : ARCHIVED_THREAD) : boxDown ? `${BOX_UNREACHABLE} — ${downWhy}. Retrying…` : !ready ? (vaultPath ? "Connecting to the box…" : "Open a vault first") : "Ask anything, or / for commands…",
+    archived ? (older ? OLDER_CHAT : ARCHIVED_THREAD) : boxDown ? `${BOX_UNREACHABLE} — ${downWhy}. Retrying…` : connecting || !ready ? (vaultPath ? CONNECTING : "Open a vault first") : "Ask anything, or / for commands…",
   );
 
   const send = () => {
@@ -552,7 +552,7 @@ export function Composer() {
               onKeyDown={onKey}
               onPaste={onPaste}
               placeholder={placeholder}
-              disabled={!ready}
+              disabled={!ready && !boxDown}
               rows={1}
               className={cn(
                 "composer-input border-0 bg-transparent min-h-0 max-h-[200px] overflow-y-hidden focus-visible:ring-0 shadow-none !py-2",
@@ -595,6 +595,12 @@ export function Composer() {
         <div className="flex items-center gap-3 min-w-0">
           {/* What this chat runs on, and how hard it thinks (src/chatModels.ts). */}
           <ChatModelPicker convId={activeConversationId} />
+          {/* A failed attempt within the grace: calm, muted, the transport's words only in the tooltip. */}
+          {connecting && reason && (
+            <span className="truncate text-muted-foreground" data-el="box-connecting" title={reason}>
+              {CONNECTING}
+            </span>
+          )}
           {boxDown && (
             <span className="truncate text-amber-500/90" data-el="box-unreachable" title={reason || undefined}>
               {BOX_UNREACHABLE}: {downWhy}

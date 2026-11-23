@@ -38,6 +38,7 @@ fake.setHandler("box_post_json", ({ url, body }) => fetchVia(url, { method: "POS
 
 const { useStore } = await import("../../src/store.ts");
 const bc = await import("../../src/boxChat.ts");
+bc.connectTiming.graceMs = 500; // the grace before "unreachable", short here (src/boxChat.ts connectTiming)
 const chat = await import("../../src/chat-controller.ts");
 
 const S = () => useStore.getState();

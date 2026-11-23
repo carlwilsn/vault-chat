@@ -48,6 +48,8 @@ import { isPopout } from "./windowKind";
 import { probeLaptopReleaseHealth } from "./laptopReleaseHealth";
 
 export const BOX_UNREACHABLE = "Box unreachable";
+/** The calm words while the app (re)connects to the box: no error, a message sent now waits for it. */
+export const CONNECTING = "Connecting to the box…";
 /** How long a waiting message may be missing from both the log's pending and its transcript before it is called dropped. */
 const DROP_GRACE_MS = 3000;
 /** No box for this vault, and none could be run here: the chat has nothing to run on. */
@@ -62,7 +64,10 @@ export function unreachableWhy(raw: string, tailscale?: { installed: boolean; co
   if (/timed? ?out|timeout|deadline/i.test(raw)) return "the box did not answer in time";
   if (/refused|reset|closed|502|503|504/i.test(raw)) return "the box is down or restarting";
   if (/dns|resolve|no route|unreachable|network|connect/i.test(raw)) return "no route to the box (is Tailscale connected?)";
-  return raw.slice(0, 160) || "no answer";
+  // The transport's own words ("error sending request for url (…)", "Failed to fetch") stay in the reason, for
+  // diagnostics (the line's tooltip, the gate's state); the line says it plainly.
+  if (/error sending request|fetch|request|http|url/i.test(raw)) return "the box is not answering";
+  return raw.trim() && raw.length <= 80 ? raw.trim() : "the box is not answering";
 }
 
 /** The store's `boxChat`: null until the vault's box is known; `on: false`, no box (the chat says so). */
@@ -85,6 +90,18 @@ export type Link = { url: string; token: string | null; vault?: string | null };
 type HttpResult = { status: number; body: string };
 
 const POLL_TIMEOUT_MS = 35_000;
+/** A quick "are you there" after a failed poll: /poll?after=latest answers at once, so the link counts as up the moment
+ *  the box answers, not when the next long poll (held up to 25 s) returns. */
+const PROBE_TIMEOUT_MS = 8_000;
+/**
+ * How the feed reconnects. A failed poll first shows "Connecting to the box…" (reachable null, the raw error kept as
+ * the reason for diagnostics); only after `graceMs` of awake time still failing is the box called unreachable.
+ * Measured on Carl's laptop (box app.jsonl box.feed, 11-23): a wake from sleep drops the feed and it comes back by
+ * itself; the old "unreachable" windows clustered at 26-30 s, which was ~1 s of retry plus the 25 s long poll that had
+ * to return before the app noticed. `retryMs` is the backoff cap while connecting (each attempt itself may take up to
+ * the 10 s connect timeout); `slowRetryMs` after the grace. Tests shorten them.
+ */
+export const connectTiming = { graceMs: 30_000, retryMs: 2_000, slowRetryMs: 15_000, sleepGapMs: 10_000, tickMs: 2_000 };
 const CACHE_MAX_PICTURES = 12;
 
 function headless(): boolean {
@@ -327,6 +344,14 @@ class BoxChatSession {
   private cacheTimer: ReturnType<typeof setTimeout> | null = null;
   /** The poll is down since (ms), false when up, null before the first answer. */
   private down: number | false | null = null;
+  /** The grace's start: the first failure of this outage, or the wake from sleep after it (awake time only). */
+  private downSince: number | null = null;
+  private graceTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastReason = "";
+  private backoff = 1000;
+  /** The clock ticks to see a wake from sleep (a gap far longer than the tick), and the window/network events. */
+  private lastTick = Date.now();
+  private offResume: (() => void) | null = null;
   /** The ids this client sent (a delivered steer or queued message drops its chip). */
   private sent = new Set<string>();
   /** Clear on this surface (src/viewClear.ts): each conversation shows only what came after this device's own Clear. */
@@ -370,6 +395,7 @@ class BoxChatSession {
     // Another translator (a vault plugin's on or off, the agent's choice): the chats are translated again, at once.
     this.unsubTranslators = subscribeTranslators(() => this.projectAll());
     void this.loop();
+    this.offResume = this.watchResume();
     try {
       this.beat = startAttentionBeat({
         device: "laptop",
@@ -384,6 +410,10 @@ class BoxChatSession {
 
   stop(): void {
     this.stopped = true;
+    this.offResume?.();
+    this.offResume = null;
+    if (this.graceTimer) clearTimeout(this.graceTimer);
+    this.graceTimer = null;
     this.beat?.stop();
     this.beat = null;
     this.unsub?.();
@@ -422,29 +452,138 @@ class BoxChatSession {
     useStore.getState().setBoxChat({ on: true, reachable, reason });
   }
 
-  /** Reconnect now (a send while marked unreachable, or tests). */
+  /** Reconnect now (a send while marked unreachable, the window back in front, the network back, or tests). */
   kick(): void {
+    this.backoff = 1000;
     this.wake?.();
   }
 
+  /**
+   * A failed attempt. Within the grace (awake time since this outage began) the chat says "Connecting to the box…"
+   * (reachable null, the raw error kept as the reason); after it, the box is out of reach (reachable false).
+   */
+  private failed(reason: string): void {
+    this.lastReason = reason;
+    const now = Date.now();
+    if (this.downSince === null) this.downSince = now;
+    const left = this.downSince + connectTiming.graceMs - now;
+    if (left > 0) {
+      const cur = useStore.getState().boxChat;
+      if (!(cur?.on && cur.reachable === null && cur.reason === reason)) useStore.getState().setBoxChat({ on: true, reachable: null, reason });
+      if (!this.graceTimer) this.graceTimer = setTimeout(() => this.graceOver(), left);
+      return;
+    }
+    this.setReach(false, reason);
+  }
+
+  private graceOver(): void {
+    this.graceTimer = null;
+    if (this.stopped || this.downSince === null) return;
+    // A timer that fires late because the laptop slept is a wake, not a grace run out.
+    if (Date.now() - this.lastTick > connectTiming.sleepGapMs) return this.resumed();
+    this.failed(this.lastReason);
+  }
+
+  /** The box answered: up now, the outage over. */
+  private markUp(): void {
+    if (this.down !== false) vlog("box.feed", { state: "connected", cursor: this.cursor, epoch: this.epoch, ...(this.down ? { downMs: Date.now() - this.down } : {}) });
+    this.down = false;
+    this.downSince = null;
+    if (this.graceTimer) clearTimeout(this.graceTimer);
+    this.graceTimer = null;
+    this.backoff = 1000;
+    this.setReach(true);
+  }
+
+  /** Back from sleep: a fresh grace for an outage still going (Tailscale takes a moment), and try again now. */
+  private resumed(): void {
+    this.lastTick = Date.now();
+    if (this.down === false) return;
+    if (this.downSince !== null) {
+      this.downSince = Date.now();
+      if (this.graceTimer) clearTimeout(this.graceTimer);
+      this.graceTimer = null;
+      if (this.lastReason) this.failed(this.lastReason);
+    }
+    this.kick();
+  }
+
+  /** Wake from sleep (the clock jumped), the window back in front, the network back: retry at once, never on a long timer. */
+  private watchResume(): () => void {
+    const offs: (() => void)[] = [];
+    const tick = setInterval(() => {
+      const now = Date.now();
+      const slept = now - this.lastTick > connectTiming.sleepGapMs;
+      this.lastTick = now;
+      if (slept) this.resumed();
+    }, connectTiming.tickMs);
+    (tick as { unref?: () => void }).unref?.();
+    offs.push(() => clearInterval(tick));
+    const nudge = () => {
+      if (this.down !== false) this.kick();
+    };
+    try {
+      if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+        window.addEventListener("focus", nudge);
+        window.addEventListener("online", nudge);
+        offs.push(() => (window.removeEventListener("focus", nudge), window.removeEventListener("online", nudge)));
+      }
+      if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+        const vis = () => !document.hidden && nudge();
+        document.addEventListener("visibilitychange", vis);
+        offs.push(() => document.removeEventListener("visibilitychange", vis));
+      }
+    } catch {
+      /* no window here (tests) */
+    }
+    return () => offs.forEach((f) => f());
+  }
+
+  /** Resolves true once the box answers, false when it is called out of reach (the grace ran out) or the chat stops. */
+  whenReachable(): Promise<boolean> {
+    const now = () => {
+      const b = useStore.getState().boxChat;
+      if (this.stopped || !b?.on || b.reachable === false) return false;
+      return b.reachable === true ? true : null;
+    };
+    const first = now();
+    if (first !== null) return Promise.resolve(first);
+    this.kick();
+    return new Promise((res) => {
+      const off = useStore.subscribe(() => {
+        const v = now();
+        if (v === null) return;
+        off();
+        res(v);
+      });
+    });
+  }
+
   private async loop(): Promise<void> {
-    let backoff = 1000;
     while (this.live()) {
       try {
         // A cache gave the screen its first picture; the box's own list is read once before the feed is followed
         // from the cache's cursor, so a chat the cache holds that the box deleted (or no longer lists) goes now,
         // whatever the feed after that cursor says.
-        if (this.cursor === null || this.reconcile) await this.resync();
+        let fresh = false;
+        if (this.cursor === null || this.reconcile) {
+          await this.resync();
+          fresh = true;
+        }
         if (!this.live()) return;
+        // Not known to be up (the launch, or after a failure): ask the box's head, which answers at once, so the
+        // chat is up the moment the box answers rather than when the long poll below returns.
+        if (this.down !== false) {
+          if (!fresh) await httpGet(this.link, "/poll?after=latest&client=laptop", PROBE_TIMEOUT_MS);
+          if (!this.live()) return;
+          this.markUp();
+        }
         const pollLink = this.link;
         const r = (await httpGet(pollLink, `/poll?after=${this.cursor}${this.epoch ? `&epoch=${encodeURIComponent(this.epoch)}` : ""}&client=laptop`, POLL_TIMEOUT_MS)) as PollAnswer & { epoch?: string };
         if (!this.live()) return;
         if (pollLink !== this.link) continue; // old workspace file signals must not reach the new viewer
-        if (this.down !== false) vlog("box.feed", { state: "connected", cursor: this.cursor, epoch: this.epoch, ...(this.down ? { downMs: Date.now() - this.down } : {}) });
-        this.down = false;
-        this.setReach(true);
+        this.markUp();
         void probeLaptopReleaseHealth(this.vault, this.link);
-        backoff = 1000;
         if (r.reset || (r.epoch && this.epoch && r.epoch !== this.epoch)) {
           // Another log than the cursor's (the box's log was reset): start over from it.
           vlog("box.feed", { state: "reset", cursor: this.cursor, epoch: this.epoch, boxEpoch: r.epoch ?? null });
@@ -459,17 +598,19 @@ class BoxChatSession {
           this.down = Date.now();
           vlog("box.feed", { state: "dropped", cursor: this.cursor, error: String((e as Error)?.message ?? e).slice(0, 200) });
         }
-        this.setReach(false, String((e as Error)?.message ?? e));
+        this.failed(String((e as Error)?.message ?? e));
         // The cursor stays: when the box answers again, /poll gives exactly what was missed.
+        const wait = this.backoff;
         await new Promise<void>((res) => {
-          const t = setTimeout(res, backoff);
+          const t = setTimeout(res, wait);
           this.wake = () => {
             clearTimeout(t);
             res();
           };
         });
         this.wake = null;
-        backoff = Math.min(backoff * 2, 15_000);
+        // Quick retries while connecting (a wake from sleep, a box restart); slower once it is truly out of reach.
+        this.backoff = Math.min(this.backoff * 2, this.downSince !== null && Date.now() - this.downSince < connectTiming.graceMs ? connectTiming.retryMs : connectTiming.slowRetryMs);
       }
     }
   }
@@ -1167,8 +1308,18 @@ export async function boxSend(opts: { text: string; contextPreamble?: string; at
     sess.failOutgoing(convId, clientId, `⚠️ ${BOX_UNREACHABLE}. The message was NOT sent.`);
     return true;
   }
+  // Still connecting (the app just opened, or woke from sleep): the message is shown and waits here, and goes the
+  // moment the box answers. Only if the box stays out of reach past the grace is it marked not sent.
+  if (s.boxChat?.reachable !== true) {
+    sess.addOutgoing(convId, { id: clientId, text: shown, attachments: opts.attachments });
+    if (!(await sess.whenReachable())) {
+      sess.failOutgoing(convId, clientId, `⚠️ ${BOX_UNREACHABLE}. The message was NOT sent.`);
+      return true;
+    }
+    sess.dropOutgoing(convId, clientId);
+  }
   const row = sess.row(convId);
-  const conv = s.conversations.find((c) => c.id === convId);
+  const conv = useStore.getState().conversations.find((c) => c.id === convId);
   const kind: "answer" | "steer" | "send" = row?.asking ? "answer" : row?.running || conv?.status === "running" ? "steer" : "send";
   // Shown at once, under the id the box echoes back; a message into a running turn waits for the agent's next step.
   sess.addOutgoing(convId, { id: clientId, text: shown, attachments: opts.attachments, ...(kind === "steer" ? { steer: true } : {}) });

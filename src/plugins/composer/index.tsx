@@ -70,6 +70,8 @@ const sendState = () => {
   return {
     ready: g.ready && !blocked,
     ...(why ? { why } : {}),
+    // Connecting to the box (just opened, or woke from sleep): a message sent now waits and goes when it answers.
+    ...(g.connecting ? { connecting: true, ...(g.reason ? { lastError: g.reason } : {}) } : {}),
     sending: D().sending > 0,
     busy: s.busy,
     held: g.held,
@@ -100,7 +102,7 @@ export function composerOffers() {
         read: modelState,
       },
       send: {
-        description: "Whether a message can go: ready (and why not), sending (a send still reading its files), busy (the agent is working: a message goes to it at its next step), held (waiting for the usage limit's reset), waiting (messages sent but not read yet), queued (those messages: id, text), canSend (ready with something in the draft) and button (send | stop: what the composer's button is).",
+        description: "Whether a message can go: ready (and why not), connecting (the box not answered yet: a message sent now waits for it; lastError: the last failed attempt's raw error), sending (a send still reading its files), busy (the agent is working: a message goes to it at its next step), held (waiting for the usage limit's reset), waiting (messages sent but not read yet), queued (those messages: id, text), canSend (ready with something in the draft) and button (send | stop: what the composer's button is).",
         read: sendState,
       },
       usage: {

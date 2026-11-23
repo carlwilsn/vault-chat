@@ -820,7 +820,7 @@ export const scenarios: Scenario[] = [
     title: "Phase 2 — chat when the box is unreachable",
     group: "Sync",
     notes:
-      "Box mode (Phase 2): the vault's sync.json names a box, so every chat turn runs on the box. Here the box can't be reached: the composer is disabled and says “Box unreachable — <why>. Retrying…”, the footer says the same, and the feed retries in the background. Opening, editing and saving a note still work (the sync catches up later).",
+      "Box mode (Phase 2): the vault's sync.json names a box, so every chat turn runs on the box. Here the box can't be reached: for the first 30 s the composer says only “Connecting to the box…” (muted; a message sent then waits and goes when the box answers); past that it says “Box unreachable — <why in plain words>. Retrying…” (Send off, typing still on), the footer says the same with the raw error in its tooltip, and the feed retries in the background. Opening, editing and saving a note still work (the sync catches up later).",
     build: (c) => world(c),
     host: {
       sync: {

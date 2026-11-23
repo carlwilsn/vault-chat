@@ -41,6 +41,9 @@ fake.setHandler("conversation_delete", () => void writes.push("delete"));
 
 const { useStore } = await import("../../src/store.ts");
 const bc = await import("../../src/boxChat.ts");
+// The grace before "unreachable" (src/boxChat.ts connectTiming), short here: these tests wait for the box out of reach.
+bc.connectTiming.graceMs = 500;
+bc.connectTiming.slowRetryMs = 1000;
 const chat = await import("../../src/chat-controller.ts");
 const { makeChatView } = await import("../../src/convlog/view.ts");
 
