@@ -2,8 +2,14 @@ import { EditorWrites } from "./editorWrites";
 import { isBoxPath, readTextAt, writeTextAt } from "./boxFiles";
 import { boxLinkFor, boxPost, localServerLink } from "./boxChat";
 import { pushEditorWrites } from "./vaultSync";
+import { isOwnWrite, noteOwnWrite } from "./liveReload";
 
-export const editorWrites = new EditorWrites({ read: readTextAt, write: writeTextAt });
+// Each save is noted as the editor's own before it starts, so the sync bringing it back is an echo (src/liveReload.ts).
+export const editorWrites = new EditorWrites({
+  read: readTextAt,
+  write: (path, text) => (noteOwnWrite(path, text), writeTextAt(path, text)),
+  isOwn: isOwnWrite,
+});
 
 /** Drain only this viewer's editor work. The conversation's owner is unrelated
  * to its file workspace. Git remains the transport/merge authority for vaults;

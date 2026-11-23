@@ -1,5 +1,5 @@
-// The viewer's pane (part `pane` of app/viewer, src/plugins/viewer): the header (the file's path, "Changed by the agent"
-// with Reload / Keep mine, the view / edit toggle, Close pane), the file drawn by the viewer the registry names
+// The viewer's pane (part `pane` of app/viewer, src/plugins/viewer): the header (the file's path, on a real conflict
+// "Changed … " with Reload / Keep mine, the view / edit toggle, Close pane), the file drawn by the viewer the registry names
 // (./builtins.tsx ViewerBody; edit mode is the source editor, EDITOR_CHAIN: the live markdown editor, Monaco otherwise),
 // saving as Carl types, live reload, Ctrl+L / the marquee in a viewer, ScrollTo on a rendered note. Moved here from
 // src/MarkdownView.tsx unchanged; src/MarkdownView.tsx mounts it through the plugin host (its props: the pane's id), and
@@ -23,7 +23,7 @@ import { landMarkdown, reportScroll } from "../../scrollTarget";
 import { decodeTarget } from "../../viewTarget";
 import { findVaultFileByTail, tryOpenLink } from "../../linkNav";
 import { noteEditedFile } from "../../commit-controller";
-import { applyDiskContent, pendingBoxText, registerDirty, setDiskChanged, useLiveFiles } from "../../liveReload";
+import { CHANGE_LABEL, applyDiskContent, noteOwnWrite, pendingBoxText, registerDirty, setDiskChanged, settleOpenFile, useLiveFiles } from "../../liveReload";
 
 import { flipNthTaskCheckbox, localPathFromUrl } from "../../mdPipeline";
 import { hit, shortcutHint } from "../../shortcuts";
@@ -262,11 +262,22 @@ export function Pane({ paneId }: Props) {
     publishTextViewport(file, content, 0);
   }, [file]);
 
-  // Live refresh (liveReload.ts): typing not yet on disk keeps an agent's
-  // change from replacing this buffer — the header offers Reload instead.
-  useEffect(() => (file ? registerDirty(file, () => lastUserValue.current !== lastSaved.current) : undefined), [file]);
+  // Live refresh (liveReload.ts): typing not yet on disk is never replaced by a change underneath; the change merges
+  // into it (adopt), and only a conflict makes the header offer Reload / Keep mine.
+  const editorHooks = useRef({ adopt: (_merged: string, _disk: string) => {} });
+  useEffect(
+    () =>
+      file
+        ? registerDirty(file, () => lastUserValue.current !== lastSaved.current, {
+            base: () => lastSaved.current,
+            buffer: () => lastUserValue.current,
+            adopt: (merged, disk) => editorHooks.current.adopt(merged, disk),
+          })
+        : undefined,
+    [file],
+  );
   const normFile = file ? file.replace(/\\/g, "/").replace(/\/+$/, "") : "";
-  const diskChanged = useLiveFiles((s) => !!(normFile && s.diskChanged[normFile]));
+  const diskChanged = useLiveFiles((s) => (normFile ? s.diskChanged[normFile] : undefined));
   const rev = useLiveFiles((s) => (normFile ? s.revs[normFile] ?? 0 : 0));
 
   // When the buffer is replaced by something other than the user typing
@@ -322,6 +333,10 @@ export function Pane({ paneId }: Props) {
     } else {
       reloadCurrent(file ?? "", value);
     }
+    queueSave(value);
+  };
+
+  const queueSave = (value: string, rebase = false) => {
     if (!file) return;
     const vault = fileWorkspace.current.vault;
     if (!vault) return;
@@ -331,7 +346,23 @@ export function Pane({ paneId }: Props) {
       if (livePath === file) lastSaved.current = value;
       noteSaved(file);
       if (!isBoxPath(file)) noteEditedFile(file);
-    }, () => setDiskChanged(file, true));
+    }, () => {
+      // The disk changed from outside under this save: merge with it, or (a real conflict) the header's notice.
+      void readTextAt(file).then((disk) => settleOpenFile(file, disk, "outside"), () => setDiskChanged(file, "outside"));
+    }, rebase);
+  };
+
+  // A change underneath merged with this buffer's typing (liveReload.settleOpenFile): show the merge, save it.
+  editorHooks.current.adopt = (merged: string, disk: string) => {
+    lastSaved.current = disk;
+    lastUserValue.current = merged;
+    if (merged !== contentRef.current) {
+      if (paneId) updatePaneContent(paneId, merged);
+      else reloadCurrent(file ?? "", merged);
+      publishTextViewport(file, merged, scrollRatioRef.current);
+    }
+    if (merged !== disk) queueSave(merged, true);
+    else if (file) void editorWrites.discard(file); // the disk already has it all: no save left to make
   };
 
   const reloadFromDisk = async () => {
@@ -353,9 +384,10 @@ export function Pane({ paneId }: Props) {
     if (!file) return;
     try {
       await editorWrites.discard(file);
+      noteOwnWrite(file, content);
       await writeTextAt(file, content);
       const vault = fileWorkspace.current.vault;
-      if (vault) editorWrites.queue({ vault, path: file, text: content }, content, () => {}, () => setDiskChanged(file, true));
+      if (vault) editorWrites.queue({ vault, path: file, text: content }, content, () => {}, () => setDiskChanged(file, "outside"));
       lastSaved.current = content;
       lastUserValue.current = content;
       setDiskChanged(file, false);
@@ -651,7 +683,7 @@ export function Pane({ paneId }: Props) {
         <div className="flex items-center gap-3">
           {diskChanged && (
             <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground" data-testid="disk-changed" draggable={false}>
-              Changed by the agent —
+              {CHANGE_LABEL[diskChanged]} —
               <button data-offer="app/viewer.reloadFromDisk"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -669,7 +701,7 @@ export function Pane({ paneId }: Props) {
                   void keepMine();
                 }}
                 className="hover:text-foreground hover:underline"
-                title="Save your version over the agent's"
+                title="Save your version over the one on disk"
               >
                 Keep mine
               </button>

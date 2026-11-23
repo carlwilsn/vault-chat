@@ -2,7 +2,7 @@
 //  - /poll "vault_changed" runs a box sync cycle at once, and the
 //    merge it brings reloads the open pane in place;
 //  - a pane with typing not yet on disk is never overwritten — it says
-//    "Changed by the agent" instead.
+//    "Changed …" instead (test/harness/editorEcho.test.ts: echoes, merges).
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -176,7 +176,7 @@ test("file_changed over unsaved typing: the notice, and Reload takes the box's t
   S().reloadCurrent(NOTE, "# A\n\nlive from the box\nCarl types");
   boxFiles["notes/a.md"] = "# A\n\nlive from the box, again\n";
   queue.push({ vault: "v", type: "file_changed", path: "notes/a.md" });
-  await waitFor("the notice", () => live.useLiveFiles.getState().diskChanged[NOTE] === true);
+  await waitFor("the notice", () => live.useLiveFiles.getState().diskChanged[NOTE] === "agent");
   assert.equal(S().currentContent, "# A\n\nlive from the box\nCarl types", "his buffer stays");
   assert.equal(live.pendingBoxText(NOTE), "# A\n\nlive from the box, again\n");
   typing = false;
@@ -208,7 +208,7 @@ test("unsaved typing is never overwritten: the pane says it changed instead", as
   fs.writeFileSync(NOTE, "# A\n\nthird agent edit\n");
   await live.refreshOpenFiles({ vault, paths: ["notes/a.md"] });
   assert.equal(S().currentContent, "# A\n\nsecond agent edit\nCarl is typing", "his buffer stays");
-  assert.equal(live.useLiveFiles.getState().diskChanged[NOTE], true, "Changed by the agent — Reload");
+  assert.equal(live.useLiveFiles.getState().diskChanged[NOTE], "box", "Changed on the box — Reload");
   // Reload takes the agent's version and clears the notice.
   typing = false;
   live.applyDiskContent(NOTE, fs.readFileSync(NOTE, "utf8"));

@@ -70,8 +70,10 @@ function drawnBy(o: Pick<Open, "file" | "mode">): string {
   return top?.id ?? "fallback";
 }
 
-/** The header says "Changed by the agent": the file changed on disk while this pane had typing not saved yet. */
-const changedOnDisk = (file: string) => !!useLiveFiles.getState().diskChanged[file.replace(/\\/g, "/").replace(/\/+$/, "")];
+/** The header's "Changed … — Reload · Keep mine": the file changed underneath this pane's unsaved typing and the two
+ *  could not merge. Who changed it, when known: "agent" (its write on the box), "box" (a sync merge), else "outside". */
+const changedBy = (file: string) => useLiveFiles.getState().diskChanged[file.replace(/\\/g, "/").replace(/\/+$/, "")];
+const changedOnDisk = (file: string) => !!changedBy(file);
 
 function describeOpen(o: Open) {
   const { type, ext } = fileViewerKeys(o.file);
@@ -97,6 +99,7 @@ function describeOpen(o: Open) {
     editable: canEdit,
     active: o.active,
     changedOnDisk: changedOnDisk(o.file),
+    ...(changedBy(o.file) ? { changedBy: changedBy(o.file) } : {}),
     ...(Object.keys(scroll).length ? { scroll } : {}),
     ...(zoomOf(o.file) !== null ? { zoom: zoomOf(o.file) } : {}),
     ...(type === "tex" && texOf(o.file) ? { tex: texOf(o.file) } : {}),
@@ -336,7 +339,7 @@ export function viewerOffers(): Offers {
         },
       },
       reloadFromDisk: {
-        description: "The header's Reload, when an open file changed on disk while it had typing not saved yet (open: changedOnDisk): show the file as it is on disk, dropping that typing. Only when Carl asks.",
+        description: "The header's Reload, when an open file changed on disk under typing not saved yet and the two could not merge (open: changedOnDisk, changedBy): show the file as it is on disk, dropping that typing. Only when Carl asks.",
         args: PANE_ARGS,
         run: async (a) => {
           const o = openFor(a);
@@ -347,7 +350,7 @@ export function viewerOffers(): Offers {
         },
       },
       keepMine: {
-        description: "The header's Keep mine, when an open file changed on disk while it had typing not saved yet: save the version on screen over the one on disk. Only when Carl asks.",
+        description: "The header's Keep mine, when an open file changed on disk under typing not saved yet and the two could not merge: save the version on screen over the one on disk. Only when Carl asks.",
         args: PANE_ARGS,
         run: async (a) => {
           const o = openFor(a);

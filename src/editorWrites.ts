@@ -5,12 +5,13 @@ type Job = EditorWrite & { base: string; saved?: string; cancelled?: boolean; ti
 
 export class EditorWrites {
   private jobs = new Map<string, Job>();
-  constructor(private io: { read(path: string): Promise<string>; write(path: string, text: string): Promise<void> }) {}
+  constructor(private io: { read(path: string): Promise<string>; write(path: string, text: string): Promise<void>; isOwn?(path: string, text: string): boolean }) {}
 
-  queue(write: EditorWrite, base: string, onSaved: () => void, onConflict: () => void): void {
+  /** `rebase`: the disk became `base` (a merge took it in), so this edit saves against it, not the earlier base. */
+  queue(write: EditorWrite, base: string, onSaved: () => void, onConflict: () => void, rebase = false): void {
     const prev = this.jobs.get(write.path);
     if (prev?.timer) clearTimeout(prev.timer);
-    const job: Job = { ...write, base: prev?.saved ?? prev?.base ?? base, tail: prev?.tail, onSaved, onConflict };
+    const job: Job = { ...write, base: rebase ? base : prev?.saved ?? prev?.base ?? base, tail: prev?.tail, onSaved, onConflict };
     this.jobs.set(write.path, job);
     job.timer = setTimeout(() => { job.timer = undefined; void this.save(job).catch(() => {}); }, 300);
   }
@@ -44,8 +45,15 @@ export class EditorWrites {
         // explicit Reload/discard must cancel a save not yet written.
         if (!this.jobs.has(job.path)) return;
       }
-      // A preceding queued write may have completed while this one waited.
-      if (disk !== job.base && disk !== job.saved) {
+      if (disk === job.text) {
+        // The disk already holds this text (the same typing came back, or a merge landed it): nothing to write.
+        job.saved = job.text;
+        job.onSaved();
+        return;
+      }
+      // A preceding queued write may have completed while this one waited; the disk may hold one of this editor's
+      // own earlier saves the sync brought back (an echo): neither is a change from outside.
+      if (disk !== job.base && disk !== job.saved && !this.io.isOwn?.(job.path, disk)) {
         job.onConflict();
         throw new Error(`${job.path}: changed on disk; Reload or Keep mine before sending`);
       }

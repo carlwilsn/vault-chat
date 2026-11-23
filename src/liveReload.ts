@@ -1,9 +1,17 @@
-// Live refresh of open files: when the agent changes a file that is open in a
-// pane (a box sync merge brought its edit in, or the laptop agent's Write/Edit
-// just ran), the pane shows the new content in place — no manual refresh.
-// Text views get the new text (scroll kept by each view); PDFs and images
-// re-render on a revision bump. A pane with unsaved typing is never
-// overwritten: it shows "Changed by the agent — Reload · Keep mine" instead.
+// Live refresh of open files: when a file open in a pane changes underneath
+// it (a box sync merge brought an edit in, the agent's Write/Edit just ran),
+// the pane shows the new content in place — no manual refresh. Text views
+// get the new text (cursor and scroll kept by each view); PDFs and images
+// re-render on a revision bump.
+//
+// What comes back is often the editor's own writes (the laptop↔box sync
+// round-trips each save): a text that is the buffer, the editor's base, or
+// one of its recent saves is an echo and changes nothing. A pane with unsaved
+// typing is never overwritten: a real outside change is merged into it
+// (src/merge3.ts) when the two touch different lines, and only a real
+// conflict shows the header's "Changed … — Reload · Keep mine", naming the
+// source when it is known (the agent's write, a merge from the box) and
+// "outside the editor" otherwise.
 //
 // Box mode goes one step ahead of the sync: the box announces each write at
 // once (/poll "file_changed"), and a pane showing that file fetches the box's
@@ -13,12 +21,22 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "./store";
 import { fileKind, isUnreadableAsText } from "./fileKind";
+import { merge3 } from "./merge3";
 
 const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
 
+/** Who changed a file underneath its editor, as far as it is known: the agent's write on the box (its file_changed),
+ *  a sync merge from the box (merged_paths), or unknown. */
+export type ChangeSource = "agent" | "box" | "outside";
+export const CHANGE_LABEL: Record<ChangeSource, string> = {
+  agent: "Changed by the agent",
+  box: "Changed on the box",
+  outside: "Changed outside the editor",
+};
+
 type LiveFiles = {
-  /** Open files whose disk copy changed under unsaved edits (normalized path → true). */
-  diskChanged: Record<string, true>;
+  /** Open files whose disk copy changed under unsaved edits that could not be merged (normalized path → who changed it). */
+  diskChanged: Record<string, ChangeSource>;
   /** Per binary file: bumped when it changed on disk (PdfView / ImageView re-read). */
   revs: Record<string, number>;
 };
@@ -35,32 +53,91 @@ export function fileRev(path: string | null | undefined): number {
   return path ? useLiveFiles.getState().revs[norm(path)] ?? 0 : 0;
 }
 
-export function setDiskChanged(path: string, on: boolean): void {
+/** Show (a source) or clear (false) the header's "Changed … — Reload · Keep mine" for `path`. */
+export function setDiskChanged(path: string, on: ChangeSource | false): void {
   const k = norm(path);
   useLiveFiles.setState((s) => {
-    if (!!s.diskChanged[k] === on) return {};
+    if ((s.diskChanged[k] ?? false) === on) return {};
     const d = { ...s.diskChanged };
-    if (on) d[k] = true;
+    if (on) d[k] = on;
     else delete d[k];
     return { diskChanged: d };
   });
 }
 
-// Each text pane (MarkdownView) says whether its buffer has typing not yet on disk.
-const dirtyChecks = new Map<string, Set<() => boolean>>();
-export function registerDirty(path: string, isDirty: () => boolean): () => void {
+// ---- the editor's own writes (echoes) ----
+
+/** What the editor wrote to each file lately: a sync bringing one of these back is an echo, not a change. */
+const ownWrites = new Map<string, { text: string; at: number }[]>();
+/** How long a save counts as the editor's own when it comes back (the sync round-trips in seconds). */
+const OWN_WRITE_TTL_MS = 2 * 60_000;
+/** The editor is writing `text` to `path` (noted before the write starts, so a read racing it knows it). */
+export function noteOwnWrite(path: string, text: string): void {
+  const k = norm(path);
+  const now = Date.now();
+  const list = (ownWrites.get(k) ?? []).filter((w) => w.text !== text && now - w.at < OWN_WRITE_TTL_MS);
+  list.push({ text, at: now });
+  ownWrites.set(k, list.slice(-8));
+}
+/** Whether `text` is one of the editor's own recent writes to `path`. */
+export function isOwnWrite(path: string, text: string): boolean {
+  const now = Date.now();
+  return (ownWrites.get(norm(path)) ?? []).some((w) => w.text === text && now - w.at < OWN_WRITE_TTL_MS);
+}
+
+// Each text pane says whether its buffer has typing not yet on disk, and (an editor) what that typing started from
+// and how to take a merge in.
+export type EditorHooks = {
+  /** The text on disk the buffer's typing started from (its last load or save). */
+  base(): string;
+  /** The buffer now. */
+  buffer(): string;
+  /** The disk became `disk` and the buffer `merged` (its typing kept, saved against `disk`). */
+  adopt(merged: string, disk: string): void;
+};
+type Reg = { isDirty: () => boolean; hooks?: EditorHooks };
+const dirtyChecks = new Map<string, Set<Reg>>();
+export function registerDirty(path: string, isDirty: () => boolean, hooks?: EditorHooks): () => void {
   const k = norm(path);
   let set = dirtyChecks.get(k);
   if (!set) dirtyChecks.set(k, (set = new Set()));
-  set.add(isDirty);
+  const reg: Reg = { isDirty, hooks };
+  set.add(reg);
   return () => {
-    set!.delete(isDirty);
+    set!.delete(reg);
     if (!set!.size) dirtyChecks.delete(k);
   };
 }
-function isDirty(path: string): boolean {
-  for (const f of dirtyChecks.get(norm(path)) ?? []) if (f()) return true;
-  return false;
+
+/**
+ * `text` is now what `path` holds underneath its open panes (the disk, or the box's copy ahead of it): show it.
+ * An echo of the editor's own content changes nothing; a clean buffer takes it silently; unsaved typing merges with
+ * it; only a real conflict shows the header's notice, naming `source`.
+ */
+export function settleOpenFile(path: string, text: string, source: ChangeSource): void {
+  const shown = shownContent(path);
+  if (!shown.length || shown.every((c) => c === text)) {
+    setDiskChanged(path, false);
+    return;
+  }
+  const regs = [...(dirtyChecks.get(norm(path)) ?? [])];
+  if (isOwnWrite(path, text) || regs.some((r) => r.hooks && (r.hooks.base() === text || r.hooks.buffer() === text))) return; // an echo
+  const dirty = regs.filter((r) => r.isDirty());
+  if (!dirty.length) {
+    applyDiskContent(path, text);
+    return;
+  }
+  const merges: [EditorHooks, string][] = [];
+  for (const r of dirty) {
+    const m = r.hooks ? merge3(r.hooks.base(), r.hooks.buffer(), text) : null;
+    if (m === null) {
+      setDiskChanged(path, source);
+      return;
+    }
+    merges.push([r.hooks!, m]);
+  }
+  for (const [h, m] of merges) h.adopt(m, text);
+  setDiskChanged(path, false);
 }
 
 // ---- the box's copy, shown ahead of the disk ----
@@ -123,7 +200,7 @@ export type BoxFileFetch = (rel: string) => Promise<Uint8Array | null>;
 /**
  * The box wrote `rel` (vault-relative) in the open vault: every pane showing
  * it shows the box's bytes, ~150 ms after the last write to it. Text panes
- * get the text (unsaved typing gets "Changed by the agent" instead); images
+ * get the text (unsaved typing merges with it, or gets "Changed by the agent" on a conflict); images
  * and PDFs re-render from the bytes. Nothing touches this disk.
  */
 export function boxFileChanged(o: { vault: string; rel: string; fetch: BoxFileFetch; delayMs?: number }): void {
@@ -169,8 +246,7 @@ async function showBoxFile(vaultPath: string, k: string, rel: string, fetch: Box
   const shown = shownContent(file);
   if (!shown.length || shown.every((c) => c === text)) return;
   holdText(k, text);
-  if (isDirty(file)) setDiskChanged(file, true);
-  else applyDiskContent(file, text);
+  settleOpenFile(file, text, "agent");
 }
 
 /** Every pane (or the single view) showing `path` gets `content`. */
@@ -257,10 +333,7 @@ export async function refreshOpenFiles(o: { vault?: string | null; paths?: strin
           return; // the box's copy is still ahead of this disk: its merge brings it
         }
       }
-      const shown = shownContent(file);
-      if (!shown.length || shown.every((c) => c === text)) return;
-      if (isDirty(file)) setDiskChanged(file, true);
-      else applyDiskContent(file, text);
+      settleOpenFile(file, text, named ? "box" : "outside");
     }),
   );
 }

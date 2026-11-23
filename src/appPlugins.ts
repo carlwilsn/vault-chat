@@ -107,7 +107,7 @@ export const VIEWER_PLUGIN: AppPluginInfo = {
   name: "Viewer",
   mount: "panel",
   description:
-    "The viewer: the files open in its panes (type, the viewer drawing each, view or edit mode, where each is scrolled), the viewer of each type of file (PDF, markdown, notebook, TeX, HTML, image, video, code; a vault plugin can draw a type its own way) and which types Ctrl+E edits; open a file, scroll to a page, line or heading, find text, zoom a PDF or image, switch mode, choose, disable or enable a viewer; each pane's header (the file's path, \"Changed by the agent\" with Reload / Keep mine, the view / edit toggle, Close pane). Off: the agent cannot reach it; files still draw.",
+    "The viewer: the files open in its panes (type, the viewer drawing each, view or edit mode, where each is scrolled), the viewer of each type of file (PDF, markdown, notebook, TeX, HTML, image, video, code; a vault plugin can draw a type its own way) and which types Ctrl+E edits; open a file, scroll to a page, line or heading, find text, zoom a PDF or image, switch mode, choose, disable or enable a viewer; each pane's header (the file's path, \"Changed …\" with Reload / Keep mine on a conflict, the view / edit toggle, Close pane). Off: the agent cannot reach it; files still draw.",
   words: ["viewer", "the viewer", "file viewer", "viewers", "viewer pane", "pdf viewer", "markdown viewer", "document viewer"],
 };
 
