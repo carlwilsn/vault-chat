@@ -23,12 +23,10 @@ import { pushKeysToBox, keysChanged, subscribeKeyPush } from "../../boxKeys";
 import { ClaudeAccountLine } from "../../ClaudeCodeSignIn";
 import { disconnectFromBox, syncBoxNow, syncWithBox } from "../../settingsBox";
 import { MasterSection } from "../../MasterSection";
-import { openShortcutSheet } from "../../ShortcutSheet";
-import { chordText } from "../../shortcuts";
 import { Picker, type PickOption } from "../../SearchPicker";
 
-// The Claude sign-in on one line at the top, then the sections: Keys, vault-chat folder, Box, Appearance; then Keyboard
-// shortcuts (the Ctrl+/ sheet). There is no voice section: the core voice is local (Kokoro, af_heart) with nothing to
+// The Claude sign-in on one line at the top, then the sections: Keys, vault-chat folder, Box, Appearance. No shortcut
+// sheet: Carl asks the agent (app/settings' state shortcuts). There is no voice section: the core voice is local (Kokoro, af_heart) with nothing to
 // pick, and the ElevenLabs voice is box:settings' voice (the ElevenLabs voice plugin draws nothing).
 //
 // The sign-in is at the TOP and is one line, because it is the first thing to
@@ -58,7 +56,6 @@ export const SETTINGS_SECTIONS: readonly { id: string; title: string }[] = [
   { id: "master", title: "vault-chat folder" },
   { id: "box", title: "Box" },
   { id: "appearance", title: "Appearance" },
-  { id: "shortcuts", title: "Keyboard shortcuts" },
 ];
 
 export function Pane() {
@@ -87,15 +84,6 @@ export function Pane() {
         <div data-settings="appearance">
           <AppearanceSection />
         </div>
-        <button data-offer="app/settings.openShortcuts"
-          onClick={openShortcutSheet}
-          className="w-full flex items-center justify-between rounded px-2 py-1.5 -mx-2 text-[12px] text-foreground/90 hover:bg-accent/60"
-          data-el="settings-shortcuts"
-          data-settings="shortcuts"
-        >
-          <span>Keyboard shortcuts</span>
-          <span className="text-[11px] text-muted-foreground">{chordText("Mod+/")}</span>
-        </button>
       </div>
     </div>
   );

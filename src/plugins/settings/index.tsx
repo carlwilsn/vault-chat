@@ -1,18 +1,18 @@
 // The Settings plugin (Track 1; src/appPlugins.ts SETTINGS_PLUGIN_ID): the Settings pane (./Pane.tsx: the Claude sign-in,
-// keys, the vault-chat folder, the box, appearance, keyboard shortcuts), mounted through the plugin host under the
+// keys, the vault-chat folder, the box, appearance), mounted through the plugin host under the
 // supervisor's records like the title bar. src/SettingsPane.tsx mounts it where Settings shows (in the chat pane's place,
-// or the viewer's when the chat is hidden); turned off or failing, a plain pane stands in (back, Keyboard shortcuts, one
+// or the viewer's when the chat is hidden); turned off or failing, a plain pane stands in (back, one
 // line that says what happened with Turn on / Reload), and while the records are unknown the pane itself is drawn in the
 // app's tree.
 //
-// It declares what it offers (api.offer, src/pluginOffers.ts): whether Settings is open, its sections and the app's
-// settings (the same records box:settings reads) as state; open (at a section), close, go to a section, change a
-// setting and open the shortcut sheet as actions; what happened as events.
+// It declares what it offers (api.offer, src/pluginOffers.ts): whether Settings is open, its sections, the app's
+// keyboard shortcuts and its settings (the same records box:settings reads) as state; open (at a section), close, go
+// to a section and change a setting as actions; what happened as events.
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import type { PluginApi } from "../../mountHost";
 import { useStore } from "../../store";
-import { closeShortcutSheet, openShortcutSheet, useShortcutSheet } from "../../ShortcutSheet";
+import { SHORTCUTS, chordText } from "../../shortcuts";
 import { boxStatusNow, checkBox, disconnectFromBox, findBoxes, folderNow, onSettingsBoxChanged, refreshFolder, setFolder, syncBoxNow, syncWithBox } from "../../settingsBox";
 import { Pane, SETTINGS_SECTIONS } from "./Pane";
 
@@ -70,8 +70,8 @@ export function settingsOffers(emit: (event: string, data?: unknown) => void = (
         read: () => SETTINGS_SECTIONS.map((s) => ({ ...s })),
       },
       shortcuts: {
-        description: "The keyboard shortcut sheet (Ctrl+/): open.",
-        read: () => ({ open: useShortcutSheet.getState().open }),
+        description: "Every keyboard shortcut of the app (src/shortcuts.ts): id, keys (as shown on this laptop), label, group, where.",
+        read: () => SHORTCUTS.map((s) => ({ id: s.id, keys: s.keys.map((k) => chordText(k)), label: s.label, group: s.group, where: s.where })),
       },
       box: {
         description: "Settings → Box for the open vault: connected (name, box, vault) or null; syncing, lastSyncOk, error, waitingForBox (commits), mergeGate (open, or closedSince + files), notOnBoxYet (files over 50 MB not sent), github (the backup), keysDidNotReach.",
@@ -91,7 +91,7 @@ export function settingsOffers(emit: (event: string, data?: unknown) => void = (
       };
       const doc = typeof document !== "undefined" && typeof document.addEventListener === "function" ? document : null;
       doc?.addEventListener("scroll", onScroll, true);
-      const offs = [useStore.subscribe(fn), useShortcutSheet.subscribe(fn), onSettingsBoxChanged(fn), () => doc?.removeEventListener("scroll", onScroll, true)];
+      const offs = [useStore.subscribe(fn), onSettingsBoxChanged(fn), () => doc?.removeEventListener("scroll", onScroll, true)];
       return () => offs.forEach((f) => f());
     },
     actions: {
@@ -162,20 +162,6 @@ export function settingsOffers(emit: (event: string, data?: unknown) => void = (
         run: async (a: Record<string, unknown>) => {
           const msg = await setFolder(String(a.path ?? ""));
           return { ...folderNow(), ...(msg ? { note: msg } : {}) };
-        },
-      },
-      openShortcuts: {
-        description: "Open the keyboard shortcut sheet (Ctrl+/), as the pane's Keyboard shortcuts.",
-        run: () => {
-          openShortcutSheet();
-          return { opened: true };
-        },
-      },
-      closeShortcuts: {
-        description: "Close the keyboard shortcut sheet (Esc).",
-        run: () => {
-          closeShortcutSheet();
-          return { open: false };
         },
       },
     },

@@ -94,7 +94,7 @@
 
     { "click": "button[title=Settings]", "label": "open Settings" },
     { "waitFor": "[data-el=settings-pane]", "timeout": 10000 },
-    { "expect": { "text": "Keyboard shortcuts" } },
+    { "expect": { "text": "Appearance" } },
     { "scroll": 600, "in": "[data-el=settings-scroll]" },
     { "wait": 1000 },
     { "click": "button[title=Settings]", "label": "close Settings" },

@@ -34,7 +34,6 @@ import { bindContextSource } from "./contextSource";
 import { ChatsPanel } from "./ChatsPanel";
 import { Notices } from "./UpdateBanner";
 import { ChangeKeeper } from "./ChangeKeeper";
-import { ShortcutSheet } from "./ShortcutSheet";
 import { hit, isMod } from "./shortcuts";
 import { fileKind } from "./fileKind";
 import type { NoteAnchor } from "./notes";
@@ -501,7 +500,6 @@ export default function App() {
       <Notices />
       {/* Changes reach Carl as lines in a chat (src/changeFlow.ts); this keeps what they stand on. Core, never a plugin. */}
       <ChangeKeeper />
-      <ShortcutSheet />
       {/* The chat list's overlay: a plugin (src/plugins/chats), with a built-in fallback (src/ChatsPanel.tsx). */}
       <ChatsPanel />
     </>

@@ -4,7 +4,6 @@ import { useStore } from "./store";
 import { applyHljsTheme } from "./hljsTheme";
 import { useGlobalAnchorClickHandler } from "./linkNav";
 import { dispatchChatAction } from "./sync";
-import { ShortcutSheet } from "./ShortcutSheet";
 import { hit, isMod } from "./shortcuts";
 
 /**
@@ -60,7 +59,6 @@ export function ChatWindow() {
   return (
     <>
       <FullscreenChat />
-      <ShortcutSheet />
     </>
   );
 }

@@ -73,7 +73,6 @@ export const COVERAGE: Record<string, Coverage> = {
   "src/ProjectChip.tsx": { none: "the chat list's project hooks; its chip is not mounted" },
   "src/SearchPicker.tsx": { none: "the picker primitive (Settings): each use names its own offer" },
   "src/SettingsPane.tsx": { state: ["app/settings", "box:settings"] },
-  "src/ShortcutSheet.tsx": { state: ["app/settings"] },
   "src/TexView.tsx": { state: ["app/viewer"] },
   "src/Titlebar.tsx": { state: ["app/titlebar"] },
   "src/ui.tsx": { none: "UI primitives" },

@@ -125,7 +125,7 @@ export const CHAT_PLUGIN: AppPluginInfo = {
 
 export const SETTINGS_PLUGIN_ID = "app/settings";
 
-/** The Settings pane (src/plugins/settings). Off or failed, a plain pane stands in (back, Keyboard shortcuts). */
+/** The Settings pane (src/plugins/settings). Off or failed, a plain pane stands in (back). */
 export const SETTINGS_PLUGIN: AppPluginInfo = {
   id: SETTINGS_PLUGIN_ID,
   name: "Settings",

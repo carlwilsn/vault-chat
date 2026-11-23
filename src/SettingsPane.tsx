@@ -3,8 +3,8 @@
 // (src/ChatPane.tsx), or the viewer's when the chat is hidden (src/App.tsx). It is how Carl gets back to the chat, so it
 // never just disappears:
 //  - while the records are not known yet, the pane itself is drawn here in the app's own tree (nothing flashes);
-//  - turned off, or failing to mount or render, a plain pane stands in (SettingsFallback): back to the chat, the
-//    keyboard shortcuts, and one line that says what happened with Turn on / Reload. The agent's box:settings still
+//  - turned off, or failing to mount or render, a plain pane stands in (SettingsFallback): back to the chat and one
+//    line that says what happened with Turn on / Reload. The agent's box:settings still
 //    changes every setting meanwhile.
 import { ArrowLeft } from "lucide-react";
 import { useStore } from "./store";
@@ -13,8 +13,6 @@ import { PlaceMount, type PluginFallbackInfo } from "./PluginMount";
 import { placeModule } from "./places";
 import { PluginOff } from "./PluginOff";
 import { Button } from "./ui";
-import { openShortcutSheet } from "./ShortcutSheet";
-import { chordText } from "./shortcuts";
 import * as settingsPlugin from "./plugins/settings";
 import { Pane } from "./plugins/settings/Pane";
 
@@ -26,7 +24,7 @@ export function SettingsPane() {
   return <PlaceMount place="settings" fallback={(f) => (f.pending ? <Pane /> : <SettingsFallback info={f} />)} />;
 }
 
-/** The plain pane: back, Keyboard shortcuts, and why the plugin's pane is not there. */
+/** The plain pane: back, and why the plugin's pane is not there. */
 export function SettingsFallback({ info }: { info: PluginFallbackInfo }) {
   const setShowSettings = useStore((s) => s.setShowSettings);
   return (
@@ -48,14 +46,6 @@ export function SettingsFallback({ info }: { info: PluginFallbackInfo }) {
             </button>
           </div>
         )}
-        <button data-offer="app/settings.openShortcuts"
-          onClick={openShortcutSheet}
-          className="w-full flex items-center justify-between rounded px-2 py-1.5 -mx-2 text-[12px] text-foreground/90 hover:bg-accent/60"
-          data-el="settings-shortcuts"
-        >
-          <span>Keyboard shortcuts</span>
-          <span className="text-[11px] text-muted-foreground">{chordText("Mod+/")}</span>
-        </button>
       </div>
     </div>
   );

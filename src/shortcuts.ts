@@ -1,7 +1,7 @@
 // Every keyboard shortcut of the laptop app, in one place. The handlers read
-// their chords from here (`hit(e, id)`, `cmKey(id)`, `monacoKeys(id)`) and the
-// shortcut sheet (Ctrl+/, ShortcutSheet.tsx) lists exactly this table, so the
-// sheet cannot go stale. test/harness/shortcuts.test.ts greps the key handlers
+// their chords from here (`hit(e, id)`, `cmKey(id)`, `monacoKeys(id)`), and
+// app/settings' state `shortcuts` lists exactly this table (Carl asks the agent;
+// there is no sheet on screen), so the list cannot go stale. test/harness/shortcuts.test.ts greps the key handlers
 // in src/ and fails on a key that is handled in code but missing here.
 //
 // Chord syntax: modifiers then the key, joined by "+". "Mod" is the platform's
@@ -58,7 +58,6 @@ export const SHORTCUTS = [
   { id: "voice.mute", keys: ["Ctrl+Shift+M"], label: "Mute / unmute", group: "Voice", where: "during a call", files: ["src/App.tsx"] },
 
   // ---- Views & windows
-  { id: "view.shortcuts", keys: ["Mod+/"], label: "Keyboard shortcuts", group: "Views & windows", where: "anywhere", files: ["src/ShortcutSheet.tsx"] },
   { id: "view.files", keys: ["Mod+B"], label: "Files / chats panel", group: "Views & windows", where: "anywhere (fullscreen: the chats)", files: ["src/App.tsx", "src/ChatWindow.tsx"] },
   { id: "view.chat", keys: ["Mod+Shift+B"], label: "Chat panel", group: "Views & windows", where: "the main window", files: ["src/App.tsx"] },
   { id: "view.fullscreen", keys: ["Mod+Shift+F"], label: "Fullscreen chat", group: "Views & windows", where: "the main window", files: ["src/App.tsx"] },
@@ -76,7 +75,6 @@ export const SHORTCUTS = [
     files: [
       "src/App.tsx",
       "src/InlineWebPage.tsx",
-      "src/ShortcutSheet.tsx",
       "src/ChatsPanel.tsx",
       "src/plugins/chats/ChatsList.tsx",
       "src/NewProjectForm.tsx",

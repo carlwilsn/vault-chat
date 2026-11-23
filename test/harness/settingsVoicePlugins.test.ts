@@ -1,6 +1,6 @@
 // Track 1: the Settings pane (src/plugins/settings, app/settings) and voice (src/plugins/voice, app/voice) are plugins.
 // Settings mounts through the plugin host where it shows (src/SettingsPane.tsx: the chat pane's place, or the viewer's);
-// it offers whether it is open, its sections and the app's settings, and open / close / scrollTo / set / openShortcuts.
+// it offers whether it is open, its sections and the app's settings, and open / close / scrollTo / set; the shortcuts as state.
 // Voice mounts in the main window (src/VoiceSlot.tsx): its text box is drawn by it, and its controls (the mic, the
 // waves, Mute) are registered with src/voiceParts.tsx, which the title bar and the composer draw in their places; it
 // offers the call and the text box, and start / end / mute / openTextPanel / say. Off or failing, each has a plain
@@ -113,10 +113,15 @@ test("Settings: mounted through the host it draws the pane and offers its state;
   for (const s of SETTINGS_SECTIONS) assert.ok((host as any).querySelector(`[data-settings="${s.id}"]`), `section ${s.id} is marked`);
   const d = listOffers().find((p: any) => p.id === "app/settings")!;
   assert.deepEqual(d.state.map((s: any) => s.name), ["open", "sections", "shortcuts", "box", "folder"]);
-  assert.deepEqual(d.actions.map((a: any) => a.name), ["open", "close", "scrollTo", "findBoxes", "connectBox", "syncBoxNow", "disconnectBox", "setFolder", "openShortcuts", "closeShortcuts"]);
+  assert.deepEqual(d.actions.map((a: any) => a.name), ["open", "close", "scrollTo", "findBoxes", "connectBox", "syncBoxNow", "disconnectBox", "setFolder"]);
   let r = await readOffers("app/settings");
   assert.equal(r.ok, true, r.error);
   assert.deepEqual(r.state.open, { open: false, where: null, section: null });
+  // No shortcut sheet: the agent reads the shortcuts (the registry, src/shortcuts.ts) and tells Carl.
+  const { SHORTCUTS } = await import("../../src/shortcuts.ts");
+  assert.equal(r.state.shortcuts.length, SHORTCUTS.length);
+  assert.ok(r.state.shortcuts.some((s: any) => s.id === "view.files" && s.label && s.keys.length), "view.files listed with its keys");
+  assert.ok(!r.state.shortcuts.some((s: any) => s.id === "view.shortcuts"), "no sheet entry");
   assert.equal(r.state.sections[3].id, "box");
   // No voice section: the core voice is local with nothing to pick; the ElevenLabs picker is app/elevenlabs-voice's.
   assert.ok(!r.state.sections.some((s: any) => s.id === "voice"), "no voice section");
@@ -154,7 +159,7 @@ test("SettingsPane: unknown, the pane itself; running, the plugin; off, a plain 
   assert.match(off, /data-el="settings-fallback"/);
   assert.match(off, /data-el="plugin-turn-on"/);
   assert.match(off, /data-el="settings-back"/);
-  assert.match(off, /data-el="settings-shortcuts"/);
+  assert.doesNotMatch(off, /settings-shortcuts|Keyboard shortcuts/, "no shortcut sheet: Carl asks the agent");
   assert.doesNotMatch(off, /data-settings="box"/, "plain");
   desire("app/settings", "running");
   let fail = true;

@@ -1,14 +1,11 @@
 // The keyboard shortcut registry (src/shortcuts.ts) is the one source of truth:
 // - every key the app's handlers act on is in it (grepped from src/);
 // - every entry names files that really handle it;
-// - Ctrl+/ (Cmd+/ on a Mac) opens the sheet, plain "/" never does;
-// - the sheet lists every entry.
+// - there is no shortcut sheet (Carl asks the agent): app/settings' state lists every entry.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, relative } from "node:path";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import { SHORTCUTS, SUPPRESSED_KEYS, parseChord, hit, chordMatches, cmKey, chordLabel, chordText, isMod, monacoKeys, shortcutHint, type Shortcut } from "../../src/shortcuts.ts";
 
 const root = join(import.meta.dirname, "..", "..");
@@ -96,19 +93,12 @@ const ev = (key: string, mods: Partial<{ ctrlKey: boolean; metaKey: boolean; alt
   ...mods,
 });
 
-test("Ctrl+/ (Cmd+/ on a Mac) opens the sheet; typing / does not", () => {
-  assert.equal(hit(ev("/", { ctrlKey: true }, "Slash"), "view.shortcuts"), true);
-  assert.equal(hit(ev("/", { metaKey: true }, "Slash"), "view.shortcuts"), true);
-  assert.equal(hit(ev("/", {}, "Slash"), "view.shortcuts"), false, "a / typed in the composer starts a command, not the sheet");
-  assert.equal(hit(ev("7", { ctrlKey: true }, "Slash"), "view.shortcuts"), true, "a layout where the / key types something else");
-  assert.equal(hit(ev("h", { ctrlKey: true }), "view.shortcuts"), false);
+test("no shortcut sheet: Ctrl+/ is bound to nothing, nothing mounts or opens a sheet", () => {
+  assert.ok(!all.some((s) => s.keys.includes("Mod+/")), "Ctrl+/ is bound to nothing (the sheet was dropped)");
   assert.ok(!all.some((s) => s.keys.includes("Mod+H")), "Ctrl+H is bound to nothing (History was dropped)");
-  // The sheet listens for it, and both windows mount the sheet.
-  const sheet = readFileSync(join(root, "src/ShortcutSheet.tsx"), "utf8");
-  assert.match(sheet, /hit\(e, "view\.shortcuts"\)/);
-  assert.match(sheet, /e\.key === "Escape"/, "Esc closes it");
-  for (const f of ["src/App.tsx", "src/ChatWindow.tsx"]) assert.match(readFileSync(join(root, f), "utf8"), /<ShortcutSheet \/>/, `${f} mounts the sheet`);
-  assert.match(readFileSync(join(root, "src/plugins/settings/Pane.tsx"), "utf8"), /openShortcutSheet/, "Settings has the item");
+  assert.equal(existsSync(join(root, "src/ShortcutSheet.tsx")), false);
+  for (const f of ["src/App.tsx", "src/ChatWindow.tsx", "src/SettingsPane.tsx", "src/plugins/settings/Pane.tsx", "src/plugins/settings/index.tsx"])
+    assert.doesNotMatch(readFileSync(join(root, f), "utf8"), /ShortcutSheet|openShortcuts|settings-shortcuts/, f);
 });
 
 test("chords match exactly, and translate for the editors and the Mac", () => {
@@ -135,7 +125,6 @@ test("on a Mac every app shortcut is Cmd: Ctrl+letter stays the Mac's own text k
   assert.equal(hit(ev("F", { metaKey: true, shiftKey: true }), "view.fullscreen", mac), true);
   assert.equal(hit(ev("d", { metaKey: true }), "voice.toggle", mac), true);
   assert.equal(hit(ev("M", { metaKey: true, shiftKey: true }), "voice.mute", mac), true);
-  assert.equal(hit(ev("/", { metaKey: true }, "Slash"), "view.shortcuts", mac), true);
   // Ctrl is not: Ctrl+K/E/B/N/T/D are kill-line, end, back, next line, transpose, delete in every Mac text field.
   for (const [k, id] of [["k", "edit.inline"], ["l", "edit.ask"], ["e", "edit.mode"], ["b", "view.files"], ["n", "files.note"], ["t", "chat.new"], ["d", "voice.toggle"]] as const) {
     assert.equal(hit(ev(k, { ctrlKey: true }), id, mac), false, `Ctrl+${k} on a Mac`);
@@ -175,14 +164,7 @@ test("on-screen hints name the platform's keys: no \"Ctrl+\" typed into a label"
   assert.deepEqual(offenders, []);
 });
 
-test("the sheet lists every registry entry", async () => {
-  const { ShortcutList } = await import("../../src/ShortcutSheet.tsx");
-  for (const mac of [false, true]) {
-    const html = renderToStaticMarkup(createElement(ShortcutList, { mac }));
-    for (const s of all) {
-      assert.ok(html.includes(`data-shortcut="${s.id}"`), `${s.id} is listed`);
-      assert.ok(html.includes(s.label.replace(/&/g, "&amp;")), `${s.id}: "${s.label}"`);
-    }
-    for (const g of new Set(all.map((s) => s.group))) assert.ok(html.includes(g.replace(/&/g, "&amp;")), `group ${g}`);
-  }
+test("app/settings' state shortcuts lists every registry entry", async () => {
+  const src = readFileSync(join(root, "src/plugins/settings/index.tsx"), "utf8");
+  assert.match(src, /shortcuts: \{[\s\S]*?read: \(\) => SHORTCUTS\.map/, "the state reads the registry itself");
 });
