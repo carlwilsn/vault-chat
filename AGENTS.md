@@ -16,12 +16,11 @@ Claude Code with a window around it: the box server, the Tauri laptop app, the p
 - preview/: UI harness with fakes, `npm run preview` → http://localhost:1500/after/?scenario=<name> (scenarios in preview/scenarios/).
 - scripts/: release, core bundle (core-publish.ts, core-boot.ts), event-log tools.
 - test/harness/: frontend tests (node --test). test/selftest/: the app's self-test step files.
-- board/: an empty stub the installed ship gate still type-checks and builds; leave it.
 
-## Test (the ship gate's seven)
+## Test (the ship gate's six)
 
 ```
-npx tsc --noEmit -p . && npx tsc --noEmit -p phone && npx tsc --noEmit -p board && npx tsc -p server/tsconfig.json
+npx tsc --noEmit -p . && npx tsc --noEmit -p phone && npx tsc -p server/tsconfig.json
 npm run test:harness
 npm run test:server
 NODE_OPTIONS=--max-old-space-size=6144 npm run build:server   # plus `npx vite build` for desktop changes

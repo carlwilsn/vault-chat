@@ -55,12 +55,14 @@ export default defineConfig({
     // machine (updaterHttpDeadline's own cases run side by side there: each owns its temp dir, ports
     // and processes).
     //
-    // One worker per core of the ship host (12). Measured 2026-11-23 on a quiet box, main 8d3bd22a, the
-    // ship's own sandbox, 2 runs each, all 1185 tests green every run: 3 workers 336/334 s, 4: 280/280 s,
-    // 6: 234/229 s, 12: 184/184 s (load average at most 8.8 of 12, 9.4 GB memory still free). The
-    // earlier overload at 6 workers (gate run of main 7f2f775c: load average 178, ~1,375 processes,
-    // 14 turn-driven tests timed out) did not recur in any of these runs. Lower it if anything flakes.
-    maxWorkers: 12,
+    // Six. Measured 2026-11-23 on a quiet box, main 8d3bd22a, the ship's own sandbox, 2 runs each, all
+    // 1185 tests green every run: 3 workers 336/334 s, 4: 280/280 s, 6: 234/229 s, 12: 184/184 s
+    // (report 30-ship-time). 12 shipped first (f9b9931e); then a 12-worker gate run lost convlogServer's
+    // "steer intent and queue both wait for native follow-ups" (the queued message not yet in the feed:
+    // a timing race that also failed 3 times in ~440 earlier 3-worker runs), so, by the rule that the
+    // count comes down when anything flakes, six. The earlier overload at 6 (gate run of main 7f2f775c:
+    // load average 178, ~1,375 processes) did not recur in these runs.
+    maxWorkers: 6,
     projects: [
       { extends: true, test: { name: "parallel", include: ["server/test/**/*.test.ts"], exclude: [...SERIAL, "**/node_modules/**"], sequence: { groupOrder: 0 } } },
       { extends: true, test: { name: "serial", include: SERIAL, poolOptions: { forks: { singleFork: true } }, sequence: { groupOrder: 1 } } },
