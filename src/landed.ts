@@ -3,6 +3,7 @@
 // the core Carl last acknowledged and the one running now (the box's GET /api/v2/core/landed/<from>/<to>, server/
 // coreBundles.ts coreLanded), and one OK. Once per new core: the acknowledged commit is kept in localStorage. The first
 // run ever only records it (nothing to compare with). As state: app/titlebar's `landed`, dismissLanded, landedChanged.
+// One card at a time: while a Ready card (src/coreReady.ts) is pending, what landed joins its list instead.
 export const LANDED_ACK_KEY = "vc.landedAck";
 export const LANDED_FALLBACK = "A new version of the interface is live";
 
@@ -47,6 +48,14 @@ export function onLandedChanged(fn: (s: LandedSummary) => void): () => void {
   slot().fns.add(fn);
   return () => void slot().fns.delete(fn);
 }
+
+/** One card at a time (src/coreReady.ts): a pending Ready card takes what landed into its own list. True: taken. */
+type Absorber = (what: string[]) => boolean;
+const ABSORB_KEY = "__vcLandedAbsorber";
+export function setLandedAbsorber(fn: Absorber | null): void {
+  (globalThis as Record<string, unknown>)[ABSORB_KEY] = fn;
+}
+const absorber = (): Absorber | null => ((globalThis as Record<string, unknown>)[ABSORB_KEY] as Absorber | null | undefined) ?? null;
 
 const store = (): Storage | null => {
   try {
@@ -95,7 +104,13 @@ export async function checkLanded(d: LandedDeps): Promise<LandedSummary> {
       saveLandedAck(running);
       return landedNow();
     }
-    publishLanded({ shown: true, revision: running!, what: landedLines(subjects) });
+    const what = landedLines(subjects);
+    // A Ready card is pending: what landed goes into its list (acknowledged), never a second card beside it.
+    if (absorber()?.(what)) {
+      saveLandedAck(running);
+      return landedNow();
+    }
+    publishLanded({ shown: true, revision: running!, what });
   } catch (e) {
     console.warn("[landed] could not check:", e);
   }

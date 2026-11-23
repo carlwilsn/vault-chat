@@ -3,11 +3,13 @@
 // says what it brings (main's commit subjects between the core running now and the offer's, the same list as the
 // Landed card: GET /api/v2/core/landed/<from>/<to>), with OK (swap in now) and Later (hidden until a newer version or
 // the next app start). OK acknowledges what landed (vc.landedAck = the offer's commit), so no Landed card follows
-// the swap. The loader's safe-boot fallback is untouched. As state: app/titlebar's `ready`, acceptReady, laterReady,
+// the swap. One card at a time: a Landed card (a core that arrived without his OK, e.g. an installer's own) never
+// shows beside a pending Ready card: what landed joins the Ready card's list and is acknowledged (absorbLanded).
+// The loader's safe-boot fallback is untouched. As state: app/titlebar's `ready`, acceptReady, laterReady,
 // readyChanged.
 import { BUILT_IN } from "./pluginDrafts";
 import type { CoreStep } from "./coreBundle";
-import { LANDED_ACK_KEY, LANDED_FALLBACK, landedLines, saveLandedAck } from "./landed";
+import { LANDED_ACK_KEY, LANDED_FALLBACK, dismissLanded, landedLines, landedNow, saveLandedAck, setLandedAbsorber } from "./landed";
 
 export type ReadySummary = {
   shown: boolean;
@@ -32,7 +34,31 @@ export function publishReady(s: ReadySummary): void {
   if (JSON.stringify(x.now) === JSON.stringify(s)) return;
   x.now = s;
   for (const f of [...x.fns]) f(s);
+  absorbLanded();
 }
+
+const FALLBACKS = new Set([LANDED_FALLBACK, LANDED_FALLBACK.replace("is live", "is ready")]);
+/** One card at a time: while a Ready card is up, a Landed card's lines join its list (what landed first, then what
+ *  the offer brings) and that landing is acknowledged, so the Landed card goes. Runs whenever either card changes. */
+export function absorbLanded(): void {
+  const r = readyNow();
+  const l = landedNow();
+  if (!r.shown || !l.shown) return;
+  dismissLanded();
+  publishReady({ ...r, what: mergeLines(l.what ?? [], r.what ?? []) });
+}
+/** What landed, then what the offer brings; the plain fallback lines only when there is nothing else. */
+function mergeLines(landed: readonly string[], ready: readonly string[]): string[] {
+  const real = [...new Set([...landed, ...ready])].filter((x) => !FALLBACKS.has(x));
+  return real.length ? real : [...ready];
+}
+// A Landed card about to show while a Ready card is up joins it instead (src/landed.ts checkLanded asks first).
+setLandedAbsorber((what) => {
+  const r = readyNow();
+  if (!r.shown) return false;
+  publishReady({ ...r, what: mergeLines(what, r.what ?? []) });
+  return true;
+});
 export const readyNow = (): ReadySummary => slot().now;
 export function onReadyChanged(fn: (s: ReadySummary) => void): () => void {
   slot().fns.add(fn);
@@ -51,6 +77,21 @@ export function laterReady(): void {
   publishReady({ shown: false });
 }
 
+/** Two main commits are the same one (either may be abbreviated, at least 7 characters). */
+export function sameCommit(a: string, b: string): boolean {
+  const x = a.trim().toLowerCase();
+  const y = b.trim().toLowerCase();
+  if (!x || !y) return false;
+  return x === y || (Math.min(x.length, y.length) >= 7 && (x.startsWith(y) || y.startsWith(x)));
+}
+
+/** The card goes (unless OK is swapping right now). */
+function takeDown(): ReadySummary {
+  const now = readyNow();
+  if (now.shown && now.phase !== "switching") publishReady({ shown: false });
+  return readyNow();
+}
+
 export type ReadyDeps = {
   /** The core's main commit now, or null (it can't say). */
   running: () => Promise<string | null>;
@@ -59,20 +100,23 @@ export type ReadyDeps = {
 };
 
 /** After each look at the box's offer: show the card for a new bundle, keep it for the same one, take it down when the
- *  offer is what runs again. Never throws. */
+ *  offer is what runs again: the same main revision as the running core, or (a box bundle) one whose commits the
+ *  running core has all (the box's running..offer list is empty). Never throws. */
 export async function offerReady(step: CoreStep | { kind: "none"; why: string }, bakedCommit: string | null, d: ReadyDeps): Promise<ReadySummary> {
   try {
     const now = readyNow();
-    if (step.kind !== "install" && step.kind !== "baked") {
-      if (now.shown && now.phase !== "switching") publishReady({ shown: false });
-      return readyNow();
-    }
+    if (step.kind !== "install" && step.kind !== "baked") return takeDown();
     const version = step.kind === "install" ? step.offer.version : BUILT_IN;
     const commit = step.kind === "install" ? step.offer.commit : bakedCommit;
     if (slot().later.has(version)) return readyNow();
-    if (now.shown && now.version === version) return now;
     const running = await d.running().catch(() => null);
+    // The card is "offered core vs running core": an offer of the main revision that runs already brings nothing.
+    if (running && commit && sameCommit(running, commit)) return takeDown();
+    if (now.shown && now.version === version) return now;
     const subjects = running && commit ? await d.subjects(running, commit).catch(() => null) : null;
+    // A box bundle whose commits are all in the running core already (running..offer is empty): nothing to land.
+    // (A switch back to the installed app's own core may be older on purpose: that one is still offered.)
+    if (step.kind === "install" && subjects && !subjects.length) return takeDown();
     const what = subjects && subjects.length ? landedLines(subjects) : step.kind === "baked" ? ["Back to the installed app's own interface."] : [LANDED_FALLBACK.replace("is live", "is ready")];
     publishReady({ shown: true, version, commit: commit ?? null, what, phase: "ready" });
   } catch (e) {

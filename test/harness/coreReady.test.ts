@@ -124,3 +124,63 @@ test("agent parity: app/titlebar reads the Ready card and presses Later", async 
   const r = await o.actions.laterReady.run({});
   assert.equal(r.ready.shown, false);
 });
+
+test("the card is offered core vs running core: never a core the laptop already runs", async () => {
+  // The same main revision as the running core (e.g. a new installer whose own core is the box's bundle): no card,
+  // and the box is not even asked for a list.
+  R._resetReady();
+  const same = { asked: [] as string[][], d: { running: async () => C.slice(0, 12), subjects: async () => assert.fail("never asked") } };
+  assert.equal((await R.offerReady(install(), null, same.d)).shown, false);
+  // A card up already (from before) goes when the offer turns out to be what runs.
+  await R.offerReady(install(), null, deps().d);
+  assert.equal(R.readyNow().shown, true);
+  const o = titlebarOffers({ host: {} } as any, () => ({}) as any) as any;
+  const seen: unknown[] = [];
+  const off = R.onReadyChanged((s) => seen.push(s));
+  await R.offerReady(install(), null, same.d);
+  off();
+  // Read and watched through app/titlebar's ready state and its readyChanged source.
+  assert.equal(o.state.ready.read().shown, false);
+  assert.deepEqual(seen, [{ shown: false }]);
+  // An offer whose commits the running core has all (running..offer is empty): no card.
+  assert.equal((await R.offerReady(install("eeee0000", "e".repeat(40)), null, deps([]).d)).shown, false);
+  // The installed app's own core at the running revision: no card either.
+  assert.equal((await R.offerReady({ kind: "baked", why: "publishing off" }, A, deps([]).d)).shown, false);
+  // An older installed core, on purpose (a switch back): still offered.
+  const back = await R.offerReady({ kind: "baked", why: "publishing off" }, "b".repeat(40), deps([]).d);
+  assert.equal(back.shown, true);
+  assert.equal(R.sameCommit("50272a64", "50272a646f93767f"), true);
+  assert.equal(R.sameCommit("50272a6", "50272a7"), false);
+});
+
+test("one card at a time: a landing while Ready is pending joins its list, never a second card", async () => {
+  const { publishLanded } = await import("../../src/landed.ts");
+  const B = "b".repeat(40);
+  // An installer's own core arrived without his OK (ack A, running B) while a Ready card is up: one card.
+  R._resetReady();
+  publishLanded({ shown: false });
+  await R.offerReady(install(), null, { running: async () => B, subjects: async () => ["Brings this."] });
+  localStorage.setItem(LANDED_ACK_KEY, A);
+  await checkLanded({ running: async () => B, subjects: async () => ["Landed that."] });
+  assert.equal(landedNow().shown, false);
+  assert.deepEqual(R.readyNow().what, ["Landed that.", "Brings this."]);
+  assert.equal(localStorage.getItem(LANDED_ACK_KEY), B);
+  // The other order: a Landed card is up, then a Ready card comes: the Landed card goes into it.
+  R._resetReady();
+  localStorage.setItem(LANDED_ACK_KEY, A);
+  await checkLanded({ running: async () => B, subjects: async () => ["Landed that."] });
+  assert.equal(landedNow().shown, true);
+  await R.offerReady(install(), null, { running: async () => B, subjects: async () => ["Brings this."] });
+  assert.equal(landedNow().shown, false);
+  assert.deepEqual(R.readyNow().what, ["Landed that.", "Brings this."]);
+  assert.equal(localStorage.getItem(LANDED_ACK_KEY), B);
+  // OK on it acknowledges the offer's core: no Landed card follows the swap.
+  await R.acceptReady(async () => ({ did: "swapped" }));
+  await checkLanded({ running: async () => C, subjects: async () => assert.fail("never asked") });
+  assert.equal(landedNow().shown, false);
+  // No Ready card pending: the landing shows as its own Landed card.
+  R._resetReady();
+  localStorage.setItem(LANDED_ACK_KEY, A);
+  await checkLanded({ running: async () => B, subjects: async () => ["Landed that."] });
+  assert.deepEqual(landedNow(), { shown: true, revision: B, what: ["Landed that."] });
+});
