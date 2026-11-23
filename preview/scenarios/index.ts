@@ -419,7 +419,7 @@ export const scenarios: Scenario[] = [
     title: "Home in the high-contrast theme",
     group: "Basics",
     theme: "contrast",
-    notes: "Same as Home, high-contrast theme (Settings > Appearance > High contrast): black, white borders, blue fills.",
+    notes: "Same as Home, high-contrast theme (Settings > Appearance > High contrast): black, white text and borders, grey fills.",
     build: (c) => world(c),
     activeConversation: "c-spectral",
     open: deskOpen(NOTE, "c-spectral"),

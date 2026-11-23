@@ -27,6 +27,8 @@ export class FakeBox {
   intents: any[] = [];
   /** Every request's route and the vault it named (`?vault=`). */
   seen: { route: string; vault: string | null }[] = [];
+  /** An older box's settings check: a POST is refused with these words (a core newer than its server). */
+  refuseSettings: string | null = null;
   down = false;
   /** The vault Show (server/show.ts) counts this feed's clients for (the laptop test's vault). */
   showVault = this.dir;
@@ -279,6 +281,7 @@ export class FakeBox {
           }
           // Carl's settings: the box's real route over this feed (server/settings.ts).
           if (u.pathname === "/api/v2/settings") {
+            if (req.method === "POST" && this.refuseSettings) return send(400, { error: this.refuseSettings });
             const out = settingsRoute(req.method!, raw ? JSON.parse(raw) : null, "carl", this.log);
             return send(out.status, out.body);
           }

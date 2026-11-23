@@ -209,12 +209,17 @@ function KeysSection() {
 function AppearanceSection() {
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
+  // The pick is the box's settings action (box:settings set theme); what it refuses is shown, not applied.
+  const [refused, setRefused] = useState<string | null>(null);
   return (
     <section className="space-y-2">
       <SectionHead title="Appearance" />
       <MenuSelect
         value={theme}
-        onChange={(v) => setTheme(v as Theme)}
+        onChange={(v) => {
+          setRefused(null);
+          void setTheme(v as Theme).then(setRefused);
+        }}
         groups={[
           {
             options: [
@@ -225,6 +230,7 @@ function AppearanceSection() {
           },
         ]}
       />
+      {refused && <p className="text-[11px] text-destructive">{refused}</p>}
     </section>
   );
 }

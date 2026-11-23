@@ -37,7 +37,7 @@ export const SETTINGS = {
     kind: "enum",
     options: THEMES,
     default: "graphite",
-    description: "The app's colour theme (laptop app and its pages): graphite (dark, the default), light, or contrast (high contrast: black, white borders, blue selection).",
+    description: "The app's colour theme (laptop app and its pages): graphite (dark, the default), light, or contrast (high contrast: black, white text and borders, grey fills).",
     legacy: { where: "laptop", key: "vault_chat_theme" },
   },
   model: {

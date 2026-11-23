@@ -125,15 +125,20 @@ export async function loadBoxSettings(link: Link): Promise<void> {
   }
 }
 
-/** Carl's pick: shown here at once, then a record on the box (which every other app and the phone follow). */
+/** Carl's pick: the same set as the agent's (box:settings, POST /api/v2/settings). It shows here only once the box took
+ *  it, as the box's value: a value this core knows and the box does not (a core newer than its server) is refused
+ *  with the box's words, never applied here alone. Returns the refusal, or null. */
 export async function saveSetting(key: SettingKey, value: SettingValue): Promise<string | null> {
   const bad = settingProblem(key, value);
   if (bad) return bad;
-  apply(key, value === null ? SETTINGS[key].default : value);
   const link = await boxLinkFor(useStore.getState().vaultPath).catch(() => null);
   if (!link) return "no box is connected";
   const r = await boxPost(link, "/api/v2/settings", { key, value });
-  return r.ok ? null : (r.error ?? "the box refused");
+  if (!r.ok) return r.error ?? "the box refused";
+  const took = (r.data as { value?: unknown } | undefined)?.value;
+  const v = took === undefined ? value : (took as SettingValue);
+  apply(key, v === null ? SETTINGS[key].default : v);
+  return null;
 }
 
 /** Hear any setting change here (a record from anywhere, or Carl's pick); returns the undo. */

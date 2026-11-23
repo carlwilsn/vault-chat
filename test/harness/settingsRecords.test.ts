@@ -92,11 +92,27 @@ test("the agent sets a setting: the open app follows from the feed; an unknown k
 });
 
 test("Carl's pick in the app is a record by carl, which the agent reads", async () => {
-  S().setTheme("light");
-  assert.equal(S().theme, "light", "shown at once");
-  await waitFor("the pick reached the box", () => readSettings().values.theme === "light");
+  assert.equal(await S().setTheme("light"), null);
+  assert.equal(S().theme, "light", "shown once the box took it");
+  assert.equal(readSettings().values.theme, "light");
   assert.equal(readSettings().set.theme!.by, "carl");
   assert.deepEqual(((await settingsNoun.state.values!.read()) as any).theme.set, "carl");
   S().toggleChatSidebar();
   await waitFor("the sidebar toggle reached the box", () => readSettings().values.chatSidebar === true);
+});
+
+test("a value the box refuses (a core newer than its server) is shown as refused and never applied here alone", async () => {
+  assert.equal(await S().setTheme("graphite"), null);
+  assert.equal(S().theme, "graphite");
+  box.refuseSettings = 'theme takes "graphite" | "light"';
+  try {
+    const why = await S().setTheme("contrast");
+    assert.equal(why, 'theme takes "graphite" | "light"', "the box's words reach the picker");
+    assert.equal(S().theme, "graphite", "nothing applied here");
+    assert.equal(readSettings().values.theme, "graphite", "the box and the screen agree");
+  } finally {
+    box.refuseSettings = null;
+  }
+  assert.equal(await S().setTheme("contrast"), null, "a box that knows it takes it");
+  assert.equal(S().theme, "contrast");
 });

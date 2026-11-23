@@ -189,7 +189,7 @@ export default function App() {
         const now = Date.now();
         if (now - lastThemeToggleRef.current < 250) return;
         lastThemeToggleRef.current = now;
-        setTheme(useStore.getState().theme === "light" ? "graphite" : "light");
+        void setTheme(useStore.getState().theme === "light" ? "graphite" : "light").then((why) => why && console.warn("[theme] the box refused:", why));
         return;
       }
       const mod = isMod(e);

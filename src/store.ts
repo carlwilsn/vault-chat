@@ -557,7 +557,8 @@ type State = {
   setServiceKey: (name: keyof ServiceKeys, k: string) => void;
   clearServiceKey: (name: keyof ServiceKeys) => void;
   /** Carl's pick: shown now, and the theme setting's record on the box (src/settings.ts) every app follows. */
-  setTheme: (t: Theme) => void;
+  /** Carl's pick: the box's refusal, or null once it took it and the screen follows. */
+  setTheme: (t: Theme) => Promise<string | null>;
   /** The theme setting changed (a record, from anywhere): shown here and in this app's other windows. */
   applyTheme: (t: Theme) => void;
   applyThemeFromEvent: (t: Theme) => void;
@@ -1114,10 +1115,9 @@ export const useStore = create<State>((set) => ({
     });
     keychainDelete(KEY[name]).catch((e) => console.error(`[keys] keychain delete ${name} failed:`, e));
   },
-  setTheme: (t) => {
-    useStore.getState().applyTheme(t);
-    void import("./settings").then((m) => m.saveSetting("theme", t)).catch(() => {});
-  },
+  setTheme: (t) =>
+    // Through the box's settings action only (src/settings.ts saveSetting): the screen follows what the box took.
+    import("./settings").then((m) => m.saveSetting("theme", t)).catch((e) => String(e)),
   applyTheme: (t) => {
     keepTheme(t);
     set({ theme: t });
