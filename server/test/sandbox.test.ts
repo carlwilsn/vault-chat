@@ -216,30 +216,22 @@ describe("the agent sandbox (bubblewrap argv)", () => {
 });
 
 describe("the machine section of the developer instructions", () => {
-  it("names the work area and the browser command that works in the sandbox", async () => {
+  it("names the work area; no second way to look at pages (RecordUI and Screen are the tools)", async () => {
     const { machineText } = await import("../context");
-    const t = machineText({ chrome: "/run/current-system/sw/bin/chromium", work: "/home/carl/agent-work/school2" });
+    const t = machineText({ work: "/home/carl/agent-work/school2" });
     // Carl wants no bounds on the agent: it is told it has the whole box.
     expect(t).toMatch(/No sandbox: you run as Carl's user with the whole box/);
     expect(t).not.toMatch(/home directory is read-only/);
     expect(t).toContain("/home/carl/agent-work/school2/");
-    expect(t).toContain(
-      "timeout 60 /run/current-system/sw/bin/chromium --headless=old --no-sandbox --disable-gpu --no-first-run --user-data-dir=/tmp/chrome-agent --window-size=1400,900 --screenshot=/tmp/page.png <url>",
-    );
-    expect(t).toContain("timeout 60 /run/current-system/sw/bin/chromium --headless=old --no-sandbox --disable-gpu --no-first-run --user-data-dir=/tmp/chrome-agent --dump-dom <url>");
-    const cmds = t.match(/timeout 60 [^`]*/g)!;
-    expect(cmds).toHaveLength(2);
-    expect(cmds.every((c) => !c.includes("--headless=new"))).toBe(true);
-    // No browser: the sandbox note alone.
-    expect(machineText({ chrome: null, work: "/w" })).not.toMatch(/browser/i);
+    expect(t).not.toMatch(/headless|chromium|browser/i);
   });
 
   it("names the key variables the agent has (never their values)", async () => {
     const { machineText } = await import("../context");
-    const t = machineText({ chrome: null, work: "/w", keys: ["OPENROUTER_API_KEY", "LAMBDA_API_KEY"] });
+    const t = machineText({ work: "/w", keys: ["OPENROUTER_API_KEY", "LAMBDA_API_KEY"] });
     expect(t).toContain("`$OPENROUTER_API_KEY`, `$LAMBDA_API_KEY`");
     expect(t).toMatch(/never print, echo or write their values/);
-    expect(machineText({ chrome: null, work: "/w", keys: [] })).not.toMatch(/API keys/);
+    expect(machineText({ work: "/w", keys: [] })).not.toMatch(/API keys/);
   });
 
   it("maps the keychain's names to environment variables", async () => {

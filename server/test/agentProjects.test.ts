@@ -59,10 +59,10 @@ describe("one name for the folder", () => {
 
 describe("what the agent is told", () => {
   it("the instructions name the project's folder, never agent-projects/ or the older place", async () => {
-    const { PROJECTS_RULE, ROLE_PROMPT, buildDeveloperInstructions } = await import("../context");
+    const { PROJECTS_RULE, buildDeveloperInstructions } = await import("../context");
     const { ENGINE_ROLE_PROMPT: ENGINE_PROMPT } = await import("../engine/prompt");
     expect(PROJECTS_RULE).toContain("A project is a folder with its own thread");
-    for (const t of [PROJECTS_RULE, ROLE_PROMPT, ENGINE_PROMPT]) {
+    for (const t of [PROJECTS_RULE, ENGINE_PROMPT]) {
       expect(t).not.toContain(".vault-chat/projects");
       expect(t).not.toContain("agent-projects");
     }

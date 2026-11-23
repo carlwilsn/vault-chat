@@ -38,5 +38,5 @@ export {
 export { chatListText, listProjectsText, readChatText } from "./tools";
 export { turnSections, MEMORY_RULE, type TurnSection } from "./builder";
 export { MEMORY_REL, memoryPath, projectFolder, loadedMemory, memoryNote, projectMemoryNote, projectMemoryLines, folderOf } from "./memory";
-export { buildDeveloperInstructions, rulesPrefixForTurn, latestRollover, machineText, agentWorkArea, ROLE_PROMPT, RECHECK_RULE, WORK_RULES, PROJECTS_RULE } from "./builder";
+export { buildDeveloperInstructions, rulesPrefixForTurn, latestRollover, machineText, agentWorkArea, WORK_RULES, PROJECTS_RULE } from "./builder";
 export { projectCost, type ProjectCost } from "./cost";

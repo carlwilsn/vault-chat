@@ -1,6 +1,5 @@
 // The developer instructions for an engine thread, and the rules prefix for every turn.
 import { agentWorkDir } from "../workArea";
-import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ctxConfig } from "./config";
@@ -10,8 +9,7 @@ import { MEMORY_REL, loadedMemory, projectMemoryNote } from "./memory";
 import { threadKindOf } from "../../src/threads";
 import type { ContextConv, RolloverInfo } from "./types";
 import { agentKeyEnvNames } from "../keys";
-
-export const ROLE_PROMPT = `You are vault-chat's agent. You run on Carl's box ("thinkbox"), in his vault's working copy; he talks to you from his laptop, typed or by voice (his phone app has only his alerts and notes).`;
+import { ENGINE_ROLE_PROMPT } from "../engine/prompt";
 
 /** Memory: what to save, where, and what wins (reports/Project memory SOTA research.md, section 8). */
 export const MEMORY_RULE = `# Memory
@@ -31,16 +29,13 @@ When things disagree, in this order: what the files and the world say now; Carl'
 /** How to work, on every thread (the mined root causes, 2026-10-18: overbuilt small asks, missions for "do it now", "done" unchecked, "note" meaning two things). */
 export const WORK_RULES = `# How to work
 
-- Size the work to the ask. A small ask (an edit, a fix, a note, a quick question) is done now, directly, in the real file, in place: no copy of the file, no sandbox, no plan or progress files, no test suite, browser checks or hashes. The vault autosaves to git, so git is the undo. Heavier checking only for long work, or when Carl asks for it.
-- Do it now. When Carl asks for something, do it in this turn: not as a mission, a schedule or a background job ("no a mission, do it rn"). ScheduleWake and StartJob are for when he asks for them, or when the work truly must outlive this turn (a training run, a long download). Never schedule the same thing twice.
+- Size the work to the ask. A small vault ask (an edit, a fix, a note, a quick question) is done now, directly, in the real file, in place: no copy of the file, no sandbox, no plan or progress files, no test suite, browser checks or hashes; the vault autosaves to git, so git is the undo. No missions, and no schedules or jobs unless he asks for them or the work truly must outlive the turn; never schedule the same thing twice. A change to vault-chat's own code always goes through its gate (the constitution's "Before any change").
 - If you change a source that something he views is built from (a .tex and its PDF), rebuild it.
-- Read back before you claim. After any edit, confirm it from the tool's own output or by re-reading the file before you say it is done, and say what you checked. If something failed or you could not check, say that.
-- "Note" means one thing: an entry in Carl's Notes panel (.vault-chat/notes.jsonl). They are the box's state box:notes: PluginRead {plugin: "box:notes"} reads them, PluginAct {plugin: "box:notes", action: add | edit (change a note in place: never add a second note to fix the first) | resolve | reopen | delete, args} changes them. A "markdown file", a "write-up", or anything "detailed" is a vault .md file, written with your file tools. When it is unclear which he means, ask.`;
+- Read back before you claim: confirm an edit from the tool's output or by re-reading the file, and say what you checked; if something failed or you could not check, say so. Notes, recaps and earlier messages can be stale: re-check reality (the file, the command, the process) before acting on one.
+- "Note" means one thing: an entry in Carl's Notes panel (.vault-chat/notes.jsonl), the box's noun box:notes (PluginRead reads them; PluginAct add | edit (in place: never a second note to fix the first) | resolve | reopen | delete changes them). A "markdown file", a "write-up", or anything "detailed" is a vault .md file, written with your file tools. When it is unclear which he means, ask.`;
 
 /** What a project is, said once wherever projects come up. */
 export const PROJECTS_RULE = `Carl's conversation is one thread, Main, that every device and call continues, whatever folder he has open; each of his projects has one thread of its own. A project is a folder with its own thread: your working folder there; its AGENTS.md (his instructions, loaded for you), its .vault-chat/project-memory.md (the project's memory) and .vault-chat/rules.md (its rules). Only Carl makes projects: in the app ("Make this a project", "+ New project"), or by asking you in so many words, spoken or typed ("start a project for HW4"); then box:chats openProject (create: true) makes it. Never make one on your own initiative. When he says to work on a project ("let's work on Physics") or to go back to Main, box:chats openProject takes you there, and his screens and a live call follow: there is one of you, Main is home, and a project's thread is a place you work. A project is context, not a wall: from any thread you may read and write anywhere the sandbox lets you. Before you change files in a project's folder from outside its thread, read its AGENTS.md and memory first, and keep to them. PluginRead box:chats shows the chats and projects.`;
-
-export const RECHECK_RULE = `Notes, recaps and earlier messages can be stale or wrong. Before you act on one (a job "running", a file "done", a number), re-check reality: read the file, run the command, look at the process. Say what you checked.`;
 
 /** The latest roll-over marker's info, if the conversation rolled over. */
 export function latestRollover(conv: ContextConv): RolloverInfo | null {
@@ -104,7 +99,7 @@ export function turnSections(conv: ContextConv, o: { folder?: { rel: string; out
           "error" in f
             ? `<working-folder>The vault root: ${f.error}.</working-folder>`
             : f.git
-              ? `<working-folder>This project is the git repo ${f.git.folder} on the box (its own repo, never synced with the vault). You work in your own clone of it, ${f.git.clone}/: relative paths and your shell start there, and its AGENTS.md is loaded. Make each change on a branch agent/<short-name> (git switch -c agent/<short-name>), commit it, check it and record the real UI, then ship it: ~/agent-work/${p.slug}/bin/submit <your checkout> <name> "<one-line title>" (it rebases on main, pushes ONLY your agent branch, checks the remote and queues ship-requests/<name>.req), and wait for ~/agent-work/${p.slug}/ship-results/<name>.result IN THE BACKGROUND (Bash with run_in_background: true, a loop until the file exists): Claude Code wakes you when it lands. The separately installed box script compares the seven baseline/candidate gates and fast-forwards main; no Keep wait. Acceptance is not Shipped: laptop sync, CI and actual device health must follow. The project's main branch is service-owned: only the box script promotes your branch; you never merge or push main (its folder is read-only to you). This project's memory and rules are not in your clone: write ${rel} by its absolute path (it is writable), and ${MEMORY_REL} under ${vault}.</working-folder>`
+              ? `<working-folder>This project is the git repo ${f.git.folder} on the box (its own repo, never synced with the vault). You work in your own clone of it, ${f.git.clone}/: relative paths and your shell start there, and its AGENTS.md is loaded. Make each change on a branch agent/<short-name> (git switch -c agent/<short-name>), commit it, run the constitution's "Before any change" checklist, then ship it: ~/agent-work/${p.slug}/bin/submit <your checkout> <name> "<one-line title>" (it rebases on main, pushes ONLY your agent branch, checks the remote and queues ship-requests/<name>.req), and wait for ~/agent-work/${p.slug}/ship-results/<name>.result IN THE BACKGROUND (Bash with run_in_background: true, a loop until the file exists): Claude Code wakes you when it lands. The separately installed box script runs the gates and fast-forwards main; an interface change then lands on Carl's OK card. Acceptance is not Shipped: laptop sync, CI and actual device health must follow. The project's main branch is service-owned: only the box script promotes your branch; you never merge or push main (its folder is read-only to you). This project's memory and rules are not in your clone: write ${rel} by its absolute path (it is writable), and ${MEMORY_REL} under ${vault}.</working-folder>`
               : f.outside
               ? `<working-folder>${f.rel}/ is this project's folder on the box (its own git, never synced with the vault): relative paths and your shell start there, and its AGENTS.md is loaded. Its memory is ${rel}; the global memory is ${MEMORY_REL} under ${vault}.</working-folder>`
               : `<working-folder>${f.rel}/ is this project's folder: relative paths and your shell start there, and its AGENTS.md is loaded. The vault root is ${vault}; write vault files such as ${MEMORY_REL} by their absolute path.</working-folder>`,
@@ -126,18 +121,18 @@ export function turnSections(conv: ContextConv, o: { folder?: { rel: string; out
 }
 
 export type BuildOptions = {
-  /** Replaces ROLE_PROMPT (ENGINE's adapted system prompt goes before it, or here). */
+  /** Replaces ENGINE_ROLE_PROMPT (the engine adds a note to it). */
   rolePrompt?: string;
 };
 
 /**
  * developerInstructions for thread/start: role prompt, the rules in full, how
  * to work, the chat's project (its shared notes, capped) or the list of
- * projects, the recap if the conversation rolled over, and the re-check rule.
+ * projects, and the recap if the conversation rolled over.
  */
 export function buildDeveloperInstructions(conv: ContextConv, opts: BuildOptions = {}): string {
   const { caps } = ctxConfig();
-  const out: string[] = [opts.rolePrompt ?? ROLE_PROMPT];
+  const out: string[] = [opts.rolePrompt ?? ENGINE_ROLE_PROMPT];
 
   const rules = rulesBlock(conv);
   out.push(
@@ -154,7 +149,7 @@ export function buildDeveloperInstructions(conv: ContextConv, opts: BuildOptions
   if (p) {
     out.push(`# This thread: project ${p.name}\n\nThis is the thread of Carl's project "${p.name}", the folder ${p.folder}. Its AGENTS.md (his instructions) is loaded; its memory (${PROJECT_DIR}/${PROJECT_NOTES_FILE}) comes with your turns, sent again whenever it changes. Other projects' memory is not yours here. ${PROJECTS_RULE}`);
   } else if (kind === "main") {
-    out.push(`# This thread: Main\n\nThis is Main, Carl's one main conversation: his laptop and voice calls continue it, whatever folder he has open, and it does not end (compaction keeps it bounded; Carl's Clear gives him a fresh view). Do small things inline; hand slow work to the Agent tool in background mode and keep talking. When a result lands while he is on another subject, name the topic it belongs to. Carl's projects (each one's folder) come with your turns; no project's memory is loaded here. ${PROJECTS_RULE}`);
+    out.push(`# This thread: Main\n\nThis is Main, Carl's one main conversation: his laptop and voice calls continue it, whatever folder he has open, and it does not end (compaction keeps it bounded; Carl's Clear gives him a fresh view). When a result lands while he is on another subject, name the topic it belongs to. Carl's projects (each one's folder) come with your turns; no project's memory is loaded here. ${PROJECTS_RULE}`);
   } else {
     out.push(`# This thread\n\nA separate chat beside Main. ${PROJECTS_RULE}`);
   }
@@ -171,8 +166,6 @@ export function buildDeveloperInstructions(conv: ContextConv, opts: BuildOptions
 
   const machine = machineBlock();
   if (machine) out.push(machine);
-
-  out.push(`# Before you trust any of this\n\n${RECHECK_RULE}`);
   return out.join("\n\n---\n\n") + "\n";
 }
 
@@ -181,19 +174,13 @@ export function agentWorkArea(vault: string): string {
   return agentWorkDir(process.env.HOME || homedir(), vault);
 }
 
-/**
- * The machine section: what the sandbox lets the agent write, and what the box
- * offers beyond the tools (a browser). The box is headless, so "seeing" a page
- * is a headless screenshot the agent then reads. `--headless=new` hangs in the
- * sandbox (it wants the session dbus under /run/user, which is hidden); the old
- * headless mode with its own profile in /tmp works, and `timeout` bounds it.
- */
-export function machineText(o: { chrome: string | null; work: string | null; keys?: string[] }): string {
+/** The machine section: what the agent may write and use beyond its tools (seeing a page is RecordUI; the real app, Screen). */
+export function machineText(o: { work: string | null; keys?: string[] }): string {
   const parts = ["# This machine"];
   if (o.work) {
     parts.push(
       `No sandbox: you run as Carl's user with the whole box — systemctl --user, sudo, the journal, any file. ` +
-        `Never read or print credentials (SSH keys, tokens, env files), and leave other vaults' .vault-chat alone. ` +
+        `Never read, print or copy credentials (SSH keys, tokens, env files, the key store), and leave other vaults' .vault-chat alone. ` +
         `Use your work area \`${o.work}/\` for code checkouts, builds, ` +
         `virtualenvs and scratch that don't belong in the vault (point caches there or at /tmp, e.g. \`npm_config_cache=/tmp/npm-cache\`). ` +
         `Backups, checkpoints, archives and other bulk output go there too, never in the vault: every file in the vault is committed and ` +
@@ -207,33 +194,10 @@ export function machineText(o: { chrome: string | null; work: string | null; key
         `${o.keys.map((k) => `\`$${k}\``).join(", ")}. Use them by name; never print, echo or write their values anywhere (files, messages, logs, commits).`,
     );
   }
-  if (o.chrome) {
-    const flags = `--headless=old --no-sandbox --disable-gpu --no-first-run --user-data-dir=/tmp/chrome-agent`;
-    parts.push(
-      `A browser is installed: \`${o.chrome}\`. To look at a web page (a local dev server, a site, an HTML file), render it headless and read the image: ` +
-        `\`timeout 60 ${o.chrome} ${flags} --window-size=1400,900 --screenshot=/tmp/page.png <url>\`, then Read /tmp/page.png. ` +
-        `For the page's DOM: \`timeout 60 ${o.chrome} ${flags} --dump-dom <url>\`. Use exactly these flags (\`--headless=new\` hangs here). Check UI work this way before calling it done.`,
-    );
-  }
   return parts.join("\n\n");
-}
-
-let chromeCache: string | null | undefined;
-function findChrome(): string | null {
-  if (chromeCache !== undefined) return chromeCache;
-  const dirs = (process.env.PATH ?? "").split(":").filter(Boolean);
-  chromeCache = null;
-  for (const n of ["chromium", "chromium-browser", "google-chrome"]) {
-    const d = dirs.find((x) => existsSync(join(x, n)));
-    if (d) {
-      chromeCache = join(d, n);
-      break;
-    }
-  }
-  return chromeCache;
 }
 
 function machineBlock(): string | null {
   if (process.platform === "win32") return null;
-  return machineText({ chrome: findChrome(), work: agentWorkArea(ctxConfig().vault), keys: agentKeyEnvNames() });
+  return machineText({ work: agentWorkArea(ctxConfig().vault), keys: agentKeyEnvNames() });
 }

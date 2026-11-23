@@ -63,7 +63,6 @@ import { externalRecordUI } from "../mcp/recordUI";
 import { loadConfig } from "../config";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { proposeEditSpec } from "./proposeEdit";
-import { PLUGIN_WRITE_TOOL, pluginWrite, pluginWriteSpec } from "../pluginWriteTool";
 import { capabilitiesOf, capabilityNote } from "./capabilities";
 import { randomUUID } from "node:crypto";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -2377,7 +2376,7 @@ export class Engine {
 
   /** Ctrl+K / Ctrl+L: the tools a side thread can use (notes, Show …), and ProposeEdit when the open file can take an edit. */
   private async inlineHostTools(editable: boolean): Promise<ToolSpec[]> {
-    return [...(await this.hostToolCatalog("voiceAct")), pluginWriteSpec, handoffSpec, ...(editable ? [proposeEditSpec] : [])] as ToolSpec[];
+    return [...(await this.hostToolCatalog("voiceAct")), handoffSpec, ...(editable ? [proposeEditSpec] : [])] as ToolSpec[];
   }
 
   /** One current host policy for new and resumed sessions. */
@@ -2961,12 +2960,6 @@ export class Engine {
     const interaction: Interaction = p.interaction ?? p.notifyScope?.interaction ?? this.interaction(convId);
     try {
       p.signal?.throwIfAborted();
-      // Ctrl+K / Ctrl+L changing the app (server/pluginWriteTool.ts): the plugin folders only, a live plugin through its
-      // slot's keep (Switch back undoes it). Only a side thread lists it; a turn writes with its own file tools.
-      if (name === PLUGIN_WRITE_TOOL && side) {
-        const r = pluginWrite(vault, a, (abs) => this.d.onFilesWritten?.(abs.map((x) => relative(vault, x).split(sep).join("/"))));
-        return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
-      }
       if (name === HANDOFF_TOOL && side) return text(await this.handoff(side.convId, a, p.signal));
       switch (name) {
         case "AskUser": {

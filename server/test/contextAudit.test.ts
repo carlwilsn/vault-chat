@@ -158,11 +158,10 @@ function duplicates(all: string): { text: string; count: number }[] {
   return [...counts.entries()].filter(([, n]) => n > 1).map(([text, count]) => ({ text: text.slice(0, 160), count }));
 }
 
-const REMOVED = /SetProject|ProjectMemory|ProjectCost|Done means proved|^## (memory|plan|progress).md|SetBudget|SetCheck|SetMetric|RunWorkers|TaskAdd|TaskClaim|TaskUpdate|TaskList|<status>|budget|plateau|worker conversation|Done when.*command|pinned check/i;
+const REMOVED = /SetProject|ProjectMemory|ProjectCost|Done means proved|^## (memory|plan|progress).md|SetBudget|SetCheck|SetMetric|RunWorkers|TaskAdd|TaskClaim|TaskUpdate|TaskList|<status>|(?<!time )budget|plateau|worker conversation|Done when.*command|pinned check/i;
 
 function normalise(s: string): string {
   return s
-    .split(join(root, "bin", "chromium")).join("<browser>")
     .split(agentWorkDir(homedir(), vault)).join("<work-area>")
     .split(vault.replace(/\\/g, "/"))
     .join("<vault>")
@@ -207,15 +206,6 @@ async function audit(mode: string, parts: { label: string; text: string }[]): Pr
 let convId = "";
 
 beforeAll(async () => {
-  // The machine block names the browser it found on PATH, so the prompt would
-  // otherwise read differently on a box that has chromium and one that does not
-  // — which is exactly how this snapshot came to fail on every ship while
-  // passing here. The audit provides its own, and normalise() hides the path:
-  // what is audited is the text, never the box.
-  const binDir = join(root, "bin");
-  mkdirSync(binDir, { recursive: true });
-  writeFileSync(join(binDir, "chromium"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-  process.env.PATH = `${binDir}:${process.env.PATH ?? ""}`;
   await import("../shims/globals");
   const { registerAll } = await import("../commands/registry");
   registerAll((await import("../commands/fs")).fsCommands);

@@ -71,7 +71,7 @@ type ToolContext = { conv: ContextConv; convs?: ContextConv[] };   // convs: eve
 | `rulesPrefixForTurn(conv?): string` | Put in front of a turn's input text when the rules changed. `""` when there are no rules files. Read fresh each call. |
 | `projectCost(nameOrSlug, convs?): ProjectCost \| null` | `Cost{project}`: `{slug, name, totalUsd, missingCalls, parts[{id,title,costUsd,missingCalls}]}` over conversations whose meta `project` is the slug. `convs` defaults to every conversation on disk. |
 | `listProjects()`, `readProject(slug)` (`{slug, name, dir, notes, rules}`), `findProject(nameOrSlug)`, `ensureProject(name, desc?)`, `createProject(name, desc?)`, `readGlobalRules()` | Plain readers, and the writers for Carl's own actions (`/message {project}`, `POST /conversation/project`): a new project is its folder and a project.md that names it. |
-| `latestRollover(conv)`, `ROLE_PROMPT`, `WORK_RULES`, `PROJECTS_RULE`, `RECHECK_RULE` | Constants and helpers. `WORK_RULES` (every thread): size the work to the ask (small asks in place, in the real file; git is the undo), do it now (no mission, schedule or job unless asked or needed), read back before claiming, and what a note is. |
+| `latestRollover(conv)`, `WORK_RULES`, `PROJECTS_RULE` | Constants and helpers. `WORK_RULES` (every thread): size the work to the ask (small vault asks in place, in the real file; git is the undo; vault-chat code always through its gate), read back before claiming (and re-check stale notes), and what a note is. |
 
 ### Tools (what the agent sees)
 
@@ -83,8 +83,8 @@ are server/notesTools.ts, the same code for pi and voice.
 
 ### How ENGINE wires it
 
-1. **New conversation / new thread:** `developerInstructions = buildDeveloperInstructions(conv)` (ENGINE may prepend
-   its adapted system prompt, or pass it as `rolePrompt` to replace `ROLE_PROMPT`).
+1. **New conversation / new thread:** `developerInstructions = buildDeveloperInstructions(conv)` (it starts with
+   `ENGINE_ROLE_PROMPT`, server/engine/prompt.ts, with Carl's constitution; ENGINE passes it as `rolePrompt` with a note).
 2. **Every turn:** `text = rulesPrefixForTurn(conv) + userText`.
 3. **Tools:** none here; box:chats (Engine.chatsCtl) calls the readers above.
 4. **Cost{project}:** `projectCost(project, convsInMemory?)`.

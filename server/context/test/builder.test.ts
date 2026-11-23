@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildDeveloperInstructions, configureContext, createProject, rulesPrefixForTurn, RECHECK_RULE, ROLE_PROMPT, WORK_RULES, PROJECTS_RULE } from "../index";
+import { buildDeveloperInstructions, configureContext, createProject, rulesPrefixForTurn, WORK_RULES, PROJECTS_RULE } from "../index";
+import { ENGINE_ROLE_PROMPT } from "../../engine/prompt";
 import type { ContextConv } from "../types";
 import { tempVault } from "./helpers";
 
@@ -43,15 +44,14 @@ describe("rules on every turn", () => {
 });
 
 describe("buildDeveloperInstructions", () => {
-  it("has the role prompt, how to work, the project's shared notes, the re-check rule; no project lists the projects", () => {
+  it("has the role prompt, how to work, the project's shared notes; no project lists the projects", () => {
     createProject("Coconut");
     createProject("Thesis");
     let s = buildDeveloperInstructions({ id: "c" });
-    expect(s.startsWith(ROLE_PROMPT)).toBe(true);
+    expect(s.startsWith(ENGINE_ROLE_PROMPT)).toBe(true);
     expect(s).toContain(WORK_RULES);
     expect(s).toContain("This chat is in no project, which is normal.");
     expect(s).toContain("- Coconut (coconut)\n- Thesis (thesis)");
-    expect(s).toContain(RECHECK_RULE);
     expect(s).toContain("add it to .vault-chat/rules.md");
 
     s = buildDeveloperInstructions({ id: "c", project: "coconut" });
@@ -59,7 +59,6 @@ describe("buildDeveloperInstructions", () => {
     expect(s).toContain(`This chat is in Carl's project "Coconut" (${ap("coconut")}).`);
     expect(s).toContain("## Its shared notes (project.md)\n\n# Coconut\n\nFind coconuts.");
     expect(s).not.toContain("This chat is in no project");
-    expect(s.trimEnd().endsWith(RECHECK_RULE)).toBe(true);
     // Said once, in either case: only Carl decides what is a project; a project is context, not a boundary.
     for (const x of [s, buildDeveloperInstructions({ id: "c" })]) {
       expect(x.split(PROJECTS_RULE).length).toBe(2);

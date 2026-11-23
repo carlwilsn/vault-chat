@@ -1,13 +1,13 @@
 // Ctrl+K / Ctrl+L changing the app (Carl, 2026-11-17: "turn off the snail, make it say shail" ended in "ask me again in
-// Main"). The box's agent now has PluginWrite (the plugin folders only: a vault plugin lands live, turned on, Switch back
-// undoes it) and Handoff (a new chat with every tool does what it can't; its answer comes back to the box, or as an alert).
+// Main"). The box's agent changes the app's state with the same model actions the app calls (PluginAct box:pages,
+// box:settings, box:workspace) and hands a code change to Handoff (a new chat with every tool, real code; its answer
+// comes back to the box, or as an alert). No vault-plugin overlay (constitution 2.1, 2026-11-23).
 // The side runner here is a stand-in for the model: it calls the tools the engine bound to the request, as the CLI would.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeRig, until, type Rig } from "./longRig";
 import { cleanup } from "./helpers";
-import { pluginWriteTarget } from "../pluginWriteTool";
 
 let rig: Rig;
 const sides: any[] = [];
@@ -54,63 +54,26 @@ const ask = async (text: string) => {
 const plugins = () => join(rig.vault, ".vault-chat", "plugins");
 
 describe("Ctrl+L can change the app", () => {
-  it("lists the scoped write and enable tools (and the handoff) for the box", async () => {
+  it("lists the model actions and the handoff for the box; no plugin-writing overlay", async () => {
     script = async () => "ok";
     await ask("what tools?");
     const names = sides.at(-1).hostTools.map((t: any) => t.name);
-    for (const n of ["PluginWrite", "PluginAct", "Handoff", "ProposeEdit"]) expect(names).toContain(n);
+    for (const n of ["PluginAct", "Handoff", "ProposeEdit"]) expect(names).toContain(n);
+    expect(names).not.toContain("PluginWrite");
   });
 
-  it("\"make my cursor show the text 'hi'\": the plugin file is written, live and on; no \"go to Main\"", async () => {
-    // The snail is there and he turned it off first (the ask of 2026-11-17).
+  it("\"turn off the snail cursor\": the same box:pages action the app calls", async () => {
     mkdirSync(plugins(), { recursive: true });
     writeFileSync(join(plugins(), "snail-cursor.js"), CURSOR("snail"));
     script = async (call) => {
       const off = await call("PluginAct", { plugin: "box:pages", action: "disable", args: { plugin: "snail-cursor" } });
       expect(off.ok).toBe(true);
-      const w = await call("PluginWrite", { path: ".vault-chat/plugins/hi-cursor.js", content: CURSOR("hi"), reason: "cursor shows hi" });
-      expect(w.ok).toBe(true);
-      return `Done: your cursor shows "hi". ${w.text}`;
+      return "Done: the snail cursor is off.";
     };
-    const done = await ask("make my cursor show the text 'hi'");
+    const done = await ask("turn off the snail cursor");
     expect(done.text).not.toMatch(/Main/);
-    expect(readFileSync(join(plugins(), "hi-cursor.js"), "utf8")).toContain("// hi");
-    expect(existsSync(join(plugins(), "hi-cursor.draft.js"))).toBe(false);
     const { pluginDesired } = await import("../supervisor");
-    expect(pluginDesired(rig.vault, ".vault-chat/plugins/hi-cursor.js").state).toBe("running");
     expect(pluginDesired(rig.vault, ".vault-chat/plugins/snail-cursor.js").state).toBe("stopped");
-  });
-
-  it("editing a plugin that was off: live, on again", async () => {
-    script = async (call) => (await call("PluginWrite", { path: ".vault-chat/plugins/snail-cursor.js", oldText: "// snail", newText: "// shail" })).text;
-    const done = await ask("make the snail say shail");
-    expect(done.text).toMatch(/live now/);
-    expect(readFileSync(join(plugins(), "snail-cursor.js"), "utf8")).toContain("// shail");
-    expect(readFileSync(join(plugins(), "snail-cursor.prev.js"), "utf8")).toContain("// snail");
-    const { pluginDesired } = await import("../supervisor");
-    expect(pluginDesired(rig.vault, ".vault-chat/plugins/snail-cursor.js").state).toBe("running");
-  });
-
-  it("writes nothing outside the plugin folders; drafts wait for the gate", async () => {
-    expect("error" in pluginWriteTarget("Hi.md")).toBe(true);
-    expect("error" in pluginWriteTarget(".vault-chat/plugins/../conversations/x.js")).toBe(true);
-    expect("error" in pluginWriteTarget(".vault-chat/box-plugins/x.js")).toBe(true);
-    expect("error" in pluginWriteTarget("/etc/passwd")).toBe(true);
-    expect("error" in pluginWriteTarget(".vault-chat/box-plugins/greet.draft.js")).toBe(true);
-    expect("error" in pluginWriteTarget(".vault-chat/app-plugins/composer.draft.js")).toBe(true);
-    let out = { ok: true, text: "" };
-    script = async (call) => ((out = await call("PluginWrite", { path: ".vault-chat/notes.jsonl", content: "x" })), out.text);
-    await ask("write my notes file");
-    expect(out.ok).toBe(false);
-    script = async (call) => ((out = await call("PluginWrite", { path: ".vault-chat/plugins/broken.js", content: "console.log(1)" })), out.text);
-    await ask("a plugin with no mount");
-    expect(out.ok).toBe(false);
-    expect(existsSync(join(plugins(), "broken.js"))).toBe(false);
-    script = async (call) => ((out = await call("PluginWrite", { path: ".vault-chat/plugins/hi-cursor.draft.js", content: CURSOR("hey") })), out.text);
-    await ask("draft a hey cursor for me to try");
-    expect(out.ok).toBe(true);
-    expect(out.text).toMatch(/Nothing reaches Carl yet: Plugins submit runs it through the gate/);
-    expect(readFileSync(join(plugins(), "hi-cursor.js"), "utf8")).toContain("// hi");
   });
 
   it("hands what it can't do to a new chat and reports its answer in the box", async () => {
