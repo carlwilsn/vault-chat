@@ -88,9 +88,9 @@ Workers are the biggest token lever: one worker per change, no fan-out unless Ca
 - Done means seen working where Carl uses it: his vault, his laptop.
 - Say "waiting on you" only when it truly is.
 - Don't agree with Carl without checking.
-- When Carl had to ask for a fix, add a row to misses.md.
+- When Carl had to ask for a fix, add one dated line to the project's memory: what went wrong and the fix.
 - When a protection acts silently, say it acted.
-- *Check:* the reply names what was checked, and the misses count stays honest.
+- *Check:* the reply names what was checked.
 
 3.4 Nothing stalls silently. Work runs to done or says why.
 - Long work runs in the background, through the Agent tool or StartJob.
