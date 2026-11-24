@@ -259,6 +259,20 @@ describe("core bundles on the box", () => {
     expect(landCore()).toBeNull();
   });
 
+  it("a commit the ship gate built and boot-checked already is stored from its hand-over, not built again", () => {
+    const root = core.coreRoot(state);
+    const commit = "e".repeat(40);
+    expect(core.prebuiltFor(root, commit)).toBeNull();
+    const dir = join(root, "prebuilt", commit);
+    mkdirSync(join(dir, "dist"), { recursive: true });
+    writeFileSync(join(dir, "dist", "index.html"), "<p>e</p>");
+    expect(core.prebuiltFor(root, commit)).toBeNull(); // no boot verdict yet: built here as before
+    writeFileSync(join(dir, "boot.json"), JSON.stringify({ verdict: "pass", reasons: [], at: 1 }));
+    expect(core.prebuiltFor(root, commit)).toBe(dir);
+    expect(core.buildShell("/r", commit, root, dir)).toContain(`--prebuilt '${dir}'`);
+    expect(core.buildShell("/r", commit, root)).not.toContain("--prebuilt");
+  });
+
   it("a failed build is given up after two tries", () => {
     const main = "d".repeat(40);
     let runs = 0;

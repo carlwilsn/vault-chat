@@ -7,10 +7,13 @@
 //             scripts/core-publish.ts; <state>/core-bundles/work/<commit12>/ is a build's scratch and its result.json.
 //   publisher on while Carl's setting corePublish is true (the default; false: nothing is built, no bundle lands (a
 //             keep on app/core is refused) and none is offered; the laptop runs its installed core).
-//             Every minute, main of the vault-chat repo on this box (VC_CORE_REPO, default ~/vc/projects/vault-chat;
+//             Every 5 s, main of the vault-chat repo on this box (VC_CORE_REPO, default ~/vc/projects/vault-chat;
 //             VC_CORE_PUBLISH=0 turns it off for good). A new main starts one build through the existing StartJob path
 //             (server/engine/jobs.ts startJobWith: its memory ceiling, low CPU/IO share, outside this server's memory: a
 //             vite build takes ~3.6 GB). Two failed builds of one commit: given up.
+//             When the ship gate built and boot-checked that commit already (its sandbox, before main moved) and
+//             handed it over in core-bundles/prebuilt/<commit>/ (dist/ + boot.json), the job stores those bytes
+//             (scripts/core-publish.ts --prebuilt) instead of building again: seconds, not ~45 s + the boot check.
 //   land      the newest built bundle nobody decided on (newestUndecidedCore) goes through the one gate (server/gate.ts
 //             landCore, coreGate): a pass is a plugin.change keep by "gate" (it becomes the core every window and launch
 //             runs: the laptop's loader takes it when Carl presses OK, src/coreFollow.ts, and falls back by itself when it
@@ -290,7 +293,13 @@ export type PublisherDeps = {
 const MAX_TRIES = 2;
 
 /** The shell a build job runs: a snapshot of the commit (git archive), the repo's node_modules, then its own script. */
-export function buildShell(repo: string, commit: string, root: string): string {
+/** The ship gate's own build of a commit, handed over after it accepted it (dist/ + boot.json), or null. */
+export function prebuiltFor(root: string, commit: string): string | null {
+  const dir = join(root, "prebuilt", commit);
+  return existsSync(join(dir, "dist", "index.html")) && existsSync(join(dir, "boot.json")) ? dir : null;
+}
+
+export function buildShell(repo: string, commit: string, root: string, prebuilt: string | null = null): string {
   const w = join(root, "work", commit.slice(0, 12));
   const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
   return [
@@ -301,7 +310,7 @@ export function buildShell(repo: string, commit: string, root: string): string {
     `git -C ${q(repo)} archive ${commit} | tar -x -C ${q(w + "/src")}`,
     `ln -s ${q(repo + "/node_modules")} ${q(w + "/src/node_modules")}`,
     `cd ${q(w + "/src")}`,
-    `exec nice -n 10 node --import tsx scripts/core-publish.ts --repo ${q(repo)} --commit ${commit} --root ${q(root)} --work ${q(w)}`,
+    `exec nice -n 10 node --import tsx scripts/core-publish.ts --repo ${q(repo)} --commit ${commit} --root ${q(root)} --work ${q(w)}${prebuilt ? ` --prebuilt ${q(prebuilt)}` : ""}`,
   ].join("\n");
 }
 
@@ -355,7 +364,7 @@ export function publishTick(d: PublisherDeps): string {
   const tried = st.attempts.filter((a) => a.commit === main);
   if (tried.some((a) => a.state !== "failed") || tried.length >= MAX_TRIES) return "up to date";
   mkdirSync(workDir(d.stateDir), { recursive: true });
-  const command = `${buildShell(d.repo, main, coreRoot(d.stateDir))}`;
+  const command = buildShell(d.repo, main, coreRoot(d.stateDir), prebuiltFor(coreRoot(d.stateDir), main));
   const started = (d.startJob ?? startJobWith)(env, d.repo, { command, name: `core-${main.slice(0, 8)}`, timeout: Math.round((d.buildMs ?? 40 * 60_000) / 1000) + 300 });
   if (!started.job) {
     st.attempts.push({ commit: main, at: now, tries: tried.length + 1, state: "failed", error: `could not start the build: ${started.text.slice(0, 200)}` });
@@ -376,6 +385,13 @@ export function pruneCores(stateDir: string, changes: readonly ChangeRecord[]): 
   for (const c of storedCores(stateDir).slice(0, 4)) keep.add(c.version);
   for (const c of storedCores(stateDir)) if (!keep.has(c.version)) rmSync(join(coreRoot(stateDir), c.version), { recursive: true, force: true });
   try {
+    const pre = join(coreRoot(stateDir), "prebuilt");
+    const dirs = readdirSync(pre).map((n) => ({ n, t: statSync(join(pre, n)).mtimeMs })).sort((a, b) => b.t - a.t);
+    for (const { n } of dirs.slice(3)) rmSync(join(pre, n), { recursive: true, force: true });
+  } catch {
+    /* none handed over */
+  }
+  try {
     const st = readPublisher(stateDir);
     const live = new Set(st.attempts.filter((a) => a.state === "building").map((a) => a.commit.slice(0, 12)));
     const dirs = readdirSync(workDir(stateDir)).filter((n) => statSync(join(workDir(stateDir), n)).isDirectory());
@@ -386,7 +402,7 @@ export function pruneCores(stateDir: string, changes: readonly ChangeRecord[]): 
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;
-/** At boot (the box that owns the log): look every minute. Off with VC_CORE_PUBLISH=0, or with no repo. */
+/** At boot (the box that owns the log): look every 5 s. Off with VC_CORE_PUBLISH=0, or with no repo. */
 export function startCorePublisher(d: Omit<PublisherDeps, "repo"> & { repo?: string }): boolean {
   const repo = d.repo ?? coreRepo();
   if (process.env.VC_CORE_PUBLISH === "0" || process.platform !== "linux" || !existsSync(join(repo, ".git")) || !existsSync(join(repo, "node_modules"))) return false;
@@ -405,9 +421,11 @@ export function startCorePublisher(d: Omit<PublisherDeps, "repo"> & { repo?: str
       console.error(`[core] ${(e as Error).message}`);
     }
   };
-  timer = setInterval(look, 60_000);
+  // Every 5 s (a git rev-parse and a few small reads): a new main is built, and a finished build lands, within
+  // seconds, not on the next minute (report 31: the minute look cost ~45 s a ship).
+  timer = setInterval(look, 5_000);
   timer.unref?.();
-  setTimeout(look, 20_000).unref?.();
+  setTimeout(look, 5_000).unref?.();
   return true;
 }
 

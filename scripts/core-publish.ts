@@ -40,7 +40,7 @@ export function needsOf(root: string, boxApi = CORE_BOX_API): CoreNeeds {
  * into place (a reader never sees half a bundle). Returns its version and the manifest's sha256. The same bytes twice:
  * the same version, stored once.
  */
-export function storeCore(root: string, dist: string, meta: { commit: string; commitTime: number; needs: CoreNeeds; builtAt?: string }): { version: string; sha256: string; manifest: CoreManifest } {
+export function storeCore(root: string, dist: string, meta: { commit: string; commitTime: number; needs: CoreNeeds; builtAt?: string }, beside: Record<string, string> = {}): { version: string; sha256: string; manifest: CoreManifest } {
   const paths = walk(dist).filter((p) => !p.endsWith(".map")).sort();
   const bad = paths.find((p) => !safeCorePath(p));
   if (bad) throw new Error(`a built file with a name a bundle cannot carry: ${bad}`);
@@ -64,6 +64,8 @@ export function storeCore(root: string, dist: string, meta: { commit: string; co
     copyFileSync(join(dist, f.path), to);
   }
   writeFileSync(join(tmp, "manifest.json"), text);
+  // Beside the manifest, not among its files (the boot check's verdict): there before any reader sees the bundle.
+  for (const [name, body] of Object.entries(beside)) writeFileSync(join(tmp, name), body);
   rmSync(final, { recursive: true, force: true });
   renameSync(tmp, final);
   return { version, sha256: hash, manifest };
@@ -98,10 +100,10 @@ export const BOOT_FILE = "boot.json";
  * scenario steps), side by side with that source: it must come up (its plugins mount) with no errors the source does
  * not have. Never throws: a check that cannot run says so ({verdict: null, error}).
  */
-export async function bootCheck(root: string, version: string, src: string): Promise<{ verdict: "pass" | "borderline" | "fail" | null; reasons: string[]; at: number; error?: string }> {
+export async function bootCheck(files: string, version: string, src: string): Promise<{ verdict: "pass" | "borderline" | "fail" | null; reasons: string[]; at: number; error?: string }> {
   try {
     const { coreBoot } = await import("./core-boot.ts");
-    const v = await coreBoot({ vault: src, files: join(root, version, "files"), version });
+    const v = await coreBoot({ vault: src, files, version });
     return { verdict: v.verdict, reasons: v.reasons, at: Date.now() };
   } catch (e) {
     return { verdict: null, reasons: [], at: Date.now(), error: String((e as Error)?.message ?? e).slice(0, 400) };
@@ -115,24 +117,34 @@ async function main(argv: string[]): Promise<void> {
   const work = resolve(arg(argv, "--work"));
   if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error("--commit: a full commit hash");
   const src = process.cwd();
-  // The repo's node_modules serve the build when the lockfile is the same; else this snapshot gets its own.
-  if (readFileSync(join(src, "package-lock.json"), "utf8") !== readFileSync(join(repo, "package-lock.json"), "utf8")) {
-    rmSync(join(src, "node_modules"), { force: true, recursive: true });
-    execFileSync("npm", ["ci", "--no-audit", "--no-fund", "--prefer-offline"], { cwd: src, stdio: "inherit" });
+  // Built and boot-checked already by the ship's gate (its sandbox, the same commit, before main moved): the box
+  // stores those bytes and their verdict instead of building them again (--prebuilt <dir>: dist/ + boot.json).
+  const prebuilt = argv.includes("--prebuilt") ? resolve(arg(argv, "--prebuilt")) : null;
+  let dist = join(work, "dist");
+  let boot: string;
+  if (prebuilt) {
+    dist = join(prebuilt, "dist");
+    boot = readFileSync(join(prebuilt, BOOT_FILE), "utf8");
+  } else {
+    // The repo's node_modules serve the build when the lockfile is the same; else this snapshot gets its own.
+    if (readFileSync(join(src, "package-lock.json"), "utf8") !== readFileSync(join(repo, "package-lock.json"), "utf8")) {
+      rmSync(join(src, "node_modules"), { force: true, recursive: true });
+      execFileSync("npm", ["ci", "--no-audit", "--no-fund", "--prefer-offline"], { cwd: src, stdio: "inherit" });
+    }
+    const r = spawnSync(process.execPath, [join(src, "node_modules", "vite", "bin", "vite.js"), "build", "--outDir", dist, "--emptyOutDir"], {
+      cwd: src,
+      stdio: "inherit",
+      env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=4096", VC_APP_REVISION: commit, VC_APP_VERSION: coreAppVersion(repo, commit) },
+    });
+    if (r.status !== 0) throw new Error(`vite build failed (exit ${r.status})`);
+    // The gate's boot of the built files (server/coreBundles.ts judgeCore reads it), before the bundle is stored: the
+    // gate never lands a bundle whose boot is not known yet.
+    boot = JSON.stringify(await bootCheck(dist, commit.slice(0, 12), src)) + "\n";
   }
-  const dist = join(work, "dist");
-  const r = spawnSync(process.execPath, [join(src, "node_modules", "vite", "bin", "vite.js"), "build", "--outDir", dist, "--emptyOutDir"], {
-    cwd: src,
-    stdio: "inherit",
-    env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=4096", VC_APP_REVISION: commit, VC_APP_VERSION: coreAppVersion(repo, commit) },
-  });
-  if (r.status !== 0) throw new Error(`vite build failed (exit ${r.status})`);
   const commitTime = Number(execFileSync("git", ["-C", repo, "log", "-1", "--format=%ct", commit], { encoding: "utf8" }).trim());
   // The box API this commit's own source says it needs (not this script's copy: they are the same file here).
-  const out = storeCore(root, dist, { commit, commitTime, needs: needsOf(src) });
-  rmSync(dist, { recursive: true, force: true });
-  // The gate's boot of the stored bundle (server/coreBundles.ts judgeCore reads it): before the build counts as done.
-  writeFileSync(join(root, out.version, BOOT_FILE), JSON.stringify(await bootCheck(root, out.version, src)) + "\n");
+  const out = storeCore(root, dist, { commit, commitTime, needs: needsOf(src) }, { [BOOT_FILE]: boot });
+  if (!prebuilt) rmSync(dist, { recursive: true, force: true });
   writeFileSync(join(work, "result.json"), JSON.stringify({ ok: true, version: out.version, sha256: out.sha256, commit, needs: out.manifest.needs }) + "\n");
   console.log(`stored core ${out.version} (${out.manifest.files.length} files) from ${commit.slice(0, 12)}`);
 }

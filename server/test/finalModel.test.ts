@@ -66,6 +66,13 @@ describe("one feed for the box: conversations never change when the open vault d
     expect(f.after(f.latest()).events).toEqual([]);
   });
 
+  it("the app's core landing (plugin.change in the main vault's log) reaches a surface on any vault", () => {
+    const n = globalFeed(B).latest();
+    convLog(A).emit(null, { type: "signal", signal: { type: "plugin.change", plugin: "app/core", change: "keep", version: "abcd1234" } });
+    convLog(A).emit(null, { type: "signal", signal: { type: "file_changed", path: "y.md" } });
+    expect(globalFeed(B).after(n).events.map((e) => (e as any).signal?.type)).toEqual(["plugin.change"]);
+  });
+
   it("a log whose last record is longer than the tail window still reads its last seq (else its checkpoint is refused)", () => {
     const r = convLog(B).emit("project-vault-chat", { type: "meta", patch: { note: "x".repeat(200_000) } } as any);
     expect(lastSeq(join(B, ".vault-chat", "events", "project-vault-chat.jsonl"))).toBe(r.seq);

@@ -34,7 +34,16 @@ function sh(cmd, args, cwd) {
 
 /** A directory as-is, or a git ref exported into the cache. */
 function materialize(spec, label) {
-  if (!spec || spec === ".") return { dir: ROOT, label: label === "before" ? `this tree (${sh("git", ["rev-parse", "--short", "HEAD"], ROOT)})` : "this tree" };
+  if (!spec || spec === ".") {
+    // A source archive (the box's core build, scripts/core-publish.ts) is no git checkout: it is still "this tree".
+    let rev = "";
+    try {
+      rev = ` (${sh("git", ["rev-parse", "--short", "HEAD"], ROOT)})`;
+    } catch {
+      /* not a git checkout */
+    }
+    return { dir: ROOT, label: label === "before" ? `this tree${rev}` : "this tree" };
+  }
   const asDir = resolve(spec);
   if (existsSync(join(asDir, "package.json"))) {
     let rev = "";

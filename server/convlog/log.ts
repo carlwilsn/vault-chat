@@ -849,10 +849,12 @@ export function _resetConvLogs(): void {
 /** Main's id (src/threads.ts MAIN_ID): one conversation for the whole box, the main vault's. */
 const MAIN = "main";
 
-/** Signals about conversations, and Carl's settings (src/settingsRecords.ts): every surface hears them whatever vault it
- *  has open. Every other signal (a file or the vault changed, the inbox, a Show) is about one vault's files and reaches
+/** Signals about conversations, Carl's settings (src/settingsRecords.ts) and the app's core landing or switching back
+ *  (plugin.change on app/core: one core for the box, recorded in the main vault's log, server/supervisor.ts): every
+ *  surface hears them whatever vault it has open. Before, a laptop on another vault never heard a core land and found
+ *  its Ready card only on its 5-minute look (report 31: 31-230 s after landing). Every other signal (a file or the vault changed, the inbox, a Show) is about one vault's files and reaches
  *  only the surfaces on that vault. */
-const CONVERSATION_SIGNALS = new Set(["follow", "project", "notif", "setting"]);
+const CONVERSATION_SIGNALS = new Set(["follow", "project", "notif", "setting", "plugin.change"]);
 /** The agent's requests to a device app (Screen, Layout, PluginRead / PluginAct, LaptopBuild:
  *  server/deviceLink.ts): about the app's window, not a vault, so every vault's feed carries them whatever vault the
  *  app has open (each names its device in `to` and has its own id; the app acks it once). Before, a vault switch in
