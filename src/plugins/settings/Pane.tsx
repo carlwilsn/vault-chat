@@ -184,10 +184,6 @@ function KeysSection() {
       ) : (
         !edit && <p className="text-[11px] text-muted-foreground/60 italic">No keys yet.</p>
       )}
-      <p className="text-[11px] text-muted-foreground/80">
-        The agent's commands get each key as an environment variable of the same name (upper-cased); plugins and vault tools
-        (<code className="font-mono bg-muted px-1 rounded text-[10.5px]">requires_keys</code> in TOOL.md) ask for one by name.
-      </p>
     </section>
   );
 }
