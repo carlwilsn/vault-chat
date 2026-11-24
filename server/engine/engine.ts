@@ -1007,7 +1007,9 @@ export class Engine {
     if (typeof body?.unqueue === "string" && body.convId) return this.takeBack(body.convId, body.unqueue);
     const textIn = String(body?.text ?? "").trim();
     const hasImages = (body.images?.length ?? 0) + (body.imagePaths?.length ?? 0) > 0;
-    const files = (Array.isArray(body.files) ? body.files : []).slice(0, 10).map((p) => attachmentAt(this.d.vault, p));
+    // The upload (POST /api/v2/attachment) keeps a file in the vault the client has open (the request's), which is
+    // not the conversation's when Carl chats in another vault's conversation: look in both.
+    const files = (Array.isArray(body.files) ? body.files : []).slice(0, 10).map((p) => attachmentAt(this.d.vault, p) ?? (viewerRoot !== this.d.vault ? attachmentAt(viewerRoot, p) : null));
     if (files.some((f) => !f)) return { error: "an attached file is not on the box (upload it first: POST /api/v2/attachment)" };
     if (!textIn && !hasImages && !files.length) return { error: "empty message" };
     // No conversation named: Main (every surface's default). A project's thread or a separate chat is made on first use.
