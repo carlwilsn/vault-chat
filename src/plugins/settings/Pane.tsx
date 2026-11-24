@@ -39,7 +39,7 @@ function SectionHead({ title, hint, right }: { title: string; hint?: ReactNode; 
   return (
     <div className="flex items-start justify-between gap-3">
       <div>
-        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{title}</h3>
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-foreground/75">{title}</h3>
         {hint && <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">{hint}</p>}
       </div>
       {right}
@@ -47,7 +47,6 @@ function SectionHead({ title, hint, right }: { title: string; hint?: ReactNode; 
   );
 }
 
-const Divider = () => <div className="h-px bg-border" />;
 
 /** The pane's sections, top to bottom (data-settings on each: the offers' scrollTo finds them by it). */
 export const SETTINGS_SECTIONS: readonly { id: string; title: string }[] = [
@@ -68,21 +67,17 @@ export function Pane() {
         </Button>
         <span className="text-[13px] font-semibold">Settings</span>
       </div>
-      <div className="flex-1 overflow-auto p-5 space-y-6" data-el="settings-scroll">
+      <div className="flex-1 overflow-auto p-5 space-y-8" data-el="settings-scroll">
         <div data-settings="account">
           <ClaudeAccountLine />
         </div>
-        <Divider />
         <div data-settings="appearance">
           <AppearanceSection />
         </div>
-        <Divider />
         <div data-settings="keys">
           <KeysSection />
         </div>
-        <Divider />
         <MasterSection />
-        <Divider />
         <BoxSection />
       </div>
     </div>
@@ -280,7 +275,7 @@ function BoxSection() {
     <section className="space-y-3" data-settings="box">
       <SectionHead
         title="Box"
-        hint={!vaultPath || box === undefined ? "Open a vault to see its sync." : box ? `Runs on ${boxName(box)}` : "No box: the chat runs on one. Connect it here."}
+        hint={!vaultPath || box === undefined ? "Open a vault to see its sync." : box ? undefined : "No box: the chat runs on one. Connect it here."}
       />
       {vaultPath &&
         box !== undefined &&
