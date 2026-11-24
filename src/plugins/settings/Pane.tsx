@@ -23,6 +23,7 @@ import { pushKeysToBox, keysChanged, subscribeKeyPush } from "../../boxKeys";
 import { ClaudeAccountLine } from "../../ClaudeCodeSignIn";
 import { disconnectFromBox, syncBoxNow, syncWithBox } from "../../settingsBox";
 import { MasterSection } from "../../MasterSection";
+import { pressShowReady } from "../../coreReady";
 import { Picker, type PickOption } from "../../SearchPicker";
 
 // The Claude sign-in on one line at the top, then the sections: Appearance, Keys, vault-chat folder, Box. No shortcut
@@ -556,6 +557,7 @@ function BoxSyncPanel({ box, onDisconnected }: { vault: string; box: BoxConfig; 
           Sync now
         </button>
       </div>
+      <CheckForUpdate />
       {backup && (
         <p className={`pl-3.5 text-[11px] ${gh ? "text-amber-500/90" : "text-muted-foreground"}`} data-el="box-sync-backup">
           {backup}
@@ -617,6 +619,34 @@ function BoxSyncPanel({ box, onDisconnected }: { vault: string; box: BoxConfig; 
           disconnect
         </button>
       )}
+    </div>
+  );
+}
+
+/** Check for update: brings the bottom-right Ready card back (after Later, or when it went), asking the box now. The
+ *  same action as app/titlebar showReady; it never presses OK. */
+function CheckForUpdate() {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const check = async () => {
+    setBusy(true);
+    try {
+      const r = await pressShowReady();
+      setNote(r.ready.shown ? "The update card is up (bottom right)." : r.note.charAt(0).toUpperCase() + r.note.slice(1) + ".");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex items-center gap-2 pl-3.5 text-[11px] text-muted-foreground" data-el="check-update">
+      <button data-offer="app/titlebar.showReady"
+        onClick={() => void check()}
+        disabled={busy}
+        className="shrink-0 text-[10.5px] hover:text-foreground underline disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        {busy ? "Checking…" : "Check for update"}
+      </button>
+      {note && <span className="min-w-0 truncate" data-el="check-update-note">{note}</span>}
     </div>
   );
 }

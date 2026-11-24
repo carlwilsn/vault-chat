@@ -230,31 +230,38 @@ export async function defaultDeps(): Promise<CoreDeps> {
   };
 }
 
-let started = false;
-/** Main window, native app: follow the box's core from now on. */
-export function startCoreFollow(): void {
-  if (started || !isTauri()) return;
-  started = true;
-  let running = false;
-  const look = async () => {
-    if (running) return;
-    running = true;
+/** The follow's one look: the box's offer, fetched and checked (never swapped: that is OK's), then the Ready card
+ *  shows, stays or goes. One look at a time: a second caller shares the look under way. */
+let looking: Promise<FollowResult | null> | null = null;
+export function lookForCore(): Promise<FollowResult | null> {
+  looking ??= (async () => {
     try {
       const deps = await defaultDeps();
       const r = await followCoreOnce(deps);
       if (r.did !== "nothing") console.info(`[core] ${r.did}${r.error ? `: ${r.error}` : ""}`);
       // A fetched and checked bundle waits for Carl's OK on the Ready card; a failed fetch shows nothing.
       if (r.did !== "failed") await (await import("./coreReady")).offerReady(r.step, r.status?.baked.commit ?? null, readyDeps(deps, r.status));
+      return r;
     } catch (e) {
       console.warn("[core] follow failed:", e);
+      return null;
     } finally {
-      running = false;
+      looking = null;
     }
-  };
-  void look();
+  })();
+  return looking;
+}
+
+let started = false;
+/** Main window, native app: follow the box's core from now on. */
+export function startCoreFollow(): void {
+  if (started || !isTauri()) return;
+  started = true;
+  const look = () => void lookForCore();
+  look();
   // A newer core than the one Carl last acknowledged (a new installer's own; a swap's OK already acknowledged it): say what landed.
   void import("./landed").then((m) => m.startLanded()).catch(() => {});
   // Every 5 minutes: a new offer (the Ready card), or the offer gone back to what runs (the card goes).
-  window.setInterval(() => void look(), LOOK_MS);
-  window.addEventListener("vc-core-changed", () => void look());
+  window.setInterval(look, LOOK_MS);
+  window.addEventListener("vc-core-changed", look);
 }

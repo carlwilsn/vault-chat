@@ -184,3 +184,45 @@ test("one card at a time: a landing while Ready is pending joins its list, never
   await checkLanded({ running: async () => B, subjects: async () => ["Landed that."] });
   assert.deepEqual(landedNow(), { shown: true, revision: B, what: ["Landed that."] });
 });
+
+test("no answer from the box (asleep, offline, no box) keeps the card: only the box's own answer takes it down (11-24: hidden 1 s after the laptop lost the box)", async () => {
+  R._resetReady();
+  await R.offerReady(install(), null, deps().d);
+  await R.offerReady({ kind: "none", why: "the box has no core bundles (an older box) or is out of reach" }, null, deps().d);
+  assert.equal(R.readyNow().shown, true);
+  assert.equal(R.readyNow().version, "cccc0000");
+  await R.offerReady({ kind: "stay", why: "running it already" }, null, deps().d);
+  assert.equal(R.readyNow().shown, false);
+});
+
+test("showReady brings the card back after Later, asks the box now and never presses OK", async () => {
+  R._resetReady();
+  await R.offerReady(install(), null, deps().d);
+  R.laterReady();
+  assert.equal(R.readyNow().shown, false);
+  let looks = 0;
+  const step = install();
+  const r = await R.showReady(async () => {
+    looks++;
+    await R.offerReady(step, null, deps().d);
+    return { step };
+  });
+  assert.equal(looks, 1);
+  assert.equal(r.ready.shown, true);
+  assert.equal(r.ready.phase, "ready");
+  assert.match(r.note, /card is up/);
+  // Nothing newer: up to date, with the box's reason.
+  R._resetReady();
+  const u = await R.showReady(async () => ({ step: { kind: "stay" as const, why: "running it already" } }));
+  assert.equal(u.ready.shown, false);
+  assert.match(u.note, /up to date/);
+  // The box out of reach: says so.
+  const n = await R.showReady(async () => ({ step: { kind: "none" as const, why: "no box" } }));
+  assert.match(n.note, /could not ask the box: no box/);
+});
+
+test("agent parity: app/titlebar showReady is the Settings control's action and says it never presses OK", async () => {
+  const o = titlebarOffers({ host: {} } as any, () => ({}) as any) as any;
+  assert.ok(o.actions.showReady);
+  assert.ok(/Never presses OK/.test(o.actions.showReady.description));
+});

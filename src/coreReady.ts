@@ -6,7 +6,7 @@
 // the swap. One card at a time: a Landed card (a core that arrived without his OK, e.g. an installer's own) never
 // shows beside a pending Ready card: what landed joins the Ready card's list and is acknowledged (absorbLanded).
 // The loader's safe-boot fallback is untouched. As state: app/titlebar's `ready`, acceptReady, laterReady,
-// readyChanged.
+// readyChanged, showReady (Later undone and the box asked now).
 import { BUILT_IN } from "./pluginDrafts";
 import type { CoreStep } from "./coreBundle";
 import { LANDED_ACK_KEY, LANDED_FALLBACK, dismissLanded, landedLines, landedNow, saveLandedAck, setLandedAbsorber } from "./landed";
@@ -77,6 +77,18 @@ export function laterReady(): void {
   publishReady({ shown: false });
 }
 
+/** Show the update card (app/titlebar showReady, Settings' "Check for update"): what Later put off is offered again,
+ *  the box is asked now (`look`: src/coreFollow.ts lookForCore, which fetches and checks but never swaps), and the
+ *  card is up when the box has a newer core than the window runs. Never presses OK. */
+export async function showReady(look: () => Promise<{ step: CoreStep | { kind: "none"; why: string }; error?: string } | null>): Promise<{ ready: ReadySummary; note: string }> {
+  slot().later.clear();
+  const r = await look().catch(() => null);
+  const now = readyNow();
+  if (now.shown) return { ready: now, note: now.phase === "switching" ? "switching to it now" : `the card is up: ${now.version === BUILT_IN ? "the installed app's own interface" : `core ${now.version}`}` };
+  const why = !r ? "could not ask the box" : r.step.kind === "none" ? `could not ask the box: ${r.step.why}${r.error ? ` (${r.error})` : ""}` : r.step.kind === "stay" ? `up to date (${r.step.why})` : "up to date";
+  return { ready: now, note: why };
+}
+
 /** Two main commits are the same one (either may be abbreviated, at least 7 characters). */
 export function sameCommit(a: string, b: string): boolean {
   const x = a.trim().toLowerCase();
@@ -105,6 +117,9 @@ export type ReadyDeps = {
 export async function offerReady(step: CoreStep | { kind: "none"; why: string }, bakedCommit: string | null, d: ReadyDeps): Promise<ReadySummary> {
   try {
     const now = readyNow();
+    // No answer (the box out of reach: the laptop asleep or offline, no box, no loader) says nothing about the offer:
+    // the card stays as it is. Only the box's own answer ("stay": what runs is what it offers) takes it down.
+    if (step.kind === "none") return now;
     if (step.kind !== "install" && step.kind !== "baked") return takeDown();
     const version = step.kind === "install" ? step.offer.version : BUILT_IN;
     const commit = step.kind === "install" ? step.offer.commit : bakedCommit;
@@ -176,3 +191,6 @@ export async function acceptReady(swap: () => Promise<{ did: string; error?: str
 
 /** OK on the Ready card (the card, or app/titlebar acceptReady): the loader swaps in the box's core now. */
 export const pressReadyOk = () => acceptReady(async () => (await import("./coreFollow")).acceptCoreNow());
+
+/** "Show update card" (app/titlebar showReady, Settings' Check for update): Later undone, the box asked now. */
+export const pressShowReady = () => showReady(async () => (await import("./coreFollow")).lookForCore());

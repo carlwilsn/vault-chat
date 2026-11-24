@@ -27,7 +27,7 @@ export const COVERAGE: Record<string, Coverage> = {
   "src/plugins/elevenlabs-voice": { none: "draws nothing: its voice is box:settings' voice (and app/elevenlabs-voice's offers)" },
   "src/plugins/filetree": { state: ["app/filetree"] },
   "src/plugins/notes": { state: ["app/notes", "box:notes"] },
-  "src/plugins/settings": { state: ["app/settings", "box:settings"] },
+  "src/plugins/settings": { state: ["app/settings", "box:settings", "app/titlebar"] },
   "src/plugins/titlebar": { state: ["app/titlebar", "box:workspace"] },
   "src/plugins/vaults": { state: ["app/vaults", "box:links"] },
   "src/plugins/viewer": { state: ["app/viewer"] },

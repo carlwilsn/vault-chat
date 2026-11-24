@@ -13,7 +13,7 @@
 // and maximize / restore as actions (no close: closing the window is Carl's); what it did as events.
 import { onUpdateChanged, updateActions, updateNow } from "../../updateState";
 import { dismissLanded, landedNow, onLandedChanged } from "../../landed";
-import { laterReady, onReadyChanged, pressReadyOk, readyNow } from "../../coreReady";
+import { laterReady, onReadyChanged, pressReadyOk, pressShowReady, readyNow } from "../../coreReady";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -228,6 +228,10 @@ export function titlebarOffers(_api: Pick<PluginApi, "host">, sync: () => BoxSyn
           laterReady();
           return { ready: readyNow() };
         },
+      },
+      showReady: {
+        description: "Bring the Ready card back (Settings' Check for update): undoes Later, asks the box now (fetches and checks, never swaps) and shows the card when the box has a newer core than the window runs. Returns ready and a note (the card is up, up to date, or why the box could not be asked). Never presses OK: that stays Carl's.",
+        run: async () => pressShowReady(),
       },
       openSyncDetails: {
         description: "Open (or close) the sync chip's details (its click): what needs attention and what to do.",
