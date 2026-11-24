@@ -43,6 +43,8 @@
     --titlebar-muted: var(--muted-foreground);
     --titlebar-hover: var(--accent) / 0.6;
     --titlebar-border: var(--border);
+    /* A pane divider (the fullscreen chat's sidebar edge): the border colour, quieter in high contrast. */
+    --divider: var(--border);
 
     --tex-body: 185 75% 65%;
     --tex-cmd: 320 70% 72%;
@@ -90,6 +92,8 @@
     --titlebar-muted: var(--muted-foreground);
     --titlebar-hover: var(--accent) / 0.6;
     --titlebar-border: var(--border);
+    /* A pane divider (the fullscreen chat's sidebar edge): the border colour, quieter in high contrast. */
+    --divider: var(--border);
 
     --tex-body: 200 85% 30%;
     --tex-cmd: 330 70% 38%;
@@ -138,6 +142,8 @@
     --titlebar-muted: var(--muted-foreground);
     --titlebar-hover: var(--accent) / 0.6;
     --titlebar-border: var(--border);
+    /* Pane dividers stay the dark fill grey: a white full-height line beside the chats read as a glitch (11-23). */
+    --divider: 0 0% 22.7%;
 
     --tex-body: 185 90% 70%;
     --tex-cmd: 320 90% 80%;
@@ -616,6 +622,12 @@ input[type="number"]::-webkit-outer-spin-button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Fullscreen chat / popout (src/plugins/chat/Frame.tsx): the chat pane's left border is the docked layout's edge
+   against the viewer; in the frame the window's edge or the sidebar's divider is there instead. */
+[data-el="chat-frame"] :is([data-el="chat-transcript"], [data-el="box-starting"], [data-el="no-box"], [data-el="transcript-fallback"]) {
+  border-left-width: 0;
 }
 
 /* High contrast: the fill grey as text on black is 1.9:1, so text accents are white (grey stays a fill); selections fill

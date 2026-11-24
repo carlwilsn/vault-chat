@@ -18,9 +18,12 @@ export function Frame() {
   const chatSidebarOpen = useStore((s) => s.chatSidebarOpen);
   const toggleChatSidebar = useStore((s) => s.toggleChatSidebar);
   return (
-    <div className="flex-1 min-h-0 flex relative">
+    <div className="flex-1 min-h-0 flex relative" data-el="chat-frame">
       {chatSidebarOpen && <ChatsSidebar />}
-      <div className="flex-1 min-w-0 flex flex-col bg-card">
+      {/* The one line here is the divider beside the open sidebar, full height, in the quiet --divider colour; the
+          pane's own left border (the docked layout's edge against the viewer) is off in the frame (App.css), so a
+          shut sidebar leaves no line on the window's edge. */}
+      <div className={`flex-1 min-w-0 flex flex-col bg-card${chatSidebarOpen ? " border-l border-divider" : ""}`}>
         {/* The chat's own top bar, in the chat's colour: sidebar toggle (when
             it's hidden), the chat's name and ⋯ menu (the chat pane plugin, app/chat), the window controls (this window's). */}
         <div
