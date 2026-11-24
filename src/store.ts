@@ -539,7 +539,9 @@ type State = {
   repoRoot: string | null;
 
   setVault: (p: string) => void;
-  setFiles: (f: FileEntry[]) => void;
+  /** The open vault's tree. `vault`: the vault the listing is of; a listing of another vault (one that finished after
+   *  a switch) is dropped, so the tree never shows one vault's files under another. */
+  setFiles: (f: FileEntry[], vault?: string) => void;
   applyDeleteCascade: (paths: string[]) => Promise<void>;
   applyRenameCascade: (moves: { from: string; to: string }[]) => Promise<void>;
   setCurrentFile: (p: string | null, content: string) => void;
@@ -745,8 +747,11 @@ export const useStore = create<State>((set) => ({
       // Normally reset the file workspace. A mounted Ctrl+K/L popover
       // still owns its absolute-path editor and captured conversation: keep
       // it mounted so navigation cannot implicitly abort its native side run.
+      // Every vault-scoped list goes at the switch: the old vault's tree (and the rest) never shows under the new
+      // vault's name while its own listing is on the way.
       return {
         vaultPath: p,
+        files: [],
         notes: [],
         notesLoaded: false,
         ...(s.inlinePromptCount ? {} : {
@@ -758,7 +763,7 @@ export const useStore = create<State>((set) => ({
         }),
       };
     }),
-  setFiles: (f) => set({ files: f }),
+  setFiles: (f, vault) => set((s) => (vault !== undefined && vault !== s.vaultPath ? {} : { files: f })),
   // Cascade store cleanup after a filesystem delete. Closes panes
   // pointing at the removed paths, clears currentFile if it dies,
   // strips note anchors that reference deleted paths, and drops

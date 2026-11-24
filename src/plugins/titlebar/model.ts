@@ -85,7 +85,7 @@ export async function refreshTree(): Promise<{ ok: boolean; files?: number; erro
   useBar.setState({ refreshing: true });
   try {
     const listed = await invoke<FileEntry[]>("list_markdown_files", { vault });
-    useStore.getState().setFiles(listed);
+    useStore.getState().setFiles(listed, vault);
     emitBarEvent("refreshed", { files: listed.length });
     return { ok: true, files: listed.length };
   } catch (e) {
@@ -128,7 +128,7 @@ export async function unhide(lines?: readonly string[]): Promise<string[]> {
   try {
     await invoke("remove_from_ignore", { vault, relativePaths: want });
     const listed = await invoke<FileEntry[]>("list_markdown_files", { vault });
-    useStore.getState().setFiles(listed);
+    useStore.getState().setFiles(listed, vault);
     emitBarEvent("unhidden", { lines: want });
   } finally {
     closeHidden();

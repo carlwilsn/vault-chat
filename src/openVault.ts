@@ -23,7 +23,7 @@ export async function openVaultAt(path: string): Promise<void> {
   // File-workspace navigation never owns the global conversation or its native turn.
   st.setVault(normalized);
   const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: normalized });
-  useStore.getState().setFiles(listed);
+  useStore.getState().setFiles(listed, normalized);
   // A vault is a git repo so agent turns can auto-commit. Silent no-op if already one.
   gitInitIfNeeded(normalized).catch(() => {});
   // The tutorial's first step starts on the welcome note.

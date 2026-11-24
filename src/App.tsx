@@ -107,7 +107,7 @@ export default function App() {
     (async () => {
       try {
         const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: saved });
-        if (!cancelled) setFiles(listed);
+        if (!cancelled) setFiles(listed, saved);
         bootMark("tree", { files: listed.length });
         gitInitIfNeeded(saved).catch(() => {});
       } catch {

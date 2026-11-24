@@ -23,7 +23,7 @@ async function refreshFileTreeIfChanged(vault: string): Promise<void> {
       .join("\n");
     if (sig !== lastFileTreeSig) {
       lastFileTreeSig = sig;
-      useStore.getState().setFiles(listed);
+      useStore.getState().setFiles(listed, vault);
     }
   } catch (e) {
     console.warn("[vault-sync] file-tree refresh failed:", e);
@@ -42,7 +42,7 @@ async function forceRefreshFileTree(vault: string): Promise<void> {
     lastFileTreeSig = listed
       .map((f) => `${f.path} ${f.is_dir ? 1 : 0} ${f.hidden ? 1 : 0}`)
       .join("\n");
-    useStore.getState().setFiles(listed);
+    useStore.getState().setFiles(listed, vault);
   } catch (e) {
     console.warn("[vault-sync] force file-tree refresh failed:", e);
   }

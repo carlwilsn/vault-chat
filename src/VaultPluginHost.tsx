@@ -54,11 +54,14 @@ export async function scanVaultPlugins(vault: string, call: Invoke = invoke as I
   return out.sort((a, b) => (a.file < b.file ? -1 : 1));
 }
 
-/** The folder's plugins, kept current: the same list object while nothing changed. */
+const NONE: VaultPluginFile[] = [];
+/** The folder's plugins, kept current: the same list object while nothing changed. The list is the vault's it was
+ *  scanned in: after a switch the old vault's plugins never mount (with the new vault's on/off records) while the new
+ *  folder is scanned. */
 export function useVaultPlugins(vault: string | null, everyMs = 2000): VaultPluginFile[] {
-  const [list, setList] = useState<VaultPluginFile[]>([]);
+  const [held, setHeld] = useState<{ vault: string | null; list: VaultPluginFile[] }>({ vault: null, list: NONE });
   useEffect(() => {
-    if (!vault) return setList([]);
+    if (!vault) return setHeld({ vault: null, list: NONE });
     let alive = true;
     let busy = false;
     const look = async () => {
@@ -68,7 +71,7 @@ export function useVaultPlugins(vault: string | null, everyMs = 2000): VaultPlug
         const next = await scanVaultPlugins(vault);
         if (!alive) return;
         const sig = (l: VaultPluginFile[]) => l.map((p) => `${p.file}\u0000${p.code}\u0000${p.draft ?? ""}\u0000${p.prev ?? ""}`).join("\u0001");
-        setList((prev) => (sig(prev) === sig(next) ? prev : next));
+        setHeld((prev) => (prev.vault === vault && sig(prev.list) === sig(next) ? prev : { vault, list: next }));
       } finally {
         busy = false;
       }
@@ -80,7 +83,7 @@ export function useVaultPlugins(vault: string | null, everyMs = 2000): VaultPlug
       clearInterval(t);
     };
   }, [vault, everyMs]);
-  return list;
+  return held.vault === vault ? held.list : NONE;
 }
 
 function One({ p }: { p: VaultPluginFile }) {

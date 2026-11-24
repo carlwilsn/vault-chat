@@ -39,7 +39,7 @@ async function runPrepare(vault: string): Promise<Prepared | null> {
     if (r.kept.length) console.warn(`[projects] left in .vault-chat/projects/ (a different file is already in ${PROJECTS_DIR}/): ${r.kept.join(", ")}`);
     // The open vault's tree: the folder appeared, or was just hidden.
     if ((r.moved.length || r.hidden) && useStore.getState().vaultPath === vault) {
-      useStore.getState().setFiles(await invoke<FileEntry[]>("list_markdown_files", { vault }));
+      useStore.getState().setFiles(await invoke<FileEntry[]>("list_markdown_files", { vault }), vault);
     }
     return r;
   } catch (e) {

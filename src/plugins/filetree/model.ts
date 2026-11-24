@@ -288,7 +288,7 @@ export async function refreshFiles(): Promise<void> {
   const vault = vaultNow();
   if (!vault) return;
   const listed = await invoke<FileEntry[]>("list_markdown_files", { vault });
-  S().setFiles(listed);
+  S().setFiles(listed, vault);
 }
 
 const commit = (msg: string) => {
