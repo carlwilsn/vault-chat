@@ -24,6 +24,14 @@
 export const WIDGET_LANG = "widget";
 /** The plugin.state id prefix of a note widget's state (src/appPluginState.ts, server/pluginState.ts). */
 export const WIDGET_STATE_PREFIX = "widget:";
+/** A widget file's size cap. */
+export const WIDGET_MAX_BYTES = 1024 * 1024;
+/** A module widget's name: its `export const meta = { name }` (read as text, the code is not run), else its file name. */
+export function widgetName(code: string, file: string): string {
+  const body = /export\s+const\s+meta\s*=\s*\{([\s\S]*?)\}\s*;?/.exec(code)?.[1] ?? "";
+  const m = /\bname\s*:\s*(["'`])((?:\\.|(?!\1)[^\\\n])*)\1/.exec(body);
+  return (m ? m[2]!.replace(/\\(.)/g, "$1").trim().slice(0, 120) : "") || file.replace(/\.m?js$/i, "");
+}
 
 export type WidgetBlock = { src: string; text: string };
 

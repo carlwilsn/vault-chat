@@ -3,7 +3,7 @@
 // by a type ("pdf"), an extension (".csv") or a MIME type ("application/pdf", "image/*": made a type or an extension
 // here). The app's own viewers are the built-in layer (src/plugins/viewer/builtins.tsx: the PDF, markdown, notebook,
 // TeX, HTML, image, video, unsupported and code viewers, unchanged). A plugin registers one over a type live, with no
-// release: a vault plugin through api.host.viewer(type, mount) (mount(el, file) draws into a plain element), undone
+// release: an in-process page through api.host.viewer(type, mount) (mount(el, file) draws into a plain element), undone
 // when it stops. Which viewer draws a file: the one chosen for its extension, else for its type (use), else the
 // newest enabled plugin viewer of its extension, then of its type, else the built-in; a throwing viewer falls back to
 // the built-in for that file, then to the plain fallback (the file's text, or what happened). The app plugin
@@ -266,7 +266,7 @@ export function viewerById(id: string): ViewerEntry | null {
 }
 
 /** The kept choices (app/viewer's state): the viewers turned off, the one chosen per key and the option values,
- *  replacing what was here. An id not registered (yet: a vault plugin not mounted) is kept for when it is. */
+ *  replacing what was here. An id not registered (yet: an in-process page not mounted) is kept for when it is. */
 export function setViewerPrefs(disabled: Iterable<string>, chosen: Record<string, string>, options: OptionValues = {}): void {
   const r = reg();
   const d = new Set(disabled);

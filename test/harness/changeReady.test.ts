@@ -1,4 +1,4 @@
-// Change by asking (reports/07 point 4; src/pluginDrafts.ts, src/changeReady.ts, src/changeFlow.ts): a plugin's draft
+// Change records (reports/07 point 4; src/pluginDrafts.ts, src/changeReady.ts, src/changeFlow.ts): a change
 // never runs by itself; the gate lands it (a keep, plugin.change records written by the box's real route,
 // server/supervisor.ts, which moves the files) and a kept change's Undo is the switch back. There is no Try step (the
 // Try flow and its tests were removed 2026-11-20). A kept copy that fails or slows typing switches back by itself.
@@ -13,8 +13,7 @@ import { act } from "react";
 import { parseHTML } from "linkedom";
 import { installFakeTauri, makeTempVault } from "./fakes.ts";
 import { fsCommands } from "../../server/commands/fs.ts";
-import { BUILT_IN, KEEP_WATCH_MS, chooseCopy, decision, draftPending, draftWhat, slotFileOf, slowMedian, versionOf, watchedKeep, TRY_SLOW_MS, type ChangeRecord } from "../../src/pluginDrafts.ts";
-import { isVaultPluginFile } from "../../src/vaultPlugins.ts";
+import { BUILT_IN, KEEP_WATCH_MS, decision, draftWhat, slowMedian, versionOf, watchedKeep, TRY_SLOW_MS, type ChangeRecord } from "../../src/pluginDrafts.ts";
 
 const vault = makeTempVault("vc-change-");
 const fake = installFakeTauri(vault);
@@ -71,7 +70,6 @@ const gateKeep = async (plugin: string, version: string) => {
 const { AppPluginMount } = await import("../../src/PluginMount.tsx");
 const { loadSupervisor, _appReconciler } = await import("../../src/pluginSupervisorApp.ts");
 const CR = await import("../../src/changeReady.ts");
-const { scanVaultPlugins } = await import("../../src/VaultPluginHost.tsx");
 const { pluginReach } = await import("../../src/pluginOffers.ts");
 const { judge } = await import("../../scripts/core-boot.ts");
 const { gateDecision: sharedDecision } = await import("../../src/gateResult.ts");
@@ -87,54 +85,21 @@ async function waitFor(what: string, fn: () => boolean, ms = 4000): Promise<void
 }
 const rec = (seq: number, change: ChangeRecord["change"], version: string, from: string | null = null): ChangeRecord => ({ seq, plugin: "app/x", change, version, from, at: seq, by: "carl", reason: null });
 
-test("which copy runs: a draft only once kept; the newest keep / switch lands; discarded never again", () => {
-  const slot = { draft: "D", live: "L", prev: "P" };
-  const [d, l, p] = ["D", "L", "P"].map(versionOf) as [string, string, string];
+test("the word on a version, what a change says it is, the typing limit", () => {
+  const d = versionOf("D");
   assert.match(d, /^[0-9a-f]{8}$/);
-  assert.deepEqual(chooseCopy(slot, []), { kind: "live", why: "live" });
-  assert.deepEqual(chooseCopy(slot, [rec(1, "discard", d)]), { kind: "live", why: "live" });
-  assert.deepEqual(chooseCopy(slot, [rec(1, "keep", d, l)]), { kind: "draft", why: "kept" }, "kept: runs before its file moved");
-  assert.deepEqual(chooseCopy({ live: "D", prev: "L" }, [rec(1, "keep", d, l)]), { kind: "live", why: "landed" });
-  assert.deepEqual(chooseCopy({ live: "D", prev: "L" }, [rec(1, "keep", d, l), rec(2, "switch", l, d)]), { kind: "prev", why: "landed" }, "switched back before the files swapped");
-  assert.deepEqual(chooseCopy({ live: "D" }, [rec(1, "keep", d, BUILT_IN), rec(2, "switch", BUILT_IN, d)]), { kind: null, why: "built-in" });
-  assert.deepEqual(chooseCopy({ live: "N" }, [rec(1, "keep", d, BUILT_IN), rec(2, "switch", BUILT_IN, d)]), { kind: "live", why: "live" }, "a live copy written since runs");
-  assert.deepEqual(chooseCopy({ prev: "P" }, []), { kind: null, why: "built-in" });
-  void p;
-  assert.equal(draftPending(slot, []), d);
-  assert.equal(draftPending(slot, [rec(1, "discard", d)]), null);
-  assert.equal(draftPending(slot, [rec(1, "keep", d, l)]), null);
   assert.equal(decision([rec(1, "discard", d), rec(2, "keep", d)], d), "keep");
-  assert.equal(draftPending({ live: "L" }, []), null);
   // What a draft says it is.
   assert.equal(draftWhat(`// @vc-app-plugin {"plugin":"app/composer","shared":[],"what":"a bigger Send button"}\nx`), "a bigger Send button");
   assert.equal(draftWhat("// @vc-change pen cursor follows the stylus\nexport function mount(){}"), "pen cursor follows the stylus");
   assert.equal(draftWhat('export const meta = { name: "Pen", change: "thinner pen" };'), "thinner pen");
   assert.equal(draftWhat("export function mount(){}"), "");
-  // The slot's files; a draft or prev in .vault-chat/plugins never mounts as a plugin of its own.
-  assert.deepEqual(slotFileOf("pen.draft.js"), { base: "pen", ext: ".js", kind: "draft" });
-  assert.deepEqual(slotFileOf("pen.prev.mjs"), { base: "pen", ext: ".mjs", kind: "prev" });
-  assert.deepEqual(slotFileOf("pen.js"), { base: "pen", ext: ".js", kind: "live" });
-  assert.equal(isVaultPluginFile("pen.draft.js"), false);
-  assert.equal(isVaultPluginFile("pen.prev.js"), false);
-  assert.equal(isVaultPluginFile("pen.js"), true);
   // The typing limit: a median over the last keys, once enough are in.
   assert.equal(slowMedian([90, 90, 90]), null);
   assert.equal(slowMedian([10, 10, 10, 10, 10, 10, 10, 80]), 10);
   assert.ok(slowMedian(Array(12).fill(TRY_SLOW_MS + 5))! > TRY_SLOW_MS);
 });
 
-
-test("vault plugins: a draft next to a plugin (or alone) is a slot, never a plugin of its own", async () => {
-  const dir = path.join(vault, ".vault-chat/plugins");
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "pen.js"), 'export const meta = { name: "Pen" };\nexport function mount(){}');
-  fs.writeFileSync(path.join(dir, "pen.draft.js"), "// @vc-change thinner\nexport function mount(){}");
-  fs.writeFileSync(path.join(dir, "new.draft.js"), "export function mount(){}");
-  const l = await scanVaultPlugins(vault);
-  assert.deepEqual(l.map((p) => [p.file, p.added ?? false, p.draft !== undefined]), [["new.js", true, true], ["pen.js", false, true]]);
-  assert.deepEqual(l.map((p) => [p.id, draftWhat(p.draft!)]), [[".vault-chat/plugins/new.js", ""], [".vault-chat/plugins/pen.js", "thinner"]]);
-  for (const p of l) fs.rmSync(path.join(dir, p.file.replace(/\.js$/, ".draft.js")), { force: true });
-});
 
 test("the boot check's verdict: pass, borderline (text or timing), fail (did not run, new errors, over the typing limit)", () => {
   const side = (o: Partial<{ errors: string[]; text: string[]; ran: boolean; typingMs: number[] }> = {}) => ({ errors: [], text: ["Chats", "Send"], ran: true, typingMs: Array(12).fill(10), ...o });

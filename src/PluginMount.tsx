@@ -46,10 +46,7 @@ export class PluginBoundary extends Component<{ path: string; children: ReactNod
   }
 }
 
-/** Which copy of a vault plugin's slot a mount is (src/pluginDrafts.ts): its mount says so (data-vc-copy). */
-export type CopyKind = "draft" | "live" | "prev";
-
-function Mount({ html, path, className, onFailed, copy, props }: { html: string | AppPluginSource; path: string; className?: string; onFailed?: (why: string) => void; copy?: CopyKind; props?: PluginProps<unknown> }) {
+function Mount({ html, path, className, onFailed, props }: { html: string | AppPluginSource; path: string; className?: string; onFailed?: (why: string) => void; props?: PluginProps<unknown> }) {
   const ref = useRef<HTMLSpanElement | null>(null);
   const handle = useRef<PluginHandle | null>(null);
   const failed = useRef(onFailed);
@@ -75,8 +72,7 @@ function Mount({ html, path, className, onFailed, copy, props }: { html: string 
     return () => mo.disconnect();
   }, []);
   // An app plugin adds no box of its own (a panel places itself).
-  // A vault plugin's copy says which it is (data-vc-copy="live" / "draft"); a built-in part says nothing.
-  if (typeof html !== "string") return <span ref={ref} data-el="plugin-mount" data-vc-plugin={path} data-vc-copy={copy} style={{ display: "contents" }} />;
+  if (typeof html !== "string") return <span ref={ref} data-el="plugin-mount" data-vc-plugin={path} style={{ display: "contents" }} />;
   // A span (shown as a block): inline in a chat it sits inside the message's paragraph, as the iframe did.
   return <span ref={ref} data-el="plugin-mount" data-vc-plugin={path} className={["block", className].filter(Boolean).join(" ")} />;
 }
@@ -94,8 +90,8 @@ export function PluginMount(props: { html: string; path: string; className?: str
 export type PluginFallbackInfo = { off: Desired | null; error: string | null; pending: boolean; retry: () => void };
 
 /** A part of the app that is a plugin: mounted while the supervisor says it runs; stopped, it is gone (nothing left),
- *  or, with a `fallback`, the fallback stands in (also when it fails). `code`: a vault plugin's code instead of a module. */
-export function AppPluginMount({ plugin, module, code, props, fallback, copyKind }: { plugin: Pick<AppPluginInfo, "id" | "name">; module?: unknown; code?: string; props?: object; fallback?: (info: PluginFallbackInfo) => ReactNode; /** A vault plugin's code: which copy of its slot it is (its mount says so: data-vc-copy). */ copyKind?: CopyKind }) {
+ *  or, with a `fallback`, the fallback stands in (also when it fails). */
+export function AppPluginMount({ plugin, module, props, fallback }: { plugin: Pick<AppPluginInfo, "id" | "name">; module?: unknown; props?: object; fallback?: (info: PluginFallbackInfo) => ReactNode }) {
   // The props the place hands the part (api.props): one channel per mount, set after each of the place's renders.
   const channel = useRef<PropsChannel<unknown> | null>(null);
   if (props !== undefined && !channel.current) channel.current = propsChannel<unknown>(props);
@@ -103,8 +99,8 @@ export function AppPluginMount({ plugin, module, code, props, fallback, copyKind
     if (props !== undefined) channel.current?.set(props);
   });
   const propsApi = channel.current ?? undefined;
-  // One source object per module / code: a new one is a fresh mount (a changed vault plugin file), a re-render is not.
-  const source = useMemo<AppPluginSource>(() => (typeof code === "string" ? { name: plugin.name, code } : { name: plugin.name, module }), [plugin.name, module, code]);
+  // One source object per module: a new one is a fresh mount, a re-render is not.
+  const source = useMemo<AppPluginSource>(() => ({ name: plugin.name, module }), [plugin.name, module]);
   const desired = usePluginDesired(plugin.id);
   const [failed, setFailed] = useState<string | null>(null);
   const [run, setRun] = useState(0);
@@ -123,7 +119,7 @@ export function AppPluginMount({ plugin, module, code, props, fallback, copyKind
   const onFailed = fallback ? setFailed : undefined;
   return (
     <PluginBoundary path={plugin.id} key={`${plugin.id}#${run}`} onFailed={onFailed}>
-      <Mount html={source} path={plugin.id} onFailed={onFailed} props={propsApi} copy={copyKind} />
+      <Mount html={source} path={plugin.id} onFailed={onFailed} props={propsApi} />
     </PluginBoundary>
   );
 }

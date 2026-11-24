@@ -12,15 +12,16 @@ import { usePluginDesired } from "./pluginSupervisorApp";
 import { PluginBoundary } from "./PluginMount";
 import { PluginOff } from "./PluginOff";
 import { appPluginState, setAppPluginState, subscribeAppPluginState } from "./appPluginState";
-import { VAULT_PLUGIN_MAX_BYTES, parseVaultPluginMeta } from "./vaultPlugins";
 import {
   NoteSource,
+  WIDGET_MAX_BYTES,
   WIDGET_STATE_PREFIX,
   noteWidgetApi,
   widgetBlockOfPre,
   widgetCandidates,
   widgetInstanceId,
   widgetKind,
+  widgetName,
   type StateStore,
 } from "./noteWidgets";
 
@@ -58,7 +59,7 @@ async function findWidget(note: string, src: string, vault: string | null): Prom
     } catch {
       continue;
     }
-    if (code.length > VAULT_PLUGIN_MAX_BYTES) return { error: `${src} is over ${VAULT_PLUGIN_MAX_BYTES} bytes` };
+    if (code.length > WIDGET_MAX_BYTES) return { error: `${src} is over ${WIDGET_MAX_BYTES} bytes` };
     if (kind === "page" && parseLiveMount(code) !== "in-process") return { error: `${src} is a page without <meta name="vc-mount" content="in-process">` };
     const rel = !box && insideVault(abs, vault) ? vaultRelative(abs, vault) : abs;
     return { abs, rel, code, kind };
@@ -89,7 +90,7 @@ function Live({ found, src, text, source }: { found: Extract<Found, { code: stri
     const nth = all.slice(0, index + 1).filter((e) => e.dataset.src === src).length || 1;
     const noteRel = insideVault(source.path, vault) ? vaultRelative(source.path, vault) : source.path;
     const id = widgetInstanceId(noteRel, found.rel, nth);
-    const name = found.kind === "module" ? parseVaultPluginMeta(found.code, found.rel.split("/").pop() ?? src).name : "";
+    const name = found.kind === "module" ? widgetName(found.code, found.rel.split("/").pop() ?? src) : "";
     const h = (handle.current = mountPlugin(host, found.kind === "module" ? { name, code: found.code } : found.code, {
       path: id,
       shadow: true,

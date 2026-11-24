@@ -4,7 +4,7 @@
 //   reasoning           the reasoning as it streams (until the reply's text starts)
 //   stream              the reply as it streams
 //   thinking-indicator  the working pulse (with "Thinking" while nothing shows yet)
-// A vault plugin draws any of them its own way (api.host.chat.row("stream", …)); app/chat-rows offers them (renderers,
+// An in-process page draws any of them its own way (api.host.chat.row("stream", …)); app/chat-rows offers them (renderers,
 // and the tail on screen now as its `live` state).
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Wrench } from "lucide-react";

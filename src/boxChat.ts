@@ -392,7 +392,7 @@ class BoxChatSession {
       }
     });
     if (lastActive) this.open(lastActive);
-    // Another translator (a vault plugin's on or off, the agent's choice): the chats are translated again, at once.
+    // Another translator (an in-process page's on or off, the agent's choice): the chats are translated again, at once.
     this.unsubTranslators = subscribeTranslators(() => this.projectAll());
     void this.loop();
     this.offResume = this.watchResume();

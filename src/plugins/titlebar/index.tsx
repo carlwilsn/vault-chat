@@ -4,7 +4,7 @@
 // built-in bar stands in there (the panel toggles, the vault picker, Settings and the window controls, which always
 // work), and while the records are unknown the bar itself is drawn in the app's tree.
 //
-// Its slot: a vault plugin adds an item to the bar live with api.host.titlebar.item({...}) (src/titlebarItems.ts), gone
+// Its slot: an in-process page adds an item to the bar live with api.host.titlebar.item({...}) (src/titlebarItems.ts), gone
 // when that plugin stops.
 //
 // It declares what it offers (api.offer, src/pluginOffers.ts): the plugins' items, the window (maximized, minimized,
@@ -81,7 +81,7 @@ export function titlebarOffers(_api: Pick<PluginApi, "host">, sync: () => BoxSyn
         read: () => readyNow(),
       },
       items: {
-        description: "The items vault plugins put in the title bar (api.host.titlebar.item): key, id, by (the plugin), side, label, title, clickable, drawn.",
+        description: "The items in-process pages put in the title bar (api.host.titlebar.item): key, id, by (the plugin), side, label, title, clickable, drawn.",
         read: () => titlebarItems().map(shownItem),
       },
       window: {

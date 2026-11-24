@@ -72,8 +72,8 @@ export type PluginApi = {
    *  src/pluginProps.ts): get() the newest, on(fn) when they change. Absent elsewhere. */
   props?: { get(): any; on(fn: () => void): () => void };
 };
-/** An app plugin's code (src/appPlugins.ts): its module, already loaded with the app. A vault plugin (src/vaultPlugins.ts)
- *  is the same, trusted and in the light DOM, but its module is loaded from `code` (the file's text) on each mount. */
+/** An app plugin's code (src/appPlugins.ts): its module, already loaded with the app. A note widget (src/noteWidgets.ts)
+ *  is loaded the same way, but its module comes from `code` (the file's text) on each mount. */
 export type AppPluginSource = { name: string; module?: unknown; code?: string };
 /** Load the module's code: the module, the URL it was loaded from (errors name it), and a release of that URL. */
 export type LoadModule = (code: string) => Promise<{ module: any; url: string; dispose(): void }>;

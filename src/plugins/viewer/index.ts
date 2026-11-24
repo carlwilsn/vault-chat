@@ -6,7 +6,7 @@
 // setMode, use, disable, enable and setOption as actions; opened, scrolled, modeChanged and changed as events. Turned off, the agent cannot
 // reach it and files still draw.
 //
-// A vault plugin draws a type its own way with api.host.viewer(type, mount) (src/hostApi.ts). The choices (a viewer
+// An in-process page draws a type its own way with api.host.viewer(type, mount) (src/hostApi.ts). The choices (a viewer
 // off, the one chosen for a type, a type made editable) are kept on the box (./prefs.ts). The active pane's file is
 // published to the shared context (api.context, file).
 import type { PluginApi } from "../../mountHost";
@@ -231,7 +231,7 @@ export function viewerOffers(): Offers {
       },
       viewers: {
         description:
-          "Each type of file (markdown, notebook, pdf, tex, html, image, video, unsupported, code) and each extension a plugin draws (\".csv\") with the viewer drawing it (active: builtin:<type> the app's own, app:<type>:<name> an app alternative drawn only when chosen, <plugin id>#<key> a plugin's, fallback = plain text) and every viewer registered for it (name, by, enabled, failures). A vault plugin adds one with api.host.viewer(type, mount).",
+          "Each type of file (markdown, notebook, pdf, tex, html, image, video, unsupported, code) and each extension a plugin draws (\".csv\") with the viewer drawing it (active: builtin:<type> the app's own, app:<type>:<name> an app alternative drawn only when chosen, <plugin id>#<key> a plugin's, fallback = plain text) and every viewer registered for it (name, by, enabled, failures). An in-process page adds one with api.host.viewer(type, mount).",
         read: () => describeViewers(),
       },
       modes: {

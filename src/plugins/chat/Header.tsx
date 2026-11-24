@@ -1,5 +1,5 @@
 // The chat pane's header (app/chat): the chat's name (and its project), the total cost when that is shown here, and the
-// ⋯ menu: the entries vault plugins put there (api.host.chat.menuItem, src/chatMenuItems.ts), drawn only when there
+// ⋯ menu: the entries in-process pages put there (api.host.chat.menuItem, src/chatMenuItems.ts), drawn only when there
 // is one (Carl 11-23: its Memory and ElevenLabs voice entries went). Docked, it is a slim row at the top
 // of the pane (DockHeader); in fullscreen chat and the popout it sits in the window's own top bar (BarTitle).
 import { useEffect, useRef, useSyncExternalStore } from "react";

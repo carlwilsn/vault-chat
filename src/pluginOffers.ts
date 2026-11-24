@@ -8,7 +8,7 @@
 //   });
 //   offers.emit("changed", payload);
 //
-// Whoever mounts the plugin (src/mountHost.ts: in-process pages, app plugins, vault plugins) registers its offers here
+// Whoever mounts the plugin (src/mountHost.ts: in-process pages, app plugins, note widgets) registers its offers here
 // as an effect of its run, so a stopped or unmounted plugin offers nothing. The box asks the host where plugins are
 // mounted (the laptop app) over the Show signal + ack channel: server/pluginOffersTool.ts puts a {type:"plugin", id,
 // to:"laptop", op: list | read | act} signal on the feed, src/boxChat.ts hands it to answerPluginSignal below, and the

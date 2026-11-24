@@ -223,7 +223,7 @@ as a URL parameter or cookie. Both still require the Serve-vouched Tailscale log
 
 **What an outside client can do.** Every vault-chat tool a side thread may use:
 Show, Screen, LaptopBuild, PluginRead/PluginAct
-(every live plugin's offers: file tree, notes panel, vault plugins; the box's
+(every live plugin's offers: file tree, notes panel, in-process pages; the box's
 own nouns: box:settings, box:notes, box:pages, box:workspace, box:history,
 box:jobs, box:chats: Carl's chats and projects, read, start, post, rename,
 delete / restore, openProject),

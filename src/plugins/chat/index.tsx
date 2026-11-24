@@ -10,7 +10,7 @@
 // app's tree while the records are unknown or the plugin is off, and a plain one stands in if it fails. The
 // transcript's rows are app/chat-rows; the composer is app/composer.
 //
-// Its slot: a vault plugin adds an entry to the ⋯ menu live with api.host.chat.menuItem({...}) (src/chatMenuItems.ts),
+// Its slot: an in-process page adds an entry to the ⋯ menu live with api.host.chat.menuItem({...}) (src/chatMenuItems.ts),
 // gone when that plugin stops.
 //
 // It declares what it offers (api.offer, src/pluginOffers.ts): the open chat, the view (docked, full screen, popped out;
@@ -127,7 +127,7 @@ export function chatOffers() {
         },
       },
       menu: {
-        description: "The ⋯ menu: open, and the entries vault plugins put there (api.host.chat.menuItem): key, id, by, label, title.",
+        description: "The ⋯ menu: open, and the entries in-process pages put there (api.host.chat.menuItem): key, id, by, label, title.",
         read: () => ({ open: useChatMenu.getState().open, items: chatMenuItems().map(shownItem) }),
       },
     },

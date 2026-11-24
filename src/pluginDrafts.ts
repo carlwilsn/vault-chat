@@ -1,17 +1,12 @@
-// Change by asking (reports/07 corrected model, point 4): a plugin edit is a draft first. A draft runs nowhere on its
-// own until the one gate (src/gateResult.ts) lands it: a pass is a keep (live at once), a fail a discard. Each word is
-// one record in the log, so the copy in effect is a fold of records, and undo is the switch back.
-//
-// A plugin with drafts has a slot of three files in one folder:
-//   vault plugins (src/vaultPlugins.ts)  .vault-chat/plugins/<name>.js, <name>.draft.js, <name>.prev.js
-// The live file runs; the draft waits for the gate; prev is what the last Keep replaced (absent: the built-in one, or for a
-// vault plugin nothing), so Switch back swaps live and prev.
+// Change records (reports/07 corrected model, point 4): a gated change (the app's core bundle, a migration) lands when
+// the one gate (src/gateResult.ts) passes it: a keep record. Each word is one record in the log, so the version in
+// effect is a fold of records, and undo is the switch back.
 //
 // Records (vault-level signals, folded by the supervisor with plugin.desired: src/pluginSupervisor.ts):
 //   {type: "plugin.change", plugin, change: "keep" | "discard" | "switch", version, from?, at, by?, reason?}
 // `version` is the copy's version (versionOf its code, or "built-in"); a keep and a switch also name `from`, the version
-// they replaced. The box writes the record and moves the files (server/pluginDrafts.ts); a host trusts the record
-// before the files have synced (a kept draft runs as the live copy at once).
+// they replaced. The box writes the record (server/supervisor.ts setPluginChange); a host trusts the record
+// before anything else follows.
 //
 // Shared by the app, the box, the builder script and the preview harness: no imports.
 
@@ -40,24 +35,6 @@ export function versionOf(code: string): string {
 }
 
 export const VERSION_RE = /^(?:[0-9a-f]{8}|built-in)$/;
-
-// ---------------------------------------------------------------- slots
-
-const VAULT_DIR = ".vault-chat/plugins";
-
-/** Where a plugin's three files are (vault-relative), or null when the plugin has no slot. */
-export type DraftSlot = { plugin: string; dir: string; live: string; draft: string; prev: string };
-
-
-/** The slot of a vault plugin by its base name (pen-cursor for .vault-chat/plugins/pen-cursor.js). */
-export const vaultSlot = (base: string, ext = ".js"): DraftSlot => ({ plugin: `${VAULT_DIR}/${base}${ext}`, dir: VAULT_DIR, live: `${base}${ext}`, draft: `${base}.draft${ext}`, prev: `${base}.prev${ext}` });
-
-/** A file name in a plugin folder: its base and which file of the slot it is. */
-export function slotFileOf(name: string): { base: string; ext: string; kind: "live" | "draft" | "prev" } | null {
-  const m = /^([^.\/\\][^\/\\]*?)(\.draft|\.prev)?(\.m?js)$/i.exec(String(name ?? ""));
-  if (!m) return null;
-  return { base: m[1]!, ext: m[3]!, kind: m[2] ? (m[2].toLowerCase() === ".draft" ? "draft" : "prev") : "live" };
-}
 
 // ---------------------------------------------------------------- records
 
@@ -95,12 +72,7 @@ export function changeOf(rec: { seq: number; at?: number; type?: unknown; signal
   };
 }
 
-// ---------------------------------------------------------------- which copy runs
-
-export type SlotCode = { draft?: string; live?: string; prev?: string };
-export type CopyKind = "draft" | "live" | "prev";
-/** What runs for a slot: a copy (and why), or none (the built-in module; for a vault plugin, nothing). */
-export type Choice = { kind: CopyKind | null; why: "kept" | "landed" | "live" | "built-in" };
+// ---------------------------------------------------------------- the version in effect
 
 /** The newest keep or switch: the version in effect, by the records. */
 export function landing(changes: readonly ChangeRecord[]): ChangeRecord | null {
@@ -116,36 +88,9 @@ export function decision(changes: readonly ChangeRecord[], version: string): Cha
   return out?.change ?? null;
 }
 
-/** Whether the slot's draft waits (it exists and nobody decided on this version). */
-export function draftPending(slot: SlotCode, changes: readonly ChangeRecord[]): string | null {
-  if (slot.draft === undefined) return null;
-  const v = versionOf(slot.draft);
-  if (decision(changes, v) !== null) return null;
-  if (landing(changes)?.version === v) return null;
-  return v;
-}
-
-/**
- * Which copy of a slot runs. The draft only when kept by a record whose files have not moved yet; the version the newest keep/switch names when its file is here; else the live
- * copy (a live copy written since the switch, outside the records, runs too); else none.
- */
-export function chooseCopy(slot: SlotCode, changes: readonly ChangeRecord[]): Choice {
-  const dv = slot.draft !== undefined ? versionOf(slot.draft) : null;
-  const lv = slot.live !== undefined ? versionOf(slot.live) : null;
-  const pv = slot.prev !== undefined ? versionOf(slot.prev) : null;
-  const land = landing(changes);
-  if (land) {
-    if (dv && land.version === dv) return { kind: "draft", why: "kept" };
-    if (lv && land.version === lv) return { kind: "live", why: "landed" };
-    if (pv && land.version === pv && lv === land.from) return { kind: "prev", why: "landed" };
-    if (land.version === BUILT_IN && (!lv || lv === land.from)) return { kind: null, why: "built-in" };
-  }
-  return lv ? { kind: "live", why: "live" } : { kind: null, why: "built-in" };
-}
-
 // ---------------------------------------------------------------- what a draft is
 
-/** The one line a draft says it is: an app plugin's header `what`, a vault plugin's `// @vc-change ...` line or meta `change`. */
+/** The one line a draft says it is: an app plugin's header `what`, a `// @vc-change ...` line or meta `change`. */
 export function draftWhat(code: string): string {
   const s = String(code ?? "");
   const first = s.split("\n", 1)[0]!;

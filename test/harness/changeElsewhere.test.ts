@@ -1,4 +1,4 @@
-// Undo for a change in a vault the laptop does not have open (2026-11-20: a vault plugin applied in school2 while the
+// Undo for a change in a vault the laptop does not have open (2026-11-20: a per-vault part applied in school2 while the
 // laptop showed vault-chat; its "Done" line drew no Undo, because the app folds only its open vault's records). The
 // line now names its vault (server/changeNotices.ts), the reducer keeps it, and src/changeElsewhere.ts reads that
 // vault's records and writes Undo there (POST /api/v2/supervisor with ?vault=).
@@ -10,7 +10,7 @@ installFakeTauri(makeTempVault("vc-elsewhere-"));
 const { isElsewhere, readElsewhere, undoElsewhere, changesIn } = await import("../../src/changeElsewhere.ts");
 const { lineState } = await import("../../src/changeFlow.ts");
 
-const PLUGIN = ".vault-chat/plugins/wild-chat.js";
+const PLUGIN = "app/wild-chat";
 const rec = (seq: number, s: Record<string, unknown>) => ({ seq, at: 1000 + seq, type: "signal", signal: { type: "plugin.change", plugin: PLUGIN, at: 1000 + seq, ...s } });
 const keep = rec(5, { change: "keep", version: "def43751", by: "gate", from: "built-in" });
 const change = { plugin: PLUGIN, version: "def43751", offer: "undo" as const, vault: "school2" };

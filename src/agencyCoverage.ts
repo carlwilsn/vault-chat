@@ -80,7 +80,6 @@ export const COVERAGE: Record<string, Coverage> = {
   "src/UpdateBanner.tsx": { state: ["app/titlebar"] },
   "src/UsagePopover.tsx": { state: ["app/composer"] },
   "src/VaultPicker.tsx": { state: ["app/vaults"] },
-  "src/VaultPluginHost.tsx": { state: ["page"] },
   "src/VideoPlayer.tsx": { state: ["app/viewer"] },
   "src/VideoView.tsx": { state: ["app/viewer"] },
   "src/voiceParts.tsx": { state: ["app/voice"] },

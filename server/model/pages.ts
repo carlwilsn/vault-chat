@@ -1,4 +1,4 @@
-// The pages noun (report 24 §4, noun 3): the plugins of a vault (its .html pages with a vc manifest, its code plugins)
+// The pages noun (report 24 §4, noun 3): the plugins of a vault (its .html pages with a vc manifest)
 // and the parts of the app that are plugins (the Notes panel "notes", the phone app "phone", …), each on or off
 // everywhere it shows (the viewer, chats, its own link, the app's window) and its budget. Only records: a turn off or on
 // (now, or from a time: an end date) is a plugin.desired record, a budget a plugin.budget record (server/supervisor.ts);
@@ -8,8 +8,7 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { pluginIdOf } from "../../src/pluginSupervisor";
-import { vaultPluginId, vaultPluginNamed } from "../../src/vaultPlugins";
-import { pluginCatalog, vaultCodePlugins } from "../pluginCatalog";
+import { pluginCatalog } from "../pluginCatalog";
 import { appPluginNamed } from "../../src/appPlugins";
 import { withinVault } from "../phoneData";
 import { onSupervisorChanged, pluginDesired, setPluginBudget, setPluginDesired, supervisorOf } from "../supervisor";
@@ -64,11 +63,7 @@ export function resolvePlugin(vault: string, word: string): { id: string } | { e
     // A plugin that has records but no page any more can still be turned on or off.
     if (supervisorOf(vault).plugins().includes(w)) return { id: w };
   }
-  const code = vaultCodePlugins(vault).filter((c) => vaultPluginNamed(w, c.file, c.name));
-  if (code.length === 1 && !app) return { id: vaultPluginId(code[0]!.file) };
-  if (code.length > 1) return { error: `${code.length} plugins are named ${w}: ${code.map((c) => vaultPluginId(c.file)).join(", ")}. Name one by its path.` };
   const hits = pagesNamed(vault, w.split("/").pop()!);
-  if (code.length === 1) hits.push(vaultPluginId(code[0]!.file));
   if (app) {
     // A part of the app by its name ("notes"), unless a vault page has that name too: then say which is which.
     if (!hits.length) return { id: app.id };
@@ -77,6 +72,19 @@ export function resolvePlugin(vault: string, word: string): { id: string } | { e
   if (hits.length === 1) return { id: hits[0]! };
   if (hits.length > 1) return { error: `${hits.length} pages are named ${w}: ${hits.slice(0, 8).join(", ")}. Name one by its path.` };
   return { error: `no page in the vault is named ${w}` };
+}
+
+/** Whether a record's plugin is still something to list: an app part, or a page whose file is in the vault. Records of
+ *  files that are gone (the vault .js plugins removed on 11-24, a deleted page) stay in the log but are not listed. */
+export function listedPart(vault: string, id: string): boolean {
+  if (!/\.(?:html?|m?js)$/i.test(id)) return true;
+  if (!/\.html?$/i.test(id)) return false;
+  const full = withinVault(vault, id);
+  try {
+    return !!full && statSync(full).isFile();
+  } catch {
+    return false;
+  }
 }
 
 const when = (ms: number) => new Date(ms).toISOString().slice(0, 16).replace("T", " ");
@@ -106,12 +114,12 @@ export function pagesNoun(vault: string): Noun {
     name: "Pages",
     state: {
       list: {
-        description: "every plugin in this vault (pages with a vc-capabilities or vc-mount manifest, code plugins: id = vault path, name, on/off, by whom, a later change, a budget), then the app's parts that have an on/off record",
+        description: "every page in this vault (pages with a vc-capabilities or vc-mount manifest: id = vault path, name, on/off, by whom, a later change, a budget), then the app's parts that have an on/off record (and a page turned off whose manifest is gone)",
         read: () => {
           const { plugins, truncated } = pluginCatalog(vault);
           const ids = new Set(plugins.map((p) => p.id));
           const rows = plugins.map((p) => `${pluginLine(vault, p.id)} | ${p.name}${p.description ? `: ${p.description}` : ""}`);
-          const others = supervisorOf(vault).plugins().filter((id) => !ids.has(id)).map((id) => pluginLine(vault, id));
+          const others = supervisorOf(vault).plugins().filter((id) => !ids.has(id) && listedPart(vault, id)).map((id) => pluginLine(vault, id));
           return { plugins: rows, ...(truncated ? { truncated: true } : {}), parts: others };
         },
       },

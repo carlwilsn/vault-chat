@@ -12,7 +12,6 @@ import { signal, signalLog, type ConvLog } from "./convlog/log";
 import { budgetSignal, desiredSignal, offLine, pluginIdOf, Supervisor, type Desired, type SupervisorRecord } from "../src/pluginSupervisor";
 import type { LogRecord } from "../src/convlog/protocol";
 import { changeSignal } from "../src/pluginDrafts";
-import { landChange, slotOf } from "./pluginDrafts";
 import { readSetting } from "./settings";
 import { isMigrationId } from "../src/migrations";
 import { migrationChange } from "./migrations";
@@ -106,14 +105,7 @@ export function setPluginChange(vault: string, b: Record<string, unknown> | null
     if (rec) tellAuto(main, plugin, sig.change, landed.version, who, sig.reason, sig.conv);
     return rec ? { status: 200, seq: rec.seq, text: landed.text } : { status: 500, error: "the log could not be written" };
   }
-  const slot = slotOf(plugin);
-  if (!slot) return { status: 400, error: `${plugin} has no drafts (a vault plugin's .js)` };
-  const landed = landChange(vault, slot, sig.change, sig.version);
-  if (!landed.ok) return { status: landed.status, error: landed.error };
-  followed(signalLog(vault));
-  const rec = signal(vault, { ...sig, plugin, version: landed.version, ...(landed.from ? { from: landed.from } : {}) });
-  if (rec) tellAuto(vault, plugin, sig.change, landed.version, who, sig.reason, sig.conv);
-  return rec ? { status: 200, seq: rec.seq, text: landed.text } : { status: 500, error: "the files moved but the log could not be written" };
+  return { status: 400, error: `${plugin} has no drafts: only the app's core (${CORE_PART}) changes by keep and switch` };
 }
 
 /** A change that went back by itself (a switch or discard by "auto"): the chat that asked for it says so. */

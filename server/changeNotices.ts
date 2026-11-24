@@ -72,9 +72,9 @@ export type GateOutcome = {
   runner?: string;
 };
 
-/** A part whose copy in effect is the vault's own (an app plugin's or a vault plugin's records live in its vault's log;
+/** A part whose copy in effect is the vault's own (an app plugin's records live in its vault's log;
  *  the laptop runs the ones of the vault it has open). The core, the box's settings and box plugins are one per box. */
-export const perVaultPart = (plugin: string): boolean => (plugin.startsWith("app/") && plugin !== CORE_PART) || plugin.startsWith(".vault-chat/plugins/");
+export const perVaultPart = (plugin: string): boolean => plugin.startsWith("app/") && plugin !== CORE_PART;
 
 /** Where a change in `vault` is not on Carl's screen: the laptop has another vault open. The words after its line, or "". */
 export function elsewhereNote(vault: string, plugin: string): string {

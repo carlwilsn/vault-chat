@@ -62,7 +62,7 @@ export const CHAT_ROWS_PLUGIN: AppPluginInfo = {
   id: CHAT_ROWS_PLUGIN_ID,
   name: "Chat rows",
   mount: "panel",
-  description: "The chat transcript's rows: the renderer of each kind of row (messages, tool calls, notices, plans, inline pages; a vault plugin can draw one kind its own way), the rows on screen, scrolling to a row and opening or closing tool rows. Off: the agent cannot reach it; the rows still draw.",
+  description: "The chat transcript's rows: the renderer of each kind of row (messages, tool calls, notices, plans, inline pages; an in-process page can draw one kind its own way), the rows on screen, scrolling to a row and opening or closing tool rows. Off: the agent cannot reach it; the rows still draw.",
   words: ["chat rows", "chat-rows", "chatrows", "transcript", "chat transcript", "rows", "row renderers", "tool rows"],
 };
 
@@ -95,7 +95,7 @@ export const TITLEBAR_PLUGIN: AppPluginInfo = {
   id: TITLEBAR_PLUGIN_ID,
   name: "Title bar",
   mount: "panel",
-  description: "The title bar across the top of the window: the panel toggles, the vault picker, refresh and Hidden files, Notes, items vault plugins put there, the sync chip, background tasks, the chat toggle and pop-out, the terminal, Settings and the window controls.",
+  description: "The title bar across the top of the window: the panel toggles, the vault picker, refresh and Hidden files, Notes, items in-process pages put there, the sync chip, background tasks, the chat toggle and pop-out, the terminal, Settings and the window controls.",
   words: ["title bar", "titlebar", "title-bar", "top bar", "topbar", "toolbar", "tool bar", "header bar", "window bar", "menu bar"],
 };
 
@@ -107,7 +107,7 @@ export const VIEWER_PLUGIN: AppPluginInfo = {
   name: "Viewer",
   mount: "panel",
   description:
-    "The viewer: the files open in its panes (type, the viewer drawing each, view or edit mode, where each is scrolled), the viewer of each type of file (PDF, markdown, notebook, TeX, HTML, image, video, code; a vault plugin can draw a type its own way) and which types Ctrl+E edits; open a file, scroll to a page, line or heading, find text, zoom a PDF or image, switch mode, choose, disable or enable a viewer; each pane's header (the file's path, \"Changed …\" with Reload / Keep mine on a conflict, the view / edit toggle, Close pane). Off: the agent cannot reach it; files still draw.",
+    "The viewer: the files open in its panes (type, the viewer drawing each, view or edit mode, where each is scrolled), the viewer of each type of file (PDF, markdown, notebook, TeX, HTML, image, video, code; an in-process page can draw a type its own way) and which types Ctrl+E edits; open a file, scroll to a page, line or heading, find text, zoom a PDF or image, switch mode, choose, disable or enable a viewer; each pane's header (the file's path, \"Changed …\" with Reload / Keep mine on a conflict, the view / edit toggle, Close pane). Off: the agent cannot reach it; files still draw.",
   words: ["viewer", "the viewer", "file viewer", "viewers", "viewer pane", "pdf viewer", "markdown viewer", "document viewer"],
 };
 
@@ -119,7 +119,7 @@ export const CHAT_PLUGIN: AppPluginInfo = {
   name: "Chat pane",
   mount: "panel",
   description:
-    "The chat pane: its header (the chat's name and project, the cost, the ⋯ menu with the entries vault plugins put there, shown only when there is one) and the pane around the transcript (which chat, docked or full screen, scrolled to the bottom or up, older messages shown, the way back to a worker's parent), and fullscreen chat's and the popout's frame (the chats sidebar, the top bar; enter or leave fullscreen, open or close the sidebar).",
+    "The chat pane: its header (the chat's name and project, the cost, the ⋯ menu with the entries in-process pages put there, shown only when there is one) and the pane around the transcript (which chat, docked or full screen, scrolled to the bottom or up, older messages shown, the way back to a worker's parent), and fullscreen chat's and the popout's frame (the chats sidebar, the top bar; enter or leave fullscreen, open or close the sidebar).",
   words: ["chat", "chat pane", "chat-pane", "chatpane", "the chat", "chat header", "chat menu", "chat's menu", "chat window", "conversation pane"],
 };
 

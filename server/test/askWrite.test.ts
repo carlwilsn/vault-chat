@@ -16,7 +16,7 @@ let script: (call: (name: string, args: unknown) => Promise<{ ok: boolean; text:
 const results = new Map<string, { text: string; done: boolean }>();
 
 const CURSOR = (word: string) =>
-  `export const meta = { name: "${word} cursor" };\nexport function mount(el, api) {\n  const s = document.createElement("style");\n  s.textContent = "html * { cursor: text !important }"; // ${word}\n  document.head.appendChild(s);\n  api.effect(() => s.remove());\n}\n`;
+  `<!doctype html><title>${word} cursor</title><meta name="vc-mount" content="in-process">\n<script type="module">export function mount(el, api) {}</script>\n`;
 
 beforeAll(async () => {
   rig = await makeRig({ deps: { handoffWaitMs: 4_000 } });
@@ -51,7 +51,7 @@ const ask = async (text: string) => {
   expect(r.ok).toBe(true);
   return (rig.backend as any).side.wait(r.id);
 };
-const plugins = () => join(rig.vault, ".vault-chat", "plugins");
+const plugins = () => join(rig.vault, "pages");
 
 describe("Ctrl+L can change the app", () => {
   it("lists the model actions and the handoff for the box; no plugin-writing overlay", async () => {
@@ -64,7 +64,7 @@ describe("Ctrl+L can change the app", () => {
 
   it("\"turn off the snail cursor\": the same box:pages action the app calls", async () => {
     mkdirSync(plugins(), { recursive: true });
-    writeFileSync(join(plugins(), "snail-cursor.js"), CURSOR("snail"));
+    writeFileSync(join(plugins(), "snail-cursor.html"), CURSOR("snail"));
     script = async (call) => {
       const off = await call("PluginAct", { plugin: "box:pages", action: "disable", args: { plugin: "snail-cursor" } });
       expect(off.ok).toBe(true);
@@ -73,7 +73,7 @@ describe("Ctrl+L can change the app", () => {
     const done = await ask("turn off the snail cursor");
     expect(done.text).not.toMatch(/Main/);
     const { pluginDesired } = await import("../supervisor");
-    expect(pluginDesired(rig.vault, ".vault-chat/plugins/snail-cursor.js").state).toBe("stopped");
+    expect(pluginDesired(rig.vault, "pages/snail-cursor.html").state).toBe("stopped");
   });
 
   it("hands what it can't do to a new chat and reports its answer in the box", async () => {

@@ -6,7 +6,7 @@
 // works) is rows too: the streaming reply ("stream"), the live tool ticker ("live-tool"), the reasoning as it streams
 // ("reasoning") and the working pulse ("thinking-indicator"), built-ins in src/plugins/chat-rows/tail.tsx.
 // A plugin registers one over a kind live, with no release:
-// a vault plugin through api.host.chat.row(kind, render) (render(el, row) draws into a plain element), undone when it
+// an in-process page through api.host.chat.row(kind, render) (render(el, row) draws into a plain element), undone when it
 // stops. Which renderer draws a kind: the one chosen for it (use), else the newest enabled plugin renderer, else the
 // built-in; a throwing renderer falls back down that chain to the built-in, then to the plain fallback row, for that row
 // only. The app plugin app/chat-rows (src/plugins/chat-rows/index.ts) offers all this to the agent (PluginRead/Act).
@@ -216,7 +216,7 @@ export function chooseRowRenderer(kind: string, id: string | null): void {
 }
 
 /** The kept choices (app/chat-rows' state, src/plugins/chat-rows/index.ts): the renderers turned off and the one chosen
- *  per kind, replacing what was here. An id not registered (yet: a vault plugin not mounted) is kept for when it is. */
+ *  per kind, replacing what was here. An id not registered (yet: an in-process page not mounted) is kept for when it is. */
 export function setRowPrefs(disabled: Iterable<string>, chosen: Record<string, string>): void {
   const r = reg();
   const d = new Set(disabled);

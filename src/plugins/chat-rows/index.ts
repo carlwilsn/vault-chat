@@ -134,7 +134,7 @@ export function chatRowsOffers(doc: Document = document) {
       },
       translators: {
         description:
-          "What turns each event in the chat's log into rows (the step before the renderers): per event type (user, user:<via> such as user:job / user:wake, worker = a background worker's line, assistant, thinking, commentary = text beside a tool call, compaction, notice) the translator now active (builtin:<type>, an app alternative app:<type>:<name> such as app:commentary:thought, a plugin's <plugin id>#<type>) and every one registered (enabled, failures). A vault plugin adds one with api.host.chat.translate(type, (event, next) => messages | null).",
+          "What turns each event in the chat's log into rows (the step before the renderers): per event type (user, user:<via> such as user:job / user:wake, worker = a background worker's line, assistant, thinking, commentary = text beside a tool call, compaction, notice) the translator now active (builtin:<type>, an app alternative app:<type>:<name> such as app:commentary:thought, a plugin's <plugin id>#<type>) and every one registered (enabled, failures). An in-process page adds one with api.host.chat.translate(type, (event, next) => messages | null).",
         read: () => describeTranslators(),
       },
       inline: {

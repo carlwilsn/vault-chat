@@ -1,7 +1,7 @@
 // The viewer pane's body (./Pane.tsx is the pane: its header, Ctrl+L, saving, live reload): the file drawn by
 // the viewer the registry names (src/viewerRegistry.ts). The app's own viewers are registered here as the built-in
 // layer, each drawing exactly what the pane drew before (PDF, rendered markdown, notebook, TeX, HTML, image, video,
-// unsupported, code in Monaco); a vault plugin's viewer draws into a plain element (DomViewer); a viewer that throws
+// unsupported, code in Monaco); an in-process page's viewer draws into a plain element (DomViewer); a viewer that throws
 // hands the file to the next in line (a plugin's → the built-in → the plain fallback), for that file only.
 //
 // The source editor (Ctrl+E on an editable type: the live editor for markdown, Monaco otherwise) is the pane's, not a

@@ -3,7 +3,6 @@
 // takes (no symlinks) and stops at CATALOG_LIMITS.
 import { closeSync, openSync, readSync, readdirSync, statSync, type Dirent } from "node:fs";
 import { join } from "node:path";
-import { VAULT_PLUGIN_DIR, VAULT_PLUGIN_MAX_BYTES, isVaultPluginFile, parseVaultPluginMeta, vaultPluginDevices, vaultPluginId, type PluginDevice } from "../src/vaultPlugins";
 import { CATALOG_LIMITS, catalogAppPlugins, catalogEnters, catalogPlugin, catalogReads, catalogServices, type Catalog, type CatalogPlugin } from "../src/pluginCatalog";
 
 function readText(full: string, size: number): string | null {
@@ -21,8 +20,8 @@ function readText(full: string, size: number): string | null {
   }
 }
 
-/** The plugins in a vault, by path. */
-export function vaultPlugins(vault: string): { plugins: CatalogPlugin[]; truncated: boolean } {
+/** The pages in a vault that are plugins (a vc manifest), by path. */
+export function vaultPages(vault: string): { plugins: CatalogPlugin[]; truncated: boolean } {
   const plugins: CatalogPlugin[] = [];
   let seen = 0;
   let truncated = false;
@@ -62,39 +61,8 @@ export function vaultPlugins(vault: string): { plugins: CatalogPlugin[]; truncat
   return { plugins, truncated };
 }
 
-/** The code files in .vault-chat/plugins (src/vaultPlugins.ts), by file name: name, description from their meta. */
-export function vaultCodePlugins(vault: string): { file: string; name: string; description: string; devices: PluginDevice[] }[] {
-  return vaultCodeFiles(vault).map(({ code, ...c }) => c);
-}
-
-/** The plugin files with their code: what a device host (the phone app) mounts. */
-function vaultCodeFiles(vault: string): { file: string; name: string; description: string; devices: PluginDevice[]; code: string }[] {
-  const dir = join(vault, VAULT_PLUGIN_DIR);
-  let entries: Dirent[];
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const out: { file: string; name: string; description: string; devices: PluginDevice[]; code: string }[] = [];
-  for (const e of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
-    if (!e.isFile() || !isVaultPluginFile(e.name)) continue;
-    let size = 0;
-    try {
-      size = statSync(join(dir, e.name)).size;
-    } catch {
-      continue;
-    }
-    if (size > VAULT_PLUGIN_MAX_BYTES) continue;
-    const code = readText(join(dir, e.name), size);
-    if (code !== null) out.push({ file: e.name, ...parseVaultPluginMeta(code, e.name), devices: vaultPluginDevices(code), code });
-  }
-  return out;
-}
-
 /** The whole catalog: the services, then the vault's plugins, then the app's own (src/appPlugins.ts). */
 export function pluginCatalog(vault: string): Catalog {
-  const { plugins, truncated } = vaultPlugins(vault);
-  plugins.unshift(...vaultCodePlugins(vault).map((c): CatalogPlugin => ({ id: vaultPluginId(c.file), name: c.name, mount: "module", description: c.description || undefined, devices: c.devices, needs: [], refused: [] })));
+  const { plugins, truncated } = vaultPages(vault);
   return { services: catalogServices(), plugins, app: catalogAppPlugins(), ...(truncated ? { truncated: true } : {}) };
 }

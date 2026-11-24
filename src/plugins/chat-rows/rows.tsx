@@ -1,6 +1,6 @@
 // The chat transcript's rows, as renderers (src/chatRows.ts): the app's own renderers for each row kind, moved here
 // unchanged from ChatPane.tsx, registered as the built-in layer, and the row dispatcher (MessageBubble, Row) that draws
-// each row with the renderer the registry names for its kind. A plugin's renderer (a vault plugin's
+// each row with the renderer the registry names for its kind. A plugin's renderer (an in-process page's
 // api.host.chat.row(kind, render)) draws into a plain block element; a renderer that throws falls back, for that row
 // only, to the built-in and then to the plain fallback row, so the chat always stands.
 import { ChangeLine } from "../../ChangeLine";

@@ -3,8 +3,8 @@
 // This module is the shared vocabulary: which kind a part is, the verdict -> decision rule, and the one result record.
 //
 //   kind           parts                                       runner (server/gate.ts, scripts/core-boot.ts)
-//   ui-plugin      vault plugins (.vault-chat/plugins/<name>.js)   (no runner since the job gate went, 11-22: a draft
-//                                                              waits; old records stay readable)
+//   ui-plugin      vault plugins (removed 11-24)                 (no runner since the job gate went, 11-22; old
+//                                                              records stay readable)
 //   migration      migrate/<name>                              its dry run on a copy of the plugin's real state, in the
 //                                                              box (server/gate.ts inBoxGate)
 //   frontend-core  app/core (a core bundle the box built)      its stored bytes: every file as the manifest says,

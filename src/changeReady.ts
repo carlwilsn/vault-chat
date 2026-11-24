@@ -15,23 +15,13 @@ import { APP_PLUGINS } from "./appPlugins";
 import { isMigrationId } from "./migrations";
 import { CORE_NAME, CORE_PART } from "./coreBundle";
 import { UNDO_CHORD, plainWhy } from "./changeFlow";
-import { BUILT_IN, KEEP_TYPING_MS, KEEP_WATCH_MS, TRY_SLOW_MS, landing, slowMedian, watchedKeep, type ChangeRecord, type SlotCode } from "./pluginDrafts";
+import { BUILT_IN, KEEP_TYPING_MS, KEEP_WATCH_MS, TRY_SLOW_MS, landing, slowMedian, watchedKeep, type ChangeRecord } from "./pluginDrafts";
 
 export const CHANGES_PLUGIN = { id: "app/changes", name: "Changes" } as const;
 
 /** A plugin's change records (the supervisor's). */
 export function changesOf(plugin: string): readonly ChangeRecord[] {
   return supervisorChangesNow(plugin);
-}
-
-// ---------------------------------------------------------------- the vault plugins' slots (VaultPluginHost writes them)
-
-export type VaultSlot = { id: string; name: string } & SlotCode;
-let vaultSlots: readonly VaultSlot[] = [];
-
-/** VaultPluginHost's last look at .vault-chat/plugins: each plugin's live, draft and prev code. */
-export function setVaultSlots(list: readonly VaultSlot[]): void {
-  vaultSlots = list;
 }
 
 /** After a switch of the core: the loader runs what is in effect now (src/coreFollow.ts); tests replace it. */
@@ -59,7 +49,7 @@ export const clearOutcome = () => {
 export const lastOutcome = () => outcome;
 
 const appName = (id: string) => APP_PLUGINS.find((p) => p.id === id)?.name ?? id.replace(/^app\//, "");
-const nameOf = (plugin: string) => (plugin === CORE_PART ? CORE_NAME : plugin.startsWith("app/") ? appName(plugin) : isMigrationId(plugin) ? `Data: ${plugin.slice(8)}` : vaultSlots.find((s) => s.id === plugin)?.name ?? plugin.split("/").pop() ?? plugin);
+const nameOf = (plugin: string) => (plugin === CORE_PART ? CORE_NAME : plugin.startsWith("app/") ? appName(plugin) : isMigrationId(plugin) ? `Data: ${plugin.slice(8)}` : plugin.split("/").pop() ?? plugin);
 
 // ---------------------------------------------------------------- the undo
 
@@ -82,8 +72,8 @@ export function canSwitchBack(plugin: string): boolean {
 
 // ---------------------------------------------------------------- after a keep: switching back by itself
 
-/** Every plugin that can have drafts here: the vault plugins' slots and the core. */
-const slotIds = (): string[] => [...vaultSlots.map((s) => s.id), CORE_PART];
+/** Every part that can have a kept change here: the core. */
+const slotIds = (): string[] => [CORE_PART];
 /** Every plugin a change can apply to here: the dead-man's switch watches them. */
 export const changeablePlugins = (): string[] => [...new Set(slotIds())];
 
@@ -100,8 +90,8 @@ export async function learnCoreHere(since = Date.now()): Promise<void> {
   const s = await (await import("./coreFollow")).coreStatus().catch(() => null);
   if (s?.active) coreHere = { version: s.active, since };
 }
-/** When this window began running `version` of `plugin`, kept at `at`: a vault plugin runs from the record at once (the
- *  keep), the core from the later of the keep and this window's start, and a core this window does not run never (null). */
+/** When this window began running `version` of `plugin`, kept at `at`: a part other than the core runs from the record at
+ *  once (the keep), the core from the later of the keep and this window's start, and a core this window does not run never (null). */
 export function runsSince(plugin: string, version: string, at: number): number | null {
   if (plugin !== CORE_PART) return at;
   return coreHere?.version === version ? Math.max(at, coreHere.since) : null;
@@ -286,7 +276,6 @@ export function changeOffers() {
 export function _resetChangeReady(): void {
   typing?.off();
   typing = null;
-  vaultSlots = [];
   outcome = null;
   revertDone.clear();
 }

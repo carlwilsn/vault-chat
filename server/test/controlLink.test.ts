@@ -262,7 +262,7 @@ describe("the vault open on the laptop is state every tool uses", () => {
     _setChangeLineSink((_v, _c, l) => void lines.push(l));
     const app = laptopOn(B, () => null);
     try {
-      await gateOutcome(A, { plugin: ".vault-chat/plugins/wild-chat.js", version: "def43751", what: "A wilder look", asked: true, conv: "agent-chat", decision: "keep", reasons: [] });
+      await gateOutcome(A, { plugin: "app/wild-chat", version: "def43751", what: "A wilder look", asked: true, conv: "agent-chat", decision: "keep", reasons: [] });
       expect(lines[0]).toMatchObject({ kind: "done", offer: "undo" });
       expect(lines[0]!.text).toMatch(/^Done: A wilder look \(in the school2 vault; the laptop has vault-chat open, so it shows after he switches to school2/);
       expect(youLayer(A).text).toMatch(/Laptop vault: vault-chat is open on the laptop, not this chat's vault \(school2\)/);

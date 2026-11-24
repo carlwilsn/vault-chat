@@ -1,4 +1,4 @@
-// The chat's ⋯ menu's slot for plugins' entries (a "Summarize this chat", an "Export", a link to a page): a vault plugin
+// The chat's ⋯ menu's slot for plugins' entries (a "Summarize this chat", an "Export", a link to a page): an in-process page
 // adds one live with api.host.chat.menuItem({...}) (src/hostApi.ts), and it is gone when the plugin stops (an effect of
 // its run) or when it calls the returned off. The chat pane plugin (src/plugins/chat, app/chat) draws them (the ⋯ menu shows only
 // when there is one) and offers them to the agent (state menu, action clickItem). A throwing click is the adding plugin's

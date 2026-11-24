@@ -8,7 +8,7 @@
 // throws is noted and skipped for that event. The app has alternatives of its own that draw only when chosen (the old
 // "commentary under Thought").
 //
-// A vault plugin adds or overrides one live: api.host.chat.translate(type, (event, next) => messages | null), undone
+// An in-process page adds or overrides one live: api.host.chat.translate(type, (event, next) => messages | null), undone
 // when it stops; app/chat-rows offers them to the agent (`translators` state; disableTranslator / enableTranslator /
 // useTranslator, kept as plugin.state records). The box and the phone project through the same view with the
 // built-ins only (no plugins register there).

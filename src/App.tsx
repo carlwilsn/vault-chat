@@ -15,7 +15,6 @@ import { VoiceSlot } from "./VoiceSlot";
 import { PlaceMount } from "./PluginMount";
 import { registerOuterResize, sashMoved } from "./layoutOps";
 import { placeModule } from "./places";
-import { VaultPlugins } from "./VaultPluginHost";
 import { ASK_PLUGIN, CHAT_PLUGIN, CHAT_ROWS_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CONTEXT_PLUGIN, ELEVENLABS_VOICE_PLUGIN, FILETREE_PLUGIN, NOTES_PLUGIN, SETTINGS_PLUGIN, TITLEBAR_PLUGIN, VAULTS_PLUGIN, VIEWER_PLUGIN } from "./appPlugins";
 import * as titlebarPlugin from "./plugins/titlebar";
 import * as settingsPlugin from "./plugins/settings";
@@ -493,8 +492,6 @@ export default function App() {
           offers (src/plugins/ask: draws nothing; each box is its `prompt` part, src/InlineEditPrompt.tsx). */}
       <PlaceMount place="overlay" />
       <PlaceMount place="offers" />
-      {/* Plugins that are code files in .vault-chat/plugins: live as they are added, changed or removed. */}
-      <VaultPlugins />
       {/* Voice: a plugin (src/plugins/voice): its text box here, its controls in the title bar and the composer. */}
       <VoiceSlot />
       <Notices />
