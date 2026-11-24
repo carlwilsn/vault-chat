@@ -37,8 +37,6 @@ function uiSettingsActions(): { actions: Set<string>; exempt: string[] } {
       else if (f.startsWith("plugins/settings/")) for (const k of SETTING_KEYS) actions.add(`set:${k}`);
       else throw new Error(`${f}: saveSetting with a computed key (${m[3]}): name it, or add it here`);
     }
-    // The phone's automatic-push switch (POST /push/preferences → the noun's set of pushAutomatic).
-    if (f.startsWith("phone/") && /"\/push\/preferences", \{ method: "POST"/.test(s)) actions.add("set:pushAutomatic");
     // The composer's model picker: model and effort, through the engine (it also restarts the running session).
     if (/boxPost\([^)]*"\/api\/v1\/model"/.test(s)) ["model", "effort"].forEach((k) => actions.add(`set:${k}`));
     for (const m of s.matchAll(/boxPost\([^,]+,\s*"\/api\/v2\/settings",\s*\{\s*(\w+)/g)) {
@@ -51,7 +49,10 @@ function uiSettingsActions(): { actions: Set<string>; exempt: string[] } {
 }
 
 /** Settings the app has no control for (each named, with why). */
-const SETTINGS_MODEL_ONLY: Record<string, string> = { corePublish: "the box's core building: set by asking the agent (box:settings); the Ready card shows its effect" };
+const SETTINGS_MODEL_ONLY: Record<string, string> = {
+  corePublish: "the box's core building: set by asking the agent (box:settings); the Ready card shows its effect",
+  pushAutomatic: "the legacy automatic pushes: set by asking the agent (box:settings); the phone's Settings no longer shows it",
+};
 
 /** Every way the app and the phone change a note, as the notes noun's action names, read from their source. */
 const ROUTE: Record<string, string[]> = { "/notes/edit": ["edit"], "/notes/status": ["resolve", "reopen"], "/notes/delete": ["delete"], "/notes/clear-resolved": ["clearResolved"] };

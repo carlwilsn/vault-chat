@@ -14,7 +14,7 @@ describe("phone device push consent", () => {
       const subscribe = vi.fn(async () => { throw new Error("No real subscriptions in tests"); });
       const getSubscription = vi.fn(async () => subscribed ? { endpoint: "https://push.invalid/synthetic", unsubscribe: vi.fn(async () => true) } : null);
       const register = vi.fn(async () => ({ pushManager: { subscribe } }));
-      const api = vi.fn(async (_path: string, _options?: unknown) => ({ ok: true, json: async () => ({ legacyAutomatic: false }) }));
+      const api = vi.fn(async (_path: string, _options?: unknown) => ({ ok: true, json: async () => ({}) }));
       const elements = new Map<string, any>();
       const $ = (id: string) => {
         if (!elements.has(id)) elements.set(id, { classList: { toggle: vi.fn(), remove: vi.fn() }, style: {}, setAttribute: vi.fn() });
@@ -26,14 +26,14 @@ describe("phone device push consent", () => {
         window: { PushManager: {} }, Notification: { permission, requestPermission },
       };
       runInNewContext(push, context);
-      // Opening Settings refreshes display and server consent only.
-      expect(boot).toContain("refreshPushUi(); void refreshPushPreference();");
+      // Opening Settings only shows this phone's push state: no prompt, no subscription, no call to the box.
+      expect(boot).toContain("refreshPushUi();");
       expect(boot).not.toContain("pushAutoOn");
-      await runInNewContext("refreshPushUi(); refreshPushPreference();", context);
+      await runInNewContext("refreshPushUi();", context);
       expect(requestPermission).not.toHaveBeenCalled();
       expect(register).not.toHaveBeenCalled();
       expect(subscribe).not.toHaveBeenCalled();
-      expect(api.mock.calls.every(([path]) => path === "/push/preferences")).toBe(true);
+      expect(api).not.toHaveBeenCalled();
       // The sole enrollment path still works, but only after the user's click.
       if (!subscribed) {
         await $("pushSw").onclick();

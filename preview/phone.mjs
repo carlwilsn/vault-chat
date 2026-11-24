@@ -59,7 +59,7 @@ export async function renderPhone({ tree, server, scenario, side, scenariosEntry
   const db = phoneMod.phoneDB(sc, Date.now());
 
   // 5. Wall + DB + page selection.
-  const clicks = [...(sc.phone?.page ? [`?.mrow[data-page="${sc.phone.page}"]`] : []), ...(sc.phone?.clicks ?? [])];
+  const clicks = [...(sc.phone?.page ? [`?.tab[data-page="${sc.phone.page}"]`] : []), ...(sc.phone?.clicks ?? [])];
   const head = guardScript(sc.id, side) + `<script>window.__VC_PREVIEW_DB__ = ${JSON.stringify(db).replace(/</g, "\\u003c")};</script>`;
   // Drive the page to the scenario's screen with real clicks ("text:Foo" =
   // the innermost visible element whose text is Foo).

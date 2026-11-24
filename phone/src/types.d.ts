@@ -217,12 +217,12 @@ interface PollEvent {
 interface MockDB {
   vault: string;
   model: string;
-  convs: ConvSummary[];
-  runs: RunInfo[];
-  schedules: ScheduleItem[];
+  convs?: ConvSummary[];
+  runs?: RunInfo[];
+  schedules?: ScheduleItem[];
   notifs: NotifItem[];
   notes: NoteItem[];
-  threads: Record<string, ChatThread>;
+  threads?: Record<string, ChatThread>;
   notifClearTs?: number;
   /** The vault's projects (GET /projects). */
   projects?: Array<{ slug: string; name: string }>;

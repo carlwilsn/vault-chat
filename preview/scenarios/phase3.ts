@@ -335,7 +335,7 @@ export const phase3Scenarios: Scenario[] = [
     notes: "Plays: Alerts, then the question card's chat icon. After: Alerts is the one list — the question card (options answer in the conversation), Blocked and Done cards — and every card opens its conversation (here PS3 problem 5). Before: the chat icon opened a separate deliberation sheet with its own ask thread.",
     build,
     surfaces: ["phone"],
-    phone: { page: "alerts", clicks: [".needsyou .digin"], db: phoneDb },
+    phone: { page: "alerts", clicks: [".row.al"], db: phoneDb },
   },
   {
     id: "p3-phone-settings",
@@ -344,6 +344,6 @@ export const phase3Scenarios: Scenario[] = [
     notes: "Plays: menu → Box & settings. Before: the drawer is the Claude screen (Feedback | Chat, reports, the coder chat) with settings behind a gear. After: just Box & settings — notifications, a test push, the version.",
     build,
     surfaces: ["phone"],
-    phone: { clicks: ["#menuBtn", "#settingsRow"], db: phoneDb },
+    phone: { clicks: ["#gearBtn"], db: phoneDb },
   },
 ];

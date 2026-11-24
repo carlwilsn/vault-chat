@@ -1,21 +1,25 @@
-// The two pages; `body.page-*` (set by setPage) picks the visible one.
+// The two pages; `body.page-*` (set by setPage) picks the visible one. Alerts: one card per alert. Notes: the
+// Open / Resolved switch, the cards, and the "New note" bar that opens the editor.
+import { Plus } from "./icons";
+
 export function Pages() {
   return (
-    <div className="body">
-      <section className="page" id="pAl">
+    <div className="pages">
+      <section className="page" id="pAlerts">
         <div className="scroll" id="alScroll"></div>
       </section>
       <section className="page" id="pNotes">
-        <div className="ncompose">
-          <textarea id="noteInput" rows={1} placeholder="Jot a note…" enterKeyHint="enter" autoComplete="off"></textarea>
-          <button className="nadd" id="noteAddBtn">
-            Save
+        <div className="seg" id="seg">
+          <button className="on" data-f="open">
+            Open
           </button>
+          <button data-f="resolved">Resolved</button>
         </div>
-        <div className="nsearch">
-          <input id="noteSearch" type="search" placeholder="Search notes" autoComplete="off" enterKeyHint="search" />
-        </div>
-        <div className="scroll" id="notesScroll"></div>
+        <div className="scroll" id="nScroll"></div>
+        <button className="newbar" id="newBtn">
+          <Plus />
+          New note
+        </button>
       </section>
     </div>
   );

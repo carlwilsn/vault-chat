@@ -1,20 +1,21 @@
-// The phone shell: a notification center (Alerts) and a notes app (Notes), and the Box & settings drawer.
-// React renders the page's fixed structure once; the app's behaviour (boot.ts) drives it by element id.
-import { Header, OffBar, Menu } from "./shell/Header";
+// The phone shell: a notification center (Alerts) and a notes app (Notes), the tab bar between them, Settings
+// behind the gear and the full-screen note editor. React renders the page's fixed structure once; the app's
+// behaviour (boot.ts) drives it by element id.
+import { Header } from "./shell/Header";
 import { Pages } from "./shell/Pages";
-import { ClaudeDrawer } from "./shell/ClaudeDrawer";
-import { Sheet } from "./shell/Sheet";
+import { Tabs } from "./shell/Tabs";
+import { Settings } from "./shell/Settings";
+import { Editor } from "./shell/Editor";
 
 export function App() {
   return (
     <>
       <Header />
-      <OffBar />
-      <Menu />
       <Pages />
-      <ClaudeDrawer />
+      <Tabs />
+      <Settings />
+      <Editor />
       <div id="toast"></div>
-      <Sheet />
     </>
   );
 }
