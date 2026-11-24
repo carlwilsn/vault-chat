@@ -17,6 +17,7 @@ import {
   BOX_REF,
   NO_SYNC_MARK,
   MASTER_FILE,
+  githubOriginToAdopt,
   githubProblem,
   githubSteps,
   isLfsHook,
@@ -534,6 +535,31 @@ describe("box sync (TypeScript cycle) on real repos", { concurrent: true }, () =
     expect(git(r.bare, ["rev-parse", "refs/heads/master"])).toBe(r.head());
   });
 
+  it("a vault whose GitHub repo is its origin (no github remote) is backed up there", async () => {
+    const r = await rig("githuborigin");
+    const gh = join(r.base, "summer.git");
+    mkdirSync(gh, { recursive: true });
+    git(gh, ["init", "-q", "--bare", "-b", "master"]);
+    // GitHub already has the vault's older history (the pre-box sync pushed origin).
+    git(r.laptop, ["push", "-q", s(gh), "HEAD:refs/heads/master"]);
+    const url = "https://github.com/someone/summer.git";
+    git(r.laptop, ["remote", "add", "origin", url]);
+    git(r.laptop, ["config", `url.${s(gh)}.insteadOf`, url]);
+    write(r.laptop, "new.md", "new\n");
+    r.boxCommit([["from-box.md", "box\n"]], "box work");
+    let rep = await r.cycle();
+    expect(rep.ok, String(rep.error)).toBe(true);
+    expect(rep.github_uploading, "origin adopted as the backup").toBe(true);
+    await waitGithubBackup(s(r.laptop));
+    rep = await r.cycle();
+    expect(rep.github_warning, String(rep.github_warning)).toBeNull();
+    expect(rep.github_pushed_at).not.toBeNull();
+    expect(git(r.laptop, ["config", "--get", "remote.github.url"])).toBe(url);
+    expect(git(r.laptop, ["config", "--get", "remote.origin.url"]), "origin left as it was").toBe(url);
+    expect(git(gh, ["rev-parse", "refs/heads/master"])).toBe(r.head());
+    expect(git(gh, ["rev-parse", "refs/heads/box"])).toBe(git(r.bare, ["rev-parse", "refs/heads/box"]));
+  });
+
   it("an unreachable box reports the full error and the changes waiting", async () => {
     const r = await rig("unreach");
     write(r.laptop, ".vault-chat/sync.json", syncJson(join(r.base, "no-such-box")));
@@ -684,6 +710,19 @@ describe("box sync (TypeScript cycle) on real repos", { concurrent: true }, () =
     expect(githubProblem("remote: Invalid username or password.\nfatal: Authentication failed for 'https://github.com/x/y.git/'")).toBe("auth");
     expect(githubProblem(" ! [rejected]        master -> master (fetch first)")).toBe("rejected");
     expect(githubProblem("fatal: something else")).toBe("other");
+  });
+
+  it("only a GitHub origin is adopted as the backup, never over a github remote or for a project", () => {
+    const rc = (...kv: [string, string][]) => parseConfigZ(kv.map(([k, v]) => `${k}\n${v}\0`).join(""));
+    const o = "https://github.com/carlwilsn/summer";
+    expect(githubOriginToAdopt(rc(["remote.origin.url", o]), false)).toBe(o);
+    expect(githubOriginToAdopt(rc(["remote.origin.url", "git@github.com:carlwilsn/summer.git"]), false)).not.toBeNull();
+    expect(githubOriginToAdopt(rc(["remote.origin.url", "https://tok@github.com/carlwilsn/summer.git"]), false)).not.toBeNull();
+    expect(githubOriginToAdopt(rc(["remote.origin.url", o]), true), "a project pushes its origin itself").toBeNull();
+    expect(githubOriginToAdopt(rc(["remote.origin.url", o], ["remote.github.url", "https://github.com/x/y"]), false)).toBeNull();
+    expect(githubOriginToAdopt(rc(["remote.origin.url", "https://gitlab.com/x/y.git"]), false)).toBeNull();
+    expect(githubOriginToAdopt(rc(["remote.origin.url", "https://github.com.evil.example/x"]), false)).toBeNull();
+    expect(githubOriginToAdopt(rc(), false)).toBeNull();
   });
 
   it("github steps cut a backlog by bytes", () => {

@@ -16,6 +16,7 @@ import {
   GIT_TIMEOUT_SECS,
   GITHUB_DEBOUNCE_MS,
   GITHUB_REMOTE,
+  githubOriginToAdopt,
   GITHUB_STEP_BYTES,
   GITHUB_STEP_TIMEOUT_SECS,
   GITHUB_UPLOAD_BRANCH,
@@ -846,8 +847,9 @@ async function githubUpload(repo: Repo, first: boolean, budget0: number, pending
 /** Back up master + the box branch to the `github` remote, off the critical path: in the background, at most every 10
  *  minutes (attempts too), a push only when GitHub's refs are behind (the first backup in a session always pushes).
  *  Every cycle reports the last outcome. */
-function githubBackup(repo: Repo, rc: RepoConfig, report: BoxSyncReport): void {
-  if (rc.get("remote.github.url") === undefined) return;
+function githubBackup(repo: Repo, rc: RepoConfig, report: BoxSyncReport, project: boolean): void {
+  const adopt = githubOriginToAdopt(rc, project);
+  if (rc.get("remote.github.url") === undefined && adopt === null) return;
   const vault = repo.vault;
   let st = GITHUB_LAST.get(vault);
   if (!st) GITHUB_LAST.set(vault, (st = { attempted: null, pushedAt: null, warning: null, problem: null, pending: null, running: false, stepBudget: GITHUB_STEP_BYTES }));
@@ -872,6 +874,12 @@ function githubBackup(repo: Repo, rc: RepoConfig, report: BoxSyncReport): void {
     const pending = { n: null as number | null };
     let outcome: Upload;
     try {
+      if (adopt !== null) {
+        // Adopt origin as `github`, then learn what GitHub already has, so the upload sends only what it lacks.
+        const a = await bg.run(["remote", "add", GITHUB_REMOTE, adopt]);
+        if (a.code !== 0 && !/already exists/i.test(a.err)) throw new Error(fullErr(a.out, a.err, a.code, "git remote add github (from origin)"));
+        await bg.run(bg.syncArgs(["fetch", "-q", GITHUB_REMOTE]), GITHUB_STEP_TIMEOUT_SECS).catch(() => null);
+      }
       outcome = await githubUpload(bg, first, budget, pending);
     } catch (e) {
       outcome = { ok: false, err: errText(e), budget };
@@ -1074,7 +1082,7 @@ async function cycle(git: Git, vault: string, push: boolean): Promise<BoxSyncRep
   }
 
   // 5. GitHub backup, after a good cycle only, in the background.
-  if (r.ok) githubBackup(repo, rc, r);
+  if (r.ok) githubBackup(repo, rc, r, cfg.project);
   // 6. A project with its own remote: the box has no credentials, so after this laptop pulls a change from the box it
   // pushes the branch to `origin` itself. Owed until it succeeds.
   if (cfg.project && rc.get("remote.origin.url") !== undefined) {

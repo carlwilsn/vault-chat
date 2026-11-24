@@ -174,6 +174,18 @@ export class RepoConfig {
   }
 }
 
+/** The GitHub backup goes to the `github` remote, which nothing in the app creates: a vault set up before the box
+ *  has its GitHub repo as `origin` (Settings' remote and the old sync pushed there), so without this its backup was
+ *  silently off — summer's GitHub copy stopped at 2026-09-13 while the box kept syncing. Such an `origin` on GitHub
+ *  is adopted as `github` (same URL; the pushes are never forced, so a GitHub copy that moved on is a warning, not a
+ *  loss). A project keeps its own `origin` push (step 6 of the cycle). Returns the URL to adopt, or null. */
+export function githubOriginToAdopt(rc: RepoConfig, project: boolean): string | null {
+  if (project || rc.get("remote.github.url") !== undefined) return null;
+  const u = rc.get("remote.origin.url")?.trim();
+  if (!u) return null;
+  return /^(https?:\/\/([^/@]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)/i.test(u) ? u : null;
+}
+
 /** `git config -z --get-regexp` output: `key\nvalue\0` per entry. */
 export function parseConfigZ(out: string): RepoConfig {
   return new RepoConfig(
