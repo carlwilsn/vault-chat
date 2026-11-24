@@ -11,6 +11,9 @@
 //! folder (`<app local data>/web-embed`) in InPrivate mode, so its cookies and storage are neither the app's nor kept.
 //! Top-level navigations go only to public http(s) hosts (never loopback, private/tailnet addresses, `*.ts.net`, or
 //! `*.localhost`); popups load in the same view; downloads are refused (the chat offers "open in browser").
+//! One exception, asked for by name (`web_embed_open_dev`): a viewer pane showing the agent's dev server through the
+//! box's tailnet proxy (server/devProxy.ts, https on a `*.ts.net` host): that view may also go anywhere on that one
+//! origin, and nowhere else private.
 //! The page's bytes come straight from the site: nothing is proxied through the box, no credentials are added.
 //!
 //! Every wry call happens on the main thread (wry views are not Send), in `EMBEDS`.
@@ -28,6 +31,8 @@ pub const EVENT: &str = "web-embed";
 struct Embed {
     window: String,
     view: WebView,
+    /// The one non-public origin this view may go to (a dev server through the box), or None.
+    origin: Option<String>,
 }
 
 thread_local! {
@@ -111,8 +116,23 @@ pub fn public_web_url(url: &Url) -> bool {
         || host.ends_with(".ts.net"))
 }
 
-fn allowed_nav(raw: &str) -> bool {
-    raw == "about:blank" || Url::parse(raw).map(|u| public_web_url(&u)).unwrap_or(false)
+/// The box's dev server through its tailnet proxy (server/devProxy.ts): https, no credentials, a `*.ts.net` host.
+pub fn box_dev_url(url: &Url) -> bool {
+    url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.host_str().is_some_and(|h| {
+            let h = h.trim_end_matches('.').to_ascii_lowercase();
+            h.ends_with(".ts.net") && h.len() > ".ts.net".len()
+        })
+}
+
+fn allowed_nav(raw: &str, origin: Option<&str>) -> bool {
+    if raw == "about:blank" {
+        return true;
+    }
+    let Ok(u) = Url::parse(raw) else { return false };
+    public_web_url(&u) || origin.is_some_and(|o| u.origin().ascii_serialization() == o)
 }
 
 fn bounds(x: f64, y: f64, width: f64, height: f64) -> Rect {
@@ -154,14 +174,49 @@ pub async fn web_embed_open(
     height: f64,
     visible: bool,
 ) -> Result<(), String> {
+    let parsed = Url::parse(url.trim()).map_err(|_| "not a web address".to_string())?;
+    if !public_web_url(&parsed) {
+        return Err("only public http(s) pages open inline".into());
+    }
+    open_embed(app, window, id, parsed, None, (x, y, width, height), visible).await
+}
+
+/// As `web_embed_open`, for the agent's dev server through the box's tailnet proxy (an https `*.ts.net` address,
+/// server/devProxy.ts) in a viewer pane: the view may go anywhere on that origin, and to public pages.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn web_embed_open_dev(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    id: String,
+    url: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    visible: bool,
+) -> Result<(), String> {
+    let parsed = Url::parse(url.trim()).map_err(|_| "not a web address".to_string())?;
+    if !box_dev_url(&parsed) {
+        return Err("only a dev server through the box (https on its tailnet name) opens here".into());
+    }
+    let origin = parsed.origin().ascii_serialization();
+    open_embed(app, window, id, parsed, Some(origin), (x, y, width, height), visible).await
+}
+
+async fn open_embed(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    id: String,
+    parsed: Url,
+    origin: Option<String>,
+    (x, y, width, height): (f64, f64, f64, f64),
+    visible: bool,
+) -> Result<(), String> {
     check_id(&id)?;
     if cfg!(not(any(target_os = "windows", target_os = "macos"))) {
         // wry's child views need X11 on Linux (and would sit outside the GTK layout): the chat shows a link there.
         return Err("inline web pages need the Windows or macOS app".into());
-    }
-    let parsed = Url::parse(url.trim()).map_err(|_| "not a web address".to_string())?;
-    if !public_web_url(&parsed) {
-        return Err("only public http(s) pages open inline".into());
     }
     let data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("web-embed");
     let _ = std::fs::create_dir_all(&data_dir);
@@ -184,6 +239,7 @@ pub async fn web_embed_open(
         }
         let (a_nav, a_new, a_load, a_title, a_dl) = (app2.clone(), app2.clone(), app2.clone(), app2.clone(), app2.clone());
         let (i_nav, i_new, i_load, i_title, i_dl) = (id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
+        let (o_nav, o_new) = (origin.clone(), origin.clone());
         let view = CONTEXT.with(|c| {
             let mut c = c.borrow_mut();
             let ctx = c.get_or_insert_with(|| WebContext::new(Some(data_dir)));
@@ -197,7 +253,7 @@ pub async fn web_embed_open(
                 .with_focused(false)
                 .with_autoplay(false)
                 .with_navigation_handler(move |to| {
-                    let ok = allowed_nav(&to);
+                    let ok = allowed_nav(&to, o_nav.as_deref());
                     if !ok {
                         emit(&a_nav, &i_nav, "blocked", Some(to), None, None);
                     }
@@ -205,7 +261,7 @@ pub async fn web_embed_open(
                 })
                 // target=_blank links and window.open: the same view goes there (a public page only).
                 .with_new_window_req_handler(move |to, _features| {
-                    if allowed_nav(&to) {
+                    if allowed_nav(&to, o_new.as_deref()) {
                         let id3 = i_new.clone();
                         let _ = a_new.run_on_main_thread(move || {
                             let _ = with_embed(&id3, |e| e.view.load_url(&to).map_err(|e| e.to_string()));
@@ -228,7 +284,7 @@ pub async fn web_embed_open(
                 .build_as_child(&window)
                 .map_err(|e| e.to_string())
         })?;
-        EMBEDS.with(|m| m.borrow_mut().insert(id, Embed { window: label, view }));
+        EMBEDS.with(|m| m.borrow_mut().insert(id, Embed { window: label, view, origin }));
         Ok(())
     })
     .await
@@ -258,10 +314,15 @@ pub async fn web_embed_go(app: AppHandle, id: String, action: String, url: Optio
     check_id(&id)?;
     if action == "load" {
         let to = url.unwrap_or_default();
-        if !allowed_nav(&to) {
-            return Err("only public http(s) pages open inline".into());
-        }
-        return on_main(&app, move || with_embed(&id, |e| e.view.load_url(&to).map_err(|e| e.to_string()))).await;
+        return on_main(&app, move || {
+            with_embed(&id, |e| {
+                if !allowed_nav(&to, e.origin.as_deref()) {
+                    return Err("only public http(s) pages open inline".into());
+                }
+                e.view.load_url(&to).map_err(|e| e.to_string())
+            })
+        })
+        .await;
     }
     on_main(&app, move || {
         with_embed(&id, |e| {
@@ -350,9 +411,23 @@ mod tests {
             "javascript:alert(1)",
             "data:text/html,hi",
         ] {
-            assert!(!allowed_nav(bad), "{bad} must be refused");
+            assert!(!allowed_nav(bad, None), "{bad} must be refused");
         }
-        assert!(allowed_nav("about:blank"));
+        assert!(allowed_nav("about:blank", None));
+    }
+
+    #[test]
+    fn a_dev_server_through_the_box() {
+        let dev = Url::parse("https://thinkbox.tail1234.ts.net:5173/").unwrap();
+        assert!(box_dev_url(&dev));
+        let origin = dev.origin().ascii_serialization();
+        assert!(allowed_nav("https://thinkbox.tail1234.ts.net:5173/x?y=1", Some(&origin)));
+        assert!(allowed_nav("https://example.com/", Some(&origin)));
+        assert!(!allowed_nav("https://thinkbox.tail1234.ts.net:8848/", Some(&origin)));
+        assert!(!allowed_nav("http://localhost:5173/", Some(&origin)));
+        for bad in ["http://thinkbox.tail1234.ts.net:5173/", "https://ts.net/", "https://user:pw@thinkbox.tail1234.ts.net/", "https://example.com/"] {
+            assert!(!box_dev_url(&Url::parse(bad).unwrap()), "{bad} is not a dev server through the box");
+        }
     }
 
     #[test]

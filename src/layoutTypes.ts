@@ -9,8 +9,13 @@ export type LayoutOp =
   | { op: "closeLeftPanel" }
   | { op: "openRightPanel" }
   | { op: "closeRightPanel" }
-  | { op: "closePane"; pane: PaneSide }
+  /** No split: pane may be left out, and the one file or page closes. */
+  | { op: "closePane"; pane?: PaneSide }
+  /** A vault file (pane needed), or a web page (url: pane left out puts it in place of the active pane's). */
   | { op: "openInPane"; path: string; pane: PaneSide }
+  | { op: "openInPane"; url: string; pane?: PaneSide }
+  /** The web page in a pane (left out: the active one): Back, Forward, Reload, Open in browser (url: another address). */
+  | { op: "webPage"; do: "back" | "forward" | "reload" | "browser"; pane?: PaneSide; url?: string }
   | { op: "split"; on: boolean }
   | { op: "focus"; target: PaneSide | "chat" }
   | { op: "fullscreenChat"; on: boolean }
@@ -21,10 +26,13 @@ export type HostLayout = {
   /** Two files side by side or stacked. */
   split: boolean;
   direction: "side-by-side" | "stacked" | null;
-  /** The viewer's files, in order (one entry when there is no split, none when nothing is open). Vault-relative. */
-  panes: { side: PaneSide | "single"; file: string; active: boolean }[];
-  /** The file the viewer is on (the active pane's). */
+  /** The viewer's panes, in order (one entry when there is no split, none when nothing is open): a vault file
+   *  (vault-relative) or a web page (its address now, and its title when known). */
+  panes: ({ side: PaneSide | "single"; active: boolean } & ({ file: string } | { url: string; title?: string }))[];
+  /** The file the viewer is on (the active pane's; null when that is a web page). */
   currentFile: string | null;
+  /** The web page the viewer is on, when the active pane holds one. */
+  currentUrl?: string;
   activePane: PaneSide | "single" | null;
   /** The file tree. */
   leftPanelOpen: boolean;

@@ -22,6 +22,9 @@
 // With `vault` (a registered vault's name: Show {path, vault}, or an absolute path inside another vault) the path is in
 // that vault: the laptop opens it as the workspace first (the vault picker's open; conversations never change with it),
 // then the file, and the ack names the vault so the box knows this app understood it.
+//
+// A `url` (a public page, or the agent's dev server through the box) opens in the viewer as a web page (src/webPane.ts),
+// in the named pane or in place of the active pane's; its title row has Open in browser.
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "./store";
 import { fileKind, isUnreadableAsText } from "./fileKind";
@@ -29,6 +32,7 @@ import { holdBoxCopy } from "./liveReload";
 import { awaitScroll } from "./scrollTarget";
 import { encodeTarget, hasTarget, type ViewTarget } from "./viewTarget";
 import { layoutLine, placeInPane, PANE_SIDES, type PaneSide } from "./paneLayout";
+import { openWebInPane } from "./webPane";
 
 /** `sha`: the sha256 (hex) of the box's copy of `path`. */
 export type ShowSignal = { type: "show"; id: string; to?: string; path?: string; vault?: string; url?: string; target?: ViewTarget; pane?: string; sha?: string };
@@ -42,8 +46,6 @@ export type ShowDeps = {
   boxFile?: (rel: string, vault?: string) => Promise<Uint8Array | null>;
   /** Open the named vault as the workspace (default: the vault-chat folder's vaults/<name>, as the picker does). */
   openVault?: (name: string) => Promise<{ path: string; switched: boolean } | { error: string }>;
-  /** Open a web address outside the app. */
-  openUrl?: (url: string) => Promise<void>;
   /** How long the viewer has to say where it landed (a PDF loads first). */
   answerMs?: number;
 };
@@ -115,9 +117,14 @@ export async function openNamedVault(name: string): Promise<{ path: string; swit
 export async function showOnLaptop(sig: ShowSignal, deps: ShowDeps = {}): Promise<ShowAck> {
   try {
     if (sig.url) {
-      const open = deps.openUrl ?? (async (u: string) => (await import("./opener")).openUrl(u));
-      await open(sig.url);
-      return { ok: true, landed: `opened ${sig.url} in the browser` };
+      // A web page opens in the viewer (src/webPane.ts): in the named pane, or in place of the active pane's.
+      if (!/^https?:\/\//i.test(sig.url)) return { ok: false, error: "a url opens only when it is http(s)" };
+      const pane = PANE_SIDES.includes(sig.pane as PaneSide) ? (sig.pane as PaneSide) : undefined;
+      if (sig.pane !== undefined && !pane) return { ok: false, error: `pane is "left" or "right", not "${sig.pane}"` };
+      const { landed } = openWebInPane(sig.url, pane);
+      const after = useStore.getState();
+      const layout = after.panes.length >= 2 ? layoutLine(after, after.vaultPath) : "";
+      return { ok: true, landed: `${landed}${layout ? `. ${layout}` : ""} (its title row has Open in browser)`, ...(pane ? { pane } : {}), ...(layout ? { layout } : {}) };
     }
     if (!sig.path) return { ok: false, error: "nothing to show (no path or url)" };
     // Another registered vault: it becomes the workspace first.

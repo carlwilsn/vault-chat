@@ -8,9 +8,10 @@
 import { useStore } from "./store";
 import { PANE_SIDES, relToVault, sideOf } from "./paneLayout";
 import type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult, PaneSide } from "./layoutTypes";
+import { isWebAddress, openWebInPane, webPageAct } from "./webPane";
 export type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult } from "./layoutTypes";
 
-export const LAYOUT_OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "split", "focus", "fullscreenChat", "chatSidebar", "resize"] as const;
+export const LAYOUT_OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "fullscreenChat", "chatSidebar", "resize"] as const;
 
 /** The outer split's own resize (Allotment's, registered by src/App.tsx): what dragging a sash does, in pixels per column. */
 let outerResize: ((sizes: number[]) => void) | null = null;
@@ -96,17 +97,21 @@ export function readLayout(measure: () => Pick<HostLayout, "viewport" | "sizes">
   const s = useStore.getState();
   const vault = s.vaultPath;
   const split = s.panes.length >= 2;
+  // A pane's content: a vault file, or a web page (its address, and its title when the page said it).
+  const content = (f: string) => (isWebAddress(f) ? { url: f, ...(s.webTitles[f] ? { title: s.webTitles[f] } : {}) } : { file: relToVault(vault, f) });
   const panes: HostLayout["panes"] = split
-    ? s.panes.slice(0, 2).map((p, i) => ({ side: PANE_SIDES[i]!, file: relToVault(vault, p.file), active: p.id === s.activePaneId }))
+    ? s.panes.slice(0, 2).map((p, i) => ({ side: PANE_SIDES[i]!, ...content(p.file), active: p.id === s.activePaneId }))
     : s.currentFile
-      ? [{ side: "single" as const, file: relToVault(vault, s.currentFile), active: true }]
+      ? [{ side: "single" as const, ...content(s.currentFile), active: true }]
       : [];
   const activePane = split ? sideOf(s, s.activePaneId) : s.currentFile ? "single" : null;
+  const web = isWebAddress(s.currentFile);
   return {
     split,
     direction: split ? (s.splitDirection === "vertical" ? "stacked" : "side-by-side") : null,
     panes,
-    currentFile: s.currentFile ? relToVault(vault, s.currentFile) : null,
+    currentFile: s.currentFile && !web ? relToVault(vault, s.currentFile) : null,
+    ...(web ? { currentUrl: s.currentFile! } : {}),
     activePane,
     leftPanelOpen: !s.leftCollapsed && !s.chatFullscreen,
     rightPanelOpen: !s.rightCollapsed && !s.popoutOpen && !s.chatFullscreen,
@@ -140,16 +145,33 @@ async function applyOne(op: LayoutOp, io: LayoutIO): Promise<{ ok: boolean; note
       return done();
     }
     case "closePane": {
-      if (!sideOk(op.pane)) return no(`pane is "left" or "right", not "${String((op as { pane?: unknown }).pane)}"`);
+      if (op.pane !== undefined && !sideOk(op.pane)) return no(`pane is "left" or "right", not "${String((op as { pane?: unknown }).pane)}"`);
       const s = st();
-      if (s.panes.length < 2) return no("there is no split: only one file is open, so there is no second pane to close");
+      if (s.panes.length < 2) {
+        // No split: the one file or page closes (as its own Close does), when no side was named.
+        if (op.pane) return no("there is no split: only one file is open, so there is no second pane to close (leave pane out to close it)");
+        if (!s.currentFile) return done("nothing was open");
+        s.setCurrentFile(null, "");
+        return done();
+      }
+      if (!op.pane) return no('closePane in a split needs pane: "left" or "right"');
       s.closePane(s.panes[op.pane === "left" ? 0 : 1]!.id);
       return done();
     }
     case "openInPane": {
-      if (!sideOk(op.pane)) return no(`pane is "left" or "right", not "${String((op as { pane?: unknown }).pane)}"`);
-      if (typeof op.path !== "string" || !op.path) return no("openInPane needs a path");
-      return io.openInPane(op.path, op.pane);
+      if (op.pane !== undefined && !sideOk(op.pane)) return no(`pane is "left" or "right", not "${String((op as { pane?: unknown }).pane)}"`);
+      if ("url" in op && op.url !== undefined) {
+        if (!isWebAddress(op.url)) return no("openInPane's url is an http(s) address");
+        return done(openWebInPane(op.url.trim(), op.pane).landed);
+      }
+      const path = (op as { path?: unknown }).path;
+      if (typeof path !== "string" || !path) return no("openInPane needs a path (a vault file) or a url (a web page)");
+      if (!op.pane) return no('openInPane of a file needs pane: "left" or "right"');
+      return io.openInPane(path, op.pane);
+    }
+    case "webPage": {
+      if (op.pane !== undefined && !sideOk(op.pane)) return no(`pane is "left" or "right", not "${String((op as { pane?: unknown }).pane)}"`);
+      return webPageAct(op.do, op.pane, op.url);
     }
     case "split": {
       const s = st();
@@ -217,7 +239,9 @@ export async function applyLayoutOps(ops: LayoutOp[], io: LayoutIO): Promise<Lay
 
 /** A line for the agent / a log: what the layout is. */
 export function layoutText(l: HostLayout): string {
-  const where = l.split ? `split ${l.direction}: ${l.panes.map((p) => `${p.side}=${p.file}${p.active ? " (active)" : ""}`).join(", ")}` : l.currentFile ? `one file: ${l.currentFile}` : "nothing open in the viewer";
+  const what = (p: HostLayout["panes"][number]) => ("url" in p ? `page ${p.url}${p.title ? ` "${p.title}"` : ""}` : p.file);
+  const one = l.panes[0];
+  const where = l.split ? `split ${l.direction}: ${l.panes.map((p) => `${p.side}=${what(p)}${p.active ? " (active)" : ""}`).join(", ")}` : one ? ("url" in one ? `one web ${what(one)}` : `one file: ${one.file}`) : "nothing open in the viewer";
   const chat = l.chatFullscreen ? "chat full screen" : l.chatPoppedOut ? "chat popped out" : `chat panel ${l.rightPanelOpen ? "open" : "closed"}`;
   const size = l.viewport ? `; window ${l.viewport.width}x${l.viewport.height}${l.sizes ? ` (left panel ${l.sizes.leftPanel}px, viewer ${l.sizes.viewer}px, chat ${l.sizes.chat}px)` : ""}` : "";
   return `${where}; left panel ${l.leftPanelOpen ? "open" : "closed"}; ${chat}${size}`;

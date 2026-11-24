@@ -3,7 +3,8 @@
 // (./builtins.tsx ViewerBody; edit mode is the source editor, EDITOR_CHAIN: the live markdown editor, Monaco otherwise),
 // saving as Carl types, live reload, Ctrl+L / the marquee in a viewer, ScrollTo on a rendered note. Moved here from
 // src/MarkdownView.tsx unchanged; src/MarkdownView.tsx mounts it through the plugin host (its props: the pane's id), and
-// draws this same component in the app's tree while the records are unknown or the plugin is off. Each pane registers
+// draws this same component in the app's tree while the records are unknown or the plugin is off. A pane holding a web
+// page is ./WebPane.tsx. Each pane registers
 // its Reload / Keep mine with ./panes.ts for the offers.
 import { registerAskOpener } from "../ask/view";
 import { noteSaved } from "../../editorState";
@@ -29,6 +30,8 @@ import { flipNthTaskCheckbox, localPathFromUrl } from "../../mdPipeline";
 import { hit, shortcutHint } from "../../shortcuts";
 import { NotePre, useNoteSource } from "../../NoteWidget";
 import { registerPane, emitPaneEvent } from "./panes";
+import { isWebAddress } from "../../webPane";
+import { WebPane } from "./WebPane";
 
 function resolveRelative(baseFile: string, rel: string): string {
   const sep = baseFile.includes("\\") ? "\\" : "/";
@@ -206,7 +209,13 @@ function publishTextViewport(
 type Props = { paneId?: string };
 const NO_CHAIN: readonly never[] = [];
 
+/** A pane: a web page (its address in the pane's place, src/webPane.ts) or a vault file. */
 export function Pane({ paneId }: Props) {
+  const file = useStore((s) => (paneId ? s.panes.find((p) => p.id === paneId)?.file : s.currentFile) ?? null);
+  return isWebAddress(file) ? <WebPane paneId={paneId} url={file} /> : <FilePane paneId={paneId} />;
+}
+
+function FilePane({ paneId }: Props) {
   const currentFile = useStore((s) => s.currentFile);
   const currentContent = useStore((s) => s.currentContent);
   const panes = useStore((s) => s.panes);

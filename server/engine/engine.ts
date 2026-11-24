@@ -3020,7 +3020,7 @@ export class Engine {
         }
         case "PluginRead":
         case "PluginAct": {
-          const r = await pluginOfferTool({ vault, emit: (ev) => this.d.broadcast?.(ev), vaults: this.d.vaultList, stateDir: loadConfig().stateDir, jobs: this.jobsCtl(conv.threadId, convId, !side), chats: this.chatsCtl(vault, convId, conv), conv: convId }, name, a);
+          const r = await pluginOfferTool({ vault, emit: (ev) => this.d.broadcast?.(ev), vaults: this.d.vaultList, stateDir: loadConfig().stateDir, jobs: this.jobsCtl(conv.threadId, convId, !side), chats: this.chatsCtl(vault, convId, conv), conv: convId, dev: (port) => this.devUrl(port) }, name, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "Screen": {

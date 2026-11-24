@@ -63,7 +63,7 @@ export const pluginOfferToolSpecs = [
     name: PLUGIN_ACT,
     description:
       "Run an action a live plugin offers (see PluginRead for its actions and their args), e.g. {plugin: \"app/notes\", action: \"view\", args: {filter: \"resolved\"}}. Carl's settings (theme, model, effort, voice, pushAutomatic, chatSidebar, corePublish): {plugin: \"box:settings\", action: \"set\", args: {key, value}} (value null: its default). A page or an app part off / on everywhere, by its name, no read first: {plugin: \"box:pages\", action: \"disable\" | \"enable\", args: {plugin: \"notes\" (the Notes panel) | \"phone\" | \"html-lab\"}}. " +
-      "Arrange his laptop screen, no read first: {plugin: \"box:workspace\", action: \"closeLeftPanel\" (the file tree) | \"openLeftPanel\" | \"closeRightPanel\" (the chat panel) | \"openRightPanel\" | \"openInPane\" {path, pane: left|right} | \"closePane\" {pane} | \"split\" {on} | \"focus\" {target} | \"fullscreenChat\" {on} | \"chatSidebar\" {open} | \"resize\" {leftPanel?, chat?} | \"openChat\" {id} | \"arrange\" {ops: [{action, ...}]}}; it answers with the layout read back from the screen (never claim a change without it). " +
+      "Arrange his laptop screen, no read first: {plugin: \"box:workspace\", action: \"closeLeftPanel\" (the file tree) | \"openLeftPanel\" | \"closeRightPanel\" (the chat panel) | \"openRightPanel\" | \"openInPane\" {path, pane: left|right} or {url, pane?} (a web page or your dev server in the viewer) | \"webPage\" {do: back|forward|reload|browser, pane?} | \"closePane\" {pane?} | \"split\" {on} | \"focus\" {target} | \"fullscreenChat\" {on} | \"chatSidebar\" {open} | \"resize\" {leftPanel?, chat?} | \"openChat\" {id} | \"arrange\" {ops: [{action, ...}]}}; it answers with the layout read back from the screen (never claim a change without it). " +
       "Search what happened, read-only: {plugin: \"box:history\", action: \"activity\" {query?, hours?} (what Carl did on his surfaces past what your turn shows) | \"transcript\" {query, thread?: \"main\" or a project} (a thread's full raw history, before any compaction or Clear)}. " +
       "Carl's chats and projects: {plugin: \"box:chats\", action: \"list\" {limit?} | \"read\" {id, last_n?} (another chat's recent messages) | \"project\" {project} | \"deleted\" | \"cost\" {id?, project?} (model spend) | \"compact\" {id?, focus?} (only when Carl asks) | \"start\" {text, place?} (a new chat with that message) | \"post\" {id, text} (hand work to the chat that owns it) | \"rename\" {id?, title?} | \"renameProject\" {place, name} | \"delete\" {ids} | \"restore\" {id} | \"deleteProject\" {project, folder?} | \"restoreProject\" {project} | \"openProject\" {project, create?, request?}}; PluginRead box:chats gives the recent chats and the projects. Rename, delete, restore and openProject only when Carl asks in so many words; only he makes projects. " +
       "Your background work: {plugin: \"box:jobs\", action: \"list\" {all?} | \"status\" {id} (one worker's or job's progress now) | \"stop\" {id} | \"steer\" {id, message} (Carl's change to a running worker)}; answer \"still running?\" from these, never from a notice alone. " +
@@ -101,6 +101,8 @@ export type PluginOfferDeps = {
   chats?: import("./model/chats").ChatsCtl;
   /** The asking conversation (a queued action's line goes there). */
   conv?: string;
+  /** A dev server on the box → its origin for the laptop (box:workspace openInPane {url}). */
+  dev?: (port: number) => Promise<{ origin: string } | { error: string }>;
 };
 
 const argLine = (schema: Record<string, unknown>): string => {
@@ -222,7 +224,7 @@ function pageRecordsText(vault: string, vaultName: string | null, id: string, r:
 
 export async function pluginOfferTool(d: PluginOfferDeps, name: string, a: Record<string, unknown>): Promise<{ ok: boolean; text: string }> {
   const plugin = typeof a.plugin === "string" ? a.plugin.trim() : "";
-  const boxDeps: BoxOfferDeps = { vault: d.vault, emit: d.emit, ackMs: d.ackMs, stateDir: d.stateDir, jobs: d.jobs, chats: d.chats, vaults: () => (d.vaults?.() ?? []).map((v) => v.path), conv: d.conv };
+  const boxDeps: BoxOfferDeps = { vault: d.vault, emit: d.emit, ackMs: d.ackMs, stateDir: d.stateDir, jobs: d.jobs, chats: d.chats, vaults: () => (d.vaults?.() ?? []).map((v) => v.path), conv: d.conv, dev: d.dev };
   // The box's own state (box:settings, box:notes, box:pages, box:workspace, box:history, box:jobs, box:chats, box:links, box:logs): answered here, with or without a device.
   if (plugin && isBoxWord(plugin)) {
     const only = typeof a.state === "string" && a.state.trim() ? a.state.trim() : undefined;

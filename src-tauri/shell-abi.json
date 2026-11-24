@@ -379,6 +379,10 @@
   "sig": "web_embed_open(id:String,url:String,x:f64,y:f64,width:f64,height:f64,visible:bool)->Result<(),String>",
   "v": "c3ceac9d"
  },
+ "web_embed_open_dev": {
+  "sig": "web_embed_open_dev(id:String,url:String,x:f64,y:f64,width:f64,height:f64,visible:bool)->Result<(),String>",
+  "v": "d0c2e645"
+ },
  "web_embed_place": {
   "sig": "web_embed_place(id:String,x:f64,y:f64,width:f64,height:f64,visible:bool)->Result<(),String>",
   "v": "af394247"

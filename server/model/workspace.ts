@@ -3,7 +3,7 @@
 // panel, full screen, its sidebar) and which chat is open. Only the laptop app has panes, so its state is what the
 // laptop reads back from its own screen (src/layoutOps.ts readLayout), kept on the box with when it was read: read live
 // when the laptop is up, the last read-back (and since when the laptop is away) when it is not. The actions are the
-// app's own layout ops (src/layoutOps.ts LAYOUT_OPS, the same ones a plugin has as api.host.layout and the title bar's
+// app's own layout ops (src/layoutOps.ts LAYOUT_OPS: a pane holds a vault file or a web page, src/webPane.ts, the same ones a plugin has as api.host.layout and the title bar's
 // buttons call) and openChat (the chat list's own open), sent over Show's signal + ack channel (server/layoutTool.ts);
 // each is confirmed only by the laptop's ack. Watched on that ack and on the laptop's own layout events (the viewer
 // opening a file, the chat list switching chat), so a change Carl makes by hand is seen too. Opening a file at a place
@@ -23,13 +23,13 @@ const when = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace("T"
 const PANE = { type: "string", enum: ["left", "right"], description: "left or right (stacked: left is the top)" };
 const obj = (props: Record<string, unknown> = {}, required: string[] = []) => ({ type: "object", properties: props, required, additionalProperties: false });
 
-export type WorkspaceCtx = { vault: string; emit?: (ev: Record<string, unknown>) => void; ackMs?: number };
+export type WorkspaceCtx = { vault: string; emit?: (ev: Record<string, unknown>) => void; ackMs?: number; dev?: (port: number) => Promise<{ origin: string } | { error: string }> };
 
 export function workspaceNoun(ctx: WorkspaceCtx): Noun {
   const run = (op: string) => async (a: Record<string, unknown>): Promise<ActResult> => {
     if (!ctx.emit) return { ok: false, text: "this box has no link to the laptop here; nothing changed." };
     const args = op === "arrange" ? { ops: a.ops } : { action: op, ...a };
-    const r = await layoutTool({ vault: ctx.vault, emit: ctx.emit, ackMs: ctx.ackMs, brief: true }, args);
+    const r = await layoutTool({ vault: ctx.vault, emit: ctx.emit, ackMs: ctx.ackMs, dev: ctx.dev, brief: true }, args);
     return { ok: r.ok, text: r.text };
   };
   const action = (description: string, op: string, args = obj()): NounAction => ({ description, args, run: run(op) });
@@ -39,7 +39,7 @@ export function workspaceNoun(ctx: WorkspaceCtx): Noun {
     state: {
       layout: {
         description:
-          "Carl's laptop screen, read back from it: panes and their files (split, side-by-side or stacked, the active pane), the left panel (file tree) open, the chat panel open / full screen / popped out, its sidebar, the open chat when known, window and column sizes; when the laptop is away, the last read-back and since when",
+          "Carl's laptop screen, read back from it: panes and their files or web pages (url and title; Carl's own navigation shows here) (split, side-by-side or stacked, the active pane), the left panel (file tree) open, the chat panel open / full screen / popped out, its sidebar, the open chat when known, window and column sizes; when the laptop is away, the last read-back and since when",
         read: async () => {
           const k = keptLayout();
           const down = controlDown("laptop");
@@ -59,8 +59,13 @@ export function workspaceNoun(ctx: WorkspaceCtx): Noun {
       closeLeftPanel: action("close the left panel (the file tree)", "closeLeftPanel"),
       openRightPanel: action("open the chat panel", "openRightPanel"),
       closeRightPanel: action("close the chat panel", "closeRightPanel"),
-      closePane: action("close one pane of the split (back to one file)", "closePane", obj({ pane: PANE }, ["pane"])),
-      openInPane: action("put a vault file in a pane (turns the split on when one other file is open; to open a file at a place, use Show)", "openInPane", obj({ path: { type: "string", description: "vault-relative" }, pane: PANE }, ["path", "pane"])),
+      closePane: action("close one pane of the split (back to one file); with no split, leave pane out to close the one file or page", "closePane", obj({ pane: PANE })),
+      openInPane: action(
+        "put a vault file (path + pane) or a web page (url; pane left out: in place of the active pane's) in a pane, turning the split on when one other is open; a pane already on a page goes to the url. A url http://localhost:<port> is your StartJob dev server, through the box. To open a file at a place, use Show",
+        "openInPane",
+        obj({ path: { type: "string", description: "vault-relative" }, url: { type: "string", description: "http(s)" }, pane: PANE }),
+      ),
+      webPage: action("the web page in a pane (left out: the active one), as its title row's buttons: back, forward, reload, or browser (opens it, or url, in his browser)", "webPage", obj({ do: { type: "string", enum: ["back", "forward", "reload", "browser"] }, pane: PANE, url: { type: "string" } }, ["do"])),
       split: action("turn the split on or off (off keeps the active pane)", "split", obj({ on: { type: "boolean" } }, ["on"])),
       focus: action("focus a pane or the chat", "focus", obj({ target: { type: "string", enum: ["left", "right", "chat"] } }, ["target"])),
       fullscreenChat: action("full-screen chat on or off", "fullscreenChat", obj({ on: { type: "boolean" } }, ["on"])),

@@ -209,7 +209,7 @@ export function startActivityWatch(): () => void {
   const unsub = useStore.subscribe((s, prev) => {
     const vault = s.vaultPath;
     if (!vault) return;
-    if (s.currentFile && s.currentFile !== prev.currentFile) focus(vault, s.currentFile, undefined, "opened the file");
+    if (s.currentFile && s.currentFile !== prev.currentFile) focus(vault, s.currentFile, undefined, /^https?:\/\//i.test(s.currentFile) ? "opened the page" : "opened the file");
     const vp = s.viewport;
     if (vp?.page && vp.path && (vp.page !== prev.viewport?.page || vp.path !== prev.viewport?.path)) {
       focus(vault, vp.path, `page ${vp.page}${vp.totalPages ? ` of ${vp.totalPages}` : ""}`, "reading");

@@ -2,7 +2,8 @@
 // browser view from the desktop shell (src-tauri/src/web_embed.rs) laid over the placeholder drawn here and kept on it
 // as the chat scrolls and resizes (src/inlineWeb.ts). The title bar: Back, Forward, Reload, Full window, Open in
 // browser, Close. Anywhere the native view cannot be made (not the desktop app, Linux, a refused address, an error),
-// the label is a plain link that opens the page in the browser.
+// the label is a plain link that opens the page in the browser. A viewer pane holding a page (src/plugins/viewer/
+// WebPane.tsx) uses the same view and the helpers exported here.
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { inlineChanged, registerInlineFrame } from "./inlineFrames";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -12,11 +13,11 @@ import { openUrl } from "./opener";
 import { defaultFrameHeight, parseFrameHint, frameHeight, HTML_MAX_H, HTML_MIN_FRAME_H } from "./inlineHtml";
 import { displayHost, nativeBounds, pickToRest, probePoints, publicWebUrl, sameBounds, visibleBox, WEB_EMBED_EVENT, type Box, type WebEmbedEvent } from "./inlineWeb";
 
-type Bounds = { x: number; y: number; width: number; height: number; visible: boolean };
+export type Bounds = { x: number; y: number; width: number; height: number; visible: boolean };
 
 /** Calls for one view run in order (a close never overtakes the open before it). */
 const queues = new Map<string, Promise<unknown>>();
-function inOrder<T>(id: string, f: () => Promise<T>): Promise<T> {
+export function inOrder<T>(id: string, f: () => Promise<T>): Promise<T> {
   const next = (queues.get(id) ?? Promise.resolve()).catch(() => undefined).then(f);
   queues.set(id, next);
   void next.finally(() => { if (queues.get(id) === next) queues.delete(id); }).catch(() => undefined);
@@ -25,8 +26,8 @@ function inOrder<T>(id: string, f: () => Promise<T>): Promise<T> {
 
 /** A reloaded chat never leaves an earlier run's native views on screen: they are all closed before the first opens. */
 let startOver: Promise<unknown> | null = null;
-const native = () => { try { return isTauri(); } catch { return false; } };
-function ready(): Promise<unknown> {
+export const native = () => { try { return isTauri(); } catch { return false; } };
+export function ready(): Promise<unknown> {
   if (!startOver) startOver = native() ? invoke("web_embed_close", {}).catch(() => undefined) : Promise.resolve();
   return startOver;
 }
@@ -35,7 +36,7 @@ function ready(): Promise<unknown> {
 const live = new Map<string, { lastSeen: number; visible: boolean; rest: () => void }>();
 
 let seq = 0;
-const newId = () => `w${Date.now().toString(36)}${(seq++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+export const newId = () => `w${Date.now().toString(36)}${(seq++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 function clipsOf(el: HTMLElement): Box[] {
   const out: Box[] = [];
@@ -54,7 +55,7 @@ function clipsOf(el: HTMLElement): Box[] {
 
 /** Where the view goes now: the visible part of the placeholder, hidden when it is off screen, under something, or
  *  the page is hidden. */
-function measure(el: HTMLElement, zoom: number): Bounds {
+export function measure(el: HTMLElement, zoom: number): Bounds {
   const hide: Bounds = { x: 0, y: 0, width: 1, height: 1, visible: false };
   if (document.hidden || !el.isConnected) return hide;
   const r = el.getBoundingClientRect();

@@ -41,6 +41,8 @@ export type BoxOfferDeps = {
   vaults?: () => string[];
   /** The asking conversation (box:history's transcript search defaults to it). */
   conv?: string;
+  /** A dev server on the box → its origin for the laptop (box:workspace openInPane {url}). */
+  dev?: (port: number) => Promise<{ origin: string } | { error: string }>;
 };
 
 export const BOX_PREFIX = "box:";
@@ -74,7 +76,7 @@ const str = (description: string) => ({ type: "string", description });
 export function boxOffers(d: BoxOfferDeps): BoxOffer[] {
   const out: BoxOffer[] = [
     // The nouns moved into the model (server/model/): each is a box offer of the same name.
-    ...nouns({ vault: d.vault, emit: d.emit, ackMs: d.ackMs, vaults: d.vaults, conv: d.conv, jobs: d.jobs, chats: d.chats }).map(nounOffer),
+    ...nouns({ vault: d.vault, emit: d.emit, ackMs: d.ackMs, vaults: d.vaults, conv: d.conv, jobs: d.jobs, chats: d.chats, dev: d.dev }).map(nounOffer),
     {
       id: "box:links",
       name: "Devices",

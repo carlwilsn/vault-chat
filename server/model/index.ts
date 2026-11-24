@@ -39,6 +39,8 @@ export type NounCtx = {
   jobs?: JobsCtl;
   /** Carl's chats and projects as the engine holds them: no chats noun without it. */
   chats?: ChatsCtl;
+  /** A dev server on the box → the origin the laptop reaches it on (Show's, server/devProxy.ts): workspace openInPane {url}. */
+  dev?: (port: number) => Promise<{ origin: string } | { error: string }>;
 };
 
 /** Every moved noun. */

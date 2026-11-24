@@ -70,6 +70,13 @@ export const webEmbedCommands: Record<string, (a: Record<string, any>) => unknow
     load(a.id, v, String(a.url), true);
     return null;
   },
+  // A dev server through the box (a viewer pane, src/plugins/viewer/WebPane.tsx): the same stand-in.
+  web_embed_open_dev: (a) => {
+    if (!/^https:\/\/[^/]+\.ts\.net(?::\d+)?\//i.test(String(a.url))) throw "only a dev server through the box (https on its tailnet name) opens here";
+    const r = webEmbedCommands.web_embed_open!(a);
+    webEmbedCalls[webEmbedCalls.length - 1]!.cmd = "web_embed_open_dev";
+    return r;
+  },
   web_embed_place: (a) => {
     webEmbedCalls.push({ cmd: "web_embed_place", args: a });
     const v = views.get(a.id);

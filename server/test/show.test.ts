@@ -156,6 +156,22 @@ describe("Show on the laptop: a signal, and success only on the ack", () => {
     expect(r).toMatchObject({ ok: true, where: "laptop" });
     leave();
   });
+
+  it("a web address goes to a pane of the laptop's viewer; an older app that opened the browser is said so", async () => {
+    const leave = feedOpened(vault, "laptop");
+    let got: Record<string, unknown> | null = null;
+    let stop = client("laptop", (ev) => ((got = ev), { ok: true, pane: "right", landed: `opened ${ev.url} in the right pane` }));
+    const r = await show(deps(), { url: "https://example.org/notes", where: "laptop", pane: "right" });
+    stop();
+    expect(got).toMatchObject({ type: "show", url: "https://example.org/notes", pane: "right" });
+    expect(r).toMatchObject({ ok: true });
+    expect(r.text).toMatch(/in the right pane/);
+    stop = client("laptop", (ev) => ({ ok: true, landed: `opened ${ev.url} in the browser` }));
+    const old = await show(deps(), { url: "https://example.org/notes", where: "laptop", pane: "left" });
+    stop();
+    expect(old.text).toMatch(/older: it opened the page in the browser, not in a pane/);
+    leave();
+  });
 });
 
 describe("Show's pane: the laptop's split screen", () => {
@@ -189,7 +205,7 @@ describe("Show's pane: the laptop's split screen", () => {
     leave();
   });
 
-  it("pane is refused, before anything is sent, off the laptop, with a url, or when it is not left/right", async () => {
+  it("pane is refused, before anything is sent, off the laptop, or when it is not left/right", async () => {
     const from = emitted.length;
     const leave = feedOpened(vault, "phone");
     const phone = await show(deps(), { path: "hw/hw4.md", where: "phone", pane: "left" });
@@ -197,8 +213,8 @@ describe("Show's pane: the laptop's split screen", () => {
     expect(phone.text).toMatch(/the phone app has only Carl's alerts and notes/);
     const board = await show(deps(), { path: "hw/hw4.md", where: "board", pane: "right" });
     expect(board.text).toMatch(/where is "laptop" or "here"/);
-    const url = await show(deps(), { url: "https://example.org", where: "laptop", pane: "left" });
-    expect(url.text).toMatch(/not in a pane/);
+    const url = await show(deps(), { url: "https://example.org", where: "phone", pane: "left" });
+    expect(url.text).toMatch(/the phone app has only Carl's alerts and notes/);
     const bad = await show(deps(), { path: "hw/hw4.md", where: "laptop", pane: "top" });
     expect(bad.text).toMatch(/pane is "left" or "right"/);
     expect(emitted.length).toBe(from);

@@ -367,6 +367,8 @@ type State = {
   panes: Pane[];
   splitDirection: SplitDirection;
   activePaneId: string | null;
+  /** A pane can hold a web page (its `file` is the http(s) address, src/webPane.ts): the pages' titles, by address. */
+  webTitles: Record<string, string>;
   messages: ChatMessage[];
   /** Every key, by name (src/keychain.ts): one mechanism for all of them. */
   keys: Keys;
@@ -544,6 +546,7 @@ type State = {
   reloadCurrent: (path: string, content: string) => void;
   splitWith: (path: string, content: string, side: DropSide) => void;
   setPaneFile: (paneId: string, path: string, content: string) => void;
+  setWebTitle: (url: string, title: string | null) => void;
   closePane: (paneId: string) => void;
   setActivePane: (paneId: string) => void;
   updatePaneContent: (paneId: string, content: string) => void;
@@ -677,6 +680,7 @@ export const useStore = create<State>((set) => ({
   panes: [],
   splitDirection: null,
   activePaneId: null,
+  webTitles: {},
   messages: [],
   keys: {}, // populated async via hydrateKeychain
   serviceKeys: {}, // populated async via hydrateKeychain
@@ -979,6 +983,17 @@ export const useStore = create<State>((set) => ({
       return isActive
         ? { panes, currentFile: path, currentContent: content }
         : { panes };
+    }),
+  setWebTitle: (url, title) =>
+    set((s) => {
+      const t = title?.trim() ?? "";
+      if ((s.webTitles[url] ?? "") === t) return {};
+      // Only the pages on screen keep a title (a page navigated away from drops it).
+      const shown = new Set([s.currentFile, ...s.panes.map((p) => p.file)]);
+      const next = Object.fromEntries(Object.entries(s.webTitles).filter(([u]) => shown.has(u)));
+      if (t) next[url] = t;
+      else delete next[url];
+      return { webTitles: next };
     }),
   closePane: (paneId) =>
     set((s) => {

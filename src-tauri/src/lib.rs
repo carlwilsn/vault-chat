@@ -5763,6 +5763,7 @@ pub fn run() {
 
             vault_page::vault_page_root,
             web_embed::web_embed_open,
+            web_embed::web_embed_open_dev,
             web_embed::web_embed_place,
             web_embed::web_embed_go,
             web_embed::web_embed_url,

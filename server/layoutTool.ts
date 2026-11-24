@@ -8,9 +8,10 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { waitAck, type Ack } from "./show";
+import { loopbackUrl } from "./devProxy";
 import { controlDown, laptopElsewhere, noteAnswer, unansweredNote, vaultName } from "./deviceLink";
 
-const OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "split", "focus", "fullscreenChat", "chatSidebar", "resize", "openChat"] as const;
+const OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "fullscreenChat", "chatSidebar", "resize", "openChat"] as const;
 type Op = Record<string, unknown> & { op: string };
 
 export type LayoutDeps = {
@@ -20,7 +21,13 @@ export type LayoutDeps = {
   ackMs?: number;
   /** Say only what was done (the workspace noun reads the layout back as its state). */
   brief?: boolean;
+  /** A dev server on the box (a loopback port a StartJob job listens on) → the origin the laptop reaches it on
+   *  (server/devProxy.ts), as Show's. Absent: a loopback url is refused. */
+  dev?: (port: number) => Promise<{ origin: string } | { error: string }>;
 };
+
+const PAGE_DO = ["back", "forward", "reload", "browser"];
+const httpUrl = (v: unknown): v is string => typeof v === "string" && /^https?:\/\/\S+$/i.test(v.trim());
 
 function parseOps(a: Record<string, unknown>): Op[] | string {
   const list = Array.isArray(a.ops) ? (a.ops as unknown[]) : a.action !== undefined ? [a] : [];
@@ -31,13 +38,30 @@ function parseOps(a: Record<string, unknown>): Op[] | string {
     if (action === "get") continue;
     if (!(OPS as readonly string[]).includes(action)) return `Unknown layout action "${action}". Use get or one of: ${OPS.join(", ")}.`;
     const op: Op = { op: action };
-    if (action === "closePane" || action === "openInPane") {
-      if (o.pane !== "left" && o.pane !== "right") return `${action} needs pane: "left" or "right".`;
-      op.pane = o.pane;
+    // pane: needed to put a file in a pane; left out of a page (in place of the active pane's), of a closePane with no
+    // split (the one file or page) and of webPage (the active pane's page).
+    if (action === "closePane" || action === "openInPane" || action === "webPage") {
+      if (o.pane !== undefined && o.pane !== "left" && o.pane !== "right") return `${action}: pane is "left" or "right".`;
+      if (o.pane !== undefined) op.pane = o.pane;
     }
     if (action === "openInPane") {
-      if (typeof o.path !== "string" || !o.path.trim()) return "openInPane needs a vault-relative path.";
-      op.path = o.path.trim();
+      if (o.url !== undefined) {
+        if (o.path !== undefined) return "openInPane takes path (a vault file) or url (a web page), not both.";
+        if (!httpUrl(o.url)) return "openInPane's url is an http(s) address.";
+        op.url = o.url.trim();
+      } else {
+        if (typeof o.path !== "string" || !o.path.trim()) return "openInPane needs path (vault-relative) or url (a web page).";
+        if (op.pane === undefined) return 'openInPane of a file needs pane: "left" or "right".';
+        op.path = o.path.trim();
+      }
+    }
+    if (action === "webPage") {
+      if (!PAGE_DO.includes(String(o.do))) return `webPage needs do: ${PAGE_DO.join(", ")}.`;
+      op.do = o.do;
+      if (o.url !== undefined) {
+        if (o.do !== "browser" || !httpUrl(o.url)) return "webPage's url (an http(s) address) goes with do: browser.";
+        op.url = o.url.trim();
+      }
     }
     if (action === "split" || action === "fullscreenChat") {
       if (typeof o.on !== "boolean") return `${action} needs on: true or false.`;
@@ -128,9 +152,18 @@ export async function layoutTool(d: LayoutDeps, args: Record<string, unknown>): 
   // The panes show the vault the laptop has open (the one truth: server/deviceLink.ts laptopElsewhere). A path that is
   // a file there opens there; one only in this chat's vault would open the wrong file, so Show (which switches) does it.
   const elsewhere = laptopElsewhere(d.vault);
-  const foreign = elsewhere ? ops.filter((o) => o.op === "openInPane" && !existsSync(join(elsewhere, String(o.path)))) : [];
+  const foreign = elsewhere ? ops.filter((o) => o.op === "openInPane" && typeof o.path === "string" && !existsSync(join(elsewhere, String(o.path)))) : [];
   if (elsewhere && foreign.length) {
     return { ok: false, text: `The laptop app has the vault ${vaultName(elsewhere)} open, and ${foreign.map((o) => o.path).join(", ")} is not a file there (its panes open that vault's files). Nothing was changed. To put this chat's file in a pane, use Show {path, where: "laptop", pane}: it switches the app to this chat's vault (${vaultName(d.vault)}) first.` };
+  }
+  // A dev server on the box (http://localhost:<port>/…): through the box's proxy, as Show opens it.
+  for (const op of ops) {
+    const loop = op.op === "openInPane" && typeof op.url === "string" ? loopbackUrl(op.url) : null;
+    if (!loop) continue;
+    if (!d.dev) return { ok: false, text: "A localhost address is a dev server on the box, and it can't be opened on the laptop here (no proxy in this server). Nothing was changed." };
+    const r = await d.dev(loop.port);
+    if ("error" in r) return { ok: false, text: `Not opened: ${r.error} Nothing was changed.` };
+    op.url = r.origin + loop.path;
   }
   const ms = d.ackMs ?? 25_000;
   // In order: each openChat through the chat list, the layout ops between them in one layout request; the last request

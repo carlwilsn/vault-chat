@@ -155,7 +155,7 @@ export const SHOW_DESCRIPTION =
   "The place, by file type (one of them): PDF: page (1-based, as PdfRead/PdfPages count) or text (the first page with that phrase). " +
   "Markdown: line (a source line, as read numbers them), heading (its text or slug) or text. Code/plain text: line, or line + endLine (the range is highlighted). " +
   "HTML: anchor (an element id), heading or text. Notebook (.ipynb): cell (1-based) or text. Image: none. " +
-  'A dev server you started with StartJob (vite, a web app): url "http://localhost:5173" (or port: 5173) opens it live on his laptop through the box (only ports a StartJob job listens on; hot reload works). ' +
+  'A web page opens in his laptop\'s viewer (in a pane with pane; its title row has Back, Forward, Reload, Open in browser): url "https://…" a public site, or url "http://localhost:5173" (or port: 5173) a dev server you started with StartJob, through the box (only ports a StartJob job listens on; hot reload works). ' +
   "The result is the confirmed outcome (the place it landed, or why not, with the valid range or nearest headings) — never assume it opened.";
 
 export const SHOW_SCHEMA = {
@@ -163,10 +163,10 @@ export const SHOW_SCHEMA = {
   properties: {
     path: { type: "string", description: "A file in the vault (vault-relative), or an absolute path inside any registered vault." },
     vault: { type: "string", description: "Laptop only: the registered vault the path is in, by name (e.g. \"vault-chat\"); the laptop switches its workspace to it. Left out: this conversation's vault (or the vault an absolute path is inside)." },
-    url: { type: "string", description: "A web address (the laptop's browser). http://localhost:<port>/… is a dev server you started with StartJob, opened through the box." },
+    url: { type: "string", description: "A web address, opened in the laptop's viewer. http://localhost:<port>/… is a dev server you started with StartJob, opened through the box." },
     port: { type: "number", description: "A dev server's port on the box (one a StartJob job listens on): the same as url http://localhost:<port>/." },
     where: { type: "string", enum: ["laptop", "here"] },
-    pane: { type: "string", enum: ["left", "right"], description: 'Laptop only: the split-screen pane to open it in (split turns on). Omitted: the active pane, as before.' },
+    pane: { type: "string", enum: ["left", "right"], description: 'Laptop only: the split-screen pane to open the file or page in (split turns on). Omitted: the active pane, as before.' },
     page: { type: "number" },
     line: { type: "number" },
     endLine: { type: "number" },
@@ -217,7 +217,6 @@ async function run(d: ShowDeps, a: Record<string, unknown>): Promise<ShowResult>
     const p = typeof a.pane === "string" ? a.pane.trim().toLowerCase() : "";
     if (p !== "left" && p !== "right") return fail(`Error: pane is "left" or "right" (the laptop's split screen), not ${JSON.stringify(a.pane)}.`);
     if (where !== "laptop") return fail(`Error: pane is for the laptop's split screen; the ${DEVICE_NAME[where]}${because} has no panes. Leave pane out, or pass where: "laptop".`);
-    if (url) return fail("Error: a web address opens in the browser, not in a pane; pane is for a vault file.");
     pane = p;
   }
 
@@ -230,14 +229,14 @@ async function run(d: ShowDeps, a: Record<string, unknown>): Promise<ShowResult>
     if ("error" in r) return fail(`Not shown: ${r.error}`, where);
     const shown = r.origin + loop.path;
     const local = url || `http://localhost:${loop.port}/`;
-    return toClient(d, where, { url: shown, local }, `${local} (as ${shown}, through the box)`, because);
+    return toClient(d, where, { url: shown, local, ...(pane ? { pane } : {}) }, `${local} (as ${shown}, through the box)`, because);
   }
 
   if (!rawPath && !url) return fail("Error: Show needs a path (a vault file) or a url.");
   if (url) {
     if (!/^https?:\/\//i.test(url)) return fail("Error: url must start with http:// or https://.");
     if (hasTarget(target)) return fail("Error: a web address takes no place in it (page, line, heading…); open it, then say where to look.");
-    return toClient(d, where, { url }, url, because);
+    return toClient(d, where, { url, ...(pane ? { pane } : {}) }, url, because);
   }
 
   // A vault file: in this conversation's vault, or (vault, or an absolute path) another registered one.
@@ -301,6 +300,6 @@ async function toClient(d: ShowDeps, where: Device, payload: Record<string, unkn
   // An app from before panes opens it in the active pane and does not say a pane: say so, never claim the split.
   // Another vault: an app from before `vault` opens the path in whatever vault it has open; never claim the switch.
   if (payload.vault && ack.vault !== payload.vault) return fail(`The ${dev} app is older and cannot switch vaults from Show: it did not confirm opening ${payload.path} in the vault ${payload.vault} (it said: ${ack.landed ?? "nothing"}). Switch its workspace with PluginAct app/vaults open {name: "${payload.vault}"}, then Show the path without vault.`, where);
-  const paneNote = payload.pane && ack.pane !== payload.pane ? ` (this laptop app is older and has no pane control: it opened in the active pane, not the ${payload.pane} pane — Carl can drag it to that side, or update the app)` : "";
+  const paneNote = payload.pane && ack.pane !== payload.pane ? (payload.url ? " (this laptop app is older: it opened the page in the browser, not in a pane)" : ` (this laptop app is older and has no pane control: it opened in the active pane, not the ${payload.pane} pane — Carl can drag it to that side, or update the app)`) : "";
   return { ok: true, where, text: `Shown on the ${dev}${because}: ${ack.landed ?? what}${paneNote}.` };
 }

@@ -229,6 +229,44 @@ export const visualScenarios: Scenario[] = [
     surfaces: ["desktop"],
   },
   {
+    id: "web-pane",
+    title: "Web page in a viewer pane — the agent's dev server beside a public page (a native browser view over each pane on the laptop)",
+    group: "Viewer",
+    notes:
+      "box:workspace openInPane {url} / Show {url, pane}: a pane holds a web page. Left: a dev server through the box (https on its tailnet name, web_embed_open_dev); right: a public page (web_embed_open). Each pane's title row: Back, Forward, Reload, title · host, Browser, Close. In the preview the native view is the dashed stand-in at the exact bounds the pane sends.",
+    build: (ctx: BuildCtx) => {
+      ctx.write("notes.md", "# Notes\n\nA file, replaced by the dev server.\n");
+    },
+    open: [
+      { file: "notes.md" },
+      { run: async () => {
+        const { applyLayoutOps } = await import(/* @vite-ignore */ "/src/layoutOps.ts");
+        const io = { openInPane: async () => ({ ok: false, error: "files are not opened here" }) };
+        await applyLayoutOps([{ op: "openInPane", url: "https://thinkbox.tail1234.ts.net:1560/after/?scenario=compact" }, { op: "openInPane", url: "https://www.geoffreylitt.com/2023/03/25/llm-end-user-programming.html", pane: "right" }], io);
+      } },
+      { wait: '[data-el="web-pane-bar"]' },
+      { sleep: 1200 },
+    ],
+    surfaces: ["desktop"],
+  },
+  {
+    id: "web-pane-link",
+    title: "Web page in a viewer pane — an address no view may show (a LAN host): the pane says why and links to it",
+    group: "Viewer",
+    notes: "A pane whose address is neither public nor the box's dev origin gets no native view: the reason and a link that opens the browser (box:workspace webPage {do: browser}).",
+    build: (ctx: BuildCtx) => {
+      ctx.write("notes.md", "# Notes\n");
+    },
+    open: [
+      { run: async () => {
+        const { openWebInPane } = await import(/* @vite-ignore */ "/src/webPane.ts");
+        openWebInPane("http://192.168.1.20:8080/admin");
+      } },
+      { wait: '[data-el="web-pane-link"]' },
+    ],
+    surfaces: ["desktop"],
+  },
+  {
     id: "page-theme",
     title: "Page theme — a vault .html follows the app's theme live (--vc-* variables); the newest embed of a file is the live one",
     group: "Chat",

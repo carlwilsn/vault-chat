@@ -142,9 +142,84 @@ test("panels and full-screen chat: several ops at once, each reported, the final
   assert.equal(l.chatFullscreen, false);
 });
 
+test("a pane holds a web page: opened, read back with its address and title, navigated, driven, closed", async () => {
+  const { registerWebPane, paneKey, boxDevUrl, embedKind } = await import("../../src/webPane.ts");
+  const { show } = await import("../../server/show.ts");
+  await Layout({ action: "split", on: false });
+  useStore.setState({ currentFile: null, currentContent: "", panes: [], activePaneId: null, splitDirection: null });
+  // In place of the active pane's (nothing open: alone).
+  let r = await Layout({ action: "openInPane", url: "https://example.com/a" });
+  assert.equal(r.ok, true, r.text);
+  let l = layoutOf(r.text);
+  assert.deepEqual(l.panes, [{ side: "single", url: "https://example.com/a", active: true }]);
+  assert.equal(l.currentUrl, "https://example.com/a");
+  assert.equal(l.currentFile, null, "a page is not a file");
+  // Its title, once the page says it.
+  S().setWebTitle("https://example.com/a", "Example A");
+  l = layoutOf((await Layout({ action: "get" })).text);
+  assert.equal(l.panes[0].title, "Example A");
+  // A file beside it: the split, as for two files.
+  r = await Layout({ action: "openInPane", path: "a.md", pane: "left" });
+  l = layoutOf(r.text);
+  assert.deepEqual(l.panes.map((p: any) => [p.side, p.file ?? p.url]), [["left", "a.md"], ["right", "https://example.com/a"]]);
+  // The page's buttons: refused on a file, honest when no live view is behind them, run when one is.
+  r = await Layout({ action: "webPage", do: "back" });
+  assert.equal(r.ok, false);
+  assert.match(r.text, /shows a file, not a web page/);
+  r = await Layout({ action: "webPage", do: "reload", pane: "right" });
+  assert.equal(r.ok, false);
+  assert.match(r.text, /a link here, not a live view/);
+  const right = S().panes[1]!.id;
+  const did: string[] = [];
+  const off = registerWebPane(paneKey(right), { live: true, act: async (w, u) => void did.push(u ? `${w} ${u}` : w) });
+  r = await Layout({ ops: [{ action: "webPage", do: "back", pane: "right" }, { action: "webPage", do: "browser", pane: "right", url: "https://example.org/x" }] });
+  assert.equal(r.ok, true, r.text);
+  assert.deepEqual(did, ["back", "browser https://example.org/x"]);
+  off();
+  // Carl follows a link in the page: the pane's address is where he is now.
+  S().setPaneFile(right, "https://example.com/b", "");
+  l = layoutOf((await Layout({ action: "get" })).text);
+  assert.equal(l.panes[1].url, "https://example.com/b");
+  assert.equal(l.panes[1].title, undefined, "the old page's title is not the new one's");
+  // The agent sends the same pane elsewhere.
+  r = await Layout({ action: "openInPane", url: "https://example.com/c", pane: "right" });
+  assert.equal(layoutOf(r.text).panes[1].url, "https://example.com/c");
+  // Show {url, pane} opens it in the viewer, not the browser.
+  const sh = await show({ vault, device: "laptop", emit, ackMs: { laptop: 5000 } }, { url: "https://example.net/", where: "laptop", pane: "left" });
+  assert.equal(sh.ok, true, sh.text);
+  assert.match(sh.text, /in the left pane/);
+  assert.equal(S().panes[0]!.file, "https://example.net/");
+  // Closed: back to one; with no split, closePane with no pane closes the one page.
+  r = await Layout({ action: "closePane", pane: "left" });
+  assert.deepEqual(layoutOf(r.text).panes, [{ side: "single", url: "https://example.com/c", active: true }]);
+  r = await Layout({ action: "closePane" });
+  assert.equal(r.ok, true, r.text);
+  assert.deepEqual(layoutOf(r.text).panes, []);
+  // A dev server: localhost goes through the box's proxy (as Show's), never as localhost.
+  const n = sent.length;
+  r = await Layout({ action: "openInPane", url: "http://localhost:1560/after/" });
+  assert.equal(r.ok, false);
+  assert.match(r.text, /no proxy/);
+  assert.equal(sent.length, n, "refused before anything was sent");
+  r = await layoutTool({ vault, emit, ackMs: 5000, dev: async (port) => ({ origin: `https://box.tail1.ts.net:${port}` }) }, { action: "openInPane", url: "http://localhost:1560/after/?scenario=x" });
+  assert.equal(r.ok, true, r.text);
+  assert.equal(S().currentFile, "https://box.tail1.ts.net:1560/after/?scenario=x");
+  // Which addresses get a live view: public pages and the box's dev origin; the rest a link with why.
+  assert.equal(boxDevUrl("https://box.tail1.ts.net:1560/"), true);
+  assert.equal(boxDevUrl("http://box.tail1.ts.net:1560/"), false);
+  assert.deepEqual(embedKind("https://example.com/"), { kind: "public" });
+  assert.deepEqual(embedKind("https://box.tail1.ts.net:1560/"), { kind: "dev" });
+  assert.ok("link" in embedKind("http://192.168.1.4/"));
+  // Bad input.
+  assert.match((await Layout({ action: "openInPane", url: "ftp://x" })).text, /http\(s\) address/);
+  assert.match((await Layout({ action: "openInPane", url: "https://x.com", path: "a.md" })).text, /not both/);
+  assert.match((await Layout({ action: "webPage", do: "dance" })).text, /needs do/);
+  await Layout({ action: "closePane" });
+});
+
 test("bad input is refused before anything is sent; an offline laptop is said honestly", async () => {
   const n = sent.length;
-  assert.match((await Layout({ action: "closePane" })).text, /needs pane/);
+  assert.match((await Layout({ action: "openInPane", path: "a.md" })).text, /needs pane/);
   assert.match((await Layout({ action: "dance" })).text, /Unknown layout action/);
   assert.match((await Layout({})).text, /needs action/);
   assert.equal(sent.length, n);
