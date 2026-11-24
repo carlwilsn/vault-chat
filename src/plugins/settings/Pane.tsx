@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, X, Plus } from "lucide-react";
 import { useStore, type Theme } from "../../store";
-import { Button, Input, MenuSelect } from "../../ui";
+import { Button, Input } from "../../ui";
 import { cleanKeyName } from "../../keychain";
 import {
   readBoxConfig,
@@ -25,7 +25,7 @@ import { disconnectFromBox, syncBoxNow, syncWithBox } from "../../settingsBox";
 import { MasterSection } from "../../MasterSection";
 import { Picker, type PickOption } from "../../SearchPicker";
 
-// The Claude sign-in on one line at the top, then the sections: Keys, vault-chat folder, Box, Appearance. No shortcut
+// The Claude sign-in on one line at the top, then the sections: Appearance, Keys, vault-chat folder, Box. No shortcut
 // sheet: Carl asks the agent (app/settings' state shortcuts). There is no voice section: the core voice is local (Kokoro, af_heart) with nothing to
 // pick, and the ElevenLabs voice is box:settings' voice (the ElevenLabs voice plugin draws nothing).
 //
@@ -52,10 +52,10 @@ const Divider = () => <div className="h-px bg-border" />;
 /** The pane's sections, top to bottom (data-settings on each: the offers' scrollTo finds them by it). */
 export const SETTINGS_SECTIONS: readonly { id: string; title: string }[] = [
   { id: "account", title: "Claude sign-in" },
+  { id: "appearance", title: "Appearance" },
   { id: "keys", title: "Keys" },
   { id: "master", title: "vault-chat folder" },
   { id: "box", title: "Box" },
-  { id: "appearance", title: "Appearance" },
 ];
 
 export function Pane() {
@@ -73,6 +73,10 @@ export function Pane() {
           <ClaudeAccountLine />
         </div>
         <Divider />
+        <div data-settings="appearance">
+          <AppearanceSection />
+        </div>
+        <Divider />
         <div data-settings="keys">
           <KeysSection />
         </div>
@@ -80,10 +84,6 @@ export function Pane() {
         <MasterSection />
         <Divider />
         <BoxSection />
-        <Divider />
-        <div data-settings="appearance">
-          <AppearanceSection />
-        </div>
       </div>
     </div>
   );
@@ -194,6 +194,14 @@ function KeysSection() {
 
 // ---- Appearance --------------------------------------------------------------
 
+// Each theme's own tokens (src/App.css :root, [data-theme="light"], [data-theme="contrast"]): a tile is a small
+// picture of the app in it, so the pick needs no menu (Carl: the dropdown opened past the bottom of the pane).
+const THEME_TILES: { value: Theme; label: string; bg: string; card: string; fg: string; muted: string; border: string }[] = [
+  { value: "graphite", label: "Graphite", bg: "hsl(0 0% 10%)", card: "hsl(0 0% 13%)", fg: "hsl(0 0% 92%)", muted: "hsl(0 0% 60%)", border: "hsl(0 0% 22%)" },
+  { value: "light", label: "Light", bg: "hsl(0 0% 98%)", card: "hsl(0 0% 100%)", fg: "hsl(0 0% 12%)", muted: "hsl(0 0% 42%)", border: "hsl(0 0% 88%)" },
+  { value: "contrast", label: "High contrast", bg: "hsl(0 0% 0%)", card: "hsl(0 0% 0%)", fg: "hsl(0 0% 100%)", muted: "hsl(0 0% 81.6%)", border: "hsl(0 0% 100%)" },
+];
+
 function AppearanceSection() {
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
@@ -202,22 +210,44 @@ function AppearanceSection() {
   return (
     <section className="space-y-2">
       <SectionHead title="Appearance" />
-      <MenuSelect
-        value={theme}
-        onChange={(v) => {
-          setRefused(null);
-          void setTheme(v as Theme).then(setRefused);
-        }}
-        groups={[
-          {
-            options: [
-              { value: "graphite", label: "Graphite (default)" },
-              { value: "light", label: "Light" },
-              { value: "contrast", label: "High contrast" },
-            ],
-          },
-        ]}
-      />
+      <div className="flex gap-3" data-el="theme-tiles">
+        {THEME_TILES.map((t) => {
+          const on = theme === t.value;
+          return (
+            <button
+              key={t.value}
+              data-offer="box:settings.set"
+              data-theme-tile={t.value}
+              aria-pressed={on}
+              onClick={() => {
+                setRefused(null);
+                void setTheme(t.value).then(setRefused);
+              }}
+              className="group flex flex-col items-center gap-1.5"
+            >
+              <span
+                className={`block h-[52px] w-[84px] overflow-hidden rounded-md ring-offset-2 ring-offset-card ${on ? "ring-2 ring-foreground/80" : "ring-1 ring-border group-hover:ring-muted-foreground"}`}
+                style={{ background: t.bg }}
+              >
+                <span className="flex h-full">
+                  <span className="block h-full w-[22px]" style={{ background: t.card, borderRight: `1px solid ${t.border}` }}>
+                    <span className="mx-[4px] mt-[7px] block h-[2px] rounded-full" style={{ background: t.muted }} />
+                    <span className="mx-[4px] mt-[4px] block h-[2px] rounded-full" style={{ background: t.muted }} />
+                    <span className="mx-[4px] mt-[4px] block h-[2px] w-[8px] rounded-full" style={{ background: t.muted }} />
+                  </span>
+                  <span className="block flex-1 px-[6px] pt-[7px]">
+                    <span className="block h-[3px] w-[28px] rounded-full" style={{ background: t.fg }} />
+                    <span className="mt-[5px] block h-[2px] w-[44px] rounded-full" style={{ background: t.muted }} />
+                    <span className="mt-[3px] block h-[2px] w-[36px] rounded-full" style={{ background: t.muted }} />
+                    <span className="mt-[3px] block h-[2px] w-[40px] rounded-full" style={{ background: t.muted }} />
+                  </span>
+                </span>
+              </span>
+              <span className={`text-[11px] ${on ? "text-foreground" : "text-muted-foreground group-hover:text-foreground"}`}>{t.label}</span>
+            </button>
+          );
+        })}
+      </div>
       {refused && <p className="text-[11px] text-destructive">{refused}</p>}
     </section>
   );
@@ -263,7 +293,6 @@ function BoxSection() {
         ) : (
           <BoxConnect vault={vaultPath} onConnected={() => void changed(true)} />
         ))}
-      <PhoneLink box={box ?? null} />
     </section>
   );
 }
@@ -450,8 +479,9 @@ function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => 
   );
 }
 
-// Read-only status of the box sync, plus "Sync now". Everything here comes
-// from the last cycle's report (src-tauri/src/box_sync.rs).
+// The box sync in two lines: its status with "Sync now", then the GitHub backup. Problems show only when they
+// happen, in plain words below. Everything comes from the last cycle's report (src/boxSync/cycle.ts); the agent
+// reads the same through app/settings (src/settingsBox.ts).
 function BoxSyncPanel({ box, onDisconnected }: { vault: string; box: BoxConfig; onDisconnected: () => void }) {
   const [st, setSt] = useState<BoxSyncState | null>(null);
   const [busy, setBusy] = useState(false);
@@ -481,18 +511,8 @@ function BoxSyncPanel({ box, onDisconnected }: { vault: string; box: BoxConfig; 
   const ago = (t: number | null | undefined) => {
     if (!t) return "never";
     const s = Math.max(0, Math.round((Date.now() - t) / 1000));
-    return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : new Date(t).toLocaleString();
+    return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : new Date(t).toLocaleString();
   };
-  const row = (label: string, value: React.ReactNode, tone?: "warn" | "bad") => (
-    <div className="flex items-start gap-3 text-[11.5px]">
-      <span className="w-28 shrink-0 text-muted-foreground">{label}</span>
-      <span
-        className={`min-w-0 break-words ${tone === "bad" ? "text-destructive" : tone === "warn" ? "text-amber-500" : "text-foreground/90"}`}
-      >
-        {value}
-      </span>
-    </div>
-  );
   const syncNow = async () => {
     setBusy(true);
     try {
@@ -501,70 +521,85 @@ function BoxSyncPanel({ box, onDisconnected }: { vault: string; box: BoxConfig; 
       setBusy(false);
     }
   };
+  const syncing = busy || (!!st?.running && !r);
+  const failRed = st?.attention?.level === "red";
+  const [dot, status] = r?.conflict
+    ? ["bg-amber-500", `Sync paused · last synced ${ago(st?.lastOkAt)}`]
+    : r?.error
+      ? [failRed ? "bg-destructive" : "bg-amber-500", `Sync failed · last good ${ago(st?.lastOkAt)}`]
+      : syncing
+        ? ["bg-muted-foreground/50 animate-pulse", "Syncing…"]
+        : st?.lastOkAt
+          ? ["bg-emerald-500", `Synced with ${boxName(box)} · ${ago(st.lastOkAt)}`]
+          : ["bg-muted-foreground/40", `Not synced with ${boxName(box)} yet`];
+  const backup = gh
+    ? gh.line
+    : r?.github_uploading
+      ? `Uploading to GitHub…${r.github_pending ? ` (${r.github_pending} change${r.github_pending === 1 ? "" : "s"} to go)` : ""}`
+      : r?.github_pushed_at
+        ? `Backed up to GitHub ${ago(r.github_pushed_at)}`
+        : null;
+  const bigStuck = !!r && !!r.big_upload_error && r.big_files.length > 0;
+  const problems = !!(r?.conflict || r?.error || bigStuck || gh || keyFail || discError);
   return (
-    <div className="space-y-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-2">
-      {row("Box", <span className="font-mono text-[11px]">{`${box.box}/git/${box.vault}.git`}</span>)}
-      {row(
-        "Last sync",
-        st?.running && !r ? "syncing…" : r?.error ? `failed · last good ${ago(st?.lastOkAt)}` : ago(st?.lastOkAt),
-        r?.error ? (st?.attention?.level === "red" ? "bad" : "warn") : undefined,
-      )}
-      {r && row("Waiting for box", `${r.changes_waiting} commit${r.changes_waiting === 1 ? "" : "s"}`)}
-      {r?.conflict &&
-        row(
-          "Merge gate",
-          `closed since ${new Date(r.conflict.since).toLocaleString()}: ${r.conflict.files.join(", ")}. Ask the agent: resolve the sync conflict.`,
-          "warn",
-        )}
-      {r && !r.conflict && row("Merge gate", "open")}
-      {r && r.big_upload_error && r.big_files.length > 0 &&
-        row(
-          "Not on the box yet",
-          r.big_files.map((b) => `${b.path} (${fmtSize(b.size)})`).join(", ") + " — over 50 MB; sending failed, retried every sync",
-          "warn",
-        )}
-      {r &&
-        row(
-          "GitHub backup",
-          gh
-            ? gh.line
-            : r.github_uploading
-              ? `uploading…${r.github_pending ? ` (${r.github_pending} commit${r.github_pending === 1 ? "" : "s"} to go)` : ""}`
-              : r.github_pushed_at
-                ? ago(r.github_pushed_at)
-                : "no github remote, or not yet",
-          gh ? "warn" : undefined,
-        )}
-      {gh && <div className="text-[11.5px] leading-relaxed text-foreground/90 pt-0.5">{gh.detail}</div>}
-      {r?.error && (
-        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-relaxed text-muted-foreground pt-1">
-          {r.error}
-        </pre>
-      )}
-      {r?.github_warning && (
-        <details className="text-[10.5px] text-muted-foreground">
-          <summary className="cursor-pointer select-none">What git said</summary>
-          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono leading-relaxed pt-1">{r.github_warning}</pre>
-        </details>
-      )}
-      <div className="pt-1 flex items-center gap-2">
+    <div className="space-y-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-2" data-el="box-sync">
+      <div className="flex items-center gap-2 text-[11.5px]">
+        <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
+        <span className="min-w-0 flex-1 truncate text-foreground/90" data-el="box-sync-status">{status}</span>
         <button data-offer="app/settings.syncBoxNow"
           onClick={syncNow}
           disabled={busy || !!st?.running}
-          className="text-[10.5px] text-muted-foreground hover:text-foreground underline disabled:opacity-40 disabled:cursor-not-allowed"
+          className="shrink-0 text-[10.5px] text-muted-foreground hover:text-foreground underline disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {busy || st?.running ? "syncing…" : "sync now"}
-        </button>
-        <span className="text-[10.5px] text-muted-foreground/70">·</span>
-        <button data-offer="app/settings.disconnectBox"
-          onClick={() => setConfirming(true)}
-          disabled={busy}
-          className="text-[10.5px] text-muted-foreground hover:text-foreground underline disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          disconnect
+          Sync now
         </button>
       </div>
-      {confirming && (
+      {backup && (
+        <p className={`pl-3.5 text-[11px] ${gh ? "text-amber-500/90" : "text-muted-foreground"}`} data-el="box-sync-backup">
+          {backup}
+        </p>
+      )}
+      {problems && (
+        <div className="space-y-1.5 rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[11px] leading-relaxed text-foreground/90" data-el="box-sync-problems">
+          {r?.conflict && (
+            <p>
+              The same files changed here and on {boxName(box)}: {r.conflict.files.join(", ")}. Sync waits until that is sorted out. Ask the agent
+              to resolve the sync conflict.
+            </p>
+          )}
+          {r?.error && (
+            <details>
+              <summary className="cursor-pointer select-none">The last sync with {boxName(box)} failed. It tries again by itself.</summary>
+              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-relaxed text-muted-foreground pt-1">{r.error}</pre>
+            </details>
+          )}
+          {bigStuck && (
+            <p>
+              Not on {boxName(box)} yet (over 50 MB, sending failed; it retries every sync):{" "}
+              {r!.big_files.map((b) => `${b.path} (${fmtSize(b.size)})`).join(", ")}
+            </p>
+          )}
+          {gh && (
+            <>
+              <p>{gh.detail}</p>
+              <details className="text-[10.5px] text-muted-foreground">
+                <summary className="cursor-pointer select-none">What git said</summary>
+                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono leading-relaxed pt-1">{r!.github_warning}</pre>
+              </details>
+            </>
+          )}
+          {keyFail && (
+            <p className="break-words">
+              Your keys didn't reach {boxName(box)}: {keyFail}
+              <button data-offer-exempt="pushes this laptop's keys to the box again: keys are secrets" onClick={() => void pushKeysToBox(box.box)} className="ml-1.5 underline hover:text-foreground">
+                Retry
+              </button>
+            </p>
+          )}
+          {discError && <p className="text-destructive">{discError}</p>}
+        </div>
+      )}
+      {confirming ? (
         <div className="space-y-1.5 pt-1">
           <p className="text-[11px] text-foreground/90">
             Disconnect {boxName(box)}? Chat goes back to running on this laptop. {boxName(box)} keeps its copy of this vault.
@@ -578,47 +613,14 @@ function BoxSyncPanel({ box, onDisconnected }: { vault: string; box: BoxConfig; 
             </Button>
           </div>
         </div>
-      )}
-      {discError && <p className="text-[11px] text-destructive">{discError}</p>}
-      {keyFail && (
-        <p className="text-[11px] text-amber-500/90 break-words pt-1">
-          Your keys didn't reach {boxName(box)}: {keyFail}
-          <button data-offer-exempt="pushes this laptop's keys to the box again: keys are secrets" onClick={() => void pushKeysToBox(box.box)} className="ml-1.5 underline hover:text-foreground">
-            Retry
-          </button>
-        </p>
-      )}
-    </div>
-  );
-}
-
-/** The phone app's one home is the box (always on): its fixed https link, no
- *  token — the box knows the phone by its Tailscale login. */
-function PhoneLink({ box }: { box: BoxConfig | null }) {
-  const [copied, setCopied] = useState<"phone" | null>(null);
-  const link = box ? `${box.box.replace(/\/+$/, "")}/phone` : null;
-  return (
-    <div className="space-y-1.5">
-      <h4 className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/70">Phone</h4>
-      {link ? (
-        <>
-          <div className="flex items-center gap-2">
-            <code className="text-[11px] font-mono bg-muted px-2 py-1 rounded truncate flex-1 min-w-0">{link}</code>
-            <button data-offer-exempt="copies the phone's link to this laptop's clipboard (the link is the box's, box:links shows the phone)"
-              className="text-[11px] px-2.5 py-1 rounded border border-border hover:bg-muted shrink-0"
-              onClick={() => {
-                void navigator.clipboard?.writeText(link);
-                setCopied("phone");
-                setTimeout(() => setCopied(null), 1500);
-              }}
-            >
-              {copied === "phone" ? "copied" : "copy"}
-            </button>
-          </div>
-          <p className="text-[11px] text-muted-foreground/70">Open it on your phone (signed in to Tailscale) and add it to the Home Screen.</p>
-        </>
       ) : (
-        <p className="text-[11px] text-muted-foreground/70">The phone app runs on a box — connect one above.</p>
+        <button data-offer="app/settings.disconnectBox"
+          onClick={() => setConfirming(true)}
+          disabled={busy}
+          className="pl-3.5 text-[10.5px] text-muted-foreground/70 hover:text-foreground underline disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          disconnect
+        </button>
       )}
     </div>
   );

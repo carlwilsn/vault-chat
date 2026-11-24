@@ -78,7 +78,7 @@ export function settingsOffers(emit: (event: string, data?: unknown) => void = (
         read: () => boxStatusNow(),
       },
       folder: {
-        description: "Settings → vault-chat folder: path (the laptop's), boxFolder, repos (kind vault | project, name, onBox).",
+        description: "The vault-chat folder (Settings shows only its path): path (the laptop's), boxFolder, repos (kind vault | project, name, onBox).",
         read: () => folderNow(),
       },
     },

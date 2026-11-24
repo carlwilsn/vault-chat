@@ -130,5 +130,4 @@ export const EXEMPT_REASONS: readonly string[] = [
   "a markdown checkbox's rendering (a GFM task box): ticking writes the file, which the agent edits as a file",
   "a markdown checkbox (a GFM task box): ticking writes the file, which the agent edits as a file",
   "a menu's container: it only keeps a click from reaching the tree (its items name their offers)",
-  "copies the phone's link to this laptop's clipboard (the link is the box's, box:links shows the phone)",
 ];

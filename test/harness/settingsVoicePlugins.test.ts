@@ -122,7 +122,7 @@ test("Settings: mounted through the host it draws the pane and offers its state;
   assert.equal(r.state.shortcuts.length, SHORTCUTS.length);
   assert.ok(r.state.shortcuts.some((s: any) => s.id === "view.files" && s.label && s.keys.length), "view.files listed with its keys");
   assert.ok(!r.state.shortcuts.some((s: any) => s.id === "view.shortcuts"), "no sheet entry");
-  assert.equal(r.state.sections[3].id, "box");
+  assert.equal(r.state.sections[4].id, "box");
   // No voice section: the core voice is local with nothing to pick; the ElevenLabs picker is app/elevenlabs-voice's.
   assert.ok(!r.state.sections.some((s: any) => s.id === "voice"), "no voice section");
   assert.equal((host as any).querySelector('[data-settings="voice"]'), null);
