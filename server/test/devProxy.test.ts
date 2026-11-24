@@ -8,6 +8,7 @@ import { createServer, request, type IncomingMessage, type Server } from "node:h
 import { connect, type AddressInfo, type Socket } from "node:net";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { tmp, cleanup, makeVault } from "./helpers";
 
 const TOKEN = "test-token-not-a-secret-0123456789";
@@ -32,6 +33,13 @@ function fakeDev(): { server: Server; seen: IncomingMessage[] } {
   const seen: IncomingMessage[] = [];
   const server = createServer((req, res) => {
     seen.push(req);
+    if (req.url === "/page") {
+      // A page that refuses framing, compressed when the browser allows it.
+      const gz = String(req.headers["accept-encoding"] ?? "").includes("gzip");
+      const html = `<!doctype html><html><head><title>Dev</title></head><body><iframe src="/before/"></iframe></body></html>`;
+      res.writeHead(200, { "Content-Type": "text/html", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'", ETag: '"v1"', ...(gz ? { "Content-Encoding": "gzip" } : { "Content-Length": String(Buffer.byteLength(html)) }) });
+      return res.end(gz ? gzipSync(html) : html);
+    }
     if (req.url === "/redirect") {
       res.writeHead(302, { Location: `http://localhost:${(server.address() as AddressInfo).port}/landed` });
       return res.end();
@@ -130,6 +138,56 @@ describe("the proxy", () => {
     expect(byHeader.token).toBeNull();
     const byQuery = JSON.parse((await get(pPort, `/d?token=${TOKEN}&keep=2`, viaServe)).body);
     expect(byQuery.url).toBe("/d?keep=2");
+  });
+
+  it("lets the app frame a page (only the app), and tells the app where the framed page is", async () => {
+    const carl = { ...viaServe, "Tailscale-User-Login": "carl@example.com" };
+    const { APP_ORIGINS } = await import("../devProxy");
+    // The app's pane frame: framable by the app's origins only, the script in its head, unencoded, length right.
+    const framed = await get(pPort, "/page", { ...carl, "Sec-Fetch-Dest": "iframe", "Accept-Encoding": "gzip, br" });
+    expect(framed.status).toBe(200);
+    expect(framed.headers["x-frame-options"]).toBeUndefined();
+    const csp = ([] as string[]).concat(framed.headers["content-security-policy"] ?? []).join(", ");
+    expect(csp).toContain("default-src 'self'");
+    expect(csp).not.toContain("frame-ancestors 'none'");
+    expect(csp).toContain(`frame-ancestors 'self' ${APP_ORIGINS.join(" ")}`);
+    expect(framed.headers["content-encoding"]).toBeUndefined();
+    expect(framed.headers.etag).toBeUndefined();
+    expect(Number(framed.headers["content-length"])).toBe(Buffer.byteLength(framed.body));
+    expect(framed.body).toMatch(/^<!doctype html><html><head><script>\(function\(\)\{.*vcFrame.*<\/script><title>Dev<\/title>/s);
+    expect(framed.body).toContain(`<iframe src="/before/"></iframe>`);
+    // Opened on its own (a browser tab, a nested frame's fetch): untouched bytes, still framable only by the app.
+    const plain = await get(pPort, "/page", { ...carl, "Accept-Encoding": "gzip" });
+    expect(plain.headers["content-encoding"]).toBe("gzip");
+    expect(plain.headers["x-frame-options"]).toBeUndefined();
+    expect(([] as string[]).concat(plain.headers["content-security-policy"] ?? []).join(", ")).toContain("frame-ancestors 'self' http://tauri.localhost");
+    // Not HTML: passed on as it was.
+    const json = await get(pPort, "/x", { ...carl, "Sec-Fetch-Dest": "iframe" });
+    expect(JSON.parse(json.body).url).toBe("/x");
+  });
+
+  it("puts the frame script after <head>, else after <html> or the doctype, else first; it runs only when the app frames the page", async () => {
+    const { withFrameScript, frameScript } = await import("../devProxy");
+    const tag = frameScript();
+    expect(withFrameScript(`<!DOCTYPE html><html lang="en"><head data-x="1"><meta charset="utf-8">`)).toBe(`<!DOCTYPE html><html lang="en"><head data-x="1">${tag}<meta charset="utf-8">`);
+    expect(withFrameScript(`<!doctype html><html><body>x`)).toBe(`<!doctype html><html>${tag}<body>x`);
+    expect(withFrameScript(`<!doctype html><p>x`)).toBe(`<!doctype html>${tag}<p>x`);
+    expect(withFrameScript(`<p>x`)).toBe(`${tag}<p>x`);
+    // The script itself parses, and posts nothing from a top-level page or a frame the page nests.
+    const body = tag.replace(/^<script>|<\/script>$/g, "");
+    const posted: unknown[] = [];
+    const win = (top: unknown, parent: unknown) => ({ top, parent, location: { href: "https://box.ts.net:1/", ancestorOrigins: ["http://tauri.localhost"] }, document: { title: "T", querySelector: () => null }, history: { pushState() {}, replaceState() {} }, addEventListener() {} });
+    const app = { postMessage: (m: unknown, o: string) => posted.push([m, o]) };
+    const run = (w: any) => new Function("window", "location", "document", "history", "addEventListener", body)(w, w.location, w.document, w.history, w.addEventListener);
+    const alone: any = win(null, null);
+    alone.top = alone;
+    alone.parent = alone;
+    run(alone);
+    run(win(app, { postMessage: () => posted.push("nested") }));
+    expect(posted).toEqual([]);
+    const framedWin: any = win(app, app);
+    run(framedWin);
+    expect(posted).toEqual([[{ vcFrame: "at", url: "https://box.ts.net:1/", title: "T" }, "http://tauri.localhost"]]);
   });
 
   it("keeps a redirect to localhost on the proxied origin", async () => {

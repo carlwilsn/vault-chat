@@ -204,7 +204,7 @@ test("a pane holds a web page: opened, read back with its address and title, nav
   r = await layoutTool({ vault, emit, ackMs: 5000, dev: async (port) => ({ origin: `https://box.tail1.ts.net:${port}` }) }, { action: "openInPane", url: "http://localhost:1560/after/?scenario=x" });
   assert.equal(r.ok, true, r.text);
   assert.equal(S().currentFile, "https://box.tail1.ts.net:1560/after/?scenario=x");
-  // Which addresses get a live view: public pages and the box's dev origin; the rest a link with why.
+  // Which addresses show: public pages (the native view) and the box's dev origin (an iframe); the rest a link with why.
   assert.equal(boxDevUrl("https://box.tail1.ts.net:1560/"), true);
   assert.equal(boxDevUrl("http://box.tail1.ts.net:1560/"), false);
   assert.deepEqual(embedKind("https://example.com/"), { kind: "public" });
@@ -215,6 +215,38 @@ test("a pane holds a web page: opened, read back with its address and title, nav
   assert.match((await Layout({ action: "openInPane", url: "https://x.com", path: "a.md" })).text, /not both/);
   assert.match((await Layout({ action: "webPage", do: "dance" })).text, /needs do/);
   await Layout({ action: "closePane" });
+});
+
+test("a dev-server pane (an iframe) keeps its own history from where the page says it is", async () => {
+  const { frameHistory, frameArrived, frameStep } = await import("../../src/webPane.ts");
+  const D = "https://box.tail1.ts.net:1560";
+  let h = frameHistory(`${D}/a`);
+  // The page reports where it landed: the address the pane sent it to, or a redirect's end (replacing that entry).
+  h = frameArrived(h, `${D}/a`, true);
+  assert.deepEqual(h, { stack: [`${D}/a`], at: 0 });
+  h = frameArrived(h, `${D}/a/`, true);
+  assert.deepEqual(h, { stack: [`${D}/a/`], at: 0 });
+  // Carl follows two links: two entries.
+  h = frameArrived(h, `${D}/b`);
+  h = frameArrived(h, `${D}/c`);
+  assert.deepEqual(h, { stack: [`${D}/a/`, `${D}/b`, `${D}/c`], at: 2 });
+  // Back twice, forward once (the pane's buttons / webPage), and the end says so.
+  let s = frameStep(h, -1)!;
+  assert.equal(s.url, `${D}/b`);
+  s = frameStep(s.h, -1)!;
+  assert.equal(s.url, `${D}/a/`);
+  assert.equal(frameStep(s.h, -1), null, "nothing before the first page");
+  s = frameStep(s.h, 1)!;
+  assert.equal(s.url, `${D}/b`);
+  h = frameArrived(s.h, `${D}/b`, true);
+  assert.equal(h.at, 1, "the page arriving where it was sent changes nothing");
+  // The window's own Back (a mouse button) lands on the entry before: one step back, not a new entry.
+  h = frameArrived(h, `${D}/a/`);
+  assert.deepEqual(h, { stack: [`${D}/a/`, `${D}/b`, `${D}/c`], at: 0 });
+  // A new page from here drops what was ahead, as a browser does.
+  h = frameArrived(h, `${D}/d`);
+  assert.deepEqual(h, { stack: [`${D}/a/`, `${D}/d`], at: 1 });
+  assert.equal(frameStep(h, 1), null);
 });
 
 test("bad input is refused before anything is sent; an offline laptop is said honestly", async () => {

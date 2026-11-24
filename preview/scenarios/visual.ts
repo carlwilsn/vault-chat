@@ -230,10 +230,10 @@ export const visualScenarios: Scenario[] = [
   },
   {
     id: "web-pane",
-    title: "Web page in a viewer pane — the agent's dev server beside a public page (a native browser view over each pane on the laptop)",
+    title: "Web page in a viewer pane — the agent's dev server (an iframe in the app) beside a public page (a native browser view on the laptop)",
     group: "Viewer",
     notes:
-      "box:workspace openInPane {url} / Show {url, pane}: a pane holds a web page. Left: a dev server through the box (https on its tailnet name, web_embed_open_dev); right: a public page (web_embed_open). Each pane's title row: Back, Forward, Reload, title · host, Browser, Close. In the preview the native view is the dashed stand-in at the exact bounds the pane sends.",
+      "box:workspace openInPane {url} / Show {url, pane}: a pane holds a web page. Left: a dev server through the box (https on its tailnet name): an iframe in the app's page, so it moves and resizes with the app (the preview can't reach the box, so the frame stays blank); right: a public page (web_embed_open), the native view. Each pane's title row: Back, Forward, Reload, title · host, Browser, Close. In the preview the native view is the dashed stand-in at the exact bounds the pane sends.",
     build: (ctx: BuildCtx) => {
       ctx.write("notes.md", "# Notes\n\nA file, replaced by the dev server.\n");
     },

@@ -1,9 +1,11 @@
 // A viewer pane can hold a web page instead of a vault file: a public site, or the agent's dev server through the box
 // (server/devProxy.ts: https on the box's tailnet name). The pane's `file` (the store's panes / currentFile) is then
 // the page's http(s) address, so everything that already places, swaps, closes and reports panes (src/paneLayout.ts,
-// src/layoutOps.ts, the workspace noun) does it for pages too. The page is drawn by the desktop shell's native browser
-// view laid over the pane (src/plugins/viewer/WebPane.tsx, the same view inline chat pages use, src/inlineWeb.ts);
-// where that can't be made, the pane shows a link and why.
+// src/layoutOps.ts, the workspace noun) does it for pages too. A public page is drawn by the desktop shell's native
+// browser view laid over the pane (most sites refuse to be framed; the same view inline chat pages use, src/inlineWeb.ts).
+// The box's dev server is an iframe in the app's own page (its proxy lets the app frame it and reports where the page
+// is: server/devProxy.ts FRAME_SCRIPT), so it moves and resizes with the app and its own frames work. Where neither can
+// be made, the pane shows a link and why (src/plugins/viewer/WebPane.tsx).
 //
 // This file: which addresses are pages and how each opens, putting one in a pane, and the live panes' buttons (Back,
 // Forward, Reload, Open in browser) as one action the layout op `webPage` and the pane's own title row both call.
@@ -23,12 +25,33 @@ export function boxDevUrl(raw: string): boolean {
   return u.protocol === "https:" && !u.username && !u.password && host.endsWith(".ts.net") && host.length > ".ts.net".length;
 }
 
-/** How a pane shows this address: a public page (web_embed_open), the box's dev server (web_embed_open_dev), or a
- *  link with the reason it can't be shown here. */
+/** How a pane shows this address: a public page (the native view, web_embed_open), the box's dev server (an iframe),
+ *  or a link with the reason it can't be shown here. */
 export function embedKind(url: string): { kind: "public" | "dev" } | { link: string } {
   if (publicWebUrl(url)) return { kind: "public" };
   if (boxDevUrl(url)) return { kind: "dev" };
   return { link: "only public pages and the agent's dev servers (opened through the box) show in the viewer" };
+}
+
+/** An iframe pane's own history (the app can't read a cross-origin frame's): where the page has been, and where it is.
+ *  Back / Forward replace the frame's page with the entry beside it, so panes never share the window's history. */
+export type FrameHistory = { stack: string[]; at: number };
+export const frameHistory = (url: string): FrameHistory => ({ stack: [url], at: 0 });
+/** The page says it is at `url`. `replacing`: the pane just sent it somewhere (a redirect lands elsewhere: that entry
+ *  becomes where it landed). Otherwise Carl went there: one step back / forward when it is the entry beside, else a
+ *  new entry after this one (any forward entries go, as in a browser). */
+export function frameArrived(h: FrameHistory, url: string, replacing = false): FrameHistory {
+  const cur = h.stack[h.at];
+  if (cur === url) return h;
+  if (replacing) return { stack: h.stack.map((u, i) => (i === h.at ? url : u)), at: h.at };
+  if (h.stack[h.at - 1] === url) return { ...h, at: h.at - 1 };
+  if (h.stack[h.at + 1] === url) return { ...h, at: h.at + 1 };
+  return { stack: [...h.stack.slice(0, h.at + 1), url], at: h.at + 1 };
+}
+/** One step back (-1) or forward (1): the new history and the address to load, or null at the end. */
+export function frameStep(h: FrameHistory, by: -1 | 1): { h: FrameHistory; url: string } | null {
+  const url = h.stack[h.at + by];
+  return url === undefined ? null : { h: { ...h, at: h.at + by }, url };
 }
 
 export type WebPageDo = "back" | "forward" | "reload" | "browser";
