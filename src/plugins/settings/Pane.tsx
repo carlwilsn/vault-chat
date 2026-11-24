@@ -478,6 +478,17 @@ function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => 
 // The box sync in two lines: its status with "Sync now", then the GitHub backup. Problems show only when they
 // happen, in plain words below. Everything comes from the last cycle's report (src/boxSync/cycle.ts); the agent
 // reads the same through app/settings (src/settingsBox.ts).
+/** One plain sentence for a failed sync. The raw git output stays in the sync state (the agent reads it); Carl asks
+ *  the agent for the detail rather than reading git's words here. */
+export function syncFailReason(err: string, box: string): string {
+  const e = err.toLowerCase();
+  if (/could not resolve host|name or service not known|no such host|connection refused|timed out|network is unreachable|failed to connect|couldn't connect/.test(e))
+    return `Can't reach ${box}. Check that Tailscale is on and ${box} is awake.`;
+  if (/authentication|permission denied|403|401/.test(e)) return `${box} refused this laptop. Ask the agent to check the sync access.`;
+  if (/no space left|disk full/.test(e)) return `${box} or this laptop is out of disk space.`;
+  return `The last sync with ${box} failed. Ask the agent why if it keeps happening.`;
+}
+
 function BoxSyncPanel({ box, onDisconnected }: { vault: string; box: BoxConfig; onDisconnected: () => void }) {
   const [st, setSt] = useState<BoxSyncState | null>(null);
   const [busy, setBusy] = useState(false);
@@ -564,10 +575,7 @@ function BoxSyncPanel({ box, onDisconnected }: { vault: string; box: BoxConfig; 
             </p>
           )}
           {r?.error && (
-            <details>
-              <summary className="cursor-pointer select-none">The last sync with {boxName(box)} failed. It tries again by itself.</summary>
-              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-relaxed text-muted-foreground pt-1">{r.error}</pre>
-            </details>
+            <p data-el="box-sync-fail">{syncFailReason(r.error, boxName(box))} It tries again by itself.</p>
           )}
           {bigStuck && (
             <p>
@@ -578,10 +586,6 @@ function BoxSyncPanel({ box, onDisconnected }: { vault: string; box: BoxConfig; 
           {gh && (
             <>
               <p>{gh.detail}</p>
-              <details className="text-[10.5px] text-muted-foreground">
-                <summary className="cursor-pointer select-none">What git said</summary>
-                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono leading-relaxed pt-1">{r!.github_warning}</pre>
-              </details>
             </>
           )}
           {keyFail && (
