@@ -158,6 +158,9 @@ describe("the feed over HTTP", () => {
     const p = await waitFor(async () => {
       const fresh = fold(await recsOf(conv), conv);
       if (pendingOf(fresh).length || !(await endedSince(conv, h0, 2))) return null;
+      // A message the runtime has just taken leaves "pending" a moment before its entry lands: wait for its words.
+      const words = fresh.items.filter((x) => x.kind === "user").map((x) => x.text ?? "").join("\n");
+      if (!words.includes("Then give an example.")) return null;
       const kinds = fresh.items.filter((x) => x.kind === "user" || x.kind === "assistant");
       return kinds.at(-1)?.kind === "assistant" ? fresh : null;
     }, 60_000);
