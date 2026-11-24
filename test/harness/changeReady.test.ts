@@ -168,3 +168,34 @@ test("after Keep: the keep is watched for a while, then left alone; the gate lan
   assert.equal(gateDecision(v("fail"), true).change, "discard");
 });
 
+
+test("a core the gate kept is watched only in a window that runs it, from when it began; the shell's watch is a short lease", async () => {
+  const S = await import("../../src/changeSafety.ts");
+  const { DEADMAN_MS, NATIVE_SILENCE_MS } = await import("../../src/changeFlow.ts");
+  // The record the box's core route writes when the gate lands a bundle (server/supervisor.ts setPluginChange).
+  const { signal } = await import("../../server/convlog/log.ts");
+  const { changeSignal } = await import("../../src/pluginDrafts.ts");
+  const sig = changeSignal({ plugin: "app/core", change: "keep", version: "c0ffee01" }, "gate", Date.now()) as Record<string, unknown>;
+  assert.ok(signal(vault, { ...sig, from: "e07ef7aa" }));
+  await loadSupervisor(true);
+  const keptAt = CR.changesOf("app/core").at(-1)!.at;
+  const core = () => ["app/core"];
+  // The laptop still runs the old core (the Ready card waits for Carl's OK): nothing to watch, nothing to switch back.
+  CR.setCoreHere({ version: "e07ef7aa", since: keptAt - 3_600_000 });
+  assert.deepEqual(S.appliedUnderWatch(keptAt + 1000, core()), [], "the old core runs here: the kept one is not judged");
+  assert.equal(CR.runsSince("app/core", "c0ffee01", keptAt), null);
+  CR.setCoreHere(null);
+  assert.deepEqual(S.appliedUnderWatch(keptAt + 1000, core()), [], "the loader has not answered (or a browser): not watched");
+  // Carl OKs it an hour later: the swapped-in window watches it from its own start.
+  const okAt = keptAt + 3_600_000;
+  CR.setCoreHere({ version: "c0ffee01", since: okAt });
+  assert.deepEqual(S.appliedUnderWatch(okAt + 1000, core()).map((a) => [a.version, a.until]), [["c0ffee01", okAt + DEADMAN_MS]]);
+  assert.deepEqual(S.appliedUnderWatch(okAt + DEADMAN_MS + 1, core()), [], "ten minutes after it began here: left alone");
+  // The shell is told a lease: a beat 40 s before (a sleep of the machine) has run out; a dead page's last one has not.
+  const until = S.nativeWatchUntil([{ until: okAt + DEADMAN_MS }], okAt);
+  assert.equal(until, okAt + S.LEASE_MS);
+  assert.ok(S.LEASE_MS > NATIVE_SILENCE_MS + 4_000 && S.LEASE_MS < 40_000);
+  assert.equal(S.nativeWatchUntil([], okAt), 0);
+  assert.equal(S.nativeWatchUntil([{ until: okAt + 5 }], okAt), okAt + 5, "never past the watch itself");
+  CR.setCoreHere(null);
+});

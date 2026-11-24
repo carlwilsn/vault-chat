@@ -87,12 +87,33 @@ const slotIds = (): string[] => [...vaultSlots.map((s) => s.id), CORE_PART];
 /** Every plugin a change can apply to here: the dead-man's switch watches them. */
 export const changeablePlugins = (): string[] => [...new Set(slotIds())];
 
+/** The core this window runs (the native loader's active bundle) and since when. A core the gate kept on the box runs
+ *  here only after Carl's OK on the Ready card swaps it in (src/coreFollow.ts): until then this window runs another
+ *  core, so nothing here may judge the kept one or switch it back (a laptop waking from sleep with the old core open
+ *  once undid a kept core that never ran). Null until the loader answers, and in a browser (no loader). */
+let coreHere: { version: string; since: number } | null = null;
+export function setCoreHere(v: { version: string; since: number } | null): void {
+  coreHere = v;
+}
+/** Ask the loader once which core this window runs (src/changeSafety.ts startChangeSafety). */
+export async function learnCoreHere(since = Date.now()): Promise<void> {
+  const s = await (await import("./coreFollow")).coreStatus().catch(() => null);
+  if (s?.active) coreHere = { version: s.active, since };
+}
+/** When this window began running `version` of `plugin`, kept at `at`: a vault plugin runs from the record at once (the
+ *  keep), the core from the later of the keep and this window's start, and a core this window does not run never (null). */
+export function runsSince(plugin: string, version: string, at: number): number | null {
+  if (plugin !== CORE_PART) return at;
+  return coreHere?.version === version ? Math.max(at, coreHere.since) : null;
+}
+
 /** The keeps under watch now (src/pluginDrafts.ts watchedKeep): plugin, kept version, when the watch ends. */
 export function keepsUnderWatch(now = Date.now()): { plugin: string; version: string; until: number }[] {
   const out: { plugin: string; version: string; until: number }[] = [];
   for (const plugin of slotIds()) {
     const k = watchedKeep(changesOf(plugin), now);
-    if (k) out.push({ plugin, version: k.version, until: k.at + KEEP_WATCH_MS });
+    const from = k ? runsSince(plugin, k.version, k.at) : null;
+    if (k && from !== null) out.push({ plugin, version: k.version, until: from + KEEP_WATCH_MS });
   }
   return out;
 }

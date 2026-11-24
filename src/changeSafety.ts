@@ -9,8 +9,9 @@
 // - Undo of the last applied change is Ctrl/Cmd+Alt+Z, caught by the shell (a global shortcut) and its tray menu, so
 //   it works whatever a change did to the page; here the same keys are a fallback where there is no shell (a browser).
 import { useStore } from "./store";
-import { DEADMAN_MS, HEALTH_EVERY_MS, HEALTH_MISSES } from "./changeFlow";
-import { autoRevert, changeablePlugins, changesOf } from "./changeReady";
+import { DEADMAN_MS, HEALTH_EVERY_MS, HEALTH_MISSES, NATIVE_SILENCE_MS } from "./changeFlow";
+import { autoRevert, changeablePlugins, changesOf, learnCoreHere, runsSince, watchTyping } from "./changeReady";
+import { KEEP_WATCH_MS } from "./pluginDrafts";
 import { landing } from "./pluginDrafts";
 import { boxLinkFor, boxPost } from "./boxChat";
 import { loadSupervisor } from "./pluginSupervisorApp";
@@ -19,15 +20,27 @@ import { hit } from "./shortcuts";
 /** Plugins whose applied change may be watched (tests replace it). */
 let watchedPlugins: () => string[] = () => changeablePlugins();
 
-/** The applied changes still inside the dead-man's window: plugin, version, until when. */
+/** The applied changes still inside the dead-man's window: plugin, version, until when. The window counts from when
+ *  this window began running the change (src/changeReady.ts runsSince): a kept core waiting for Carl's OK is not
+ *  watched here at all. */
 export function appliedUnderWatch(now = Date.now(), plugins = watchedPlugins()): { plugin: string; version: string; until: number }[] {
   const out: { plugin: string; version: string; until: number }[] = [];
   for (const plugin of new Set(plugins)) {
     const l = landing(changesOf(plugin));
-    if (!l || l.change !== "keep" || (l.from ?? "built-in") === l.version) continue;
-    if (now - l.at <= DEADMAN_MS && now >= l.at - 60_000) out.push({ plugin, version: l.version, until: l.at + DEADMAN_MS });
+    if (!l || l.change !== "keep" || (l.from ?? "built-in") === l.version || now - l.at > KEEP_WATCH_MS) continue;
+    const from = runsSince(plugin, l.version, l.at);
+    if (from !== null && now - from <= DEADMAN_MS && now >= from - 60_000) out.push({ plugin, version: l.version, until: from + DEADMAN_MS });
   }
   return out;
+}
+
+/** What the native shell is told the watch lasts: never longer than a short lease each beat renews. The shell counts its
+ *  silence across a sleep of the machine, so a laptop waking with a change watched read a long silence and undid it
+ *  (2026-11-23); a lease in wall-clock time has run out by then. A dead page's last lease still outlives the shell's
+ *  NATIVE_SILENCE_MS (beats come at most about HEALTH_EVERY_MS + the 2 s ping apart), so the shell still fires for it. */
+export const LEASE_MS = NATIVE_SILENCE_MS + 2 * HEALTH_EVERY_MS;
+export function nativeWatchUntil(applied: readonly { until: number }[], now = Date.now()): number {
+  return applied.length ? Math.min(Math.max(...applied.map((a) => a.until)), now + LEASE_MS) : 0;
 }
 
 /** Whether Carl's layout shows the chat pane in this window now (closed, popped out or Settings: nothing to judge). */
@@ -95,7 +108,7 @@ export async function healthTick(now = Date.now()): Promise<"idle" | "healthy" |
   const watching = applied.length > 0;
   const h = watching ? await check() : { healthy: true, why: null };
   const link = await boxLinkFor(useStore.getState().vaultPath).catch(() => null);
-  void beat({ url: link?.url ?? null, token: link?.token ?? null, vault: link?.vault ?? null, watchUntil: applied.length ? Math.max(...applied.map((a) => a.until)) : 0, healthy: h.healthy, tried: [] });
+  void beat({ url: link?.url ?? null, token: link?.token ?? null, vault: link?.vault ?? null, watchUntil: nativeWatchUntil(applied, now), healthy: h.healthy, tried: [] });
   if (!watching) {
     misses = 0;
     return "idle";
@@ -132,6 +145,8 @@ let timer: ReturnType<typeof setInterval> | null = null;
 /** Start checking (the app's ChangeKeeper, once). Returns the stop. */
 export function startChangeSafety(): () => void {
   if (timer || typeof window === "undefined") return () => {};
+  // Which core runs here decides whether a kept core is judged (src/changeReady.ts runsSince); typing is watched again once known.
+  void learnCoreHere().then(watchTyping).catch(() => {});
   timer = setInterval(() => void healthTick().catch(() => {}), HEALTH_EVERY_MS);
   const onKey = (e: KeyboardEvent) => {
     if (!hit(e, "change.undo")) return;
