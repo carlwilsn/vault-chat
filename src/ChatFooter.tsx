@@ -126,10 +126,12 @@ function TokenRing({ used, limit, size }: { used: number; limit: number; size: n
   const r = (size - 2) / 2;
   const circ = 2 * Math.PI * r;
   const pct = Math.min(used / limit, 1);
-  const color = pct < 0.5 ? "hsl(var(--muted-foreground))" : pct < 0.8 ? "hsl(40, 90%, 55%)" : "hsl(0, 72%, 58%)";
+  // The track is the quiet divider grey and the used arc the text colour, so even a short arc reads in every theme
+  // (high contrast's border is white: a grey arc on a white track looked like an empty ring, 11-23).
+  const color = pct < 0.5 ? "hsl(var(--foreground))" : pct < 0.8 ? "hsl(40, 90%, 55%)" : "hsl(0, 72%, 58%)";
   return (
     <svg width={size} height={size} className="shrink-0">
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="hsl(var(--border))" strokeWidth={1.5} />
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="hsl(var(--divider))" strokeWidth={1.5} />
       <circle
         cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={1.5}
         strokeDasharray={circ} strokeDashoffset={circ * (1 - pct)}
