@@ -632,6 +632,43 @@ input[type="number"]::-webkit-outer-spin-button {
   text-overflow: ellipsis;
 }
 
+/* The composer's @ picker (src/plugins/composer/Composer.tsx): a small popover above the composer at the "@"; rows of
+   icon, bold name, dim parent folder (cut from the left, so the nearest folder stays), matched letters lit. Carl
+   approved it from the mockup (option A: white icons, filled selection). */
+.mention-picker {
+  --mention-hit: 48 100% 68%;
+  position: fixed;
+  z-index: 60;
+  overflow-y: auto;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--popover));
+  color: hsl(var(--popover-foreground));
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  font-size: 12.5px;
+}
+[data-theme="light"] .mention-picker { --mention-hit: 32 95% 36%; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14); }
+[data-theme="contrast"] .mention-picker { border-color: hsl(var(--foreground) / 0.55); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6); }
+.mention-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  min-width: 0;
+}
+.mention-row.on { background: hsl(var(--accent)); }
+.mention-ic { width: 15px; height: 15px; flex-shrink: 0; stroke-width: 1.6; color: hsl(var(--foreground) / 0.85); }
+.mention-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex-shrink: 1; }
+.mention-dir { color: hsl(var(--muted-foreground)); font-weight: 400; }
+.mention-path { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; min-width: 40px; flex-shrink: 100; direction: rtl; text-align: left; }
+.mention-path bdi { direction: ltr; unicode-bidi: isolate; }
+.mention-hit { color: hsl(var(--mention-hit)); }
+
 /* Fullscreen chat / popout (src/plugins/chat/Frame.tsx): the chat pane's left border is the docked layout's edge
    against the viewer; in the frame the window's edge or the sidebar's divider is there instead. */
 [data-el="chat-frame"] :is([data-el="chat-transcript"], [data-el="box-starting"], [data-el="no-box"], [data-el="transcript-fallback"]) {

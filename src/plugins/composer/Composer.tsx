@@ -5,8 +5,8 @@
 // fallback share it, and it reads whether a message can go from src/chatGate.ts, as the pane does.
 //
 // Its own React root: a keystroke redraws the composer alone, never the chat pane around it.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Plus, Square, ArrowUp, X, Mic, Paperclip, Scan, AtSign, AlertCircle, FileText } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Plus, Square, ArrowUp, X, Mic, Paperclip, Scan, AtSign, AlertCircle, FileText, Folder, File, FileCode, Image, Film, Globe, Music, Table } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { attachBlob, sizeLabel } from "../../attachFiles";
 import { isExternalFileDrop } from "../../dnd";
@@ -35,8 +35,9 @@ import {
   detachItem,
   attachPaths,
   escapeRegExp,
-  filterFilesForMention,
   focusHandoff,
+  noteRecentFile,
+  recentFiles,
   scrollHold,
   sendDraft,
   setAttachError,
@@ -46,6 +47,64 @@ import {
   useDraft,
   type MentionHit,
 } from "./draft";
+import { MENTION_ROWS, rankMentions } from "./mentionMatch";
+
+/** The @ picker: a popover this wide (narrower in a small window), rows this tall. */
+const PICKER_W = 360;
+const PICKER_ROW = 28;
+
+const AUDIO_EXTS = new Set(["mp3", "wav", "m4a", "ogg", "flac", "aac", "opus"]);
+const DATA_EXTS = new Set(["csv", "tsv", "json", "jsonl", "xlsx", "xls", "yaml", "yml", "toml", "parquet"]);
+
+/** A picker row's icon: folder, or the file's type; drawn in the text colour (no colours). */
+function MentionIcon({ hit }: { hit: MentionHit }) {
+  const cls = "mention-ic";
+  if (hit.isDir) return <Folder className={cls} />;
+  const { kind, ext } = fileKind(hit.path);
+  if (AUDIO_EXTS.has(ext)) return <Music className={cls} />;
+  if (DATA_EXTS.has(ext)) return <Table className={cls} />;
+  if (kind === "markdown" || kind === "pdf" || kind === "tex" || kind === "notebook" || ext === "txt") return <FileText className={cls} />;
+  if (kind === "image") return <Image className={cls} />;
+  if (kind === "video") return <Film className={cls} />;
+  if (kind === "html") return <Globe className={cls} />;
+  if (kind === "code") return <FileCode className={cls} />;
+  return <File className={cls} />;
+}
+
+/** Text with the matched letters lit. */
+function Lit({ text, idx }: { text: string; idx: number[] }) {
+  if (!idx.length) return <>{text}</>;
+  const on = new Set(idx);
+  const out: React.ReactNode[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const hit = on.has(i);
+    let j = i;
+    while (j < text.length && on.has(j) === hit) j++;
+    out.push(hit ? <span key={i} className="mention-hit">{text.slice(i, j)}</span> : text.slice(i, j));
+    i = j;
+  }
+  return <>{out}</>;
+}
+
+/** Where the "@" at `at` sits horizontally inside the textarea (px from its left edge): a mirror of the box's text up to
+ *  it, laid out with the same font, padding and wrapping. */
+function caretX(el: HTMLTextAreaElement, at: number): number {
+  const cs = getComputedStyle(el);
+  const m = document.createElement("div");
+  for (const k of ["fontFamily", "fontSize", "fontWeight", "letterSpacing", "lineHeight", "paddingLeft", "paddingRight", "paddingTop", "borderLeftWidth", "borderRightWidth", "boxSizing", "tabSize", "textIndent"] as const) {
+    (m.style as unknown as Record<string, string>)[k] = cs[k];
+  }
+  Object.assign(m.style, { position: "absolute", visibility: "hidden", top: "0", left: "-9999px", whiteSpace: "pre-wrap", overflowWrap: "break-word", width: `${el.clientWidth + parseFloat(cs.borderLeftWidth || "0") + parseFloat(cs.borderRightWidth || "0")}px` });
+  m.textContent = el.value.slice(0, at);
+  const mark = document.createElement("span");
+  mark.textContent = "@";
+  m.appendChild(mark);
+  document.body.appendChild(m);
+  const x = mark.offsetLeft - el.scrollLeft;
+  m.remove();
+  return x;
+}
 
 /** The composer grows with its text up to this height, then scrolls. */
 const COMPOSER_MAX_PX = 200;
@@ -90,6 +149,8 @@ export function Composer() {
   const [fileMention, setFileMention] = useState<{ query: string; start: number } | null>(null);
   const [fileMentionIdx, setFileMentionIdx] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [pickerPos, setPickerPos] = useState<{ left: number; bottom: number; width: number; maxHeight: number } | null>(null);
 
   // A capture taken for the chat (the marquee over the viewer): into the draft.
   useEffect(() => {
@@ -216,7 +277,40 @@ export function Composer() {
   };
 
   const filteredSkills = skillMention ? skills.filter((s) => s.name.startsWith(skillMention.query)) : [];
-  const matchedFiles = fileMention ? filterFilesForMention(files, vaultPath, fileMention.query).slice(0, 8) : [];
+  const mentionQuery = fileMention?.query ?? null;
+  const matchedFiles = useMemo(
+    () => (mentionQuery === null ? [] : rankMentions(files, vaultPath, mentionQuery, recentFiles())),
+    [files, vaultPath, mentionQuery],
+  );
+  const pickerOpen = !!fileMention && matchedFiles.length > 0;
+
+  // The @ picker sits just above the composer, its left edge at the "@", kept inside the window.
+  const mentionStart = fileMention?.start ?? -1;
+  useLayoutEffect(() => {
+    if (!pickerOpen) {
+      setPickerPos(null);
+      return;
+    }
+    const place = () => {
+      const box = boxRef.current;
+      const el = inputRef.current;
+      if (!box || !el) return;
+      const b = box.getBoundingClientRect();
+      const t = el.getBoundingClientRect();
+      const width = Math.min(PICKER_W, window.innerWidth - 16);
+      const at = t.left + caretX(el, mentionStart) - 14;
+      const left = Math.max(8, Math.min(at, window.innerWidth - width - 8));
+      const room = Math.max(120, b.top - 14);
+      setPickerPos({ left, bottom: window.innerHeight - b.top + 6, width, maxHeight: Math.min(MENTION_ROWS * PICKER_ROW + 10, room) });
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [pickerOpen, mentionStart]);
+  useEffect(() => {
+    if (!pickerOpen) return;
+    boxRef.current?.querySelector(`[data-el="mention-row"][data-i="${fileMentionIdx}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [pickerOpen, fileMentionIdx]);
 
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (skillMention && filteredSkills.length > 0) {
@@ -242,7 +336,7 @@ export function Composer() {
         return;
       }
     }
-    if (fileMention && matchedFiles.length > 0) {
+    if (pickerOpen) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
         setFileMentionIdx((i) => Math.min(i + 1, matchedFiles.length - 1));
@@ -336,6 +430,7 @@ export function Composer() {
     const insertion = `@${hit.name} `;
     setInputOnly(`${before}${insertion}${after.replace(/^\s+/, "")}`);
     addReference({ rel: hit.rel, path: hit.path, name: hit.name, raw: `@${hit.name}` }, true);
+    noteRecentFile(hit.path);
     setFileMention(null);
     requestAnimationFrame(() => {
       const el = inputRef.current;
@@ -392,6 +487,7 @@ export function Composer() {
         <div
           className={cn("relative flex flex-col rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors", dropOver && "border-ring/60 ring-1 ring-ring/30")}
           data-el="composer"
+          ref={boxRef}
           // A file dropped from Explorer: attached (images as images; anything else uploaded with the message).
           onDragOver={(e) => {
             if (!ready || !isExternalFileDrop(e.dataTransfer)) return;
@@ -434,20 +530,40 @@ export function Composer() {
               ))}
             </div>
           )}
-          {fileMention && matchedFiles.length > 0 && (
-            <div className="absolute bottom-full left-0 right-0 max-h-[240px] overflow-auto bg-popover border-t border-x border-border shadow-lg z-10">
+          {pickerOpen && pickerPos && (
+            <div
+              className="mention-picker"
+              data-el="mention-picker"
+              role="listbox"
+              style={{ left: pickerPos.left, bottom: pickerPos.bottom, width: pickerPos.width, maxHeight: pickerPos.maxHeight }}
+            >
               {matchedFiles.map((f, i) => (
                 <div
                   key={f.path}
-                  className={cn("flex items-baseline gap-3 px-3 py-2 cursor-pointer border-b border-border/40 last:border-b-0", i === fileMentionIdx ? "bg-accent" : "hover:bg-accent/60")}
+                  role="option"
+                  aria-selected={i === fileMentionIdx}
+                  data-el="mention-row"
+                  data-i={i}
+                  title={f.rel}
+                  className={cn("mention-row", i === fileMentionIdx && "on")}
                   onMouseDown={(e) => {
                     e.preventDefault();
                     pickMention(f);
                   }}
                   onMouseEnter={() => setFileMentionIdx(i)}
                 >
-                  <span className="text-primary font-mono text-[12.5px] font-medium shrink-0 max-w-[50%] truncate">{f.name}</span>
-                  <span className="text-muted-foreground text-[11px] truncate font-mono">{f.rel}</span>
+                  <MentionIcon hit={f} />
+                  <span className="mention-name">
+                    <Lit text={f.name} idx={f.ni} />
+                    {f.isDir && <span className="mention-dir">/</span>}
+                  </span>
+                  {f.dir && (
+                    <span className="mention-dir mention-path">
+                      <bdi>
+                        <Lit text={f.dir} idx={f.di} />
+                      </bdi>
+                    </span>
+                  )}
                 </div>
               ))}
             </div>

@@ -8,7 +8,7 @@
 // and uploaded, the viewport context, then the box's send intent through dispatchChatAction.
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { useStore, type FileEntry, type FileUpload } from "../../store";
+import { useStore, type FileUpload } from "../../store";
 import { attachPath, insideVault, pathMentions } from "../../attachFiles";
 import { imageMime } from "../../imageMime";
 import { filesLine } from "../../filesLine";
@@ -21,7 +21,7 @@ import { splitFilesLine } from "../../filesLine";
 
 export type PendingImage = { imageDataUrl: string; sourcePath?: string; sourceAnchor?: string | null; capturedFilePath?: string };
 export type Mention = { rel: string; path: string; name: string; raw: string };
-export type MentionHit = { path: string; name: string; rel: string };
+export type { MentionHit } from "./mentionMatch";
 
 export type Draft = {
   input: string;
@@ -188,32 +188,25 @@ export async function attachPaths(paths: string[]): Promise<{ attached: Attached
   return { attached, errors };
 }
 
-// Fuzzy-ish file picker for @mentions. Query matches against file name first (startsWith > contains), then against the
-// relative path as a fallback.
-export function filterFilesForMention(files: FileEntry[], vaultPath: string | null, query: string): MentionHit[] {
-  if (!vaultPath) return [];
-  const q = query.toLowerCase();
-  const hits: Array<MentionHit & { score: number }> = [];
-  for (const f of files) {
-    // Folders are selectable now so the agent can ListDir/Glob into
-    // them — they land as path-only mentions.
-    if (f.hidden) continue;
-    const rel = f.path.startsWith(vaultPath + "/") ? f.path.slice(vaultPath.length + 1) : f.path;
-    const nameLower = f.name.toLowerCase();
-    const relLower = rel.toLowerCase();
-    let score: number;
-    if (!q) score = 10;
-    // Tiers first (name prefix > name contains > path contains), closeness
-    // within a tier — the old flat scores let a long prefix match sink below
-    // a contains match, and a late contains match below a path match.
-    else if (nameLower.startsWith(q)) score = 3000 - Math.min(999, nameLower.length - q.length);
-    else if (nameLower.includes(q)) score = 2000 - Math.min(999, nameLower.indexOf(q));
-    else if (relLower.includes(q)) score = 1000 - Math.min(999, relLower.indexOf(q));
-    else continue;
-    hits.push({ path: f.path, name: f.name, rel, score });
-  }
-  hits.sort((a, b) => b.score - a.score);
-  return hits.map(({ score: _s, ...h }) => h);
+// The files Carl looked at lately, for the @ picker (./mentionMatch.ts): an empty @ lists them, a typed one ranks them
+// higher. The app keeps no recent-files list of its own, so this is the files open in the viewer now (the active one
+// first) and then the ones opened since the app started, newest first, plus what he @-picked. Laptop memory only.
+const RECENT_MAX = 30;
+let opened: string[] = [];
+export function noteRecentFile(path: string | null | undefined): void {
+  if (!path || /^https?:/i.test(path)) return;
+  opened = [path, ...opened.filter((p) => p !== path)].slice(0, RECENT_MAX);
+}
+useStore.subscribe((s, prev) => {
+  if (s.currentFile !== prev.currentFile) noteRecentFile(s.currentFile);
+  if (s.vaultPath !== prev.vaultPath) opened = [];
+});
+noteRecentFile(useStore.getState().currentFile);
+export function recentFiles(): string[] {
+  const s = useStore.getState();
+  const active = s.panes.find((p) => p.id === s.activePaneId)?.file ?? s.currentFile;
+  const open = [active, ...s.panes.map((p) => p.file)].filter((p): p is string => !!p && !/^https?:/i.test(p));
+  return [...new Set([...open, ...opened])];
 }
 
 // Build a context preamble out of attached mentions. Returns an empty
