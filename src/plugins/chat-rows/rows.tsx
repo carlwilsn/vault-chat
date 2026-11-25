@@ -4,7 +4,7 @@
 // api.host.chat.row(kind, render)) draws into a plain block element; a renderer that throws falls back, for that row
 // only, to the built-in and then to the plain fallback row, so the chat always stands.
 import { ChangeLine } from "../../ChangeLine";
-import { Component, memo, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ComponentPropsWithoutRef, type ComponentType, type ReactNode } from "react";
+import { Component, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentPropsWithoutRef, type ComponentType, type ReactNode } from "react";
 import { ChevronDown, Wrench, Mic, AlertCircle, Info, Loader2, FileText } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { Markdown } from "../../Markdown";
@@ -17,6 +17,7 @@ import { soloWebImages } from "../../inlineWeb";
 import { localPathFromUrl } from "../../mdPipeline";
 import { planDone } from "../../planPlace";
 import { splitFilesLine } from "../../filesLine";
+import { FileChip, relInVault, resolveVaultFile } from "../../fileChip";
 import { sendQueuedNow, unqueue } from "../composer/draft";
 import { OpenRow } from "../../rowOpen";
 import { COMPACTION_DIVIDER_TEXT, isCompactionDivider, dividerSummary } from "../../chatContext";
@@ -198,7 +199,53 @@ function ChatParagraph({ node, children, ...rest }: ComponentPropsWithoutRef<"p"
   return <>{out}</>;
 }
 
-export const chatComponents = { img: ChatMedia, p: ChatParagraph } as const;
+/** Plain text of a link's children (to tell a named link from a bare path). */
+function textOf(n: ReactNode): string {
+  if (typeof n === "string" || typeof n === "number") return String(n);
+  if (Array.isArray(n)) return n.map(textOf).join("");
+  return "";
+}
+
+/** A link to a vault file (a reply's `[x](notes/a.md)`, a wiki link, Carl's @name) is a file chip (src/fileChip.tsx);
+ *  any other link stays a link. */
+function ChatLink({ node: _n, href, children, ...rest }: ComponentPropsWithoutRef<"a"> & { node?: unknown }) {
+  useStore((s) => s.files);
+  const f = typeof href === "string" && !/^(https?|mailto|data|blob):/i.test(href) && !href.startsWith("#") ? resolveVaultFile(href) : null;
+  if (!f) return <a href={href} {...rest}>{children}</a>;
+  const text = textOf(children).trim();
+  const name = f.path.replace(/\\/g, "/").split("/").pop() ?? "";
+  const bare = !text || text === href || text === name || text.replace(/^@/, "") === name || f.path.replace(/\\/g, "/").endsWith(`/${text}`);
+  return <FileChip path={f.path} isDir={f.isDir} label={bare ? undefined : children} />;
+}
+
+export const chatComponents = { img: ChatMedia, p: ChatParagraph, a: ChatLink } as const;
+
+/** Carl's @name in his message as a link to the file (a chip once drawn): the path his send tracked (the message's
+ *  "[attached: @name → path]" footer), else the vault file of that name. Code spans and blocks are left alone. */
+export function mentionLinks(text: string, footerSrc: string): string {
+  const tracked = new Map<string, string>();
+  const foot = /\[attached: ([^\]]*)\]\s*$/.exec(footerSrc);
+  if (foot) for (const it of foot[1]!.split(", @")) {
+    const m = /^@?(.+?) → (.+)$/.exec(it.trim());
+    if (m) tracked.set(m[1]!, m[2]!);
+  }
+  return text
+    .split(/(```[\s\S]*?```|`[^`\n]*`)/)
+    .map((part, i) =>
+      i % 2
+        ? part
+        : part.replace(/(^|\s)@([^\s@\[\]()<>]+)/g, (all, pre: string, tok: string) => {
+            const name = tracked.has(tok) ? tok : tok.replace(/[.,;:!?)]+$/, "");
+            const rest = tok.slice(name.length);
+            const path = tracked.get(name) ?? resolveVaultFile(name)?.path;
+            const f = path ? resolveVaultFile(path) : null;
+            if (!f) return all;
+            const rel = relInVault(f.path) || f.path.replace(/\\/g, "/");
+            return `${pre}[${name.replace(/[[\]]/g, "\\$&")}](<${rel}>)${rest}`;
+          }),
+    )
+    .join("");
+}
 
 // Strip the trailing "[attached: ...]" footer that ChatPane appends to
 // user turns so the agent sees resolved @-ref paths. The footer is
@@ -313,7 +360,11 @@ function VoiceMessageRow({ message, voiceCont = false, index }: RowProps) {
 }
 
 function UserBubble({ message, index }: RowProps) {
-  const userText = splitFilesLine(stripAttachedFooter(message.display ?? message.content));
+  const raw = message.display ?? message.content;
+  const files = useStore((s) => s.files);
+  const userText = splitFilesLine(stripAttachedFooter(raw));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const text = useMemo(() => mentionLinks(userText.text, message.content), [userText.text, message.content, files]);
   return (
     <div className="flex flex-col gap-1.5 items-end group/msg" data-message-id={message.mid} {...(message.waiting ? { "data-el": "waiting-message" } : {})} {...rowAttr(index)}>
         <div className={cn("max-w-[85%] rounded-2xl rounded-br-md bg-primary/90 text-primary-foreground px-3.5 py-2 text-[13px] leading-relaxed break-words overflow-hidden prose-user", message.waiting && "opacity-60")}>
@@ -351,7 +402,7 @@ function UserBubble({ message, index }: RowProps) {
               ))}
             </div>
           )}
-          {userText.text.trim() && <Markdown source={userText.text} profile="user" components={chatComponents} />}
+          {userText.text.trim() && <Markdown source={text} profile="user" components={chatComponents} />}
         </div>
         {message.waiting && (
           <div className="flex items-center gap-1.5 -mt-0.5">

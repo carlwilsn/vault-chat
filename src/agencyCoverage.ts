@@ -37,6 +37,7 @@ export const COVERAGE: Record<string, Coverage> = {
   "src/App.tsx": { state: ["app/titlebar"] },
   "src/ChangeKeeper.tsx": { state: ["app/changes"] },
   "src/ChangeLine.tsx": { state: ["app/changes"] },
+  "src/fileChip.tsx": { state: ["app/composer", "box:workspace"] },
   "src/chatExtras.tsx": { state: ["app/chat"] },
   "src/ChatFooter.tsx": { state: ["app/composer"] },
   "src/ChatHeader.tsx": { state: ["app/chat"] },
@@ -129,4 +130,5 @@ export const EXEMPT_REASONS: readonly string[] = [
   "a markdown checkbox's rendering (a GFM task box): ticking writes the file, which the agent edits as a file",
   "a markdown checkbox (a GFM task box): ticking writes the file, which the agent edits as a file",
   "a menu's container: it only keeps a click from reaching the tree (its items name their offers)",
+  "Copy path: puts a path on Carl's clipboard; the agent reads the path from the chat itself",
 ];

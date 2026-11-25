@@ -52,6 +52,9 @@ export const SHORTCUTS = [
   { id: "chat.stop", keys: ["Esc"], label: "Stop the agent", group: "Chat & composer", where: "the composer, while the agent works", files: ["src/plugins/composer/Composer.tsx", "src/ComposerPanel.tsx", "src/plugins/ask/Prompt.tsx"] },
   { id: "chat.menuMove", keys: ["ArrowUp", "ArrowDown"], label: "Move in menus", group: "Chat & composer", where: "@file and /command menus", files: ["src/plugins/composer/Composer.tsx", "src/plugins/ask/Prompt.tsx", "src/NotePopup.tsx"] },
   { id: "chat.menuPick", keys: ["Tab", "Enter"], label: "Pick from menu", group: "Chat & composer", where: "@file and /command menus", files: ["src/plugins/composer/Composer.tsx", "src/plugins/ask/Prompt.tsx", "src/NotePopup.tsx"] },
+  { id: "chat.chipDelete", keys: ["Backspace", "Delete"], label: "Delete file chip", group: "Chat & composer", where: "next to a file chip in the composer (it goes whole)", files: ["src/plugins/composer/chips.ts"] },
+  { id: "chat.chipStep", keys: ["ArrowLeft", "ArrowRight"], label: "Skip a file chip", group: "Chat & composer", where: "next to a file chip in the composer", files: ["src/plugins/composer/chips.ts"] },
+  { id: "chat.chipOpen", keys: ["Enter"], label: "Open a file chip", group: "Chat & composer", where: "a file chip in a message, focused", files: ["src/fileChip.tsx"] },
 
   // ---- Voice
   { id: "voice.toggle", keys: ["Ctrl+D"], label: "Voice on / off", group: "Voice", where: "anywhere", files: ["src/App.tsx", "src/ChatWindow.tsx"] },
@@ -73,6 +76,7 @@ export const SHORTCUTS = [
     group: "Views & windows",
     where: "popovers, panels, dialogs, a capture, the open background-tasks list, a web page shown full window",
     files: [
+      "src/fileChip.tsx",
       "src/App.tsx",
       "src/InlineWebPage.tsx",
       "src/ChatsPanel.tsx",

@@ -5,8 +5,8 @@
 // fallback share it, and it reads whether a message can go from src/chatGate.ts, as the pane does.
 //
 // Its own React root: a keystroke redraws the composer alone, never the chat pane around it.
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Plus, Square, ArrowUp, X, Mic, Paperclip, Scan, AtSign, AlertCircle, FileText, Folder, File, FileCode, Image, Film, Globe, Music, Table } from "lucide-react";
+import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Plus, Square, ArrowUp, X, Mic, Paperclip, Scan, AtSign, AlertCircle, FileText } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { attachBlob, sizeLabel } from "../../attachFiles";
 import { isExternalFileDrop } from "../../dnd";
@@ -49,24 +49,8 @@ import {
 } from "./draft";
 import { rankMentions, rankNames } from "./mentionMatch";
 import { ComposerMenu, Lit } from "./Menu";
-
-const AUDIO_EXTS = new Set(["mp3", "wav", "m4a", "ogg", "flac", "aac", "opus"]);
-const DATA_EXTS = new Set(["csv", "tsv", "json", "jsonl", "xlsx", "xls", "yaml", "yml", "toml", "parquet"]);
-
-/** A picker row's icon: folder, or the file's type; drawn in the text colour (no colours). */
-function MentionIcon({ hit }: { hit: MentionHit }) {
-  const cls = "mention-ic";
-  if (hit.isDir) return <Folder className={cls} />;
-  const { kind, ext } = fileKind(hit.path);
-  if (AUDIO_EXTS.has(ext)) return <Music className={cls} />;
-  if (DATA_EXTS.has(ext)) return <Table className={cls} />;
-  if (kind === "markdown" || kind === "pdf" || kind === "tex" || kind === "notebook" || ext === "txt") return <FileText className={cls} />;
-  if (kind === "image") return <Image className={cls} />;
-  if (kind === "video") return <Film className={cls} />;
-  if (kind === "html") return <Globe className={cls} />;
-  if (kind === "code") return <FileCode className={cls} />;
-  return <File className={cls} />;
-}
+import { chipKey, chipRanges, snapCaret, type ChipRange } from "./chips";
+import { FileTypeIcon, resolveVaultFile } from "../../fileChip";
 
 /** The composer grows with its text up to this height, then scrolls. */
 const COMPOSER_MAX_PX = 200;
@@ -74,6 +58,33 @@ const COMPOSER_MAX_PX = 200;
 /** The text box's focus survives a swap (the in-tree composer while the records load, then the plugin's): taken over
  *  when the new one mounts within this long of the old one going. */
 const HANDOFF_MS = 1500;
+
+/** The text drawn again under the text box, the same size and wrapping, with each @-reference as a chip; the box's own
+ *  text is transparent over it (its caret and selection stay), so a chip sits exactly where its "@name" is. */
+const ChipBackdrop = forwardRef<HTMLDivElement, { text: string; chips: ChipRange[]; className: string }>(function ChipBackdrop({ text, chips, className }, ref) {
+  const parts: React.ReactNode[] = [];
+  let at = 0;
+  for (const c of chips) {
+    if (c.start < at) continue;
+    parts.push(text.slice(at, c.start));
+    const f = resolveVaultFile(c.name);
+    parts.push(
+      <span key={c.start} className="file-chip composer-chip" data-el="composer-chip">
+        <span className="composer-chip-at">
+          @<FileTypeIcon path={f?.path ?? c.name} isDir={f?.isDir} className="file-chip-ic" />
+        </span>
+        {c.name}
+      </span>,
+    );
+    at = c.end;
+  }
+  parts.push(text.slice(at), "\u200b");
+  return (
+    <div ref={ref} aria-hidden className={className} data-el="composer-backdrop">
+      {parts}
+    </div>
+  );
+});
 
 export function Composer() {
   const vaultPath = useStore((s) => s.vaultPath);
@@ -101,6 +112,10 @@ export function Composer() {
   const pendingImages = useDraft((d) => d.images);
   const pendingFiles = useDraft((d) => d.files);
   const attachError = useDraft((d) => d.attachError);
+  const mentions = useDraft((d) => d.mentions);
+  // The tracked @-references drawn as chips over the text (./chips.ts): none, and the text box is exactly as before.
+  const chips = useMemo(() => (mentions.length ? chipRanges(input, mentions.map((m) => m.name)) : []), [input, mentions]);
+  const backdropRef = useRef<HTMLDivElement>(null);
 
   const [plusOpen, setPlusOpen] = useState(false);
   const [dropOver, setDropOver] = useState(false);
@@ -276,6 +291,22 @@ export function Composer() {
         return;
       }
     }
+    // A chip is one thing: Backspace / Delete take it whole, the arrows step over it.
+    if (chips.length && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+      const el = e.currentTarget;
+      if (el.selectionStart === el.selectionEnd) {
+        const r = chipKey(input, chips, el.selectionStart, e.key);
+        if (r) {
+          e.preventDefault();
+          if (r.text !== input) {
+            el.value = r.text;
+            el.setSelectionRange(r.caret, r.caret);
+            onInputChange(r.text);
+          } else el.setSelectionRange(r.caret, r.caret);
+          return;
+        }
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       // Never fire mid-IME-composition (e.g. CJK candidate selection) — the
       // Enter that commits a composition must not send the message.
@@ -315,6 +346,27 @@ export function Composer() {
     const mentions = useDraft.getState().mentions;
     if (mentions.length) setMentions((prev) => prev.filter((m) => new RegExp(`(^|\\s)@${escapeRegExp(m.name)}(?![\\w./-])`).test(v)));
   };
+
+  // The caret never rests inside a chip: a click or a jump that lands in one goes to its nearer edge.
+  const onSelectChips = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    const el = e.currentTarget;
+    if (el.selectionStart !== el.selectionEnd) return;
+    const to = snapCaret(chips, el.selectionStart);
+    if (to !== el.selectionStart) el.setSelectionRange(to, to);
+  };
+  const syncBackdrop = () => {
+    const el = inputRef.current;
+    const b = backdropRef.current;
+    if (el && b) b.scrollTop = el.scrollTop;
+  };
+  useLayoutEffect(() => {
+    // The box's scrollbar (past the height cap) narrows its text: the drawing narrows with it.
+    const el = inputRef.current;
+    const b = backdropRef.current;
+    if (!el || !b) return;
+    b.style.borderRight = `${el.offsetWidth - el.clientWidth}px solid transparent`;
+    b.scrollTop = el.scrollTop;
+  });
 
   const pickSkill = (name: string) => {
     if (!skillMention) {
@@ -463,7 +515,7 @@ export function Composer() {
               onHover={setFileMentionIdx}
               rows={matchedFiles.map((f) => ({
                 key: f.path,
-                icon: <MentionIcon hit={f} />,
+                icon: <FileTypeIcon path={f.path} isDir={f.isDir} className="mention-ic" />,
                 name: (
                   <>
                     <Lit text={f.name} idx={f.ni} />
@@ -569,22 +621,38 @@ export function Composer() {
                 </>
               )}
             </div>
-            <Textarea
-              data-perf-target="composer"
-              ref={inputRef}
-              value={input}
-              onChange={(e) => onInputChange(e.target.value)}
-              onKeyDown={onKey}
-              onPaste={onPaste}
-              placeholder={placeholder}
-              disabled={!ready && !boxDown}
-              rows={1}
-              className={cn(
-                "composer-input border-0 bg-transparent min-h-0 max-h-[200px] overflow-y-hidden focus-visible:ring-0 shadow-none !py-2",
-                voiceMode || voiceNotice ? (chatFullscreen ? "!pr-52" : "!pr-40") : chatFullscreen && voiceError ? "!pr-32" : "!pr-20",
-                "!pl-11",
+            <div className="relative w-full min-w-0">
+              {chips.length > 0 && (
+                <ChipBackdrop
+                  ref={backdropRef}
+                  text={input}
+                  chips={chips}
+                  className={cn(
+                    "composer-backdrop text-[13px] leading-relaxed px-3 !py-2 !pl-11",
+                    voiceMode || voiceNotice ? (chatFullscreen ? "!pr-52" : "!pr-40") : chatFullscreen && voiceError ? "!pr-32" : "!pr-20",
+                  )}
+                />
               )}
-            />
+              <Textarea
+                data-perf-target="composer"
+                ref={inputRef}
+                value={input}
+                onChange={(e) => onInputChange(e.target.value)}
+                onKeyDown={onKey}
+                onPaste={onPaste}
+                onSelect={chips.length ? onSelectChips : undefined}
+                onScroll={chips.length ? syncBackdrop : undefined}
+                placeholder={placeholder}
+                disabled={!ready && !boxDown}
+                rows={1}
+                className={cn(
+                  "composer-input border-0 bg-transparent min-h-0 max-h-[200px] overflow-y-hidden focus-visible:ring-0 shadow-none !py-2",
+                  voiceMode || voiceNotice ? (chatFullscreen ? "!pr-52" : "!pr-40") : chatFullscreen && voiceError ? "!pr-32" : "!pr-20",
+                  "!pl-11",
+                  chips.length > 0 && "composer-chipped",
+                )}
+              />
+            </div>
             <div className="absolute right-3 bottom-2 flex items-center gap-1">
               {/* Mute, by the composer while voice is on (or where voice went, when it moved to another device). */}
               <VoiceMuteButton />
