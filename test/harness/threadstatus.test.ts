@@ -1,6 +1,6 @@
 // A place's bar (Carl's option B): chevron, icon, name and "+" only, no hover icons. While it works a spinner
-// takes the icon's spot (no trailing gutter); finished unseen, the dot sits in a trailing gutter that is there
-// only then.
+// takes the icon's spot; finished unseen, the dot follows the name inside the toggle. The row's padding is the
+// same in every state, so the "+" never moves.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
@@ -25,7 +25,8 @@ for (const type of ["main", "project"] as const) {
           ...(actions === "notes" || actions === "both" ? { onNotes: () => {} } : {}),
           ...(actions === "menu" || actions === "both" ? { onRename: async () => {}, onDelete: async () => {} } : {}),
         }));
-        assert.match(html, state === "unread" ? /relative flex items-center gap-1 group pr-7/ : /relative flex items-center gap-1 group pr-1\.5/);
+        assert.match(html, /relative flex items-center gap-1 group pr-1\.5/);
+        assert.doesNotMatch(html, /group pr-7/);
         assert.match(html, /truncate flex-1/);
         assert.equal(html.includes('data-el="working"'), state === "running");
         assert.equal(html.includes('title="Done — unseen" role="img"'), state === "unread");

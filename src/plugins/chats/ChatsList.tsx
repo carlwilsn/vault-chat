@@ -352,9 +352,9 @@ export function ThreadRow({
             }
           : undefined
       }
-      // The trailing gutter only while the unseen dot is there (Carl: too much space on the right); a working
-      // place shows its spinner where its icon was, so an idle or working bar ends at its "+".
-      className={cn("relative flex items-center gap-1 group", !running && unread ? "pr-7" : "pr-1.5", active ? "bg-accent" : "hover:bg-accent/40")}
+      // The same padding in every state, so the "+" sits at one x on every row (Carl: it jumped left on a row
+      // with unseen chats). A working place shows its spinner where its icon was; the unseen dot follows the name.
+      className={cn("relative flex items-center gap-1 group pr-1.5", active ? "bg-accent" : "hover:bg-accent/40")}
     >
       <button data-offer="app/chats.expand"
         data-el="place-toggle"
@@ -383,7 +383,7 @@ export function ThreadRow({
           {name}
         </span>
         {!running && unread ? (
-          <span className="absolute right-4 top-1/2 -translate-y-1/2 h-1.5 w-1.5 rounded-full bg-primary" title="Done — unseen" role="img" aria-label="Done — unseen" />
+          <span className="shrink-0 h-1.5 w-1.5 rounded-full bg-primary" title="Done — unseen" role="img" aria-label="Done — unseen" />
         ) : null}
       </button>
       {hasMenu && menu && (
