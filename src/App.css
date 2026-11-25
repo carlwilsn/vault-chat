@@ -599,6 +599,14 @@ input[type="number"]::-webkit-outer-spin-button {
   cursor: ns-resize !important;
 }
 
+/* Every split (allotment) keeps its own layers to itself: its sashes sit at z-index 35 and their hover/drag colour is
+   --focus-border (white in graphite and high contrast), so without this a sash under an open overlay (the Chats
+   overlay at z-30, Notes, a note popup) painted a white full-height line through it and still took the mouse (11-24).
+   As its own stacking context the whole layout is one layer: whatever floats over it covers all of it. */
+[class*="allotment-module_splitView__"] {
+  isolation: isolate;
+}
+
 /* Show / ScrollTo: the line range it landed on, flashed for a moment (Monaco, CodeView, notebook cells). */
 .vc-line-flash { background: rgba(250, 204, 21, 0.28); transition: background 0.6s; }
 .vc-cell-flash { outline: 2px solid rgba(250, 204, 21, 0.7); outline-offset: 4px; border-radius: 6px; }
