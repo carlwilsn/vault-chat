@@ -130,6 +130,9 @@ export default function App() {
   const vaultPath = useStore((s) => s.vaultPath);
   const fitWidth = useMemo(() => computeFitWidth(files), [files]);
   const leftMax = Math.max(fitWidth, 600);
+  // A narrow window (snapped to half the screen: 768 px at 125% on a 1920 screen) gets smaller column minimums, so
+  // the three columns fit inside the window instead of running off its right edge (160+340+320 = 820 px did).
+  const narrow = useNarrowWindow();
   const layoutRef = useRef<AllotmentHandle>(null);
   // The sashes' own resize, for box:workspace's resize (src/layoutOps.ts): what dragging them does.
   useEffect(() => registerOuterResize((sizes) => layoutRef.current?.resize(sizes)), []);
@@ -543,16 +546,16 @@ export default function App() {
             key here remounted ChatPane, discarded its draft and reader scroll,
             and rebuilt the entire historical transcript for a file operation. */}
         <Allotment ref={layoutRef} key={popoutOpen ? "pop" : "dock"} proportionalLayout={false} onChange={sashMoved}>
-          <Allotment.Pane preferredSize={fitWidth} minSize={160} maxSize={leftMax} visible={!leftCollapsed} snap>
+          <Allotment.Pane preferredSize={fitWidth} minSize={narrow ? 120 : 160} maxSize={leftMax} visible={!leftCollapsed} snap>
             <FileTree />
           </Allotment.Pane>
-          <Allotment.Pane minSize={340} priority={LayoutPriority.High}>
+          <Allotment.Pane minSize={narrow ? 200 : 340} priority={LayoutPriority.High}>
             {showSettings && chatHidden ? <SettingsPane /> : <MarkdownArea />}
           </Allotment.Pane>
           {/* Dropping the pane entirely while popped out — visible=false
               still leaves a sash the user can grab at the screen edge. */}
           {!popoutOpen && (
-            <Allotment.Pane preferredSize={440} minSize={320} visible={!rightCollapsed} snap>
+            <Allotment.Pane preferredSize={440} minSize={narrow ? 260 : 320} visible={!rightCollapsed} snap>
               <ChatPane />
             </Allotment.Pane>
           )}
@@ -562,6 +565,18 @@ export default function App() {
     </div>
     </>
   );
+}
+
+/** Below 900 px the window is narrow (the docked layout's column minimums shrink), following its live width. */
+function useNarrowWindow(): boolean {
+  const narrowNow = () => typeof window !== "undefined" && window.innerWidth < 900;
+  const [narrow, setNarrow] = useState(narrowNow);
+  useEffect(() => {
+    const on = () => setNarrow(narrowNow());
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
+  }, []);
+  return narrow;
 }
 
 let measureCtx: CanvasRenderingContext2D | null | undefined;
