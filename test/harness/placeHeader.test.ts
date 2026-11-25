@@ -1,6 +1,7 @@
-// A place's header bar only shows or hides its chats, and its "+" sits at the
+// A project's header bar only shows or hides its chats, and its "+" sits at the
 // header's right end (not on a line under the chats). The same ThreadRow is the
-// chat pane's list and the fullscreen chat's sidebar.
+// chat pane's list and the fullscreen chat's sidebar. The chats without a project have
+// no bar (Carl's design E2): "New chat" on top starts one (chatsPlugin.test.ts).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
@@ -10,7 +11,7 @@ import { installFakeTauri, makeTempVault } from "./fakes.ts";
 installFakeTauri(makeTempVault("vc-placeheader-"));
 const { ThreadRow } = await import("../../src/plugins/chats/ChatsList.tsx");
 
-for (const type of ["main", "project"] as const) {
+for (const type of ["project"] as const) {
   test(`${type}: the header toggles, and its + is in the header row`, () => {
     const html = renderToStaticMarkup(
       createElement(ThreadRow, {
@@ -32,7 +33,7 @@ for (const type of ["main", "project"] as const) {
   });
 }
 
-for (const [kind, opened, expectSpinner] of [["project", true, false], ["project", false, true], ["main", true, false], ["main", false, true]] as const) {
+for (const [kind, opened, expectSpinner] of [["project", true, false], ["project", false, true]] as const) {
   test(`${kind} ${opened ? "expanded" : "collapsed"}: its loader ${expectSpinner ? "shows" : "is hidden"} while a chat works`, () => {
     const html = renderToStaticMarkup(
       createElement(ThreadRow, {

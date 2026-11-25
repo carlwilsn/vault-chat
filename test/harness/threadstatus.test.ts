@@ -10,7 +10,8 @@ import { installFakeTauri, makeTempVault } from "./fakes.ts";
 installFakeTauri(makeTempVault("vc-threadstatus-"));
 const { ThreadRow } = await import("../../src/plugins/chats/ChatsList.tsx");
 
-for (const type of ["main", "project"] as const) {
+// The chats without a project have no bar (Carl's design E2): only projects have one.
+for (const type of ["project"] as const) {
   for (const state of ["running", "unread", "idle"] as const) {
     for (const actions of ["none", "notes", "menu", "both"] as const) {
       test(`${type}: ${state}, ${actions} — spinner in the icon's spot, dot only when unseen, no hover icons`, () => {

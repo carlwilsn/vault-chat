@@ -14,10 +14,10 @@ test("a chat row is a plain button: no checkbox, no pressed state, per-row delet
   const html = renderToStaticMarkup(
     createElement(ThreadRow, {
       entry: {
-        type: "main", id: "main", title: "Main", slug: "", active: true, running: false, unread: false,
+        type: "project", id: "project-x", title: "X", slug: "x", active: true, running: false, unread: false,
         chats: [{ id: "c1", title: "A chat", active: false, running: false, unread: false, at: 1 }],
       } as any,
-      name: "Main",
+      name: "X",
       onOpenChat: () => {},
       deleteOne: async () => null,
     }),

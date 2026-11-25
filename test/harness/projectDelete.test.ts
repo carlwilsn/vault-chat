@@ -69,10 +69,9 @@ test("a place's bar shows no hover icons (Carl's option B): its menu is on right
         ...more,
       }),
     );
-  const main = row("main", "main", { onNotes: () => {}, onNewChat: () => {} });
-  assert.ok(main.includes('data-el="thread-main"'));
   const proj = row("project", "project-coconut", { onNotes: () => {}, onRename: async () => {}, onDelete: async () => {}, onNewChat: () => {} });
-  for (const html of [main, proj]) {
+  assert.ok(proj.includes('data-el="thread-project"'));
+  for (const html of [proj]) {
     assert.ok(!html.includes('data-el="project-menu"'), "no ⋯ button");
     assert.ok(!html.includes('data-el="project-notes"'), "no notes button");
     assert.ok(!html.includes('data-el="project-menu-list"'), "the menu is shut until a right-click");

@@ -1,9 +1,10 @@
 // The chat list (Stage 2, Track 1: the second part of the app to become a plugin; src/plugins/chats/index.tsx mounts
-// it): Main and the projects as places that open into their chats, "Show more", spinners and the unseen dot, the
-// right-click menus (rename, delete) and "+ New project". Two surfaces show the same list: the overlay from the
+// it): "New chat" on top, the chats without a project under it, then the projects as places that open into their
+// chats, "Show more", spinners and the unseen dot, the right-click menus (rename, delete) and "New project" (Carl's
+// design E2, 2026-11-24: no "Chats" header, no Main row). Two surfaces show the same list: the overlay from the
 // chat pane's chats button (ChatsOverlay) and fullscreen chat's left sidebar (ChatsSidebarView).
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MessageSquare, Plus, X as XIcon, Folder, PanelLeftClose, Home, ChevronRight } from "lucide-react";
+import { Plus, X as XIcon, Folder, FolderPlus, PanelLeftClose, ChevronRight } from "lucide-react";
 import { useStore } from "../../store";
 import { useProjects } from "../../ProjectChip";
 import { newChatIn } from "../../chat-controller";
@@ -105,10 +106,10 @@ export function ChatsSidebarView() {
 }
 
 /**
- * The left panel (src/threads.ts panelModel): the vault's main on its own at the top, then the
- * projects under a small "Projects" label and "+ New project". Each is a place that opens into its
- * chats, newest first, with "New chat" under them — the place Carl is in is open, the rest are shut
- * until he asks. Nothing else: no older chats (their files stay on disk; the agent reads them with
+ * The left panel (src/threads.ts panelModel): "New chat" (with the surface's close / hide at its right end), the
+ * chats without a project (the model's "main" place) listed flush, always shown, then a line, the projects under a
+ * small "Projects" label and "New project". Each project is a place that opens into its chats, newest first — the
+ * place Carl is in is open, the rest are shut until he asks. Nothing else: no older chats (their files stay on disk; the agent reads them with
  * its tools), no memory viewer (memory works behind the scenes; Carl: "if there is a failure, i will
  * tell you to fix it").
  */
@@ -120,7 +121,7 @@ export function ThreadsList({
   /** after a thread is picked or started (the overlay closes; the sidebar stays) */
   onPicked?: () => void;
   onFocusComposer?: () => void;
-  /** the header's last control: close (overlay) or hide (sidebar) */
+  /** the top line's last control: close (overlay) or hide (sidebar) */
   trailing: React.ReactNode;
 }) {
   const conversations = useStore((s) => s.conversations);
@@ -165,46 +166,41 @@ export function ThreadsList({
 
   return (
     <>
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border/60">
-        <div className="flex items-center gap-2">
-          <MessageSquare className="h-3.5 w-3.5 text-muted-foreground" />
-          <span className="text-[13px] font-semibold">Chats</span>
-        </div>
-        <div className="flex items-center gap-1 relative">
-          {trailing}
-        </div>
+      <div className="flex items-center gap-1 pl-2 pr-1.5 pt-2 pb-1 shrink-0">
+        <button data-offer="app/chats.newChat"
+          data-el="chats-new-chat"
+          onClick={() => {
+            newChatIn("main");
+            focusChat();
+          }}
+          className="group/new flex-1 flex items-center gap-2 px-2 py-1.5 rounded-md text-[12.5px] font-medium text-foreground hover:bg-accent/60 min-w-0"
+        >
+          <Plus className="h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover/new:text-foreground" />
+          New chat
+        </button>
+        {trailing}
       </div>
 
       <div className="flex-1 overflow-auto" data-el="threads">
-        {/* Main: the one conversation, on its own. */}
-        <div className="py-1.5">
-          <ThreadRow
-            entry={main}
-            name="Main"
-            deleteOne={deleteOne}
-            onOpenChat={(id, title) => open(id, title)}
-            onNewChat={() => {
-              newChatIn("main");
-              focusChat();
-            }}
-          />
-        </div>
-        <div className="border-t border-border/60" />
+        {/* The chats without a project: listed flush, always shown. */}
+        <LooseChats entry={main} deleteOne={deleteOne} onOpenChat={(id, title) => open(id, title)} />
+        <div className="mt-2 border-t border-border/60" />
         <div className={label} data-el="projects-label">
           Projects
         </div>
         {entries.map((e) =>
           e.type === "main" ? null : e.type === "new-project" ? (
             naming === null ? (
-              <button data-offer="box:chats.openProject"
-                key="new-project"
-                onClick={() => setNaming("")}
-                data-el="new-project"
-                className="w-full px-4 pt-2 pb-1 flex items-center gap-1.5 text-[11.5px] text-muted-foreground/80 hover:text-foreground"
-              >
-                <Plus className="h-3 w-3" />
-                New project
-              </button>
+              <div key="new-project" className="px-2 pt-1 pb-2">
+                <button data-offer="box:chats.openProject"
+                  onClick={() => setNaming("")}
+                  data-el="new-project"
+                  className="w-full px-2 py-[5px] flex items-center gap-2 rounded-md text-[11.5px] text-muted-foreground/80 hover:text-foreground hover:bg-accent/60"
+                >
+                  <FolderPlus className="h-3 w-3 shrink-0" />
+                  New project
+                </button>
+              </div>
             ) : (
               <NewProjectForm key="new-project" onCancel={() => setNaming(null)} onCreate={(name) => void create(name)} />
             )
@@ -237,11 +233,46 @@ export function ThreadsList({
 }
 
 /**
- * Main (a home, a stronger name) or a project (a folder). At rest and on hover the bar shows only its chevron,
+ * The chats without a project (the model's "main" place), under "New chat": no bar of their own, never collapsed,
+ * flush left, with the same Show more / Show all as a project's list.
+ */
+function LooseChats({
+  entry,
+  onOpenChat,
+  deleteOne,
+}: {
+  entry: Extract<PanelEntry, { type: "main" }>;
+  onOpenChat: (id: string, title: string) => void;
+  deleteOne?: (id: string) => Promise<string | null>;
+}) {
+  const level = useChatLevel(entry.id);
+  // Its Show more is forgotten when the list goes away (panel closed).
+  useEffect(() => () => void chatLevels.delete(entry.id), [entry.id]);
+  const vis = visibleChats(entry.chats, level);
+  return (
+    <div data-el="place-chat-list" data-place={entry.id}>
+      {vis.shown.map((c) => (
+        <ChatItem key={c.id} chat={c} loose onOpen={() => onOpenChat(c.id, c.title)} deleteOne={deleteOne} />
+      ))}
+      {vis.next && (
+        <button data-offer="app/chats.showMore"
+          data-el="place-show-more"
+          data-place={entry.id}
+          onClick={() => chatLevels.set(entry.id, nextChatLevel(entry.chats.length, level))}
+          className="w-full text-left pl-4 py-1 text-[12px] text-muted-foreground/70 hover:text-foreground hover:bg-accent/40"
+        >
+          {vis.next === "more" ? "Show more" : "Show all"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A project (a folder). At rest and on hover the bar shows only its chevron,
  * icon, name and "+" (Carl's option B, 2026-11-08: no hover icons): while the place works a small spinner takes
- * the icon's spot; finished unseen, a dot at the end. Right-click opens a project's menu: Rename (the row
- * becomes its name, Enter keeps it) and "Delete project…" (asked once, right under the row). Main has no menu (its
- * Memory entry went, Carl 11-23: the agent keeps memory with its file tools).
+ * the icon's spot; finished unseen, a dot at the end. Right-click opens its menu: Rename (the row becomes its name,
+ * Enter keeps it) and "Delete project…" (asked once, right under the row).
  *
  * The header bar only shows or hides the place's chats (Carl: clicking it does nothing else — it neither opens
  * the project nor switches chat); a chat is opened from its own row. "+" at the header's right end starts a new
@@ -256,7 +287,7 @@ export function ThreadRow({
   onDelete,
   deleteOne,
 }: {
-  entry: Extract<PanelEntry, { type: "main" | "project" }>;
+  entry: Extract<PanelEntry, { type: "project" }>;
   name: string;
   /** Open one of the place's chats. */
   onOpenChat?: (id: string, title: string) => void;
@@ -269,7 +300,6 @@ export function ThreadRow({
   deleteOne?: (id: string) => Promise<string | null>;
 }) {
   const { active, running, unread } = entry;
-  const isMain = entry.type === "main";
   const chats = entry.chats;
   // Open where Carl is: a place he is in shows its chats; the others stay shut
   // until he asks. His own click wins over that, and is kept (src/placeOpen.ts):
@@ -283,7 +313,7 @@ export function ThreadRow({
   }, [shown, entry.id]);
   // And when the list itself goes away (panel closed). Only then: a level the agent set as it opened the place stays.
   useEffect(() => () => void chatLevels.delete(entry.id), [entry.id]);
-  // A place's spinner (Main's too) shows only while it is collapsed: open, its own chats show theirs (Carl, 2026-11-10, 2026-11-12).
+  // A place's spinner shows only while it is collapsed: open, its own chats show theirs (Carl, 2026-11-10, 2026-11-12).
   const spinning = running && !shown;
   // How far its list is opened ("Show more" / "Show all"): session state, not saved (./view.ts, shared with the offers).
   const level = useChatLevel(entry.id);
@@ -293,7 +323,7 @@ export function ThreadRow({
   const [draft, setDraft] = useState(name);
   const [busy, setBusy] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const canEdit = !isMain && !!(onRename || onDelete);
+  const canEdit = !!(onRename || onDelete);
   const hasMenu = canEdit;
   const press = useLongPress(() => setMenu(true), hasMenu);
   useEffect(() => {
@@ -341,7 +371,7 @@ export function ThreadRow({
   return (
     <>
     <div
-      data-el={isMain ? "thread-main" : "thread-project"}
+      data-el="thread-project"
       data-thread={entry.id}
       {...press}
       onContextMenu={
@@ -362,22 +392,20 @@ export function ThreadRow({
         onClick={() => setOpened(!shown)}
         aria-label={shown ? `Hide ${name}'s chats` : `Show ${name}'s chats`}
         aria-expanded={shown}
-        className={cn("flex-1 text-left px-4 flex items-center min-w-0", isMain ? "py-2 gap-2.5" : "py-1.5 gap-2")}
+        className="flex-1 text-left px-4 py-1.5 gap-2 flex items-center min-w-0"
       >
         <span data-el="place-chats" className="shrink-0 -ml-2 mr-0.5 h-4 w-4 flex items-center justify-center rounded text-muted-foreground">
           <ChevronRight className={cn("h-3 w-3 transition-transform", shown && "rotate-90")} />
         </span>
         {spinning ? (
-          <Spinner className={isMain ? "h-3.5 w-3.5" : "h-3 w-3"} />
-        ) : isMain ? (
-          <Home className="h-3.5 w-3.5 text-foreground/80 shrink-0" />
+          <Spinner className="h-3 w-3" />
         ) : (
           <Folder className="h-3 w-3 text-muted-foreground shrink-0" />
         )}
         <span
           className={cn(
-            "truncate flex-1",
-            isMain ? "text-[13px] font-semibold text-foreground" : cn("text-[12.5px]", active ? "text-foreground font-medium" : running || unread ? "text-foreground" : "text-foreground/80"),
+            "truncate flex-1 text-[12.5px]",
+            active ? "text-foreground font-medium" : running || unread ? "text-foreground" : "text-foreground/80",
           )}
         >
           {name}
@@ -536,7 +564,8 @@ function MenuItem({ el, danger, onClick, children }: { el: string; danger?: bool
  * One chat under its place. Nothing on hover (Carl's option B): a spinner at the right end while it works, the
  * dot when it finished unseen. Right-click: Rename (the row becomes its name) and Delete chat (asked once).
  */
-function ChatItem({ chat: c, onOpen, deleteOne }: { chat: PanelChat; onOpen: () => void; deleteOne?: (id: string) => Promise<string | null> }) {
+/** `loose`: a chat without a project, flush left under "New chat" (a project's chats are indented under its bar). */
+function ChatItem({ chat: c, loose, onOpen, deleteOne }: { chat: PanelChat; loose?: boolean; onOpen: () => void; deleteOne?: (id: string) => Promise<string | null> }) {
   const [confirm, setConfirm] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(c.title);
@@ -578,7 +607,7 @@ function ChatItem({ chat: c, onOpen, deleteOne }: { chat: PanelChat; onOpen: () 
   };
   if (renaming)
     return (
-      <div className="pl-9 pr-3 py-0.5" data-el="chat-rename" data-chat={c.id}>
+      <div className={cn(loose ? "pl-2" : "pl-9", "pr-3 py-0.5")} data-el="chat-rename" data-chat={c.id}>
         <input data-offer="box:chats.rename"
           autoFocus
           value={draft}
@@ -616,8 +645,9 @@ function ChatItem({ chat: c, onOpen, deleteOne }: { chat: PanelChat; onOpen: () 
           data-chat={c.id}
           onClick={onOpen}
           className={cn(
-            "relative w-full text-left pl-11 py-1 flex items-center gap-2 text-[12px] min-w-0",
+            "relative w-full text-left py-1 flex items-center gap-2 text-[12px] min-w-0",
             // Room at the right only for what is there: the spinner while it works, the dot when unseen.
+            loose ? "pl-4" : "pl-11",
             c.running || c.unread ? "pr-7" : "pr-3",
             c.active ? "bg-accent text-foreground font-medium" : "hover:bg-accent/40 text-foreground/75",
           )}
@@ -635,7 +665,7 @@ function ChatItem({ chat: c, onOpen, deleteOne }: { chat: PanelChat; onOpen: () 
           <div
             ref={menuRef}
             data-el="chat-menu"
-            style={{ left: Math.max(24, menu.x), top: menu.y + 4 }}
+            style={{ left: Math.max(loose ? 8 : 24, menu.x), top: menu.y + 4 }}
             className="absolute z-30 min-w-[150px] p-1 rounded-lg border border-border bg-popover shadow-lg text-[12px]"
           >
             <MenuItem data-offer="box:chats.rename"
@@ -666,10 +696,10 @@ function ChatItem({ chat: c, onOpen, deleteOne }: { chat: PanelChat; onOpen: () 
             )}
           </div>
         )}
-        {err && !confirm && <div className="pl-11 pr-3 pb-1 text-[11px] text-destructive">Not renamed: {err}</div>}
+        {err && !confirm && <div className={cn(loose ? "pl-4" : "pl-11", "pr-3 pb-1 text-[11px] text-destructive")}>Not renamed: {err}</div>}
       </div>
       {confirm && (
-        <div data-el="chat-delete-confirm" data-chat={c.id} className="ml-9 mr-3 my-1 px-3 py-2 rounded-md border border-border bg-muted/40 text-[12px]">
+        <div data-el="chat-delete-confirm" data-chat={c.id} className={cn(loose ? "ml-2" : "ml-9", "mr-3 my-1 px-3 py-2 rounded-md border border-border bg-muted/40 text-[12px]")}>
           <div className="text-foreground/90 leading-snug">
             Delete <span className="font-medium">{c.title}</span>? The agent can bring it back if you ask.
           </div>

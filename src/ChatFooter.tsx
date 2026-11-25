@@ -66,7 +66,7 @@ export function ChatFooterTools({ ready, archived }: { ready: boolean; archived:
           onClick={toggleChatsPanel}
           className={`relative flex items-center gap-1 text-[11px] hover:text-foreground transition-colors ${chatsShown ? "text-foreground" : "text-muted-foreground"}`}
           data-el="chats-toggle"
-          title="Chats — Main and your projects, and what's running"
+          title="Chats — your chats and projects, and what's running"
           aria-label="Chats"
         >
           <MessageSquare className="h-3 w-3" />

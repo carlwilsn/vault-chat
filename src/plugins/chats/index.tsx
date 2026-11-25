@@ -49,8 +49,9 @@ async function model(fresh = true): Promise<{ places: Place[]; projects: Project
   return { places: entries.filter((e): e is Place => e.type !== "new-project"), projects };
 }
 
-/** Whether a place shows its chats: Carl's own choice, else open where he is (ThreadRow's rule). */
-const expanded = (p: Place) => placeOpen(S().vaultPath, p.id) ?? p.active;
+/** Whether a place shows its chats: the chats without a project (main) always do (they have no bar to shut, Carl's
+ *  design E2); a project: Carl's own choice, else open where he is (ThreadRow's rule). */
+const expanded = (p: Place) => p.type === "main" || (placeOpen(S().vaultPath, p.id) ?? p.active);
 
 /** The place a word names: "main", a project's slug, its name, or its thread's id. */
 async function placeNamed(word: unknown): Promise<Place> {
@@ -115,7 +116,7 @@ export function chatsOffers() {
     state: {
       places: {
         description:
-          "Main and each project, in the list's order: place (main or the project's slug), name, expanded, here (the open chat is in it), working, unseen, chats (how many), shown (the chats the list shows when expanded, newest first: id, title, open?, working?, unseen?), showMore (what the row under them says: more | all | null) and hidden.",
+          "The chats without a project (place main, listed at the top under New chat, always expanded) and each project, in the list's order: place (main or the project's slug), name, expanded, here (the open chat is in it), working, unseen, chats (how many), shown (the chats the list shows when expanded, newest first: id, title, open?, working?, unseen?), showMore (what the row under them says: more | all | null) and hidden.",
         read: async () => (await model(false)).places.map(placeRow),
       },
       selected: {
@@ -155,10 +156,14 @@ export function chatsOffers() {
         },
       },
       collapse: {
-        description: "Hide a place's chats (it also forgets its Show more).",
+        description: "Hide a project's chats (it also forgets its Show more). The chats without a project (main) always show.",
         args: PLACE,
         run: async (a: Record<string, unknown>) => {
           const p = await placeNamed(a.place);
+          if (p.type === "main") {
+            chatLevels.delete(p.id);
+            return { expanded: true, note: "the chats without a project always show; their Show more is reset" };
+          }
           setPlaceOpen(S().vaultPath, p.id, false);
           chatLevels.delete(p.id);
           return { expanded: false };
@@ -186,7 +191,7 @@ export function chatsOffers() {
         },
       },
       newChat: {
-        description: "Start a fresh, empty chat on screen (a place's +, the footer's New chat): in a place, or left out where Carl is. It opens in the chat pane. Renaming, deleting and restoring chats and projects, and a new chat with a first message, are box:chats.",
+        description: "Start a fresh, empty chat on screen (the list's top New chat is place main; a project's +): in a place, or left out where Carl is. It opens in the chat pane. Renaming, deleting and restoring chats and projects, and a new chat with a first message, are box:chats.",
         args: { type: "object", properties: { place: PLACE.properties.place }, additionalProperties: false },
         run: async (a: Record<string, unknown>) => {
           const p = a.place === undefined ? null : await placeNamed(a.place);

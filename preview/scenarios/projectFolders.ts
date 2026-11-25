@@ -47,6 +47,15 @@ const manyChats = () => {
       meta: { kind: "separate", project: "psych-221", lastActivityAt: Date.parse("2026-10-27T09:00:00") - i * 3_600_000 },
       messages: [{ role: "user", content: `Question ${i}` }, { role: "assistant", content: `Answer ${i}` }],
     };
+  // And 7 chats without a project: listed flush under "New chat" (5, then Show more).
+  ["HBR Effectuation Article Discussion", "Vault chat status and answer sheet", "Work: Deep audit and cut plan", "Work: Stateless redesign", "Notes on psych reading", "Spectral clustering recap", "BitNet writeup outline"].forEach((title, i) => {
+    convs[`loose-chat-${i + 1}`] = {
+      title,
+      source: "manual",
+      meta: { kind: "separate", lastActivityAt: Date.parse("2026-10-27T09:30:00") - i * 3_600_000 },
+      messages: [{ role: "user", content: title }, { role: "assistant", content: "Sure." }],
+    };
+  });
   return { sync: { box: BOX, boxChat: { convs, live: true } } };
 };
 
@@ -81,7 +90,7 @@ export const projectFolderScenarios: Scenario[] = [
     group: "Projects",
     clock: "2026-10-27T10:00:00",
     notes:
-      "Box mode. Psych 221 holds 14 chats. Its list shows the 5 newest and a quiet “Show more”; that reveals 5 more (10), then the row says “Show all” and reveals the rest. 5 or fewer chats: no row; 10 or fewer: one step. The open chat and any chat working or unseen always stay visible. Resets on reload.",
+      "Box mode. Seven chats without a project sit under New chat (5 and Show more). Psych 221 holds 14 chats. Its list shows the 5 newest and a quiet “Show more”; that reveals 5 more (10), then the row says “Show all” and reveals the rest. 5 or fewer chats: no row; 10 or fewer: one step. The open chat and any chat working or unseen always stay visible. Resets on reload.",
     build: P3.build,
     host: manyChats,
     open: [openPanel, { sleep: 500 }],

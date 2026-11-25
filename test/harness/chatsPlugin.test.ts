@@ -104,7 +104,13 @@ test("mounted through the host (the sidebar surface), it renders the list and de
   assert.equal(handle.error, null);
   await waitFor("the list renders its places", () => html(host).includes('data-el="thread-project"') && html(host).includes("Physics"));
   assert.match(html(host), /data-el="chats-sidebar"/);
-  assert.match(html(host), /data-el="thread-main"/);
+  // Carl's design E2: no "Chats" header and no Main row; "New chat" on top, then the chats without a project, flush.
+  const h = html(host);
+  assert.match(h, /data-el="chats-new-chat"/);
+  assert.ok(h.indexOf('data-el="chats-new-chat"') < h.indexOf('data-chat="m0"') && h.indexOf('data-chat="m0"') < h.indexOf('data-el="projects-label"'));
+  assert.ok(!h.includes('data-el="thread-main"') && !h.includes(">Chats<") && !h.includes(">Main<"), "no header, no Main row");
+  assert.match(h, /data-chat="m0"[^>]*class="[^"]*pl-4|class="[^"]*pl-4[^"]*"[^>]*data-chat="m0"/, "flush left");
+  assert.match(h, /data-el="new-project"/);
   const d = listOffers().find((p) => p.id === "app/chats")!;
   assert.ok(d, "listed while it runs");
   assert.equal(d.name, "Chats");
@@ -144,7 +150,9 @@ test("act round trip: expand a project, open its chat, show more on Main; the li
   assert.deepEqual(r.state!.selected, { id: "p1", title: "Kinematics", place: "physics" });
   await waitFor("p1's row is active", () => /data-chat="p1"[^>]*class="[^"]*bg-accent text-foreground/.test(html(host)) || /class="[^"]*bg-accent text-foreground[^"]*"[^>]*data-chat="p1"/.test(html(host)));
 
-  // Show more on Main (shut now: Carl is in Physics): it opens, and its 8 chats are all shown; the Show more row goes.
+  // The chats without a project always show (no bar to shut), even while Carl is in Physics.
+  assert.ok(html(host).includes('data-chat="m0"'));
+  // Show more on them: their 8 chats are all shown; the Show more row goes.
   assert.ok(!html(host).includes('data-chat="m5"'));
   const m = await actOffers("chats", "showMore", { place: "main" });
   assert.equal(m.ok, true, m.error);
@@ -173,6 +181,10 @@ test("actions on the list: new chat in a place, renames and deletes are box:chat
   assert.equal(S().activeConversationId, id);
   r = await actOffers("chats", "rename", { id: "m3", title: "Lab report" });
   assert.equal(r.ok, false, "renaming is box:chats rename");
+  // The chats without a project have no bar to shut: collapse leaves them shown.
+  r = await actOffers("chats", "collapse", { place: "main" });
+  assert.equal(r.ok, true, r.error);
+  assert.equal((r.state!.places as any[])[0].expanded, true);
   r = await actOffers("chats", "expand", { place: "nowhere" });
   assert.match(r.error!, /no place "nowhere"/);
   r = await actOffers("chats", "open", { id: "zzz" });
@@ -255,7 +267,7 @@ test("a plugin that throws on mount: the fallback list stands in (no error card)
   assert.match(html(container), /data-chat="m0"/);
   fail = false;
   retry!();
-  await waitFor("the plugin again", () => html(container).includes('data-el="chats-sidebar"') && html(container).includes('data-el="thread-main"'));
+  await waitFor("the plugin again", () => html(container).includes('data-el="chats-sidebar"') && html(container).includes('data-el="chats-new-chat"'));
   root.unmount();
   await tick();
 });
