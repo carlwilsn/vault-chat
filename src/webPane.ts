@@ -148,6 +148,10 @@ export async function webPageAct(what: WebPageDo | WebDriveDo, side?: PaneSide, 
   return { ok: true };
 }
 
+/** How long the step waits for the agent's cursor to reach the element (its glide is 150 ms; the ring and the fade run on
+ *  their own). Back-to-back steps: the cursor jumps along. */
+export const POINT_MS = 150;
+
 export type DriveArgs = { ref?: unknown; text?: unknown; value?: unknown; enter?: unknown; by?: unknown };
 
 /** One step inside a public page, then the page read again (the noun's panes[].page carries it back). */
@@ -174,6 +178,12 @@ async function drivePage(h: WebPaneHandle, what: WebDriveDo, a: DriveArgs, pageU
     }
     const op = driveOpFor(what, a);
     if (typeof op === "string") return { ok: false, error: op };
+    // Carl sees it coming: the agent's cursor glides to the element first (src/webDrive.ts point), then it acts.
+    if ("ref" in op || "text" in op) {
+      const at = await h.drive({ op: "point", ...("ref" in op && op.ref ? { ref: op.ref } : { text: (op as { text?: string }).text }) });
+      if (at.error) return { ok: false, error: String(at.error) };
+      await new Promise((r) => setTimeout(r, POINT_MS));
+    }
     const ans = await h.drive(op);
     if (ans.error) return { ok: false, error: String(ans.error) };
     await h.read(true);

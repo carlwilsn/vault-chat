@@ -264,6 +264,8 @@ test("a public page is driven: read with refs, click / type / scroll / select th
     assert.deepEqual(steps.at(-1), { op: "type", ref: "e1", value: "carl@example.com", enter: true });
     r = await Layout({ action: "webPage", do: "click", text: "Sign in" });
     assert.equal(r.ok, true, r.text);
+    // Carl watches it: the agent's cursor goes to the element first, then the click.
+    assert.deepEqual(steps.slice(-2), [{ op: "point", text: "Sign in" }, { op: "click", text: "Sign in" }]);
     assert.equal(layoutOf(r.text).panes[0].page.text, "Welcome", "read back after the click");
     r = await Layout({ action: "webPage", do: "scroll", by: "bottom" });
     assert.deepEqual(steps.at(-1), { op: "scroll", by: "bottom" });
@@ -303,7 +305,7 @@ test("a public page is driven: read with refs, click / type / scroll / select th
   await Layout({ action: "closePane" });
 
   // The page script itself: valid JS for every step, and typed text kept exactly ("$&" is not a replacement pattern).
-  for (const op of [{ op: "read" }, { op: "click", text: "a" }, { op: "type", ref: "e1", value: "x$&y'\"</script>", enter: true }, { op: "scroll", by: -200 }, { op: "describe", ref: "e1" }, { op: "pickStart" }, { op: "pickPoll" }, { op: "pickStop" }] as const) {
+  for (const op of [{ op: "read" }, { op: "click", text: "a" }, { op: "type", ref: "e1", value: "x$&y'\"</script>", enter: true }, { op: "scroll", by: -200 }, { op: "describe", ref: "e1" }, { op: "point", ref: "e1" }, { op: "pickStart" }, { op: "pickPoll" }, { op: "pickStop" }] as const) {
     const js = driveScript(op as never);
     assert.doesNotThrow(() => new Function(js), `${op.op}: the script parses`);
     assert.ok(js.includes(JSON.stringify(op)), `${op.op}: the op is in the script as JSON`);

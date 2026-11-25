@@ -15,6 +15,8 @@ export type DriveOp =
   | { op: "type"; ref?: string; text?: string; value: string; enter?: boolean }
   | { op: "scroll"; ref?: string; by?: number | "top" | "bottom" }
   | { op: "describe"; ref: string }
+  /** The agent's cursor glides to the element (and rings it) before a click / type / scroll acts on it. */
+  | { op: "point"; ref?: string; text?: string }
   | { op: "pickStart" }
   | { op: "pickPoll" }
   | { op: "pickStop" };
@@ -162,6 +164,30 @@ function describe(el) {
   var text = secret(el) ? "" : sq(el.innerText || el.textContent || (el.value != null ? el.value : ""), 300);
   return { url: location.href, ref: ref(el), tag: el.tagName.toLowerCase(), label: label(el) || el.tagName.toLowerCase(), text: text, html: sq(c.outerHTML, 400) };
 }
+// The agent's cursor, so Carl watches it act: a dot in the app's accent that glides to the element and rings it, then
+// fades when idle. Outside <body> (not in the page's text), pointer-events none (never in the way of his mouse).
+function point(o) {
+  var el = find(o);
+  el.scrollIntoView({ block: "center", inline: "nearest" });
+  var r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+  var c = st.cursor;
+  if (!c || !c.dot.isConnected) {
+    var dot = d.createElement("div"), ring = d.createElement("div");
+    dot.setAttribute("aria-hidden", "true"); ring.setAttribute("aria-hidden", "true");
+    dot.style.cssText = "position:fixed;left:0;top:0;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;background:#d97757;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35);pointer-events:none;z-index:2147483647;transition:transform .15s ease-out,opacity .3s;opacity:0;transform:translate(" + Math.round(innerWidth / 2) + "px," + Math.round(innerHeight / 2) + "px)";
+    ring.style.cssText = "position:fixed;pointer-events:none;z-index:2147483646;border:2px solid #d97757;border-radius:4px;box-shadow:0 0 0 4px rgba(217,119,87,.25);opacity:0;transition:opacity .3s";
+    d.documentElement.appendChild(ring); d.documentElement.appendChild(dot);
+    c = st.cursor = { dot: dot, ring: ring, t: 0 };
+    void dot.offsetWidth;
+  }
+  c.dot.style.opacity = "1";
+  c.dot.style.transform = "translate(" + Math.round(x) + "px," + Math.round(y) + "px)";
+  c.ring.style.left = (r.left - 3) + "px"; c.ring.style.top = (r.top - 3) + "px"; c.ring.style.width = (r.width + 2) + "px"; c.ring.style.height = (r.height + 2) + "px";
+  c.ring.style.opacity = "1";
+  clearTimeout(c.t);
+  c.t = setTimeout(function () { c.dot.style.opacity = "0"; c.ring.style.opacity = "0"; }, 1500);
+  return { pointed: ref(el) };
+}
 function pickStop() { if (st.stop) st.stop(); st.stop = null; }
 function pickStart() {
   pickStop(); st.pick = null;
@@ -194,6 +220,7 @@ try {
   else if (o.op === "type") out = type(o);
   else if (o.op === "scroll") out = scroll(o);
   else if (o.op === "describe") out = { picked: describe(find(o)) };
+  else if (o.op === "point") out = point(o);
   else if (o.op === "pickStart") out = pickStart();
   else if (o.op === "pickPoll") out = pickPoll();
   else if (o.op === "pickStop") { pickStop(); out = { picking: false }; }
