@@ -26,7 +26,7 @@ for (const type of ["project"] as const) {
           ...(actions === "notes" || actions === "both" ? { onNotes: () => {} } : {}),
           ...(actions === "menu" || actions === "both" ? { onRename: async () => {}, onDelete: async () => {} } : {}),
         }));
-        assert.match(html, /relative flex items-center gap-1 group pr-1\.5/);
+        assert.match(html, /relative flex items-center gap-1 group pr-0\.5/);
         assert.doesNotMatch(html, /group pr-7/);
         assert.match(html, /truncate flex-1/);
         assert.equal(html.includes('data-el="working"'), state === "running");
