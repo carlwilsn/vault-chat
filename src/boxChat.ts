@@ -38,7 +38,7 @@ import { foldSupervisorRecords } from "./pluginSupervisorApp";
 import { foldAppPluginRecords, loadAppPluginStates } from "./appPluginState";
 import type { Conversation } from "./conversations";
 import type { LogRecord, PollAnswer } from "./convlog/protocol";
-import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, type Picture, type RowState } from "./convlog/reduce";
+import { emptyPicture, emptyRow, foldInto, isOpen, pendingOf, reduceRow, type Picture, type RowState } from "./convlog/reduce";
 import { RETRY_TEXT, makeChatView, type ChatView } from "./convlog/view";
 import { subscribeTranslators } from "./convlog/translators";
 import { MAIN_ID, threadKindOf } from "./threads";
@@ -1026,7 +1026,8 @@ class BoxChatSession {
       const o = (this.outgoing.get(convId) ?? []).find((x) => x.id === id);
       if (!o || o.failed || o.now) return;
       const p = this.pics.get(convId);
-      if (p && (p.items.some((x) => x.id === id) || pendingOf(p).some((x) => x.id === id) || p.meta.running)) return;
+      // Not while the conversation is being summarized either: the runtime takes what was queued once the summary lands.
+      if (p && (p.items.some((x) => x.id === id) || pendingOf(p).some((x) => x.id === id) || p.meta.running || p.inflight.some((x) => x.kind === "compaction" && isOpen(x)))) return;
       this.failOutgoing(convId, id, "Not delivered: the turn was stopped before the agent read it.");
     }, DROP_GRACE_MS);
   }

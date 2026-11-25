@@ -637,6 +637,11 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     this.push(live, { text: promptOf(o.texts, o.context), images, priority: "later" }, { text: o.texts.join("\n\n"), request: o.request, images });
   }
 
+  undelivered(threadId: string): string[] {
+    const live = this.live.get(threadId);
+    return live ? [...live.pending.values()].map((m) => m.request?.clientId).filter((id): id is string => !!id) : [];
+  }
+
   async clearQueue(threadId: string): Promise<{ steering: string[]; followUp: string[] }> {
     const live = this.live.get(threadId);
     if (!live) return { steering: [], followUp: [] };

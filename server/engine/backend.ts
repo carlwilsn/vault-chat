@@ -254,6 +254,8 @@ export type EngineBackend = {
   models?(): ModelChoice[];
   /** This runtime holds that thread right now (it can be noted into, forgotten, interrupted). */
   holds(threadId: string): boolean;
+  /** Carl's messages (their client ids) handed to the thread and not consumed yet: they wait for its next turn. */
+  undelivered?(threadId: string): string[];
   /** Drop the thread from this runtime without ending the conversation (the next turn takes it again). */
   forget(threadId: string): void;
   /** Which engine owns this thread, by name. A single backend is always itself;

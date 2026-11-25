@@ -400,7 +400,9 @@ function onLive(d: Draft, r: Extract<LogRecord, { type: "live" }>): void {
     case "compaction_start":
       // Said again (the runtime repeats it while it works, the host says it first): the one line, from when it began.
       if (d.inflight.some((x) => x.kind === "compaction" && isOpen(x))) return;
-      d.inflight = [...d.inflight.filter((x) => x.kind !== "compaction"), { id: `compacting:${r.seq}`, kind: "compaction", status: "streaming", at: r.at }];
+      // One Carl asked for (/compact) is the host's to end (it always does: the divider or why not), so it outlives
+      // the turn it waited behind (closeOpen keeps it).
+      d.inflight = [...d.inflight.filter((x) => x.kind !== "compaction"), { id: `${ev.reason === "manual" ? MANUAL_COMPACTION : "compacting:"}${r.seq}`, kind: "compaction", status: "streaming", at: r.at }];
       return;
     case "compaction_end":
       d.inflight = d.inflight.filter((x) => x.kind !== "compaction");
@@ -419,6 +421,9 @@ function onLive(d: Draft, r: Extract<LogRecord, { type: "live" }>): void {
   }
 }
 
+/** The id prefix of a compaction Carl asked for (/compact): open until the host ends it, across a turn's end. */
+const MANUAL_COMPACTION = "compacting:manual:";
+
 /** The turn is over: what was in flight and never written stays, closed (a stop, a crash); nothing streams or runs forever. */
 function closeOpen(d: Draft): void {
   // The turn ended on a failed request (every retry failed too): one line, the last failure, said once.
@@ -433,7 +438,7 @@ function closeOpen(d: Draft): void {
   if (d.inflight.length) {
     const kept = d.inflight.filter((x) => x.kind !== "compaction" && !(x.kind === "notice" && x.id.startsWith("retry:")) && (x.kind !== "assistant" || (x.text ?? "").trim()));
     for (const it of kept) d.items.push({ ...it, status: isOpen(it) ? "stopped" : it.status });
-    d.inflight = [];
+    d.inflight = d.inflight.filter((x) => x.kind === "compaction" && x.id.startsWith(MANUAL_COMPACTION));
     d.inflightTs = null;
   }
   d.items.forEach((it, i) => {

@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { tmp, cleanup } from "./helpers";
 import { withPiSessions } from "./fakeSession";
 import { assistant, piOf, userMsg } from "./fakePi";
+import { appendEntries } from "../convlog/piSession";
 import type {
   BackendEvent,
   Detached,
@@ -45,6 +46,10 @@ class ContractBackend extends EventEmitter implements EngineBackend {
   turns: { threadId: string; texts: string[]; model: string }[] = [];
   steers: { threadId: string; texts: string[] }[] = [];
   followUps: { threadId: string; texts: string[] }[] = [];
+  /** Follow-ups handed over and not consumed yet (their client ids): what the runtime keeps for its next turn. */
+  queued = new Set<string>();
+  /** A /compact in progress: it ends when the test says so. */
+  compactGate: (() => void) | null = null;
   interrupts: string[] = [];
   clears = 0;
   private n = 0;
@@ -83,7 +88,12 @@ class ContractBackend extends EventEmitter implements EngineBackend {
     return false;
   }
   async compact(_threadId: string): Promise<{ tokensBefore?: number; summary?: string }> {
+    await new Promise<void>((r) => (this.compactGate = r));
+    this.compactGate = null;
     return {};
+  }
+  undelivered(_threadId: string): string[] {
+    return [...this.queued];
   }
 
   async startTurn(threadId: string, o: { texts: string[]; model: string }) {
@@ -93,11 +103,13 @@ class ContractBackend extends EventEmitter implements EngineBackend {
   async steer(threadId: string, _turnId: string, o: { texts: string[] }): Promise<void> {
     this.steers.push({ threadId, texts: o.texts });
   }
-  async followUp(threadId: string, o: { texts: string[] }): Promise<void> {
+  async followUp(threadId: string, o: { texts: string[]; request?: { clientId: string } }): Promise<void> {
     this.followUps.push({ threadId, texts: o.texts });
+    if (o.request?.clientId) this.queued.add(o.request.clientId);
   }
   async clearQueue(): Promise<{ steering: string[]; followUp: string[] }> {
     this.clears += 1;
+    this.queued.clear();
     return { steering: [], followUp: [] };
   }
   async interrupt(threadId: string): Promise<void> {
@@ -250,6 +262,43 @@ describe("the EngineBackend contract is the whole boundary", () => {
     expect(backend.interrupts).toContain(tid);
     backend.ev(tid, { kind: "turnCompleted", turnId: "ct-turn-2", status: "interrupted" });
     await until(async () => (await readConv(vault, r.convId))?.state === "idle");
+  });
+
+  it("/compact shows at once, and a message queued behind it waits (never dropped) until the runtime takes it", async () => {
+    // Carl 2026-11-25: /compact sent while a turn ran showed nothing until the turn ended, and his messages queued
+    // meanwhile read "Not delivered" though Claude Code took them right after the summary.
+    const { pendingOf, isOpen } = await import("../../src/convlog/reduce");
+    const r = await engine.message({ text: "Build the mock.", convId: "contract-3" });
+    await until(() => backend.turns.length === 3);
+    const tid = backend.turns[2].threadId;
+    const pic = () => engine.picture(r.convId);
+    const summarizing = () => pic().inflight.some((x: any) => x.kind === "compaction" && isOpen(x));
+
+    const q = await engine.message({ convId: r.convId, text: "I have to go.", queue: true, clientMsgId: "c-late" });
+    expect(q.queued).toBe(true);
+    const done = engine.compact(r.convId);
+    // 1: the line the moment he asks, while the turn still runs.
+    expect(summarizing()).toBe(true);
+    expect(pic().meta.running).toBeTruthy();
+
+    // The turn ends with his message still in the runtime's queue (it runs after the summary).
+    backend.live(tid, assistant([{ text: "Mock built." }]));
+    backend.ev(tid, { kind: "turnCompleted", turnId: "ct-turn-3", status: "completed" });
+    await until(() => !pic().meta.running);
+    // 2: still waiting, not dropped; the line still up.
+    expect(pendingOf(pic()).map((x: any) => x.id)).toEqual(["c-late"]);
+    expect(summarizing()).toBe(true);
+
+    // The summary lands; Claude Code takes the queued message: its entry is the delivery.
+    await until(() => !!backend.compactGate);
+    const file = (await readConv(vault, r.convId)).threadPath;
+    backend.queued.delete("c-late");
+    appendEntries(file, [{ type: "message", message: { role: "user", content: [{ type: "text", text: "I have to go." }], vcRequest: { v: 1, clientId: "c-late", via: "queue" }, timestamp: Date.now() } }]);
+    backend.compactGate!();
+    await done;
+    expect(summarizing()).toBe(false);
+    expect(pendingOf(pic())).toEqual([]);
+    expect(pic().items.some((x: any) => x.id === "c-late" && x.kind === "user")).toBe(true);
   });
 
   it("the runtime going down and coming back is the contract's own two signals", async () => {

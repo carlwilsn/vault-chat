@@ -503,6 +503,14 @@ export class Engine {
   /** Write one record to a conversation's log. */
   private emit(convId: string, body: EventBody): void {
     emitTo(this.d.vault, convId, body);
+    // Carl's message is in the transcript with no turn of ours open (the catch-up after a /compact, when Claude
+    // Code takes what was queued before it): it waits no more. A running turn's feed says so itself (delivered).
+    const cid = (body as { type?: string; clientId?: unknown }).type === "entry" ? (body as { clientId?: unknown }).clientId : undefined;
+    const open = this.live.get(convId);
+    if (typeof cid === "string" && cid && (!open || open.finished)) {
+      const p = this.picture(convId);
+      if (p && pendingOf(p).some((x) => x.id === cid)) this.setPending(convId, undefined, cid);
+    }
   }
 
   private picture(convId: string): Picture | null {
@@ -845,6 +853,10 @@ export class Engine {
       const log = logOf(this.d.vault);
       for (const r of log.rows()) {
         if (this.live.has(r.id)) continue;
+        // A /compact the restart cut: its line ends here, saying so (it outlives turns, so nothing else ends it).
+        if ((this.picture(r.id)?.inflight ?? []).some((x) => x.kind === "compaction" && isOpen(x))) {
+          this.emit(r.id, { type: "live", ev: { type: "compaction_end", aborted: false, errorMessage: "the server restarted before the summary landed" } });
+        }
         if (r.legacy) {
           // An older file that says a turn was running (a restart during the upgrade): resume it once.
           if (r.state !== "running") continue;
@@ -1830,6 +1842,9 @@ export class Engine {
     if (!p) return { ok: false, error: `conversation ${convId} not found` };
     const busy = this.compacting.get(convId);
     if (busy) return busy;
+    // Said the moment he asks, on every surface, not only once a running turn has ended (it waits for that):
+    // "Summarizing the earlier conversation…" from now until the divider or why not (compactNow's end).
+    if (!p.inflight.some((x) => x.kind === "compaction" && isOpen(x))) this.emit(convId, { type: "live", ev: { type: "compaction_start", reason: "manual" } });
     const work = this.serial(convId, () => this.scoped(() => this.compactNow(convId, focus)));
     this.compacting.set(convId, work);
     void work.finally(() => this.compacting.delete(convId));
@@ -2697,7 +2712,12 @@ export class Engine {
     const state: EngineConv["state"] = conv0?.pendingAsk ? "waiting_user" : wakeAt ? "sleeping" : "idle";
     // Stop/failure drops undelivered input. Send now transfers the existing
     // native inputs: keep them pending until their exact entries are delivered.
-    this.emit(l.convId, { type: "meta", patch: { running: null, ...(l.sendNow ? {} : { pending: null }), state, nextWakeAt: wakeAt ?? null } });
+    // What the runtime still holds for its next turn (sent as this one ended, or
+    // behind a /compact that runs first) is still on its way: it stays waiting
+    // until its entry lands (emit), never said "Not delivered" meanwhile.
+    const queuedNative = l.sendNow ? null : new Set(this.d.backend.undelivered?.(l.threadId) ?? []);
+    const stillPending = queuedNative ? pendingOf(this.picture(l.convId) ?? ({ meta: {} } as Picture)).filter((x) => queuedNative.has(x.id)) : null;
+    this.emit(l.convId, { type: "meta", patch: { running: null, ...(stillPending ? { pending: stillPending.length ? stillPending : null } : {}), state, nextWakeAt: wakeAt ?? null } });
     // What ended it, said once in the transcript (after what was in flight, which the end closed).
     // A turn stopped because the sign-in was refused has already said so.
     if (l.refused || held) {
