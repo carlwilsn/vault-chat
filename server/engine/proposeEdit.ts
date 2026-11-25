@@ -17,7 +17,7 @@ export const proposeEditSpec: ToolSpec = {
     "insert = newText is NEW text that is not in the file yet, added at one spot (before/after a line, or at the cursor); it must carry only the new lines, never a copy of lines already in the file; " +
     "delete = existing text is removed. " +
     "Where: line numbers (startLine/endLine, 1-based, inclusive; afterLine/beforeLine for an insert, afterLine 0 = top of the file) as numbered in FILE, or oldText (exact text of the file, which must occur once). With neither: replace and delete act on his SELECTION, insert at his CURSOR. Organizing, cleaning up or rewriting the file is a replace of its lines (all of them for the whole file), never an insert of a new version. " +
-    "To change several places, replace one range that spans them. A later call replaces an earlier proposal. If the tool returns an error, fix the call and call it again. newText has no code fences and no commentary, and is in the file's own style. Afterwards say in a line what you proposed. " +
+    "His selection is where he points, not a limit: when the ask reaches other lines (remove an image elsewhere, merge what is above), the edit covers those lines too (a range spanning them; startLine/endLine may lie outside the selection). To change several places, replace one range that spans them. A later call replaces an earlier proposal. If the tool returns an error, fix the call and call it again. newText has no code fences and no commentary, and is in the file's own style. Afterwards say in a line what you proposed. " +
     "Use it when Carl asks for a change to the file; answer in words when he only asks a question.",
   inputSchema: {
     type: "object",
@@ -87,6 +87,33 @@ export function rewordedCopy(doc: string, newText: string): boolean {
   return shared >= 0.85 * add.size && shared >= 0.6 * have.size;
 }
 
+/**
+ * Whether a replace's `newText` is largely a copy of the file OUTSIDE the range it replaces (said as what it repeats),
+ * or null. Lines the replaced range itself has do not count: rewording, commenting or reformatting those lines repeats
+ * them by design. Two ways it shows: lines repeated as they are (at least 3, and half of newText's lines), or a reworded
+ * copy of the outside text (most of the outside's own words, the replaced range's left out, and not much shorter).
+ * 11-25: one selected line was replaced with a rewrite of the 23 lines above it, so the file held both.
+ */
+export function copiesOutside(t: string, from: number, to: number, newText: string): string | null {
+  const outside = t.slice(0, from) + t.slice(to);
+  if (!outside.trim()) return null;
+  const inRange = new Set(t.slice(from, to).split("\n").map((l) => l.trim()));
+  const outLines = new Set(outside.split("\n").map((l) => l.trim()));
+  const subst = newText.split("\n").filter(substantive);
+  const dup = subst.filter((l) => outLines.has(l.trim()) && !inRange.has(l.trim()));
+  if (dup.length >= 3 && dup.length * 2 >= subst.length) return `${dup.length} lines as they are, for example ${JSON.stringify(dup[0]!.trim())}`;
+  // Reworded: newText carries most of the outside's own words (those the range does not have) and is not much
+  // shorter than it. New words in newText do not matter here (a rewrite that also adds the asked-for items is one).
+  const own = words(t.slice(from, to));
+  const have = [...words(outside)].filter((w) => !own.has(w));
+  if (have.length < 12) return null;
+  const size = (x: string) => x.split("\n").filter(substantive).length;
+  if (size(newText) * 2 < size(outside)) return null;
+  const add = words(newText);
+  const shared = have.filter((w) => add.has(w)).length;
+  return shared >= 0.6 * have.length ? `a reworded copy of it: ${shared} of its ${have.length} words` : null;
+}
+
 /** Turn the agent's call into one concrete range of the open file, or the reason it cannot. */
 export function resolveProposal(doc: EditDoc | null, args: unknown): Resolved {
   const a = (args ?? {}) as Record<string, unknown>;
@@ -95,8 +122,14 @@ export function resolveProposal(doc: EditDoc | null, args: unknown): Resolved {
   const newText = typeof a.newText === "string" ? a.newText : null;
   const note = typeof a.note === "string" && a.note.trim() ? { note: a.note.trim().slice(0, 300) } : {};
   if (action !== "delete" && newText === null) return fail(`${action} needs newText (a string).`);
-  // An older client sends no file: the selection (or cursor) is the only place there is.
-  if (!doc) return { ok: true, proposal: { newText: newText ?? "", kind: action, ...note } };
+  // A client that sends no file: the selection (or cursor) is the only place there is. Lines or text elsewhere cannot
+  // be placed, and must not land on the selection instead (11-25: a rewrite of lines 1-24 replaced the one selected line).
+  if (!doc) {
+    if (["startLine", "endLine", "afterLine", "beforeLine", "oldText"].some((k) => a[k] !== undefined && a[k] !== null && a[k] !== "")) {
+      return fail("This editor sent no file, so lines or text elsewhere cannot be placed: leave out startLine/endLine/afterLine/beforeLine/oldText; replace and delete then act on his selection, insert at his cursor.");
+    }
+    return { ok: true, proposal: { newText: newText ?? "", kind: action, ...note } };
+  }
 
   const t = doc.text;
   const n = lineCount(t);
@@ -151,6 +184,17 @@ export function resolveProposal(doc: EditDoc | null, args: unknown): Resolved {
     if (doc.from === doc.to) return fail(`${action} needs startLine/endLine or oldText when nothing is selected.`);
     from = doc.from;
     to = doc.to;
+  }
+
+  if (action === "replace") {
+    const copied = copiesOutside(t, from, to, newText!);
+    if (copied) {
+      const [a1, b1] = [t.slice(0, from).split("\n").length, t.slice(0, Math.max(from, to - 1)).split("\n").length];
+      return fail(
+        `This replace covers lines ${a1}-${b1}, but newText repeats text from outside that range (${copied}), so the file would hold the old lines and the new copy. ` +
+          "A selection is where Carl points, not a limit: widen startLine/endLine to cover every line the new text rewrites (the whole file: startLine 1, endLine " + n + "), or make separate edits; otherwise leave the outside text out of newText.",
+      );
+    }
   }
 
   let out = action === "delete" ? "" : newText!;

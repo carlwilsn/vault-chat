@@ -12,6 +12,7 @@ import {
   type InlineEditRequest,
 } from "./InlineEditPrompt";
 import type { EditProposal } from "./complete";
+import { proposalRange } from "./plugins/ask/view";
 
 type MonacoInlineEdit = InlineEditRequest & {
   range: monaco.IRange;
@@ -205,22 +206,14 @@ export function MonacoEditor({
     let range = inlineEdit.range;
     if (proposal?.from !== undefined && proposal.to !== undefined) {
       // The box resolved it to a range of the file as the popover opened it: that range, where the text still is.
-      const cur = model.getValue();
-      let from = proposal.from;
-      let to = proposal.to;
-      const removed = proposal.removed ?? "";
-      if (cur.slice(from, to) !== removed) {
-        const i = removed ? cur.indexOf(removed) : -1;
-        if (i < 0 || cur.indexOf(removed, i + 1) >= 0) {
-          setInlineEdit(null);
-          editor.focus();
-          return;
-        }
-        from = i;
-        to = i + removed.length;
+      const at = proposalRange(model.getValue(), proposal, { from: 0, to: 0 });
+      if (!at) {
+        setInlineEdit(null);
+        editor.focus();
+        return;
       }
-      const a = model.getPositionAt(from);
-      const b = model.getPositionAt(to);
+      const a = model.getPositionAt(at.from);
+      const b = model.getPositionAt(at.to);
       range = { startLineNumber: a.lineNumber, startColumn: a.column, endLineNumber: b.lineNumber, endColumn: b.column };
     }
     editor.executeEdits("inline-edit", [{ range, text: result, forceMoveMarkers: true }]);

@@ -169,6 +169,20 @@ export function onAskChanged(fn: () => void): () => void {
 export const shownProposal = (p: EditProposal | null, selection: string): AskBoxState["proposal"] =>
   p ? { newText: p.newText, removed: p.removed ?? (selection || null) } : null;
 
+/**
+ * Where an accepted proposal lands in the file as it is now: the range the box resolved (the file as the popover
+ * opened it), found again by its text if the file moved since; the selection when the box resolved no range (an older
+ * box); null when its text is gone or ambiguous (nothing is written then). Every editor applies an accept through this.
+ */
+export function proposalRange(cur: string, p: EditProposal | undefined, selection: { from: number; to: number }): { from: number; to: number } | null {
+  if (p?.from === undefined || p.to === undefined) return selection;
+  const removed = p.removed ?? "";
+  if (cur.slice(p.from, p.to) === removed) return { from: p.from, to: p.to };
+  const i = removed ? cur.indexOf(removed) : -1;
+  if (i < 0 || cur.indexOf(removed, i + 1) >= 0) return null;
+  return { from: i, to: i + removed.length };
+}
+
 /** Tests: forget every box. */
 export function _resetAskBoxes(): void {
   boxes.clear();

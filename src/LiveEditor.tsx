@@ -23,6 +23,8 @@ import {
   type InlineEditRequest,
 } from "./InlineEditPrompt";
 import { useStore } from "./store";
+import type { EditProposal } from "./complete";
+import { proposalRange } from "./plugins/ask/view";
 import { reportScroll } from "./scrollTarget";
 import { cmKey } from "./shortcuts";
 import { decodeTarget, landLines } from "./viewTarget";
@@ -453,12 +455,19 @@ export function LiveEditor({
     }
   }, [value]);
 
-  const acceptInlineEdit = (result: string) => {
+  const acceptInlineEdit = (result: string, proposal?: EditProposal) => {
     const view = viewRef.current;
     if (!view || !inlineEdit) return;
+    // The range the box resolved (lines anywhere in the file), not only the selection the box opened on.
+    const at = proposalRange(view.state.doc.toString(), proposal, inlineEdit);
+    if (!at) {
+      setInlineEdit(null);
+      view.focus();
+      return;
+    }
     view.dispatch({
-      changes: { from: inlineEdit.from, to: inlineEdit.to, insert: result },
-      selection: { anchor: inlineEdit.from + result.length },
+      changes: { from: at.from, to: at.to, insert: result },
+      selection: { anchor: at.from + result.length },
     });
     setInlineEdit(null);
     view.focus();
@@ -501,5 +510,6 @@ function buildInlineEditContext(
     ? { left: coords.left, top: coords.top, bottom: coords.bottom }
     : { left: 100, top: 100, bottom: 120 };
 
-  return { from, to, selection, before, after, language, anchor };
+  // The whole file too, so the agent sees it numbered and its ProposeEdit can address any lines of it.
+  return { from, to, selection, before, after, language, anchor, doc: { text: doc.toString(), from, to } };
 }
