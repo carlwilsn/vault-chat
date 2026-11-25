@@ -11,18 +11,9 @@ import { listen } from "@tauri-apps/api/event";
 import { ArrowLeft, ArrowRight, ExternalLink, Maximize2, Minimize2, RotateCw, X } from "lucide-react";
 import { openUrl } from "./opener";
 import { defaultFrameHeight, parseFrameHint, frameHeight, HTML_MAX_H, HTML_MIN_FRAME_H } from "./inlineHtml";
-import { displayHost, nativeBounds, pickToRest, probePoints, publicWebUrl, sameBounds, visibleBox, WEB_EMBED_EVENT, type Box, type WebEmbedEvent } from "./inlineWeb";
+import { displayHost, inOrder, nativeBounds, pickToRest, probePoints, publicWebUrl, viewPlacer, visibleBox, WEB_EMBED_EVENT, type Bounds, type Box, type ViewPlacer, type WebEmbedEvent } from "./inlineWeb";
 
-export type Bounds = { x: number; y: number; width: number; height: number; visible: boolean };
-
-/** Calls for one view run in order (a close never overtakes the open before it). */
-const queues = new Map<string, Promise<unknown>>();
-export function inOrder<T>(id: string, f: () => Promise<T>): Promise<T> {
-  const next = (queues.get(id) ?? Promise.resolve()).catch(() => undefined).then(f);
-  queues.set(id, next);
-  void next.finally(() => { if (queues.get(id) === next) queues.delete(id); }).catch(() => undefined);
-  return next;
-}
+export { inOrder, type Bounds };
 
 /** A reloaded chat never leaves an earlier run's native views on screen: they are all closed before the first opens. */
 let startOver: Promise<unknown> | null = null;
@@ -37,6 +28,64 @@ const live = new Map<string, { lastSeen: number; visible: boolean; rest: () => v
 
 let seq = 0;
 export const newId = () => `w${Date.now().toString(36)}${(seq++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+/** The native view `id` kept on its placeholder (src/inlineWeb.ts viewPlacer): made with `open` (web_embed_open, or the
+ *  dev variant) at the address `url()` holds when the call runs. */
+export function nativeView(id: string, url: () => string, open = "web_embed_open"): ViewPlacer {
+  return viewPlacer(id, {
+    open: (b) => invoke(open, { id, url: url(), ...b }),
+    place: (b) => invoke("web_embed_place", { id, ...b }),
+    close: () => invoke("web_embed_close", { id }),
+  }, ready);
+}
+
+/** Where the window's logical pixels are, per CSS pixel: the page zoom (devicePixelRatio over the window's scale
+ *  factor, read again when the window's scale changes: another monitor). */
+export function useZoom(onChange: () => void): () => number {
+  const scale = useRef(0);
+  const cb = useRef(onChange);
+  cb.current = onChange;
+  useEffect(() => {
+    let alive = true;
+    let off: (() => void) | null = null;
+    void import("@tauri-apps/api/window").then(async (m) => {
+      const w = m.getCurrentWindow();
+      const s = await w.scaleFactor();
+      if (!alive) return;
+      scale.current = s;
+      cb.current();
+      const u = await w.onScaleChanged((e) => { scale.current = e.payload.scaleFactor; cb.current(); });
+      if (alive) off = u; else u();
+    }).catch(() => undefined);
+    return () => { alive = false; off?.(); };
+  }, []);
+  return useCallback(() => (window.devicePixelRatio || 1) / (scale.current || window.devicePixelRatio || 1), []);
+}
+
+/** Calls `place` whenever the placeholder `el` may have moved: its size (ResizeObserver), the window's size, any
+ *  scroll, the page showing again, the layout around it (the body's size: panels, splits), and a 200 ms tick for what
+ *  fires no event (a pane moving without resizing, a menu opening over it). At most once a frame. */
+export function followPlaceholder(el: HTMLElement | null, place: () => void, also?: () => void): () => void {
+  let raf = 0;
+  const run = () => { raf = 0; place(); };
+  const soon = () => { if (!raf) raf = requestAnimationFrame(run); };
+  const ro = el && typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => { also?.(); soon(); }) : null;
+  if (el) { ro?.observe(el); ro?.observe(document.body); }
+  window.addEventListener("scroll", soon, true);
+  window.addEventListener("resize", soon);
+  document.addEventListener("visibilitychange", soon);
+  // The tick measures now, not on a frame: it keeps working while no frame comes.
+  const tick = setInterval(place, 200);
+  soon();
+  return () => {
+    cancelAnimationFrame(raf);
+    ro?.disconnect();
+    window.removeEventListener("scroll", soon, true);
+    window.removeEventListener("resize", soon);
+    document.removeEventListener("visibilitychange", soon);
+    clearInterval(tick);
+  };
+}
 
 function clipsOf(el: HTMLElement): Box[] {
   const out: Box[] = [];
@@ -91,10 +140,10 @@ function LiveWebPage({ src, label, sizeHint, onFail, onClose }: { src: string; l
   const [loading, setLoading] = useState(true);
   const [note, setNote] = useState<{ text: string; url: string } | null>(null);
   const [resting, setResting] = useState(false);
-  const opened = useRef(false);
-  const last = useRef<Bounds | null>(null);
   const urlRef = useRef(src);
   urlRef.current = url;
+  const view = useRef<ViewPlacer | null>(null);
+  if (!view.current) view.current = nativeView(id, () => urlRef.current);
 
   // The page's own reports: where it went, its title, a refused link or download.
   useEffect(() => {
@@ -111,75 +160,46 @@ function LiveWebPage({ src, label, sizeHint, onFail, onClose }: { src: string; l
     return () => { gone = true; off?.(); };
   }, [id]);
 
+  // The window's scale factor, to turn CSS pixels into the window's logical pixels when the app is zoomed.
+  const placeRef = useRef<() => void>(() => undefined);
+  const zoom = useZoom(() => placeRef.current());
   const place = useCallback(() => {
     const el = body.current;
-    if (!el || resting) return;
-    const zoom = (window.devicePixelRatio || 1) / (scale.current || window.devicePixelRatio || 1);
-    const b = measure(el, zoom);
+    const v = view.current;
+    if (!el || !v || resting) return;
+    const b = measure(el, zoom());
     const entry = live.get(id);
     if (entry) { entry.visible = b.visible; if (b.visible) entry.lastSeen = Date.now(); }
-    if (!opened.current) {
-      if (!b.visible) return; // made the first time it is seen
-      opened.current = true;
-      last.current = b;
-      live.set(id, { lastSeen: Date.now(), visible: true, rest: () => setResting(true) });
-      for (const k of pickToRest(live)) live.get(k)?.rest();
-      void ready().then(() => inOrder(id, () => invoke("web_embed_open", { id, url: urlRef.current, ...b }))).catch((e: unknown) => {
-        opened.current = false;
-        live.delete(id);
-        onFail(String(e instanceof Error ? e.message : e));
-      });
-      return;
-    }
-    if (sameBounds(last.current, b)) return;
-    last.current = b;
-    void inOrder(id, () => invoke("web_embed_place", { id, ...b })).catch(() => undefined);
-  }, [id, resting, onFail]);
-
-  // The window's scale factor, to turn CSS pixels into the window's logical pixels when the app is zoomed.
-  const scale = useRef<number>(0);
-  useEffect(() => {
-    let alive = true;
-    void import("@tauri-apps/api/window").then((m) => m.getCurrentWindow().scaleFactor()).then((s) => { if (alive) { scale.current = s; place(); } }).catch(() => undefined);
-    return () => { alive = false; };
-  }, [place]);
+    const wasOpen = v.open;
+    const sent = v.to(b);
+    if (wasOpen || !v.open) return;
+    live.set(id, { lastSeen: Date.now(), visible: true, rest: () => setResting(true) });
+    for (const k of pickToRest(live)) live.get(k)?.rest();
+    sent?.catch((e: unknown) => {
+      live.delete(id);
+      onFail(String(e instanceof Error ? e.message : e));
+    });
+  }, [id, resting, onFail, zoom]);
+  placeRef.current = place;
 
   // Follow the placeholder: scrolling (any ancestor), resizing, layout changes, and a slow tick for what fires no event
   // (a menu opening over it, a panel sliding in).
   useEffect(() => {
     if (resting) return;
-    let raf = 0;
-    const soon = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; place(); }); };
     const el = body.current;
-    const ro = el && typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => { setWidth(el.clientWidth); soon(); }) : null;
-    if (el) { ro?.observe(el); ro?.observe(document.body); setWidth(el.clientWidth); }
-    window.addEventListener("scroll", soon, true);
-    window.addEventListener("resize", soon);
-    document.addEventListener("visibilitychange", soon);
-    const tick = setInterval(soon, 200);
-    soon();
-    return () => {
-      cancelAnimationFrame(raf);
-      ro?.disconnect();
-      window.removeEventListener("scroll", soon, true);
-      window.removeEventListener("resize", soon);
-      document.removeEventListener("visibilitychange", soon);
-      clearInterval(tick);
-    };
+    if (el) setWidth(el.clientWidth);
+    return followPlaceholder(el, place, () => { if (el) setWidth(el.clientWidth); });
   }, [place, resting]);
 
   // Resting (past the cap) or leaving the chat: the native view goes; resting keeps where it had got to.
   useEffect(() => {
     if (!resting) return;
-    opened.current = false;
-    last.current = null;
     live.delete(id);
-    void inOrder(id, () => invoke("web_embed_close", { id })).catch(() => undefined);
+    void view.current?.close();
   }, [resting, id]);
   useEffect(() => () => {
     live.delete(id);
-    if (opened.current) void inOrder(id, () => invoke("web_embed_close", { id })).catch(() => undefined);
-    opened.current = false;
+    void view.current?.close();
   }, [id]);
   // Esc leaves the full window (when the app has the keys; the page keeps its own).
   useEffect(() => {
@@ -191,13 +211,12 @@ function LiveWebPage({ src, label, sizeHint, onFail, onClose }: { src: string; l
 
   const go = (action: "back" | "forward" | "reload") => void inOrder(id, () => invoke("web_embed_go", { id, action })).catch(() => undefined);
   const openOutside = async () => {
-    const now = opened.current ? await inOrder(id, () => invoke<string>("web_embed_url", { id })).catch(() => urlRef.current) : urlRef.current;
+    const now = view.current?.open ? await inOrder(id, () => invoke<string>("web_embed_url", { id })).catch(() => urlRef.current) : urlRef.current;
     await openUrl(now || src).catch(() => undefined);
   };
   const close = () => {
     live.delete(id);
-    if (opened.current) void inOrder(id, () => invoke("web_embed_close", { id })).catch(() => undefined);
-    opened.current = false;
+    void view.current?.close();
     onClose();
   };
   const startDrag = (e: React.PointerEvent<HTMLSpanElement>) => {

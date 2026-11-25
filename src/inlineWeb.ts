@@ -82,8 +82,66 @@ export function probePoints(b: Box, inset = 6): [number, number][] {
   return ys.flatMap((y) => xs.map((x) => [Math.round(x), Math.round(y)] as [number, number]));
 }
 
-export const sameBounds = (a: { x: number; y: number; width: number; height: number; visible: boolean } | null, b: { x: number; y: number; width: number; height: number; visible: boolean }) =>
+export type Bounds = { x: number; y: number; width: number; height: number; visible: boolean };
+export const sameBounds = (a: Bounds | null, b: Bounds) =>
   !!a && a.visible === b.visible && (!b.visible || (a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height));
+
+/** Calls for one view run in order (a move never goes before the view exists, a close never overtakes its open). */
+const queues = new Map<string, Promise<unknown>>();
+export function inOrder<T>(id: string, f: () => Promise<T>): Promise<T> {
+  const next = (queues.get(id) ?? Promise.resolve()).catch(() => undefined).then(f);
+  queues.set(id, next);
+  void next.finally(() => { if (queues.get(id) === next) queues.delete(id); }).catch(() => undefined);
+  return next;
+}
+
+export type ViewCalls = { open(b: Bounds): Promise<unknown>; place(b: Bounds): Promise<unknown>; close(): Promise<unknown> };
+
+/** One native view kept exactly on its placeholder. `to(b)` with where the placeholder is now (src/InlineWebPage.tsx
+ *  measure), as often as anything moves: the view is made the first time it is seen, then moved there. Every call goes
+ *  through the view's queue (inOrder), after `before` (the start-over close), and the open takes the placeholder's
+ *  bounds when it runs, not when it was asked for: a split settling while the view is being made (the new pane first
+ *  laid out narrow at the left pane's place) is never lost, and a move is never sent for a view that does not exist
+ *  yet (the shell drops those). A move that fails is sent again by the next `to`. `close` comes after anything asked
+ *  before it, so a pane that goes leaves no view behind. */
+export function viewPlacer(id: string, calls: ViewCalls, before: () => Promise<unknown> = () => Promise.resolve()) {
+  let want: Bounds | null = null;
+  /** What the shell was last asked for (null: nothing it is sure to have). */
+  let sent: Bounds | null = null;
+  let open = false;
+  return {
+    get open() { return open; },
+    to(b: Bounds): Promise<unknown> | null {
+      want = b;
+      if (!open) {
+        if (!b.visible) return null; // made the first time it is seen
+        open = true;
+        sent = b;
+        return inOrder(id, async () => {
+          await before();
+          sent = want!;
+          return calls.open(want!);
+        }).catch((e: unknown) => {
+          open = false;
+          sent = null;
+          throw e;
+        });
+      }
+      if (sameBounds(sent, b)) return null;
+      sent = b;
+      return inOrder(id, () => calls.place(b)).catch(() => { if (sent === b) sent = null; });
+    },
+    /** Forget what the shell has: the next `to` makes the view again (after a close of its own). */
+    reset() { open = false; sent = null; },
+    close(): Promise<unknown> | null {
+      if (!open) return null;
+      open = false;
+      sent = null;
+      return inOrder(id, () => calls.close()).catch(() => undefined);
+    },
+  };
+}
+export type ViewPlacer = ReturnType<typeof viewPlacer>;
 
 /** At most this many native views live at once; past it the one seen longest ago rests (it comes back where it was). */
 export const MAX_LIVE_VIEWS = 4;

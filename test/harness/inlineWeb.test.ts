@@ -6,7 +6,7 @@ import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkBreaks from "remark-breaks";
 import remarkRehype from "remark-rehype";
-import { displayHost, isWebPageSrc, nativeBounds, pickToRest, probePoints, publicWebUrl, sameBounds, soloWebImages, visibleBox } from "../../src/inlineWeb.ts";
+import { displayHost, isWebPageSrc, nativeBounds, pickToRest, probePoints, publicWebUrl, sameBounds, soloWebImages, viewPlacer, visibleBox, type Bounds } from "../../src/inlineWeb.ts";
 
 test("a page is an http(s) address that is not a picture, video, audio or PDF file", () => {
   assert.ok(isWebPageSrc("https://www.geoffreylitt.com/2023/03/25/llm-end-user-programming.html"));
@@ -71,4 +71,83 @@ test("a page on a line of its own is a page; an image inside a sentence (a badge
   assert.deepEqual(soloWebImages(para("Build ![status](https://img.shields.io/badge/build-passing-green) today")), []);
   assert.deepEqual(soloWebImages(para("![chart](https://x.com/chart.png)")), [], "a picture stays a picture");
   assert.deepEqual(soloWebImages(para("![page](.vault-chat/visuals/a.html)")), [], "a vault page is InlineHtmlFrame's");
+});
+
+// ---- where the native view sits: always its own pane's placeholder (viewPlacer) ----
+
+/** The desktop shell as web_embed.rs behaves: a move for a view that does not exist yet is dropped; each call answers
+ *  after `ms`. `at` is where each view is now. */
+function fakeShell(ms = 5) {
+  const at = new Map<string, Bounds>();
+  const log: string[] = [];
+  const wait = () => new Promise((r) => setTimeout(r, ms));
+  const calls = (id: string) => ({
+    open: async (b: Bounds) => { log.push(`open ${b.x},${b.width}`); await wait(); at.set(id, b); },
+    place: async (b: Bounds) => { log.push(`place ${b.x},${b.width}`); await wait(); if (at.has(id)) at.set(id, b); },
+    close: async () => { log.push("close"); await wait(); at.delete(id); },
+  });
+  return { at, log, calls };
+}
+const settle = () => new Promise((r) => setTimeout(r, 60));
+const box = (x: number, width: number, visible = true): Bounds => ({ x, y: 60, width, height: 800, visible });
+/** A body rect (CSS px) as the pane measures it: the visible part inside the viewer, in the window's pixels. */
+const body = (left: number, right: number, viewer = { left: 160, top: 60, right: 1400, bottom: 900 }) =>
+  ({ ...nativeBounds(visibleBox({ left, top: 60, right, bottom: 900 }, [viewer], { w: 1400, h: 900 })!), visible: true });
+
+test("two panes, an iframe left and a native view right: the view lands on the right pane even when the split settles while it is being made", async () => {
+  const shell = fakeShell();
+  // The start-over close (ready()) is still on its way when the pane is first seen.
+  let release!: () => void;
+  const before = new Promise<void>((r) => { release = r; });
+  const right = viewPlacer("right-pane", shell.calls("right-pane"), () => before);
+  // The split's first layout: the new right pane drawn narrow at the left pane's place (Carl's laptop, 11-24) ...
+  right.to(body(160, 436));
+  // ... then settled beside the iframe pane (160..780), before the view exists.
+  right.to(body(780, 1400));
+  release();
+  await settle();
+  assert.deepEqual(shell.at.get("right-pane"), body(780, 1400), "on the right pane, not the left pane's place");
+  assert.equal(shell.log[0]?.startsWith("open"), true, "nothing is sent before the view exists (the shell would drop it)");
+  // The left (iframe) pane has no native view: only the right one exists.
+  assert.deepEqual([...shell.at.keys()], ["right-pane"]);
+});
+
+test("after a split change, a resize or a swap the view follows its own pane; a lost move is sent again", async () => {
+  const shell = fakeShell(2);
+  const v = viewPlacer("p", shell.calls("p"));
+  v.to(body(780, 1400));
+  await settle();
+  v.to(body(630, 1100)); // the window narrower
+  v.to(body(160, 1400)); // the other pane closed: the split is gone
+  await settle();
+  assert.deepEqual(shell.at.get("p"), body(160, 1400));
+  assert.equal(v.to(body(160, 1400)), null, "no call when nothing moved (the 200 ms tick is free)");
+  // A move the shell refused is not taken as done: the next measure sends it again.
+  const flaky = fakeShell(1);
+  let fail = true;
+  const c = flaky.calls("q");
+  const w = viewPlacer("q", { ...c, place: async (b) => { if (fail) { fail = false; throw new Error("busy"); } return c.place(b); } });
+  w.to(box(0, 300));
+  await settle();
+  w.to(box(400, 300));
+  await settle();
+  assert.deepEqual(flaky.at.get("q"), box(0, 300));
+  w.to(box(400, 300));
+  await settle();
+  assert.deepEqual(flaky.at.get("q"), box(400, 300));
+});
+
+test("a pane that goes while its view is still being made leaves no view behind; a hidden pane makes none", async () => {
+  const shell = fakeShell(5);
+  const v = viewPlacer("gone", shell.calls("gone"));
+  v.to(box(780, 620));
+  v.close(); // the pane closed before the shell answered the open
+  await settle();
+  assert.equal(shell.at.has("gone"), false);
+  assert.deepEqual(shell.log, ["open 780,620", "close"], "the close comes after the open, never before it");
+  const hidden = fakeShell();
+  const h = viewPlacer("h", hidden.calls("h"));
+  assert.equal(h.to(box(0, 1, false)), null);
+  await settle();
+  assert.deepEqual(hidden.log, []);
 });

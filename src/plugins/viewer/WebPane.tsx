@@ -18,8 +18,8 @@ import { listen } from "@tauri-apps/api/event";
 import { ArrowLeft, ArrowRight, ExternalLink, Globe, RotateCw, X } from "lucide-react";
 import { useStore } from "../../store";
 import { openUrl } from "../../opener";
-import { inOrder, measure, native, newId, ready, type Bounds } from "../../InlineWebPage";
-import { displayHost, sameBounds, WEB_EMBED_EVENT, type WebEmbedEvent } from "../../inlineWeb";
+import { followPlaceholder, inOrder, measure, native, nativeView, newId, useZoom } from "../../InlineWebPage";
+import { displayHost, WEB_EMBED_EVENT, type ViewPlacer, type WebEmbedEvent } from "../../inlineWeb";
 import type { WebPageSeen } from "../../layoutTypes";
 import { boxDevUrl, embedKind, frameArrived, frameHistory, frameStep, paneKey, registerWebPane, type WebPageDo } from "../../webPane";
 
@@ -226,11 +226,11 @@ function NativeWebPane({ paneId, url }: { paneId?: string; url: string }) {
   const idRef = useRef<string>(newId());
   const id = idRef.current;
   const body = useRef<HTMLDivElement | null>(null);
-  const opened = useRef(false);
-  const last = useRef<Bounds | null>(null);
   /** Where the view is (its own navigation, or the address it was told to load). */
   const viewUrl = useRef(url);
-  const scale = useRef(0);
+  /** The native view, kept on this pane's own body (src/inlineWeb.ts viewPlacer). */
+  const view = useRef<ViewPlacer | null>(null);
+  if (!view.current) view.current = nativeView(id, () => viewUrl.current);
 
   const setAddress = useSetAddress(paneId, viewUrl);
 
@@ -253,88 +253,53 @@ function NativeWebPane({ paneId, url }: { paneId?: string; url: string }) {
     return () => { gone = true; off?.(); };
   }, [id, failed, setAddress]);
 
+  // Where the view goes: this pane's own body, measured when the call runs (never another pane's, never a layout
+  // from before the split settled).
+  const placeRef = useRef<() => void>(() => undefined);
+  const zoom = useZoom(() => placeRef.current());
   const place = useCallback(() => {
     const el = body.current;
-    if (!el || failed) return;
-    const zoom = (window.devicePixelRatio || 1) / (scale.current || window.devicePixelRatio || 1);
-    const b = measure(el, zoom);
-    if (!opened.current) {
-      if (!b.visible) return; // made the first time it is seen
-      opened.current = true;
-      last.current = b;
-      void ready().then(() => inOrder(id, () => invoke("web_embed_open", { id, url: viewUrl.current, ...b }))).catch((e: unknown) => {
-        opened.current = false;
-        setRunErr({ url: viewUrl.current, why: String(e instanceof Error ? e.message : e) });
-      });
-      return;
-    }
-    if (sameBounds(last.current, b)) return;
-    last.current = b;
-    void inOrder(id, () => invoke("web_embed_place", { id, ...b })).catch(() => undefined);
-  }, [id, failed]);
+    const v = view.current;
+    if (!el || !v || failed) return;
+    const wasOpen = v.open;
+    const sent = v.to(measure(el, zoom()));
+    if (!wasOpen && v.open) sent?.catch((e: unknown) => setRunErr({ url: viewUrl.current, why: String(e instanceof Error ? e.message : e) }));
+  }, [failed, zoom]);
+  placeRef.current = place;
 
-  useEffect(() => {
-    let alive = true;
-    void import("@tauri-apps/api/window").then((m) => m.getCurrentWindow().scaleFactor()).then((s) => { if (alive) { scale.current = s; place(); } }).catch(() => undefined);
-    return () => { alive = false; };
-  }, [place]);
-
-  // Follow the pane: resizing, splitting, layout changes, and a slow tick for what fires no event (a menu over it).
-  useEffect(() => {
-    if (failed) return;
-    let raf = 0;
-    const soon = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; place(); }); };
-    const el = body.current;
-    const ro = el && typeof ResizeObserver !== "undefined" ? new ResizeObserver(soon) : null;
-    if (el) { ro?.observe(el); ro?.observe(document.body); }
-    window.addEventListener("scroll", soon, true);
-    window.addEventListener("resize", soon);
-    document.addEventListener("visibilitychange", soon);
-    const tick = setInterval(soon, 200);
-    soon();
-    return () => {
-      cancelAnimationFrame(raf);
-      ro?.disconnect();
-      window.removeEventListener("scroll", soon, true);
-      window.removeEventListener("resize", soon);
-      document.removeEventListener("visibilitychange", soon);
-      clearInterval(tick);
-    };
-  }, [place, failed]);
+  // Follow the pane: opening, splitting and unsplitting, the split's divider, the window, scrolling, the other pane
+  // changing kind, and a 200 ms tick for what fires no event (the pane moving without resizing, a menu over it).
+  useEffect(() => (failed ? undefined : followPlaceholder(body.current, place)), [place, failed]);
 
   // A new address for this pane (the agent's openInPane / Show, not the page's own navigation): the view goes there,
   // keeping its history; a view of the other kind (public / dev server) is made again.
   useEffect(() => {
     if (url === viewUrl.current) return;
     viewUrl.current = url;
-    if (!opened.current) return;
+    const v = view.current;
+    if (!v?.open) return;
     const reopen = () => {
-      opened.current = false;
-      last.current = null;
+      v.reset();
       void inOrder(id, () => invoke("web_embed_close", { id })).catch(() => undefined).then(() => place());
     };
     void inOrder(id, () => invoke("web_embed_go", { id, action: "load", url })).catch(reopen);
   }, [url, id, place]);
 
-  // Leaving (the pane closed, another file in it, the viewer unmounted): the native view goes.
-  useEffect(() => () => {
-    if (opened.current) void inOrder(id, () => invoke("web_embed_close", { id })).catch(() => undefined);
-    opened.current = false;
-  }, [id]);
+  // Leaving (the pane closed, another file in it, the viewer unmounted): the native view goes, after anything asked
+  // of it before (a view still being made is closed once it exists).
+  useEffect(() => () => void view.current?.close(), [id]);
   useEffect(() => {
-    if (!failed || !opened.current) return;
-    opened.current = false;
-    void inOrder(id, () => invoke("web_embed_close", { id })).catch(() => undefined);
-  }, [failed, id]);
+    if (failed) void view.current?.close();
+  }, [failed]);
 
   const act = useCallback(
     async (what: WebPageDo, other?: string) => {
       if (what === "browser") {
-        const now = other ?? (opened.current ? await inOrder(id, () => invoke<string>("web_embed_url", { id })).catch(() => viewUrl.current) : viewUrl.current);
+        const now = other ?? (view.current?.open ? await inOrder(id, () => invoke<string>("web_embed_url", { id })).catch(() => viewUrl.current) : viewUrl.current);
         await openUrl(now || viewUrl.current).catch(() => window.open(viewUrl.current, "_blank", "noopener"));
         return;
       }
-      if (!opened.current) return;
+      if (!view.current?.open) return;
       await inOrder(id, () => invoke("web_embed_go", { id, action: what })).catch(() => undefined);
     },
     [id],

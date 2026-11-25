@@ -17,6 +17,10 @@ document.elementFromPoint = (x: number, y: number) => {
   try { return nativeFromPoint(x, y); } finally { for (const b of boxes) b.style.pointerEvents = ""; }
 };
 export const webEmbedCalls: { cmd: string; args: Record<string, unknown> }[] = [];
+// The real shell answers on its main thread, and making a WebView2 takes a few hundred ms: the stand-in takes as long,
+// so a pane that moves while its view is being made (a split settling) is seen here as on the laptop.
+const OPEN_MS = 250, CLOSE_MS = 40;
+const later = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function pageFor(url: string): string {
   const u = new URL(url);
@@ -49,8 +53,9 @@ function place(v: View, a: Record<string, any>) {
 }
 
 export const webEmbedCommands: Record<string, (a: Record<string, any>) => unknown> = {
-  web_embed_open: (a) => {
+  web_embed_open: async (a) => {
     webEmbedCalls.push({ cmd: "web_embed_open", args: a });
+    await later(OPEN_MS);
     const old = views.get(a.id);
     if (old) { place(old, a); return null; }
     const box = document.createElement("div");
@@ -91,8 +96,9 @@ export const webEmbedCommands: Record<string, (a: Record<string, any>) => unknow
     if (!v) throw "no such inline page";
     return v.history[v.at];
   },
-  web_embed_close: ({ id }) => {
+  web_embed_close: async ({ id }) => {
     webEmbedCalls.push({ cmd: "web_embed_close", args: { id } });
+    await later(CLOSE_MS);
     for (const [k, v] of views) {
       if (id && k !== id) continue;
       v.box.remove();
