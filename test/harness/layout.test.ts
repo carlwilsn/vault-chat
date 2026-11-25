@@ -255,6 +255,35 @@ test("a dev-server pane (an iframe) keeps its own history from where the page sa
   assert.equal(frameStep(h, 1), null);
 });
 
+test("a web pane's address bar: what was typed opens through the agent's own openInPane, in that pane", async () => {
+  const { addressFor, openTyped } = await import("../../src/webPane.ts");
+  // An address as it is; a host gets https://; other words are a search; nothing typed opens nothing.
+  assert.equal(addressFor("https://en.wikipedia.org/wiki/Cat"), "https://en.wikipedia.org/wiki/Cat");
+  assert.equal(addressFor("  en.wikipedia.org/wiki/Dog "), "https://en.wikipedia.org/wiki/Dog");
+  assert.equal(addressFor("example.com:8080/x?y=1"), "https://example.com:8080/x?y=1");
+  assert.equal(addressFor("localhost:5173"), "https://localhost:5173");
+  assert.equal(addressFor("cauchy sequence"), "https://duckduckgo.com/?q=cauchy%20sequence");
+  assert.equal(addressFor("wikipedia"), "https://duckduckgo.com/?q=wikipedia");
+  assert.equal(addressFor("   "), null);
+  assert.equal(openTyped("  "), null);
+
+  await Layout({ action: "split", on: false });
+  useStore.setState({ currentFile: null, currentContent: "", panes: [], activePaneId: null, splitDirection: null });
+  // The one viewer: the page goes in its place, as openInPane {url} with no pane does.
+  await Layout({ action: "openInPane", url: "https://en.wikipedia.org/wiki/Cat" });
+  assert.match(openTyped("en.wikipedia.org/wiki/Dog")!, /opened https:\/\/en\.wikipedia\.org\/wiki\/Dog/);
+  assert.equal(S().currentFile, "https://en.wikipedia.org/wiki/Dog");
+  // A split: typed in the right pane's bar, the right pane goes there (openInPane {url, pane: "right"}).
+  await Layout({ ops: [{ action: "openInPane", path: "a.md", pane: "left" }, { action: "openInPane", url: "https://en.wikipedia.org/wiki/Cat", pane: "right" }, { action: "focus", target: "left" }] });
+  const right = S().panes[1]!.id;
+  assert.match(openTyped("green tree frog", right)!, /in the right pane/);
+  assert.equal(S().panes[0]!.file, `${vault}/a.md`);
+  assert.equal(S().panes[1]!.file, "https://duckduckgo.com/?q=green%20tree%20frog");
+  // The agent reads the new address back.
+  const l = layoutOf((await Layout({ action: "get" })).text);
+  assert.deepEqual(l.panes.map((p: any) => p.file ?? p.url), ["a.md", "https://duckduckgo.com/?q=green%20tree%20frog"]);
+});
+
 test("bad input is refused before anything is sent; an offline laptop is said honestly", async () => {
   const n = sent.length;
   assert.match((await Layout({ action: "openInPane", path: "a.md" })).text, /needs pane/);

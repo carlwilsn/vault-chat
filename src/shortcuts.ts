@@ -104,6 +104,7 @@ export const SHORTCUTS = [
   },
 
   // ---- Editing
+  { id: "web.address", keys: ["Enter", "Esc"], label: "Go / revert address", group: "Editing", where: "a web pane's address bar", files: ["src/plugins/viewer/WebPane.tsx"] },
   { id: "edit.inline", keys: ["Mod+K"], label: "Ask or edit", group: "Editing", where: "an editor", files: ["src/LiveEditor.tsx", "src/MonacoEditor.tsx"] },
   { id: "edit.ask", keys: ["Mod+L"], label: "Ask or edit", group: "Editing", where: "a file", files: ["src/LiveEditor.tsx", "src/MonacoEditor.tsx", "src/plugins/viewer/Pane.tsx"] },
   { id: "edit.mode", keys: ["Mod+E"], label: "Edit / view", group: "Editing", where: "an open file", files: ["src/App.tsx"] },

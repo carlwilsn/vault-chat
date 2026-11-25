@@ -116,3 +116,23 @@ export async function webPageAct(what: WebPageDo, side?: PaneSide, url?: string)
   await h.act(what);
   return { ok: true };
 }
+
+/** What was typed in a pane's address bar, as the address to open: an http(s) address as it is; one word with a dot
+ *  (or localhost), as a host, gets https://; anything else is a web search. Null: nothing typed. */
+export function addressFor(typed: string): string | null {
+  const t = typed.trim();
+  if (!t) return null;
+  if (/^https?:\/\//i.test(t)) return t;
+  if (!/\s/.test(t) && /^(localhost|[^/?#.]+(\.[^/?#.]+)*\.[a-z]{2,})(:\d+)?([/?#]|$)/i.test(t)) return `https://${t}`;
+  return `https://duckduckgo.com/?q=${encodeURIComponent(t)}`;
+}
+
+/** A pane's address bar: Enter goes to what was typed, through the agent's own openInPane {url, pane} (the side the
+ *  pane is on in a split; with none, the one viewer). Returns where it landed, or null when nothing was typed. */
+export function openTyped(typed: string, paneId?: string | null): string | null {
+  const to = addressFor(typed);
+  if (!to) return null;
+  const s = useStore.getState();
+  const idx = paneId && s.panes.length >= 2 ? s.panes.findIndex((p) => p.id === paneId) : -1;
+  return openWebInPane(to, idx === 0 ? "left" : idx === 1 ? "right" : undefined).landed;
+}

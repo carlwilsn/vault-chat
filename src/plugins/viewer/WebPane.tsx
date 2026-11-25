@@ -22,7 +22,7 @@ import { followPlaceholder, inOrder, measure, native, nativeView, newId, useZoom
 import { downloadNote } from "../../webProfile";
 import { displayHost, WEB_EMBED_EVENT, type ViewPlacer, type WebEmbedEvent } from "../../inlineWeb";
 import type { WebPageSeen } from "../../layoutTypes";
-import { boxDevUrl, embedKind, frameArrived, frameHistory, frameStep, paneKey, registerWebPane, type WebPageDo } from "../../webPane";
+import { boxDevUrl, embedKind, frameArrived, frameHistory, frameStep, openTyped, paneKey, registerWebPane, type WebPageDo } from "../../webPane";
 
 const iconBtn = "inline-flex items-center gap-1 hover:text-foreground disabled:opacity-40";
 
@@ -84,9 +84,9 @@ function PaneShell(p: { paneId?: string; url: string; failed: string | null; loa
         <button data-offer="box:workspace.webPage" type="button" className={iconBtn} onClick={() => void act("back")} title="Back" data-el="web-pane-back" disabled={!!failed}><ArrowLeft className="h-3.5 w-3.5" /></button>
         <button data-offer="box:workspace.webPage" type="button" className={iconBtn} onClick={() => void act("forward")} title="Forward" data-el="web-pane-forward" disabled={!!failed}><ArrowRight className="h-3.5 w-3.5" /></button>
         <button data-offer="box:workspace.webPage" type="button" className={iconBtn} onClick={() => void act("reload")} title="Reload" data-el="web-pane-reload" disabled={!!failed}><RotateCw className={`h-3.5 w-3.5 ${loading && !failed ? "animate-spin" : ""}`} /></button>
-        <span className="truncate flex-1 min-w-0 font-mono" title={url} data-el="web-pane-title">
-          {title ? <span className="text-foreground/90 font-sans">{title} </span> : null}
-          <span className="opacity-70">{title ? "· " : ""}{displayHost(url)}</span>
+        <AddressBar paneId={paneId} url={url} />
+        <span className="truncate flex-1 min-w-0" title={title ?? url} data-el="web-pane-title">
+          {title ? <span className="text-foreground/90">{title}</span> : null}
         </span>
         <button data-offer="box:workspace.webPage" type="button" onClick={() => void act("browser")} className={iconBtn} data-el="web-pane-browser" title="Open in the browser"><ExternalLink className="h-3.5 w-3.5" /> Browser</button>
         <button data-offer="box:workspace.closePane" type="button" onClick={(e) => { e.stopPropagation(); close(); }} className={iconBtn} data-el="web-pane-close" title="Close the page"><X className="h-3.5 w-3.5" /></button>
@@ -326,5 +326,42 @@ function NativeWebPane({ paneId, url }: { paneId?: string; url: string }) {
         )}
       </div>
     </PaneShell>
+  );
+}
+
+/** The pane's address, editable: Enter goes there (src/webPane.ts openTyped: the agent's openInPane {url, pane}; a
+ *  host gets https://, other words a web search), Esc puts it back. The pane's address is the store's, so the page,
+ *  the workspace noun and Files follow. */
+function AddressBar({ paneId, url }: { paneId?: string; url: string }) {
+  const [text, setText] = useState(url);
+  const [editing, setEditing] = useState(false);
+  const fresh = useRef(false);
+  useEffect(() => {
+    if (!editing) setText(url);
+  }, [url, editing]);
+  const go = () => {
+    openTyped(text, paneId);
+  };
+  return (
+    <input
+      data-offer="box:workspace.openInPane"
+      data-el="web-pane-address"
+      value={editing ? text : url}
+      title={url}
+      spellCheck={false}
+      onFocus={(e) => (setEditing(true), setText(url), e.target.select(), (fresh.current = true))}
+      // The click that focused it keeps the whole address selected (its mouseup would put the caret there).
+      onMouseUp={(e) => {
+        if (fresh.current) e.preventDefault();
+        fresh.current = false;
+      }}
+      onBlur={() => setEditing(false)}
+      onChange={(e) => setText(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (go(), e.currentTarget.blur());
+        else if (e.key === "Escape") (e.stopPropagation(), setText(url), e.currentTarget.blur());
+      }}
+      className="w-[clamp(140px,40%,320px)] min-w-0 rounded-md bg-muted/50 px-2 py-0.5 font-mono text-[11px] text-foreground/80 outline-none focus:bg-muted focus:ring-1 focus:ring-primary/40"
+    />
   );
 }
