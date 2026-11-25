@@ -16,7 +16,7 @@ export const proposeEditSpec: ToolSpec = {
     "replace = existing text becomes newText (rewording, adding comments to existing code, fixing, reformatting: the result REPLACES the old lines, so newText is the new version of just that range, not an addition next to it); " +
     "insert = newText is NEW text that is not in the file yet, added at one spot (before/after a line, or at the cursor); it must carry only the new lines, never a copy of lines already in the file; " +
     "delete = existing text is removed. " +
-    "Where: line numbers (startLine/endLine, 1-based, inclusive; afterLine/beforeLine for an insert, afterLine 0 = top of the file) as numbered in FILE, or oldText (exact text of the file, which must occur once). With neither: replace and delete act on his SELECTION, insert at his CURSOR. " +
+    "Where: line numbers (startLine/endLine, 1-based, inclusive; afterLine/beforeLine for an insert, afterLine 0 = top of the file) as numbered in FILE, or oldText (exact text of the file, which must occur once). With neither: replace and delete act on his SELECTION, insert at his CURSOR. Organizing, cleaning up or rewriting the file is a replace of its lines (all of them for the whole file), never an insert of a new version. " +
     "To change several places, replace one range that spans them. A later call replaces an earlier proposal. If the tool returns an error, fix the call and call it again. newText has no code fences and no commentary, and is in the file's own style. Afterwards say in a line what you proposed. " +
     "Use it when Carl asks for a change to the file; answer in words when he only asks a question.",
   inputSchema: {
@@ -67,6 +67,26 @@ export function repeatedLines(doc: string, newText: string): string[] {
   return newText.split("\n").filter((l) => substantive(l) && have.has(l.trim()));
 }
 
+/** Distinct words (4+ letters or digits, lowercased). */
+const words = (t: string): Set<string> => new Set(t.toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) ?? []);
+
+/**
+ * Whether `newText` is a reworded copy of the file (an "organized" version of it): nearly all its words are the
+ * file's, it carries most of the file's words, and it is at least half the file's size. A summary is much shorter
+ * and carries few of the file's words; a new item or function carries few too. Carl's "organize this file" became
+ * an insert of the clean version beside the old one (11-25: 93% of its words were the file's, 80% of the file's words were in it).
+ */
+export function rewordedCopy(doc: string, newText: string): boolean {
+  const have = words(doc);
+  const add = words(newText);
+  if (have.size < 12 || add.size < 8) return false;
+  const size = (t: string) => t.split("\n").filter(substantive).length;
+  if (size(newText) * 2 < size(doc)) return false;
+  let shared = 0;
+  for (const w of add) if (have.has(w)) shared++;
+  return shared >= 0.85 * add.size && shared >= 0.6 * have.size;
+}
+
 /** Turn the agent's call into one concrete range of the open file, or the reason it cannot. */
 export function resolveProposal(doc: EditDoc | null, args: unknown): Resolved {
   const a = (args ?? {}) as Record<string, unknown>;
@@ -109,6 +129,12 @@ export function resolveProposal(doc: EditDoc | null, args: unknown): Resolved {
       return fail(
         `This insert repeats ${dup.length} line(s) the file already has (for example ${JSON.stringify(dup[0]!.trim())}). An insert must carry only NEW lines. ` +
           "To change existing lines (add comments, reword, fix), call replace over their startLine/endLine with the new version; to add only new lines, insert just those at the right spot.",
+      );
+    }
+    if (rewordedCopy(t, newText!)) {
+      return fail(
+        "This insert is a new version of the file's own content, so the file would hold the old text and the new copy. " +
+          "To organize, clean up or rewrite existing text, call replace over the lines it covers (startLine 1, endLine " + n + " for the whole file).",
       );
     }
   } else if (oldText !== null) {
