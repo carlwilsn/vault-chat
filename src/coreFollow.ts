@@ -43,6 +43,8 @@ export type CoreDeps = {
   post: (link: Link, path: string, body: Record<string, unknown>) => Promise<any>;
   /** Just before the loader swaps: keep the screen (src/coreSwap.ts saveSwapState). */
   beforeSwap?: () => Promise<unknown>;
+  /** The loader refused the swap after beforeSwap: what it held for the load goes again (src/coreSwap.ts cancelSwap). */
+  swapFailed?: () => Promise<unknown>;
   /** Just before the loader swaps: what the window should run after the load, so the new page says plainly whether it
    *  does (checkSwapOutcome). */
   expect?: (e: Omit<SwapExpect, "at">) => void;
@@ -183,6 +185,7 @@ export async function followCoreOnce(d: CoreDeps, o: { swap?: boolean; now?: boo
     await d.native("core_use", { version });
   } catch (e) {
     clearSwapExpect();
+    await d.swapFailed?.().catch(() => {});
     return { step, did: "failed", error: String((e as Error)?.message ?? e) };
   }
   return { step, did: "swapped", status: s };
@@ -214,9 +217,10 @@ export function readyDeps(deps: CoreDeps, s: CoreStatus | null | undefined): imp
 const LOOK_MS = 5 * 60_000;
 
 export async function defaultDeps(): Promise<CoreDeps> {
-  const { saveSwapState } = await import("./coreSwap");
+  const { saveSwapState, cancelSwap } = await import("./coreSwap");
   return {
     beforeSwap: () => saveSwapState(),
+    swapFailed: () => cancelSwap(),
     expect: (e) => expectSwap(e),
     native: invoke,
     link: async () => {

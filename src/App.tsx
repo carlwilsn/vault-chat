@@ -13,7 +13,7 @@ import { FullscreenChat } from "./FullscreenChat";
 import { NotePopup } from "./NotePopup";
 import { VoiceSlot } from "./VoiceSlot";
 import { PlaceMount } from "./PluginMount";
-import { registerOuterResize, sashMoved } from "./layoutOps";
+import { reapplyKeptColumns, registerOuterResize, sashMoved } from "./layoutOps";
 import { placeModule } from "./places";
 import { ASK_PLUGIN, CHAT_PLUGIN, CHAT_ROWS_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CONTEXT_PLUGIN, ELEVENLABS_VOICE_PLUGIN, FILETREE_PLUGIN, NOTES_PLUGIN, SETTINGS_PLUGIN, TITLEBAR_PLUGIN, VAULTS_PLUGIN, VIEWER_PLUGIN } from "./appPlugins";
 import * as titlebarPlugin from "./plugins/titlebar";
@@ -137,6 +137,8 @@ export default function App() {
     // preferredSize updates the library's preference, not its current width.
     // Refit through its native API without replacing the conversation owner.
     layoutRef.current?.reset();
+    // Right after a core swap: the widths Carl had, not the fitted ones (src/coreSwap.ts).
+    reapplyKeptColumns();
   }, [fitWidth]);
 
   // Fullscreen chat has no viewer, so "Capture a region" (the + menu, the voice

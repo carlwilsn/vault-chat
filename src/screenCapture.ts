@@ -132,10 +132,10 @@ async function collectCss(): Promise<string> {
   return parts.join("\n");
 }
 
-type Ctx = { vw: number; vh: number; jobs: Promise<void>[]; frames: number };
+type Ctx = { vw: number; vh: number; jobs: Promise<void>[]; frames: number; blankFrames?: boolean };
 
 /** A labelled box standing in for something that can't be drawn (a sandboxed live page). */
-function placeholder(el: Element, label: string): HTMLElement {
+function placeholder(el: Element, label: string, blank = false): HTMLElement {
   const cs = getComputedStyle(el);
   const d = document.createElement("div");
   const cls = el.getAttribute("class");
@@ -145,6 +145,12 @@ function placeholder(el: Element, label: string): HTMLElement {
     `${el.getAttribute("style") ?? ""};width:${cs.width};height:${cs.height};display:${cs.display === "inline" ? "inline-block" : cs.display};box-sizing:border-box;border:1px dashed #555;background:repeating-linear-gradient(45deg,#8a8a8a 0 10px,#7e7e7e 10px 20px);color:#fff;font:13px system-ui,sans-serif;align-items:center;justify-content:center;text-align:center;padding:8px;overflow:hidden`,
   );
   d.textContent = label;
+  if (blank) {
+    // A core swap's picture (src/coreSwap.ts): the frame's place left plain, as the new window shows it while it loads.
+    d.textContent = "";
+    d.style.background = "none";
+    d.style.border = "0";
+  }
   return d;
 }
 
@@ -157,7 +163,7 @@ function cloneTree(src: Node, ctx: Ctx): Node | null {
   if (tag === "IFRAME" || tag === "EMBED" || tag === "OBJECT") {
     ctx.frames++;
     const title = el.getAttribute("title") || el.getAttribute("aria-label") || "live page";
-    const box = placeholder(el, `${title} (a live page: not drawn in the picture)`);
+    const box = placeholder(el, `${title} (a live page: not drawn in the picture)`, ctx.blankFrames);
     // A viewer page draws itself (src/pageSnap.ts): its picture goes where the frame is.
     if (tag === "IFRAME" && el.matches(SNAP_FRAME_SELECTOR) && onScreen(el, ctx.vw, ctx.vh)) {
       ctx.jobs.push(
@@ -255,10 +261,10 @@ function loadImage(url: string, ms: number): Promise<HTMLImageElement> {
 }
 
 /** The SVG document that draws the window: the cloned <html> inside a foreignObject, with the app's styles. */
-export async function windowSvg(): Promise<{ svg: string; width: number; height: number; frames: number }> {
+export async function windowSvg(o: { blankFrames?: boolean } = {}): Promise<{ svg: string; width: number; height: number; frames: number }> {
   const width = Math.round(window.innerWidth);
   const height = Math.round(window.innerHeight);
-  const ctx: Ctx = { vw: width, vh: height, jobs: [], frames: 0 };
+  const ctx: Ctx = { vw: width, vh: height, jobs: [], frames: 0, blankFrames: o.blankFrames };
   const root = document.documentElement;
   const html = root.cloneNode(false) as HTMLElement;
   if (document.body) {
@@ -287,11 +293,11 @@ export async function windowSvg(): Promise<{ svg: string; width: number; height:
 }
 
 /** Draw the app's window (or one column of it) as a PNG, at most maxWidth wide. Throws with a plain reason. */
-export async function captureWindow(target: CaptureTarget = "window", o: { maxWidth?: number; chatFullscreen?: boolean; chatPoppedOut?: boolean; timeoutMs?: number } = {}): Promise<Capture> {
+export async function captureWindow(target: CaptureTarget = "window", o: { maxWidth?: number; chatFullscreen?: boolean; chatPoppedOut?: boolean; timeoutMs?: number; /** frames that can't draw themselves left plain, not labelled */ blankFrames?: boolean } = {}): Promise<Capture> {
   if (typeof document === "undefined" || typeof window === "undefined") throw new Error("there is no screen here");
   const rect = targetRect(target, o);
   if (typeof rect === "string") throw new Error(rect);
-  const { svg, frames } = await windowSvg();
+  const { svg, frames } = await windowSvg({ blankFrames: o.blankFrames });
   const img = await loadImage(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`, o.timeoutMs ?? 12_000);
   const size = fitSize(rect.width, rect.height, window.devicePixelRatio || 1, o.maxWidth ?? CAPTURE_MAX_WIDTH);
   const canvas = document.createElement("canvas");

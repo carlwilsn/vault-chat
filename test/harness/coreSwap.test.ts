@@ -118,14 +118,124 @@ test("index.html paints a swap's first frame in its theme and with the picture o
   assert.ok(html.indexOf("vc.coreSwapShot") < html.indexOf('<div id="root">'));
 });
 
-test("reveal fades the picture out and forgets it", async () => {
-  const shot = document.createElement("div");
+test("reveal drops the picture in one step, with no fade, and forgets it", async () => {
+  const shot = document.createElement("img");
   shot.id = S.SWAP_SHOT_ID;
   document.body.appendChild(shot);
   mem.set(S.SWAP_SHOT_KEY, "data:image/png;base64,AAAA");
   G.requestAnimationFrame = (f: () => void) => setTimeout(f, 0);
   S.revealAfterSwap();
   assert.equal(mem.has(S.SWAP_SHOT_KEY), false);
-  await new Promise((r) => setTimeout(r, S.SHOT_FADE_MS + 120));
+  assert.equal(shot.getAttribute("style") ?? "", "", "no opacity, no transition: the picture never fades");
+  await new Promise((r) => setTimeout(r, 30));
   assert.equal(document.getElementById(S.SWAP_SHOT_ID), null);
+  // index.html paints the picture as an image decoded with its frame (no blank frame before it), with no transition.
+  const { readFileSync } = await import("node:fs");
+  const html = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
+  assert.match(html, /createElement\("img"\)[\s\S]*decoding = "sync"/);
+  const css = html.slice(html.indexOf("#vc-swap-shot {"), html.indexOf("}", html.indexOf("#vc-swap-shot {")));
+  assert.doesNotMatch(css, /transition|opacity/);
+});
+
+/** The app's outer split (file tree, viewer, chat) and the viewer's own split, as Allotment draws them, with widths. */
+function drawSplits(cols: number[], panes: number[] | null) {
+  const view = (w: number, inner = "") => `<div class="split-view-view" data-w="${w}">${inner}</div>`;
+  const inner = panes ? `<div data-el="markdown-area"><div class="split-view split-view-horizontal"><div class="split-view-container">${panes.map((w) => view(w)).join("")}</div></div></div>` : `<div data-el="markdown-area"></div>`;
+  const old = document.querySelector("#splits");
+  old?.remove();
+  const root = document.createElement("div");
+  root.id = "splits";
+  root.innerHTML = `<div class="split-view split-view-horizontal"><div class="split-view-container">${view(cols[0]!)}${view(cols[1]!, inner)}${view(cols[2]!)}</div></div>`;
+  document.body.appendChild(root);
+  for (const el of root.querySelectorAll(".split-view-view") as any) {
+    const w = Number(el.getAttribute("data-w"));
+    el.getBoundingClientRect = () => ({ width: w, height: 700, left: 0, top: 0, right: w, bottom: 700 });
+  }
+}
+
+test("layout identical across a swap: panes (a web page too), split, active, panels, column widths, the viewer's split", async () => {
+  const L = await import("../../src/layoutOps.ts");
+  G.window ??= globalThis;
+  G.innerWidth = 1400;
+  G.innerHeight = 860;
+  useStore.setState({
+    vaultPath: vault,
+    conversations: [conv("c1")],
+    activeConversationId: "c1",
+    panes: [
+      { id: "x", file: `${vault}/a.md`, content: "A", mode: "view" },
+      { id: "y", file: "https://example.com/page", content: "", mode: "view" },
+    ],
+    splitDirection: "horizontal",
+    activePaneId: "y",
+    currentFile: "https://example.com/page",
+    currentContent: "",
+    leftCollapsed: false,
+    rightCollapsed: false,
+    chatFullscreen: false,
+  } as any);
+  drawSplits([210, 670, 520], [260, 410]);
+  const before = { layout: L.readLayout(), panes: L.paneSplitSizes() };
+  const kept = JSON.parse(JSON.stringify(S.swapStateNow(null, 2000)));
+  // Too big to keep the pane text: a web page is still put back (it has no file to read).
+  for (const p of kept.panes) p.content = null;
+
+  // The new bundle: nothing open, the chat shut, the columns at their defaults, the viewer split evenly.
+  useStore.setState({ panes: [], splitDirection: null, activePaneId: null, currentFile: null, currentContent: "", rightCollapsed: true } as any);
+  drawSplits([160, 800, 440], [335, 335]);
+  let cols: number[] | null = null;
+  let inner: number[] | null = null;
+  const offA = L.registerOuterResize((sizes) => ((cols = sizes), drawSplits(sizes, inner ?? [335, 335])));
+  const offB = L.registerPaneSplitResize((sizes) => ((inner = sizes), drawSplits(cols ?? [160, 800, 440], sizes)));
+  try {
+    const reads: string[] = [];
+    const done = await S.restoreSwapState(kept, { read: async (p) => (reads.push(p), "A"), chatsLoaded: async () => {}, setDraft: () => {}, frame: async () => {}, filesLoaded: async () => {} });
+    assert.ok(done.includes("panes") && done.includes("sizes"), done.join(","));
+    assert.deepEqual(reads, [`${vault}/a.md`], "only the file is read again, never the web page's address");
+    const after = { layout: L.readLayout(), panes: L.paneSplitSizes() };
+    assert.deepEqual(after, before);
+    // The new window's first file listing refits the columns (src/App.tsx): the kept widths win for a while after.
+    drawSplits([180, 780, 440], inner);
+    assert.equal(L.reapplyKeptColumns(), true);
+    assert.deepEqual(L.readLayout().sizes, before.layout.sizes);
+    assert.equal(L.reapplyKeptColumns(Date.now() + S.KEEP_COLUMNS_MS + 1), false, "and only for a while");
+  } finally {
+    offA();
+    offB();
+    document.querySelector("#splits")?.remove();
+  }
+});
+
+test("no beforeunload prompt during a swap: the guard stands aside and every frame leaves first; a swap that did not start puts them back", async () => {
+  const H = await import("../../src/swapHold.ts");
+  G.window ??= globalThis;
+  G.getComputedStyle ??= () => ({ display: "block" });
+  const host = document.createElement("div");
+  host.innerHTML = `<div class="pane"><iframe id="web" class="absolute inset-0" src="https://box:1560/before/?scenario=home"></iframe></div><div class="chat"><iframe id="page" style="height:300px" srcdoc="x"></iframe></div>`;
+  document.body.appendChild(host);
+  try {
+    assert.equal(H.swapHeld(), false);
+    // OK on the Ready card: the screen is kept, then the hold (src/coreSwap.ts saveSwapState).
+    await S.saveSwapState();
+    assert.equal(H.swapHeld(), true, "the window's own leave guard stands aside");
+    assert.equal(host.querySelectorAll("iframe").length, 0, "no frame is left to ask on the load");
+    const boxes = host.querySelectorAll("[data-vc-swap-frame]");
+    assert.equal(boxes.length, 2, "a still box in each frame's place");
+    assert.equal(boxes[0]!.getAttribute("class"), "absolute inset-0");
+    // The loader refused: everything as it was.
+    await S.cancelSwap();
+    assert.equal(H.swapHeld(), false);
+    assert.deepEqual([...host.querySelectorAll("iframe")].map((f: any) => f.id), ["web", "page"]);
+    assert.equal(host.querySelectorAll("[data-vc-swap-frame]").length, 0);
+    assert.equal(mem.has(S.SWAP_KEY), false, "and nothing is restored on a later load");
+  } finally {
+    host.remove();
+    H.releaseSwapHold();
+  }
+  // The guard is the app window's only: a copy of the app framed in a pane never registers one.
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../../src/linkNav.ts", import.meta.url), "utf8");
+  assert.match(src, /const guard = [^;]*window\.top === window/);
+  assert.match(src, /if \(guard\) window\.addEventListener\("beforeunload"/);
+  assert.match(src, /if \(swapHeld\(\)\) return;/);
 });

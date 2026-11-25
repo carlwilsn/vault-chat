@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Allotment } from "allotment";
+import { Allotment, type AllotmentHandle } from "allotment";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore, type DropSide } from "./store";
 import { MarkdownView } from "./MarkdownView";
 import { VAULT_PANE_MIME, treeDrag } from "./dnd";
 import { isUnreadableAsText } from "./fileKind";
+import { registerPaneSplitResize } from "./layoutOps";
 
 type DropMode = { kind: "edge"; side: DropSide } | { kind: "fill" } | null;
 
@@ -17,6 +18,9 @@ export function MarkdownArea() {
   const [treeDrop, setTreeDrop] = useState<DropMode>(null);
   const dragDepth = useRef(0);
   const areaRef = useRef<HTMLDivElement | null>(null);
+  // The split's sash, for a core swap putting its sizes back (src/coreSwap.ts).
+  const splitRef = useRef<AllotmentHandle>(null);
+  useEffect(() => registerPaneSplitResize((sizes) => splitRef.current?.resize(sizes)), []);
 
   const sideAt = (r: DOMRect, cx: number, cy: number): DropSide => {
     const x = (cx - r.left) / r.width;
@@ -128,7 +132,7 @@ export function MarkdownArea() {
       onDrop={onDrop}
     >
       {panes.length === 2 ? (
-        <Allotment key={splitDirection ?? "h"} vertical={splitDirection === "vertical"}>
+        <Allotment ref={splitRef} key={splitDirection ?? "h"} vertical={splitDirection === "vertical"}>
           <Allotment.Pane minSize={200}>
             <MarkdownView paneId={panes[0].id} />
           </Allotment.Pane>

@@ -61,6 +61,62 @@ export function pushLayoutChanges(post: (layout: HostLayout) => void, measure: (
 }
 
 const sashFns = new Set<() => void>();
+/** As dragging the sashes: the file tree's and the chat's widths (a width left out stays), the viewer takes the rest.
+ *  Returns why it can't, or null. */
+export function resizeColumns(c: { leftPanel?: number; chat?: number }, measure: () => Pick<HostLayout, "viewport" | "sizes"> = domMeasure): string | null {
+  const m = measure();
+  if (!outerResize || !m.sizes || !m.viewport) return "the columns can't be resized here (full-screen chat, or no split on screen)";
+  const left = typeof c.leftPanel === "number" ? Math.max(0, c.leftPanel) : m.sizes.leftPanel;
+  const chat = typeof c.chat === "number" ? Math.max(0, c.chat) : m.sizes.chat;
+  const total = m.sizes.leftPanel + m.sizes.viewer + m.sizes.chat;
+  outerResize([left, Math.max(340, total - left - chat), chat]);
+  return null;
+}
+
+// Column widths a core swap put back (src/coreSwap.ts): the new window's first file listing refits the file tree
+// (src/App.tsx resets the columns when its fit width changes), which would undo them; for a short while after the
+// swap the refit puts them back instead.
+let keptColumns: { leftPanel?: number; chat?: number; until: number } | null = null;
+export function keepColumns(c: { leftPanel?: number; chat?: number }, ms: number, now = Date.now()): void {
+  keptColumns = { ...c, until: now + ms };
+}
+/** After the columns were reset (src/App.tsx): the kept widths again, while they are kept. True when it did. */
+export function reapplyKeptColumns(now = Date.now()): boolean {
+  if (!keptColumns || now > keptColumns.until) {
+    keptColumns = null;
+    return false;
+  }
+  return resizeColumns(keptColumns) === null;
+}
+
+// The viewer's own split (two panes, src/MarkdownArea.tsx): its sizes, as its sash leaves them.
+let paneSplitResize: ((sizes: number[]) => void) | null = null;
+export function registerPaneSplitResize(fn: (sizes: number[]) => void): () => void {
+  paneSplitResize = fn;
+  return () => {
+    if (paneSplitResize === fn) paneSplitResize = null;
+  };
+}
+/** The two panes' sizes in pixels (widths side by side, heights stacked), or null when the viewer is not split. */
+export function paneSplitSizes(): number[] | null {
+  if (typeof document === "undefined") return null;
+  try {
+    const split = document.querySelector('[data-el="markdown-area"] .split-view');
+    const views = split ? [...split.querySelectorAll(":scope > .split-view-container > .split-view-view")] : [];
+    if (views.length !== 2) return null;
+    const vertical = split!.classList.contains("split-view-vertical");
+    return views.map((v) => Math.round(vertical ? v.getBoundingClientRect().height : v.getBoundingClientRect().width));
+  } catch {
+    return null;
+  }
+}
+/** The viewer's split to these sizes, as dragging its sash. False when there is no split on screen. */
+export function resizePaneSplit(sizes: number[]): boolean {
+  if (!paneSplitResize || sizes.length !== 2) return false;
+  paneSplitResize(sizes);
+  return true;
+}
+
 /** The outer split's columns changed size (Allotment's onChange, src/App.tsx). */
 export function sashMoved(): void {
   for (const f of [...sashFns]) f();
@@ -206,14 +262,8 @@ async function applyOne(op: LayoutOp, io: LayoutIO): Promise<{ ok: boolean; note
       return done();
     }
     case "resize": {
-      // As dragging the sashes: the file tree's and the chat's widths, the viewer takes the rest.
-      const m = (io.measure ?? domMeasure)();
-      if (!outerResize || !m.sizes || !m.viewport) return no("the columns can't be resized here (full-screen chat, or no split on screen)");
-      const left = typeof op.leftPanel === "number" ? Math.max(0, op.leftPanel) : m.sizes.leftPanel;
-      const chat = typeof op.chat === "number" ? Math.max(0, op.chat) : m.sizes.chat;
-      const total = m.sizes.leftPanel + m.sizes.viewer + m.sizes.chat;
-      outerResize([left, Math.max(340, total - left - chat), chat]);
-      return done();
+      const why = resizeColumns({ leftPanel: op.leftPanel, chat: op.chat }, io.measure);
+      return why ? no(why) : done();
     }
     default:
       return no(`unknown layout op "${String((op as { op?: unknown }).op)}" (${LAYOUT_OPS.join(", ")})`);

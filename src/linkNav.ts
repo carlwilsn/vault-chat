@@ -5,6 +5,7 @@ import { useStore } from "./store";
 import { isUnreadableAsText } from "./fileKind";
 import { openUrl, isExternalHref } from "./opener";
 import { localPathFromUrl } from "./mdPipeline";
+import { holdForSwap, releaseSwapHold, swapHeld } from "./swapHold";
 
 function resolveRelative(baseFile: string, rel: string): string {
   const sep = baseFile.includes("\\") ? "\\" : "/";
@@ -117,19 +118,25 @@ export function useGlobalAnchorClickHandler(): void {
       if (e.button === 1) onClick(e);
     };
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      // A core swap (src/coreSwap.ts) loads the window on purpose, with the screen kept: no "Leave site?" there.
-      if ((window as { __vcCoreSwapping?: boolean }).__vcCoreSwapping) return;
+      // A core swap (src/coreSwap.ts, src/swapHold.ts) loads the window on purpose, with the screen kept: no "Reload site?" there.
+      if (swapHeld()) return;
       e.preventDefault();
     };
+    // The guard is the app window's: a copy of the app framed in a pane (the preview harness in the viewer) never
+    // asks, for its own Reload or for the window's.
+    const guard = typeof window !== "undefined" && window.top === window;
     window.addEventListener("click", onClick, true);
     window.addEventListener("auxclick", onAuxClick, true);
-    window.addEventListener("beforeunload", onBeforeUnload);
-    // The main window is about to swap the core: every window (a chat popout too) is loaded with it.
-    let unlistenSwap: (() => void) | null = null;
+    if (guard) window.addEventListener("beforeunload", onBeforeUnload);
+    // The main window is about to swap the core: every window (a chat popout too) is loaded with it; a swap that did
+    // not start lets them go again.
+    const unlisten: (() => void)[] = [];
     let gone = false;
-    void listen("vc-core-swapping", () => void ((window as { __vcCoreSwapping?: boolean }).__vcCoreSwapping = true))
-      .then((u) => (gone ? u() : (unlistenSwap = u)))
-      .catch(() => {});
+    for (const [ev, fn] of [["vc-core-swapping", () => void holdForSwap()], ["vc-core-swap-cancelled", releaseSwapHold]] as const) {
+      void listen(ev, fn)
+        .then((u) => (gone ? u() : unlisten.push(u)))
+        .catch(() => {});
+    }
 
     // Nuclear option: walk the DOM and strip `href` from every anchor
     // whose target is an internal link (vault:// / relative path / file:).
@@ -167,9 +174,9 @@ export function useGlobalAnchorClickHandler(): void {
     return () => {
       window.removeEventListener("click", onClick, true);
       window.removeEventListener("auxclick", onAuxClick, true);
-      window.removeEventListener("beforeunload", onBeforeUnload);
+      if (guard) window.removeEventListener("beforeunload", onBeforeUnload);
       gone = true;
-      unlistenSwap?.();
+      for (const u of unlisten) u();
       observer.disconnect();
     };
   }, []);

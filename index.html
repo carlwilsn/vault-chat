@@ -47,15 +47,15 @@
       html.vc-swapping #vault-splash { display: none; }
       html.vc-swapping #root { visibility: hidden; }
       /* A core swap's picture of the old screen: the first frame, until the
-         restored screen fades in under it (src/coreSwap.ts revealAfterSwap). */
+         restored screen is drawn under it (src/coreSwap.ts revealAfterSwap). */
       #vc-swap-shot {
         position: fixed;
         inset: 0;
         z-index: 10000;
         pointer-events: none;
-        background-repeat: no-repeat;
-        background-position: 0 0;
-        background-size: 100% 100%;
+        display: block;
+        width: 100%;
+        height: 100%;
       }
 
       /* Splash sits on top of #root while React mounts and the initial
@@ -110,9 +110,12 @@
         if (sessionStorage.getItem("vc.coreSwap")) {
           var shot = sessionStorage.getItem("vc.coreSwapShot");
           if (shot && shot.indexOf("data:image/") === 0) {
-            var d = document.createElement("div");
+            // An image decoded with the frame that shows it: never a blank frame before the picture.
+            var d = document.createElement("img");
             d.id = "vc-swap-shot";
-            d.style.backgroundImage = 'url("' + shot + '")';
+            d.alt = "";
+            d.decoding = "sync";
+            d.src = shot;
             document.body.appendChild(d);
           }
         }

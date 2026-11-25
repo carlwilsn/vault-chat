@@ -10,11 +10,18 @@
 // later launch: a fresh start).
 // The old frame is not held that long on Carl's laptop (WebView2 drops it on the reload: a ~1.4 s blank, dark on his
 // light theme), so the swap also keeps a picture of the screen (src/screenCapture.ts, at the window's own pixels) in
-// sessionStorage: index.html paints it as the very first frame, and the restored screen fades in over it (SHOT_FADE_MS),
-// so the small differences of the drawing never show as a jump. The theme rides along (src/firstTheme.ts): the first
-// frame is never the wrong colour.
+// sessionStorage: index.html paints it as the very first frame, and the restored screen replaces it in one frame once it
+// is drawn under it (no fade: Carl wants the swap still). The theme rides along (src/firstTheme.ts): the first frame is
+// never the wrong colour.
+// The layout comes back exactly: the panes (a web page's address too), split, active, the side panels, full-screen chat,
+// and the widths: the columns (file tree, viewer, chat: src/layoutOps.ts resizeColumns, what dragging the sashes does)
+// and the viewer's own split. The new window's first file listing refits the file tree; the kept widths win over it
+// (keepColumns). Nothing asks "Reload site?" on the swap's load (src/swapHold.ts).
 import { useStore, type Pane, type SplitDirection } from "./store";
 import { isTheme, type Theme } from "./firstTheme";
+import { holdForSwap, releaseSwapHold } from "./swapHold";
+import { isWebAddress } from "./webPane";
+import { domMeasure, keepColumns, paneSplitSizes, resizeColumns, resizePaneSplit } from "./layoutOps";
 
 /** index.html reads this key by name before any script loads: keep the two in step. */
 export const SWAP_KEY = "vc.coreSwap";
@@ -23,8 +30,8 @@ export const SWAP_MAX_MS = 60_000;
 export const SWAP_SHOT_KEY = "vc.coreSwapShot";
 /** The id index.html gives the picture's element. */
 export const SWAP_SHOT_ID = "vc-swap-shot";
-/** How long the restored screen fades in over the picture. */
-export const SHOT_FADE_MS = 160;
+/** How long the columns' widths a swap put back win over the new window's refit of the file tree. */
+export const KEEP_COLUMNS_MS = 15_000;
 /** A picture bigger than this (characters) is not kept: sessionStorage has ~5 M. */
 const SHOT_MAX_CHARS = 3_500_000;
 /** Pane text kept as it is (unsaved edits included) up to this much in all; over it the files are read again. */
@@ -43,6 +50,12 @@ export type SwapState = {
   active: number;
   currentFile: string | null;
   currentContent: string | null;
+  /** The one file's view or edit (a split's panes carry their own). */
+  mode?: "view" | "edit";
+  /** The columns' widths in pixels (0: a closed panel), null when there is no split on screen (full-screen chat). */
+  sizes?: { leftPanel: number; viewer: number; chat: number } | null;
+  /** The viewer's split: its two panes' sizes in pixels. */
+  paneSizes?: number[] | null;
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   chatFullscreen: boolean;
@@ -75,6 +88,9 @@ export function swapStateNow(draft: SwapState["draft"], now = Date.now()): SwapS
     active: Math.max(0, s.panes.findIndex((p) => p.id === s.activePaneId)),
     currentFile: s.currentFile,
     currentContent: s.currentContent.length <= PANE_TEXT_MAX ? s.currentContent : null,
+    mode: s.mode,
+    sizes: domMeasure().sizes,
+    paneSizes: paneSplitSizes(),
     leftCollapsed: s.leftCollapsed,
     rightCollapsed: s.rightCollapsed,
     chatFullscreen: s.chatFullscreen,
@@ -96,8 +112,9 @@ export async function saveSwapState(): Promise<SwapState | null> {
   const st = swapStateNow(draft);
   // The picture first, while the screen is still exactly as Carl sees it (no more than ~2 s; without it the swap still runs).
   const shot = await screenPicture();
-  // The load that follows is on purpose: the window's leave guard (src/linkNav.ts) stands aside for it.
-  if (typeof window !== "undefined") (window as { __vcCoreSwapping?: boolean }).__vcCoreSwapping = true;
+  // The load that follows is on purpose: the window's leave guard (src/linkNav.ts) stands aside for it, and the frames
+  // in it leave (their own beforeunload would ask), after the picture so it still shows them.
+  holdForSwap();
   try {
     const { emit } = await import("@tauri-apps/api/event");
     await emit("vc-core-swapping");
@@ -123,13 +140,30 @@ export async function saveSwapState(): Promise<SwapState | null> {
   return st;
 }
 
+/** The swap did not start (the loader refused): the frames and the leave guard come back, in every window. */
+export async function cancelSwap(): Promise<void> {
+  releaseSwapHold();
+  try {
+    ss()?.removeItem(SWAP_KEY);
+    ss()?.removeItem(SWAP_SHOT_KEY);
+  } catch {
+    /* none */
+  }
+  try {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("vc-core-swap-cancelled");
+  } catch {
+    /* no other windows */
+  }
+}
+
 /** The window as Carl sees it, at its own pixels, as a data: URL; null when it can't be drawn in time. Never throws. */
 async function screenPicture(): Promise<string | null> {
   try {
     if (typeof window === "undefined") return null;
     const { captureWindow } = await import("./screenCapture");
     const px = Math.round(window.innerWidth * (window.devicePixelRatio || 1));
-    const c = await captureWindow("window", { maxWidth: Math.min(Math.max(px, 1), 4096), timeoutMs: 2000 });
+    const c = await captureWindow("window", { maxWidth: Math.min(Math.max(px, 1), 4096), timeoutMs: 2000, blankFrames: true });
     const url = `data:${c.mimeType};base64,${c.data}`;
     return url.length <= SHOT_MAX_CHARS ? url : null;
   } catch {
@@ -163,12 +197,8 @@ export function revealAfterSwap(): void {
   }
   const shot = document.getElementById(SWAP_SHOT_ID);
   if (!shot) return;
-  // The restored screen is under it now: fade the picture out, then drop it.
-  shot.style.transition = `opacity ${SHOT_FADE_MS}ms ease-out`;
-  requestAnimationFrame(() => {
-    shot.style.opacity = "0";
-    setTimeout(() => shot.remove(), SHOT_FADE_MS + 40);
-  });
+  // The restored screen is drawn under it in the next frame: the picture goes after that frame, at once (no fade).
+  requestAnimationFrame(() => requestAnimationFrame(() => shot.remove()));
 }
 
 export type RestoreDeps = {
@@ -179,6 +209,8 @@ export type RestoreDeps = {
   setDraft: (d: NonNullable<SwapState["draft"]>) => void;
   /** Frames to wait for the transcript to lay out before scrolling. */
   frame: () => Promise<void>;
+  /** Wait (bounded) until the vault's file listing is in: it refits the file tree, so the widths go back after it. */
+  filesLoaded?: () => Promise<void>;
 };
 
 /** Put back what the window showed before the swap. What it can't (a file gone, a chat deleted since) is left as the
@@ -188,9 +220,11 @@ export async function restoreSwapState(st: SwapState, d: RestoreDeps): Promise<s
   const s = useStore.getState();
   if (st.vault && s.vaultPath !== st.vault) return done; // another vault opened since: nothing of it applies
   const panes: Pane[] = [];
+  // A web page has no text to read: its address is the pane.
+  const text = async (file: string, kept: string | null) => kept ?? (isWebAddress(file) ? "" : await d.read(file));
   for (const p of st.panes) {
     try {
-      panes.push({ id: `p_${Math.random().toString(36).slice(2)}`, file: p.file, mode: p.mode, content: p.content ?? (await d.read(p.file)) });
+      panes.push({ id: `p_${Math.random().toString(36).slice(2)}`, file: p.file, mode: p.mode, content: await text(p.file, p.content) });
     } catch {
       /* gone since */
     }
@@ -201,13 +235,50 @@ export async function restoreSwapState(st: SwapState, d: RestoreDeps): Promise<s
     done.push("panes");
   } else if (st.currentFile) {
     try {
-      useStore.getState().setCurrentFile(st.currentFile, st.currentContent ?? (await d.read(st.currentFile)));
+      useStore.getState().setCurrentFile(st.currentFile, await text(st.currentFile, st.currentContent));
+      if (st.mode) useStore.getState().setMode(st.mode);
       done.push("file");
     } catch {
       /* gone since */
     }
   }
   useStore.setState({ leftCollapsed: st.leftCollapsed, rightCollapsed: st.rightCollapsed, chatFullscreen: st.chatFullscreen });
+  if (st.sizes || st.paneSizes) {
+    // The panels open or shut and the file listing in (it refits the tree), then the widths as they were.
+    await d.filesLoaded?.();
+    await d.frame();
+    let sized = false;
+    try {
+      if (st.sizes && !st.chatFullscreen) {
+        const c = { ...(st.sizes.leftPanel > 0 ? { leftPanel: st.sizes.leftPanel } : {}), ...(st.sizes.chat > 0 ? { chat: st.sizes.chat } : {}) };
+        keepColumns(c, KEEP_COLUMNS_MS);
+        sized = resizeColumns(c) === null;
+      }
+      if (st.paneSizes && panes.length >= 2) {
+        // The viewer's split lays its two panes out over a few frames after they mount: once they hold still, its
+        // sash goes where it was (again, should that first layout still land after it).
+        let last = "";
+        for (let i = 0; i < 20; i++) {
+          const now = JSON.stringify(paneSplitSizes());
+          if (now !== "null" && now === last) break;
+          last = now;
+          await d.frame();
+        }
+        const want = JSON.stringify(st.paneSizes);
+        for (let i = 0; i < 3 && JSON.stringify(paneSplitSizes()) !== want; i++) {
+          if (!paneSplitSizes() || !resizePaneSplit(st.paneSizes)) break;
+          sized = true;
+          await d.frame();
+        }
+      }
+    } catch (e) {
+      console.warn("[core] the widths did not go back:", e);
+    }
+    if (sized) {
+      await d.frame();
+      done.push("sizes");
+    }
+  }
   if (st.draft && (st.draft.input || st.draft.mentions.length || st.draft.images.length || st.draft.files.length)) {
     d.setDraft(st.draft);
     done.push("draft");
@@ -254,6 +325,7 @@ export async function restoreAfterSwap(): Promise<void> {
       chatsLoaded: () => until(() => useStore.getState().conversations.some((c) => c.id === st.conv) || (useStore.getState().conversationsLoaded && useStore.getState().conversations.length > 0), 8000),
       setDraft: (x) => draftMod.useDraft.setState({ input: x.input, mentions: x.mentions as never, images: x.images as never, files: x.files as never }),
       frame: () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))),
+      filesLoaded: () => until(() => useStore.getState().files.length > 0, 3000),
     });
     console.info(`[core] after the swap, put back: ${done.join(", ") || "nothing"}`);
     mark(done.join(",") || "nothing");
