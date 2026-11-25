@@ -45,6 +45,8 @@ const FRESH_MS = 120_000;
 const TURN_STALE_MS = 5 * 60_000;
 /** The usage endpoint said 429 without a retry-after: leave it this long. */
 const USAGE_BACKOFF_MS = 15 * 60_000;
+/** The usage endpoint refused the token (no profile scope): leave it this long. */
+const REFUSED_BACKOFF_MS = 6 * 3600_000;
 /** The model the header probe asks for one token on: the cheapest. */
 const PROBE_MODEL = process.env.VC_TITLE_MODEL || "claude-haiku-5-5";
 
@@ -201,6 +203,8 @@ async function ask(token: string, f: Fetch): Promise<PlanUsage> {
           const after = num(r.headers.get("retry-after"));
           usageBlockedUntil = now + (after && after > 0 ? after * 1000 : USAGE_BACKOFF_MS);
         }
+        // Refused for good (a setup-token has no user:profile scope): not asked again for hours.
+        if (r.status === 401 || r.status === 403) usageBlockedUntil = now + REFUSED_BACKOFF_MS;
       }
     } catch (e) {
       why = `usage: ${(e as Error).name}`;

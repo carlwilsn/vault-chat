@@ -122,6 +122,20 @@ describe("plan usage", () => {
     expect(urls.filter((u) => u.endsWith("/api/oauth/usage")).length).toBe(1);
   });
 
+  it("a token the usage endpoint refuses (no profile scope) goes straight to the headers next time", async () => {
+    const urls: string[] = [];
+    const f = async (url: string) => {
+      urls.push(url);
+      if (url.endsWith("/api/oauth/usage")) return new Response("{}", { status: 403 });
+      return new Response("{}", { status: 200, headers: { "anthropic-ratelimit-unified-7d-utilization": "0.24" } });
+    };
+    await planUsage(TOKEN, f);
+    forgetPlanUsage({ keepBackoff: true });
+    const u = await planUsage(TOKEN, f);
+    expect(u.weekly?.percent).toBe(24);
+    expect(urls.filter((x) => x.endsWith("/api/oauth/usage")).length).toBe(1);
+  });
+
   it("the box keeps the answer in a file and a restart starts from it; refresh asks only when stale", async () => {
     const path = join(mkdtempSync(join(tmpdir(), "plan-usage-")), "plan-usage.json");
     keepPlanUsageIn(path);
