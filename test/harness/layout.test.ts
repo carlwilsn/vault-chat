@@ -122,24 +122,28 @@ test("focus, closePane and split off change the real store, and the read-back sa
 });
 
 test("panels and full-screen chat: several ops at once, each reported, the final layout is the screen's", async () => {
+  // The right panel is Chats (the chat list); every chat is a tile.
   const r = await Layout({ ops: [{ action: "closeLeftPanel" }, { action: "closeRightPanel" }] });
   assert.equal(r.ok, true, r.text);
   let l = layoutOf(r.text);
   assert.equal(l.leftPanelOpen, false);
   assert.equal(l.rightPanelOpen, false);
   assert.equal(S().leftCollapsed, true);
-  assert.equal(S().rightCollapsed, true);
+  assert.equal(S().chatSidebarOpen, false);
   const again = await Layout({ action: "closeLeftPanel" });
   assert.match(again.text, /already closed/);
   await Layout({ action: "openLeftPanel" });
   await Layout({ action: "openRightPanel" });
   assert.equal(S().leftCollapsed, false);
-  assert.equal(S().rightCollapsed, false);
+  assert.equal(S().chatSidebarOpen, true);
+  // Full-screen chat: the open chat's tile fills the window (the side panels out of the way), and back.
   l = layoutOf((await Layout({ action: "fullscreenChat", on: true })).text);
   assert.equal(l.chatFullscreen, true);
   assert.equal(l.leftPanelOpen, false, "a full-screen chat has no file tree on screen");
+  assert.ok((l.tiles as any[]).some((t) => t.chat && t.maximized), "its tile is the one full screen");
   l = layoutOf((await Layout({ action: "fullscreenChat", on: false })).text);
   assert.equal(l.chatFullscreen, false);
+  assert.equal(l.leftPanelOpen, true, "the file tree back as it was");
 });
 
 test("a pane holds a web page: opened, read back with its address and title, navigated, driven, closed", async () => {
@@ -388,7 +392,8 @@ test("a web pane's address bar: what was typed opens through the agent's own ope
 
 test("bad input is refused before anything is sent; an offline laptop is said honestly", async () => {
   const n = sent.length;
-  assert.match((await Layout({ action: "openInPane", path: "a.md" })).text, /needs pane/);
+  // A file with no pane goes where new things go (tiles); a spot that isn't one is refused here.
+  assert.match((await Layout({ action: "moveTile", tile: "t1", spot: "middle" })).text, /spot is one of/);
   assert.match((await Layout({ action: "dance" })).text, /Unknown layout action/);
   assert.match((await Layout({})).text, /needs action/);
   assert.equal(sent.length, n);

@@ -94,11 +94,8 @@ const placeRow = (p: Place) => {
   };
 };
 
-/** The panel the list is in: the overlay in the docked layout, the sidebar in fullscreen chat. */
-const panel = () => {
-  const s = S();
-  return s.chatFullscreen ? { surface: "sidebar", open: s.chatSidebarOpen } : { surface: "overlay", open: s.showChatsPanel };
-};
+/** The panel the list is in: Chats, the right side panel (Ctrl+Shift+B); every chat itself is a tile. */
+const panel = () => ({ surface: "sidebar", open: S().chatSidebarOpen });
 
 /** The plugin's offers (exported for tests). */
 export function chatsOffers() {
@@ -196,27 +193,20 @@ export function chatsOffers() {
         run: async (a: Record<string, unknown>) => {
           const p = a.place === undefined ? null : await placeNamed(a.place);
           const id = newChatIn(p === null ? null : p.type === "project" ? p.slug : "main");
-          if (S().rightCollapsed && !S().chatFullscreen) S().toggleRight();
           return { created: id, place: projectOfThread(id) ?? S().conversations.find((c) => c.id === id)?.project ?? "main" };
         },
       },
       openPanel: {
-        description: "Open the list on screen: the overlay, or in fullscreen chat the sidebar.",
+        description: "Open the list on screen: Chats, the right side panel (Ctrl+Shift+B).",
         run: () => {
-          const s = S();
-          if (s.chatFullscreen) {
-            if (!s.chatSidebarOpen) s.toggleChatSidebar();
-          } else s.setShowChatsPanel(true);
+          if (!S().chatSidebarOpen) S().toggleChatSidebar();
           return panel();
         },
       },
       closePanel: {
         description: "Close the list on screen.",
         run: () => {
-          const s = S();
-          if (s.chatFullscreen) {
-            if (s.chatSidebarOpen) s.toggleChatSidebar();
-          } else s.setShowChatsPanel(false);
+          if (S().chatSidebarOpen) S().toggleChatSidebar();
           return panel();
         },
       },

@@ -1,15 +1,10 @@
-// The laptop's split screen, as one model for everything that names it.
-//
-// The store keeps either one file (currentFile, panes = []) or a split
-// (panes[0], panes[1], splitDirection, activePaneId). Here the two panes are
-// called "left" and "right" — panes[0] and panes[1]; in a stacked split (top /
-// bottom) left is the top one — and those are the names pi's Show takes
-// (`pane`), the names the turn prefix uses (layoutLine) and the names Show's
-// result reports.
-//
-// Nothing here outlives the app: a start opens with an empty viewer.
-import { useStore, type DropSide, type Pane, type SplitDirection } from "./store";
+// The viewer's files by the older names Show and the agent's `pane` take. Where things are is the tiles' (src/tiles.ts);
+// the store keeps which files are open: one (currentFile, panes = []) or several (panes, activePaneId). "left" and
+// "right" are panes[0] and panes[1] (src/tiles.ts tileAtSide); the turn prefix and Show's result say the tiles
+// (layoutLine).
+import type { Pane, SplitDirection } from "./store";
 import type { PaneSide } from "./layoutTypes";
+import { ensureTilesStarted, placeAtSide, sideOfPane, spotName, tileTitle, useTiles } from "./tiles";
 
 export type { PaneSide } from "./layoutTypes";
 export const PANE_SIDES: readonly PaneSide[] = ["left", "right"];
@@ -17,7 +12,6 @@ export const PANE_SIDES: readonly PaneSide[] = ["left", "right"];
 type LayoutState = { currentFile: string | null; panes: Pane[]; splitDirection: SplitDirection; activePaneId: string | null };
 
 const slash = (p: string) => p.replace(/\\/g, "/");
-const same = (a: string, b: string) => slash(a).toLowerCase() === slash(b).toLowerCase();
 
 /** A vault-relative path for display (the agent's tools take these). */
 export function relToVault(vault: string | null | undefined, p: string): string {
@@ -27,67 +21,38 @@ export function relToVault(vault: string | null | undefined, p: string): string 
   return n.toLowerCase().startsWith(v.toLowerCase() + "/") ? n.slice(v.length + 1) : n;
 }
 
-/** The side a pane is on (by its index), or null when there is no split. */
-export function sideOf(s: LayoutState, paneId: string | null): PaneSide | null {
-  if (s.panes.length < 2 || !paneId) return null;
-  const i = s.panes.findIndex((p) => p.id === paneId);
-  return i === 0 ? "left" : i === 1 ? "right" : null;
+/** The side a pane is on (src/tiles.ts sideOfPane: the first / second file tile in place order), or null when there
+ *  is no second file. */
+export function sideOf(_s: LayoutState, paneId: string | null): PaneSide | null {
+  ensureTilesStarted();
+  return sideOfPane(paneId);
 }
 
 /**
- * One line saying what is open and where, in Show's names. "" with nothing open.
- *   Split screen on (side by side): left pane: a.pdf (active) · right pane: b.md
- *   One file open (no split): a.pdf
+ * One line saying what is open and where, in the tiles' spot names (src/tiles.ts). "" with nothing open.
+ *   Tiles: left: a.pdf (focused) · top-right: chat "LR schedule" · bottom-right: empty
+ *   One file open: a.pdf
  */
 export function layoutLine(s: LayoutState, vault: string | null | undefined): string {
-  if (s.panes.length >= 2) {
-    const how = s.splitDirection === "vertical" ? "stacked; left is the top pane" : "side by side";
-    const each = s.panes.slice(0, 2).map((p, i) => `${PANE_SIDES[i]} pane: ${relToVault(vault, p.file)}${p.id === s.activePaneId ? " (active)" : ""}`);
-    return `Split screen on (${how}): ${each.join(" · ")}`;
+  ensureTilesStarted();
+  const t = useTiles.getState();
+  const rows = [...t.slots].sort((a, b) => a.rect.y - b.rect.y || a.rect.x - b.rect.x);
+  if (rows.length >= 2 || rows.some((r) => r.content?.type === "chat")) {
+    const each = rows.map((r) => {
+      const what = !r.content ? "empty" : r.content.type === "chat" ? `chat "${tileTitle(r.content)}"` : relToVault(vault, (r.content.paneId ? s.panes.find((p) => p.id === (r.content as { paneId: string }).paneId)?.file : s.currentFile) ?? "");
+      return `${spotName(r.rect)}: ${what}${t.maximized === r.id ? " (full screen)" : t.focused === r.id && r.content ? " (focused)" : ""}`;
+    });
+    return `Tiles: ${each.join(" · ")}`;
   }
-  if (s.currentFile) return `One file open (no split): ${relToVault(vault, s.currentFile)}`;
+  if (s.currentFile) return `One file open: ${relToVault(vault, s.currentFile)}`;
   return "";
 }
 
-/** The edge of the store's split a side means (a stacked split keeps its direction). */
-function edgeOf(s: LayoutState, side: PaneSide): DropSide {
-  if (s.panes.length >= 2 && s.splitDirection === "vertical") return side === "left" ? "top" : "bottom";
-  return side;
-}
-
-/**
- * Put `path` in the `side` pane, turning split on when one other file is open —
- * the store's own drop-at-edge (placeFileAtEdge), so it is what dragging a file
- * to that edge does. Already there: it is only made the active pane. In the
- * other pane: the two swap. Nothing else open: it opens alone (a split needs
- * two files). Returns whether the file was (re)loaded into a viewer.
- */
+/** Put `path` in the `side` pane (Show's and the agent's `pane`): src/tiles.ts placeAtSide. Returns whether the file
+ *  was (re)loaded into a viewer. */
 export function placeInPane(side: PaneSide, path: string, content: string): { opened: boolean } {
-  const st = useStore.getState();
-  if (st.panes.length >= 2) {
-    const idx = st.panes.findIndex((p) => same(p.file, path));
-    const want = side === "left" ? 0 : 1;
-    if (idx === want) {
-      st.setActivePane(st.panes[idx]!.id);
-      return { opened: false };
-    }
-    if (idx >= 0) {
-      // In the other pane: swap the two, then make it the active one.
-      const other = st.panes[want]!;
-      st.rearrangePanes(st.panes[idx]!.id, other.id, edgeOf(st, side));
-      st.setActivePane(st.panes[idx]!.id);
-      return { opened: false };
-    }
-    st.placeFileAtEdge(path, content, edgeOf(st, side));
-    return { opened: true };
-  }
-  if (st.currentFile && same(st.currentFile, path)) return { opened: false };
-  if (!st.currentFile) {
-    st.setCurrentFile(path, content);
-    return { opened: true };
-  }
-  st.placeFileAtEdge(path, content, side);
-  return { opened: true };
+  ensureTilesStarted();
+  return placeAtSide(side, { file: path, text: content });
 }
 
 // ---------------------------------------------------------------- no restore on start

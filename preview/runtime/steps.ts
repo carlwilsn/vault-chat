@@ -86,6 +86,15 @@ export async function runSteps(steps: Step[], vault: string): Promise<void> {
       // The app's own store module (same instance Vite serves the app).
       const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
       const { invoke } = await import(/* @vite-ignore */ "@tauri-apps/api/core");
+      // &open=https://… opens a web page tile at the right.
+      if (/^https?:\/\//i.test(s.file)) {
+        // In the right half, so the scenario's chat stays beside it (its composer shows a picked element's chip).
+        const { openAt, SPOTS } = await import(/* @vite-ignore */ "/src/tiles.ts");
+        const chat = useStore.getState().activeConversationId;
+        openAt({ file: s.file, text: "" }, SPOTS.right);
+        if (chat) openAt({ chat }, SPOTS.left);
+        continue;
+      }
       let path = `${vault}/${s.file}`;
       if (!(await invoke<boolean>("path_exists", { path }))) {
         // A private fixture base doesn't have the synthetic vault's files:

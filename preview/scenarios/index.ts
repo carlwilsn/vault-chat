@@ -18,10 +18,11 @@ import { backgroundScenarios } from "./background";
 import { projectFolderScenarios } from "./projectFolders";
 import { masterScenarios } from "./master";
 import type { Script } from "../runtime/llm";
+import { homePlaces, expandHomeFolders } from "./homePlaces";
 
 const MIN = 60_000;
 
-type WorldOpts = { awaiting?: boolean; extraConvs?: (now: number) => W.Conv[]; noHistory?: boolean };
+type WorldOpts = { awaiting?: boolean; extraConvs?: (now: number) => W.Conv[]; noHistory?: boolean; places?: boolean };
 function world(ctx: BuildCtx, o: WorldOpts = {}): void {
   const { now, vault } = ctx;
   // A private base (built from a real vault) brings its own conversations,
@@ -30,7 +31,9 @@ function world(ctx: BuildCtx, o: WorldOpts = {}): void {
     if (o.extraConvs) ctx.conversations(o.extraConvs(now));
     return;
   }
-  ctx.conversations([...W.chats(vault, now), ...W.missions(now, { awaiting: o.awaiting }), ...(o.extraConvs?.(now) ?? [])]);
+  // places: Main and two projects with their chats (homePlaces.ts) in place of the plain chats.
+  if (o.places) homePlaces(ctx);
+  ctx.conversations([...(o.places ? [] : W.chats(vault, now)), ...W.missions(now, { awaiting: o.awaiting }), ...(o.extraConvs?.(now) ?? [])]);
   ctx.write(".vault-chat/notifications.jsonl", W.notifications(now, { awaiting: o.awaiting }).join("\n") + "\n");
   ctx.write(".vault-chat/notes.jsonl", W.notes(now).join("\n") + "\n");
   ctx.write(".vault-chat/schedules.jsonl", W.schedules(now).join("\n") + "\n");
@@ -391,6 +394,11 @@ function voiceLibraryScenario(): Scenario {
 
 const syncTimers = { 15000: 1500, 30000: 1500 };
 
+/** The home scenario's keys: twelve, as a laptop that has collected a few (fake, masked values). */
+const HOME_KEYS: Record<string, string> = Object.fromEntries(
+  ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "ELEVENLABS_API_KEY", "LAMBDA_API_KEY", "GITHUB_TOKEN", "HF_TOKEN", "REPLICATE_API_TOKEN", "GROQ_API_KEY", "MISTRAL_API_KEY", "PERPLEXITY_API_KEY", "TAVILY_API_KEY"].map((n) => [`user.${n}`, `PREVIEW-${n.toLowerCase()}-••••••••0000`]),
+);
+
 export const scenarios: Scenario[] = [
   // ===== Basics =====
   {
@@ -398,10 +406,14 @@ export const scenarios: Scenario[] = [
     title: "Home — a note open, a past chat",
     group: "Basics",
     notes:
-      "The writeup open in the viewer, a past chat with a tool call in the pane. Everything is live: open files, edit, chat (an unscripted message gets a generic streamed reply), Ctrl+B / Ctrl+Shift+B, Alt+L for light theme. Writes stay in memory until reload.",
-    build: (c) => world(c),
+      "The writeup open in the viewer, a past chat with a tool call in the pane. Chats: Main (2 chats) and the projects BitNet 160M (3) and Stat 210 (2); Files opens with notes, papers and the BitNet project expanded. Everything is live: open files, edit, chat (an unscripted message gets a generic streamed reply), Ctrl+B / Ctrl+Shift+B, Alt+L for light theme. Writes stay in memory until reload.",
+    build: (c) => world(c, { places: true }),
     activeConversation: "c-spectral",
-    open: deskOpen(NOTE, "c-spectral"),
+    // Settings > Keys with many keys (Carl 11-24: how the smaller Settings copes with a long list). Fake values only;
+    // a removed key stays removed across a reload (backend/host.ts removedKeys), as the box's settings do.
+    host: { keys: HOME_KEYS },
+    localStorage: { vault_chat_user_keys: JSON.stringify(Object.keys(HOME_KEYS).map((k) => k.slice(5)).sort()) },
+    open: [expandHomeFolders, ...deskOpen(NOTE, "c-spectral")],
     surfaces: ["desktop", "phone"],
   },
   {

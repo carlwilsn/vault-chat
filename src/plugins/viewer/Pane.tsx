@@ -30,6 +30,7 @@ import { flipNthTaskCheckbox, localPathFromUrl } from "../../mdPipeline";
 import { hit, shortcutHint } from "../../shortcuts";
 import { NotePre, useNoteSource } from "../../NoteWidget";
 import { registerPane, emitPaneEvent } from "./panes";
+import { TileHeadActions, useFileTile } from "../../TileTitle";
 import { isWebAddress } from "../../webPane";
 import { WebPane } from "./WebPane";
 
@@ -241,6 +242,9 @@ function FilePane({ paneId }: Props) {
   const toggleMode = paneId ? () => togglePaneMode(paneId) : toggleGlobalMode;
   const isActive = paneId ? paneId === activePaneId : true;
   const inSplit = panes.length > 0;
+  // the file tile showing this pane (its grip, zoom and close are the tile's hover pill,
+  // src/TileTitle.tsx TilePill; this header keeps today's look: breadcrumb, view toggle).
+  const tile = useFileTile(paneId);
 
   // The viewer the registry names for this file (src/viewerRegistry.ts), live: a plugin's viewer on or off redraws the
   // pane. Ctrl+E switches an editable type to the source editor; code's viewer is the editor itself.
@@ -625,7 +629,7 @@ function FilePane({ paneId }: Props) {
   }
 
   const relPath = file.split("/").slice(-3).join(" › ");
-  const showActiveOutline = inSplit && isActive;
+  const showActiveOutline = !tile && inSplit && isActive; // a tile shows focus without a box
   const { kind, ext } = keys!;
   // A view / edit toggle where Ctrl+E edits the type (markdown and .tex by default: rendered prose / compiled PDF vs.
   // raw source), except where the viewer is the editor itself (code). Editor visibility tracks the pane's own mode. The
@@ -680,16 +684,21 @@ function FilePane({ paneId }: Props) {
       {!(!editing && top?.ownHeader?.(mode)) && (
       <div
         data-look-skip
-        className={`flex items-center justify-between px-6 py-2.5 border-b border-border/60 ${
-          paneId ? "cursor-grab active:cursor-grabbing" : ""
+        data-el="viewer-header"
+        // in a tile this row is the tile's handle (src/TileTitle.tsx): the view toggle (and the
+        // disk-changed notice) at the left, the path centred, zoom / close at the right end on hover only; an empty part
+        // of it drags the tile.
+        data-tile-head={tile ? "" : undefined}
+        className={`relative flex items-center justify-between gap-3 px-6 py-2.5 border-b border-border/60 ${
+          paneId && !tile ? "cursor-grab active:cursor-grabbing" : ""
         }`}
-        draggable={!!paneId}
+        draggable={!!paneId && !tile}
         onDragStart={onHeaderDragStart}
       >
-        <div className="text-[11px] font-mono text-muted-foreground truncate select-none flex items-center gap-2">
+        <div data-el="tile-head-name" className={`text-[11px] font-mono text-muted-foreground truncate select-none flex items-center gap-2 ${tile ? "order-2 flex-1 min-w-0 justify-center" : ""}`}>
           <span className="truncate">{relPath}</span>
         </div>
-        <div className="flex items-center gap-3">
+        <div className={`flex items-center gap-3 ${tile ? "order-1 shrink-0" : ""}`}>
           {diskChanged && (
             <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground" data-testid="disk-changed" draggable={false}>
               {CHANGE_LABEL[diskChanged]} —
@@ -745,7 +754,7 @@ function FilePane({ paneId }: Props) {
               )}
             </button>
           )}
-          {paneId && (
+          {paneId && !tile && (
             <button data-offer="app/viewer.closePane"
               onClick={(e) => {
                 e.stopPropagation();
@@ -759,6 +768,7 @@ function FilePane({ paneId }: Props) {
             </button>
           )}
         </div>
+        {tile && <TileHeadActions right={8} />}
       </div>
       )}
       <ViewerBody chain={editing ? EDITOR_CHAIN : chain} props={viewerProps} />

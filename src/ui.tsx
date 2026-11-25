@@ -1,4 +1,5 @@
-import { forwardRef, useEffect, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type TextareaHTMLAttributes, type SelectHTMLAttributes } from "react";
+import { forwardRef, useEffect, useLayoutEffect, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type TextareaHTMLAttributes, type SelectHTMLAttributes } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown } from "lucide-react";
 import { cn } from "./lib/utils";
 
@@ -170,5 +171,59 @@ export function Kbd({ children }: { children: React.ReactNode }) {
     <kbd className="inline-flex items-center rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
       {children}
     </kbd>
+  );
+}
+
+/** The look of the app's right-click menus (the chats panel's, the title bar's): a compact rounded popover, rows with
+ *  the accent hover. One place, so every menu reads the same. */
+export const MENU_PANEL = "p-1 rounded-lg border border-border bg-popover text-popover-foreground shadow-lg text-[12px]";
+export const menuItemClass = (danger?: boolean) =>
+  cn(
+    "w-full text-left px-2 py-1.5 rounded-md outline-none transition-colors",
+    danger ? "text-destructive hover:bg-destructive/10 focus-visible:bg-destructive/10" : "text-foreground/85 hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground",
+  );
+
+/**
+ * A right-click menu at the cursor, in the app's menu look (MENU_PANEL), portalled to the body and kept inside the
+ * window (it flips left / above the point when it would run off). It closes on Esc, a press outside, or the window
+ * losing focus; its first item takes the keyboard focus, ArrowUp/ArrowDown move between items.
+ */
+export function ContextMenu({ at, onClose, children, ...rest }: { at: { x: number; y: number }; onClose: () => void; children: React.ReactNode } & Record<`data-${string}`, string>) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const { width: w, height: h } = el.getBoundingClientRect();
+    const M = 4;
+    el.style.left = `${Math.max(M, at.x + w + M > window.innerWidth ? at.x - w : at.x)}px`;
+    el.style.top = `${Math.max(M, at.y + 2 + h + M > window.innerHeight ? at.y - h - 2 : at.y + 2)}px`;
+    el.style.visibility = "visible";
+    el.querySelector<HTMLElement>('[role^="menuitem"]')?.focus({ preventScroll: true });
+  }, [at.x, at.y]);
+  useEffect(() => {
+    const down = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && onClose();
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") return void (e.preventDefault(), e.stopPropagation(), onClose());
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      const items = [...(ref.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]') ?? [])];
+      if (!items.length) return;
+      e.preventDefault();
+      const i = items.indexOf(document.activeElement as HTMLElement);
+      items[(i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length].focus();
+    };
+    window.addEventListener("pointerdown", down, true);
+    window.addEventListener("keydown", key, true);
+    window.addEventListener("blur", onClose);
+    return () => {
+      window.removeEventListener("pointerdown", down, true);
+      window.removeEventListener("keydown", key, true);
+      window.removeEventListener("blur", onClose);
+    };
+  }, [onClose]);
+  return createPortal(
+    <div ref={ref} role="menu" {...rest} className={cn("fixed z-[1000] w-max max-w-[320px]", MENU_PANEL)} style={{ left: at.x, top: at.y, visibility: "hidden" }} onContextMenu={(e) => e.preventDefault()}>
+      {children}
+    </div>,
+    document.body,
   );
 }

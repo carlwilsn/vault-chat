@@ -6,10 +6,8 @@ import type { FileEntry } from "./store";
 import "allotment/dist/style.css";
 import { FileTree } from "./FileTree";
 import { MarkdownArea } from "./MarkdownArea";
-import { ChatPane, ChatPaneHost } from "./ChatPane";
-import { SettingsPane } from "./SettingsPane";
 import { Titlebar } from "./Titlebar";
-import { FullscreenChat } from "./FullscreenChat";
+import { AutoHideTitlebar } from "./AutoHideTitlebar";
 import { NotePopup } from "./NotePopup";
 import { VoiceSlot } from "./VoiceSlot";
 import { PlaceMount } from "./PluginMount";
@@ -30,7 +28,7 @@ import * as elevenLabsVoicePlugin from "./plugins/elevenlabs-voice";
 import * as contextPlugin from "./plugins/context";
 import * as askPlugin from "./plugins/ask";
 import { bindContextSource } from "./contextSource";
-import { ChatsPanel } from "./ChatsPanel";
+import { ChatsSidebar } from "./ChatsPanel";
 import { Notices } from "./UpdateBanner";
 import { ChangeKeeper } from "./ChangeKeeper";
 import { hit, isMod } from "./shortcuts";
@@ -51,6 +49,9 @@ import {
 } from "./vaultSync";
 import { startActivityWatch } from "./activity";
 import { clearSavedLayouts } from "./paneLayout";
+import { startTiles, toggleMaximizeFocused, useTiles } from "./tiles";
+import { startChatRowDrag, startDevDragHook } from "./tileDrag";
+import { MAIN_ID } from "./threads";
 import { afterVaultReady, bootMark } from "./bootTiming";
 import "./App.css";
 
@@ -97,6 +98,10 @@ export default function App() {
   useEffect(() => bindContextSource(), []);
   // A start opens with an empty viewer; the layout earlier builds saved is cleared (src/paneLayout.ts).
   useEffect(() => clearSavedLayouts(), []);
+  // the viewer's tile tree kept in step with the store, chats draggable out of the chats lists.
+  useEffect(() => startTiles(), []);
+  useEffect(() => startChatRowDrag((id) => (id === MAIN_ID ? "Main" : useStore.getState().conversations.find((c) => c.id === id)?.title || "Chat")), []);
+  useEffect(() => startDevDragHook(), []);
 
   const setFiles = useStore((s) => s.setFiles);
   useEffect(() => {
@@ -121,15 +126,53 @@ export default function App() {
     };
   }, [setFiles]);
   const leftCollapsed = useStore((s) => s.leftCollapsed);
-  const rightCollapsed = useStore((s) => s.rightCollapsed);
   const popoutOpen = useStore((s) => s.popoutOpen);
   const chatFullscreen = useStore((s) => s.chatFullscreen);
-  const showSettings = useStore((s) => s.showSettings);
-  const chatHidden = rightCollapsed || popoutOpen;
+  const chatsOpen = useStore((s) => s.chatSidebarOpen);
+  // a zoomed tile fills the window (src/tiles.ts maximizeTile closes the side panels and puts them back;
+  // Ctrl+B / Ctrl+Shift+B still open them beside it); our title bar is not drawn (App.css). The window itself never
+  // changes size or mode (no OS fullscreen: a snapped window stays snapped).
+  const tileMaximized = useTiles((t) => !!t.maximized);
   const files = useStore((s) => s.files);
   const vaultPath = useStore((s) => s.vaultPath);
   const fitWidth = useMemo(() => computeFitWidth(files), [files]);
-  const leftMax = Math.max(fitWidth, 600);
+  // both side panels (Files, Chats) stop at one cap: about 480 px, or a third of a narrower window.
+  const panelMax = usePanelMax();
+  const leftMax = panelMax;
+  // a side panel's own edge dragged past half its minimum closes it (Files and Chats alike, mirrored), and
+  // the store says so (Ctrl+B / Ctrl+Shift+B open it again). Not Allotment's snap: that also snapped the panel on the
+  // far side when the near one hit its maximum (dragging Files' edge right closed Chats).
+  useEffect(() => {
+    const down = (e: PointerEvent) => {
+      const sash = (e.target as Element | null)?.closest?.(".sash");
+      const outer = document.querySelector(".split-view-horizontal, .split-view");
+      if (!sash || !outer || sash.parentElement?.parentElement !== outer) return;
+      const all = [...sash.parentElement.children].filter((c) => c.classList.contains("sash") && (c as HTMLElement).offsetHeight > 0);
+      const s = useStore.getState();
+      // Which panel this edge is Files' or Chats' own: the leftmost visible edge with Files open, the rightmost with
+      // Chats open.
+      const isFiles = !s.leftCollapsed && all[0] === sash;
+      const isChats = s.chatSidebarOpen && all[all.length - 1] === sash && !(isFiles && all.length === 1);
+      if (!isFiles && !isChats) return;
+      const views = outer.querySelectorAll(":scope > .split-view-container > .split-view-view");
+      const panel = (isFiles ? views[0] : views[views.length - 1])?.getBoundingClientRect();
+      if (!panel) return;
+      const min = isFiles ? (window.innerWidth < 900 ? 120 : 160) : 220;
+      const move = (ev: PointerEvent) => {
+        const width = isFiles ? ev.clientX - panel.left : panel.right - ev.clientX;
+        if (width >= min / 2) return;
+        stop();
+        const st = useStore.getState();
+        if (isFiles && !st.leftCollapsed) st.toggleLeft();
+        if (isChats && st.chatSidebarOpen) st.toggleChatSidebar();
+      };
+      const stop = () => (window.removeEventListener("pointermove", move, true), window.removeEventListener("pointerup", stop, true));
+      window.addEventListener("pointermove", move, true);
+      window.addEventListener("pointerup", stop, true);
+    };
+    document.addEventListener("pointerdown", down, true);
+    return () => document.removeEventListener("pointerdown", down, true);
+  }, []);
   // A narrow window (snapped to half the screen: 768 px at 125% on a 1920 screen) gets smaller column minimums, so
   // the three columns fit inside the window instead of running off its right edge (160+340+320 = 820 px did).
   const narrow = useNarrowWindow();
@@ -196,6 +239,12 @@ export default function App() {
         return;
       }
       const mod = isMod(e);
+      if (e.key === "Escape" && !e.defaultPrevented && useTiles.getState().maximized && !document.querySelector('[role="dialog"], [role="menu"]')) {
+        // Esc ends a zoom (as Ctrl+Shift+F again), unless a menu or dialog is open (Esc is theirs).
+        e.preventDefault();
+        toggleMaximizeFocused();
+        return;
+      }
       if (!mod) return;
       // Holding a Ctrl-shortcut auto-repeats the keydown at the OS rate
       // (~30 Hz). Without this guard, Ctrl+B flickers the pane on/off,
@@ -269,19 +318,17 @@ export default function App() {
         }
       } else if (hit(e, "view.files")) {
         e.preventDefault();
-        // Fullscreen chat has no file tree: its left panel is the chats.
-        const st = useStore.getState();
-        if (st.chatFullscreen && !st.popoutOpen) st.toggleChatSidebar();
-        else toggleLeft();
+        toggleLeft();
       } else if (hit(e, "view.chat")) {
+        // Ctrl+Shift+B shows or hides the Chats panel (there is no chat panel: chats are tiles).
         e.preventDefault();
-        toggleRight();
+        useStore.getState().toggleChatSidebar();
       } else if (hit(e, "view.fullscreen")) {
-        // Ctrl+Shift+F — toggle borderless fullscreen chat. Covers the
-        // titlebar, file tree, and viewer with just the ChatPane. Same
-        // chord exits.
+        // Ctrl+Shift+F — maximize / restore the focused tile (its header's button). There is no separate
+        // full-screen mode: a chat tile filling the area is what full-screen chat was.
         e.preventDefault();
-        useStore.getState().toggleChatFullscreen();
+        if (useStore.getState().chatFullscreen) useStore.getState().toggleChatFullscreen();
+        else toggleMaximizeFocused();
       } else if (hit(e, "chat.new")) {
         // Ctrl+T — back to Main (one main conversation: there are no new chats to start). The
         // webview's native "new tab" is already swallowed by Tauri.
@@ -289,7 +336,6 @@ export default function App() {
         if (!s.vaultPath || !s.conversationsLoaded) return;
         e.preventDefault();
         void import("./projects").then((p) => p.openThread("main"));
-        if (s.rightCollapsed) s.toggleRight();
       } else if (hit(e, "view.terminal") || hit(e, "view.terminalOther")) {
         // Ctrl+J: the terminal where the chat runs (the box for a box vault); Shift: the other one.
         e.preventDefault();
@@ -502,8 +548,6 @@ export default function App() {
       <Notices />
       {/* Changes reach Carl as lines in a chat (src/changeFlow.ts); this keeps what they stand on. Core, never a plugin. */}
       <ChangeKeeper />
-      {/* The chat list's overlay: a plugin (src/plugins/chats), with a built-in fallback (src/ChatsPanel.tsx). */}
-      <ChatsPanel />
     </>
   );
 
@@ -512,53 +556,36 @@ export default function App() {
   // when the chat is popped out (the popout window is the fullscreen chat).
   // The chat pane itself is ChatPaneHost's, at the same place in either layout: <ChatPane /> in a layout is a slot it
   // moves into (src/ChatPane.tsx), so switching layouts never rebuilds the transcript.
-  const host = !popoutOpen && <ChatPaneHost />;
-  if (chatFullscreen && !popoutOpen) {
-    return (
-      <>
-      {host}
-      <FullscreenChat>
-        {captureOver && (
-          <div className="fixed inset-0 z-40 flex flex-col bg-background" data-el="fullscreen-capture">
-            <div className="h-8 shrink-0 flex items-center justify-center gap-2 border-b border-border text-[11.5px] text-muted-foreground">
-              Drag over the region to capture
-              <span className="text-muted-foreground/60">· Esc to cancel</span>
-            </div>
-            <div className="flex-1 min-h-0">
-              <MarkdownArea />
-            </div>
-          </div>
-        )}
-        {overlays}
-      </FullscreenChat>
-      </>
-    );
-  }
-
+  // no full-screen chat and no chat panel: a chat is a tile (src/tiles.ts); a maximized chat tile is what
+  // full-screen chat was. The side panels: Files (left), Chats (right), Notes (its own).
+  void chatFullscreen;
+  void captureOver;
   return (
     <>
-    {host}
-    <div className="h-full w-full bg-background flex flex-col">
-      <Titlebar />
+    <div className="relative h-full w-full bg-background flex flex-col" data-tile-zoom={tileMaximized ? "" : undefined}>
+      <AutoHideTitlebar><Titlebar /></AutoHideTitlebar>
       <div className="flex-1 min-h-0">
         {/* Viewer navigation cannot replace the conversation's React owner.
             Refit file-tree widths through Allotment, not a React remount. A vault
             key here remounted ChatPane, discarded its draft and reader scroll,
             and rebuilt the entire historical transcript for a file operation. */}
-        <Allotment ref={layoutRef} key={popoutOpen ? "pop" : "dock"} proportionalLayout={false} onChange={sashMoved}>
-          <Allotment.Pane preferredSize={fitWidth} minSize={narrow ? 120 : 160} maxSize={leftMax} visible={!leftCollapsed} snap>
+        <Allotment
+          ref={layoutRef}
+          key={popoutOpen ? "pop" : "dock"}
+          proportionalLayout={false}
+          onChange={sashMoved}
+        >
+          <Allotment.Pane preferredSize={Math.min(fitWidth, panelMax)} minSize={narrow ? 120 : 160} maxSize={leftMax} visible={!leftCollapsed}>
             <FileTree />
           </Allotment.Pane>
-          <Allotment.Pane minSize={narrow ? 200 : 340} priority={LayoutPriority.High}>
-            {showSettings && chatHidden ? <SettingsPane /> : <MarkdownArea />}
+          {/* The tiles: low enough that Files + tiles + Chats fit a narrow window side by side (the strip scrolls). */}
+          <Allotment.Pane minSize={200} priority={LayoutPriority.High}>
+            <MarkdownArea />
           </Allotment.Pane>
-          {/* Dropping the pane entirely while popped out — visible=false
-              still leaves a sash the user can grab at the screen edge. */}
-          {!popoutOpen && (
-            <Allotment.Pane preferredSize={440} minSize={narrow ? 260 : 320} visible={!rightCollapsed} snap>
-              <ChatPane />
-            </Allotment.Pane>
-          )}
+          {/* Chats, the chat list, as the right side panel (Ctrl+Shift+B); every chat itself is a tile. */}
+          <Allotment.Pane preferredSize={272} minSize={220} maxSize={panelMax} visible={chatsOpen}>
+            <ChatsSidebar />
+          </Allotment.Pane>
         </Allotment>
       </div>
       {overlays}
@@ -568,6 +595,18 @@ export default function App() {
 }
 
 /** Below 900 px the window is narrow (the docked layout's column minimums shrink), following its live width. */
+/** The side panels' widest: 480 px, or a third of the window when that is less (live). */
+function usePanelMax(): number {
+  const now = () => (typeof window === "undefined" ? 480 : Math.max(220, Math.min(480, Math.round(window.innerWidth / 3))));
+  const [max, setMax] = useState(now);
+  useEffect(() => {
+    const on = () => setMax(now());
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
+  }, []);
+  return max;
+}
+
 function useNarrowWindow(): boolean {
   const narrowNow = () => typeof window !== "undefined" && window.innerWidth < 900;
   const [narrow, setNarrow] = useState(narrowNow);

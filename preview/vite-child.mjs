@@ -36,7 +36,8 @@ const server = await vite.createServer({
   // keeps its own optimized-deps cache, or the two servers overwrite each
   // other's and a cold frame gets 504 "outdated optimize dep" and never mounts.
   // (An older pre-bundle with the real Tauri names is not reused: Vite's dep hash includes the esbuild plugins' names.)
-  cacheDir: resolve(tree, "node_modules", `.vite-preview-${side}`),
+  // VC_PREVIEW_CACHE_DIR: a second preview of the same tree (a test server beside a running one) keeps its own.
+  cacheDir: process.env.VC_PREVIEW_CACHE_DIR ? `${process.env.VC_PREVIEW_CACHE_DIR}-${side}` : resolve(tree, "node_modules", `.vite-preview-${side}`),
   plugins: [react(), previewPlugin({ side, tree, label, base })],
   server: {
     port,

@@ -24,6 +24,7 @@ import { displayHost, WEB_EMBED_EVENT, type ViewPlacer, type WebEmbedEvent } fro
 import type { WebPageSeen } from "../../layoutTypes";
 import { boxDevUrl, embedKind, frameArrived, frameHistory, frameStep, openTyped, paneKey, paneSideOf, registerWebPane, setPickingPane, webPageAct, type WebPageDo } from "../../webPane";
 import { answerOf, driveScript, pickOf, seenOf, type DriveOp } from "../../webDrive";
+import { TileHeadActions, useFileTile } from "../../TileTitle";
 
 const iconBtn = "inline-flex items-center gap-1 hover:text-foreground disabled:opacity-40";
 
@@ -40,6 +41,10 @@ export function WebPane({ paneId, url }: { paneId?: string; url: string }) {
   return boxDevUrl(url) ? <FrameWebPane paneId={paneId} url={url} /> : <NativeWebPane paneId={paneId} url={url} />;
 }
 
+/** The one viewer's page goes to `to` in its own tile (setCurrentFile would open it as a new file, where new things
+ *  go: src/tiles.ts startTiles). */
+const inPlace = (to: string) => useStore.setState({ currentFile: to, currentContent: "" });
+
 /** The pane's address becomes `to` (the page's own navigation, or Back / Forward): the store, so the noun follows. */
 function useSetAddress(paneId: string | undefined, viewUrl: { current: string }) {
   return useCallback(
@@ -48,7 +53,7 @@ function useSetAddress(paneId: string | undefined, viewUrl: { current: string })
       const s = useStore.getState();
       if (paneId) {
         if (s.panes.find((p) => p.id === paneId)?.file !== to) s.setPaneFile(paneId, to, "");
-      } else if (s.currentFile !== to) s.setCurrentFile(to, "");
+      } else if (s.currentFile !== to) inPlace(to);
     },
     [paneId, viewUrl],
   );
@@ -57,6 +62,7 @@ function useSetAddress(paneId: string | undefined, viewUrl: { current: string })
 /** The frame both kinds share: the pane, its title row, a note, and the body under them. */
 function PaneShell(p: { paneId?: string; url: string; failed: string | null; loading: boolean; note: { text: string; url?: string } | null; embedId?: string; act: (what: WebPageDo, other?: string) => Promise<void>; picking?: boolean; children: ReactNode }) {
   const { paneId, url, failed, loading, note, act } = p;
+  const tile = useFileTile(paneId);
   const activePaneId = useStore((s) => s.activePaneId);
   const inSplit = useStore((s) => s.panes.length > 0);
   const title = useStore((s) => s.webTitles[url] ?? null);
@@ -81,6 +87,20 @@ function PaneShell(p: { paneId?: string; url: string; failed: string | null; loa
       data-active={isActive ? "true" : "false"}
       data-embed-id={p.embedId}
     >
+      {tile ? (
+        // A tile's own top row, as a file's (src/TileTitle.tsx): Back, Forward, Reload and the address at the left, full
+        // screen and close on hover; the empty room drags. No page name, Select or Browser button (Carl 11-25: he asks
+        // the agent for those: workspace webPage select / browser).
+        <div data-look-skip data-tile-head="" className="relative flex items-center justify-between gap-3 px-3 py-2 border-b border-border/60 text-[11px] text-muted-foreground shrink-0" data-el="web-pane-bar">
+          <div className="order-1 flex-1 min-w-0 flex items-center gap-2.5">
+            <button data-offer="box:workspace.webPage" type="button" className={iconBtn} onClick={() => void act("back")} title="Back" data-el="web-pane-back"><ArrowLeft className="h-3.5 w-3.5" /></button>
+            <button data-offer="box:workspace.webPage" type="button" className={iconBtn} onClick={() => void act("forward")} title="Forward" data-el="web-pane-forward"><ArrowRight className="h-3.5 w-3.5" /></button>
+            <button data-offer="box:workspace.webPage" type="button" className={iconBtn} onClick={() => void act("reload")} title="Reload" data-el="web-pane-reload" disabled={!!failed}><RotateCw className={`h-3.5 w-3.5 ${loading && !failed ? "animate-spin" : ""}`} /></button>
+            <AddressBar paneId={paneId} url={url} />
+          </div>
+          <TileHeadActions right={8} />
+        </div>
+      ) : (
       <div data-look-skip className="flex items-center gap-2.5 px-4 py-2 border-b border-border/60 text-[11px] text-muted-foreground shrink-0" data-el="web-pane-bar">
         <button data-offer="box:workspace.webPage" type="button" className={iconBtn} onClick={() => void act("back")} title="Back" data-el="web-pane-back" disabled={!!failed}><ArrowLeft className="h-3.5 w-3.5" /></button>
         <button data-offer="box:workspace.webPage" type="button" className={iconBtn} onClick={() => void act("forward")} title="Forward" data-el="web-pane-forward" disabled={!!failed}><ArrowRight className="h-3.5 w-3.5" /></button>
@@ -106,6 +126,7 @@ function PaneShell(p: { paneId?: string; url: string; failed: string | null; loa
         <button data-offer="box:workspace.webPage" type="button" onClick={() => void act("browser")} className={iconBtn} data-el="web-pane-browser" title="Open in the browser"><ExternalLink className="h-3.5 w-3.5" /> Browser</button>
         <button data-offer="box:workspace.closePane" type="button" onClick={(e) => { e.stopPropagation(); close(); }} className={iconBtn} data-el="web-pane-close" title="Close the page"><X className="h-3.5 w-3.5" /></button>
       </div>
+      )}
       {note && !failed && (
         <div className="flex items-center gap-2 px-4 py-0.5 border-b border-border/60 text-[11px] text-muted-foreground shrink-0" data-el="web-pane-note">
           <span className="truncate flex-1">{note.url ? `${note.text}: ${note.url}` : note.text}</span>
@@ -465,7 +486,7 @@ function AddressBar({ paneId, url }: { paneId?: string; url: string }) {
         if (e.key === "Enter") (go(), e.currentTarget.blur());
         else if (e.key === "Escape") (e.stopPropagation(), setText(url), e.currentTarget.blur());
       }}
-      className="w-[clamp(140px,40%,320px)] min-w-0 rounded-md bg-muted/50 px-2 py-0.5 font-mono text-[11px] text-foreground/80 outline-none focus:bg-muted focus:ring-1 focus:ring-primary/40"
+      className="w-[clamp(72px,40%,320px)] min-w-0 rounded-md bg-muted/50 px-2 py-0.5 font-mono text-[11px] text-foreground/80 outline-none focus:bg-muted focus:ring-1 focus:ring-primary/40"
     />
   );
 }

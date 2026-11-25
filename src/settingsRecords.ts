@@ -86,6 +86,13 @@ export const SETTINGS = {
     description: "The fullscreen chat's sidebar (the chat list beside it) open (true) or closed (false).",
     legacy: { where: "laptop", key: "vc_chat_sidebar", read: (raw) => raw !== "0" },
   },
+  titleBarAutoHide: {
+    applies: "window",
+    kind: "boolean",
+    default: false,
+    description: "the laptop window's title bar hidden (true: the tiles and panels take its room, and it slides in over them while the pointer rests at the very top edge) or always shown (false). Carl toggles it from the bar's right-click menu.",
+    legacy: { where: "laptop", key: "vc_titlebar_autohide", read: (raw) => raw === "1" },
+  },
 } as const satisfies Record<string, SettingDef>;
 
 export type SettingKey = keyof typeof SETTINGS;

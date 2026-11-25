@@ -16,6 +16,15 @@ self.MonacoEnvironment = {
   },
 };
 
+// An editor disposed mid-request (a tile closed or replaced while Monaco's worker was still answering) rejects with
+// Monaco's own CancellationError ("Canceled"): expected, not an error of ours.
+if (typeof window !== "undefined") {
+  window.addEventListener("unhandledrejection", (e) => {
+    const r = (e as PromiseRejectionEvent).reason as { name?: string; message?: string } | undefined;
+    if (r && r.name === "Canceled" && r.message === "Canceled") e.preventDefault();
+  });
+}
+
 // Graphite: --background = hsl(0 0% 10%) = #1a1a1a
 // Light:    --background = hsl(0 0% 98%) = #fafafa
 // Syntax colors approximate highlight.js's github-dark palette so code

@@ -746,3 +746,61 @@ input[type="number"]::-webkit-outer-spin-button {
 [data-theme="contrast"] .text-primary { color: hsl(var(--foreground)); }
 [data-theme="contrast"] ::selection { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }
 [data-theme="contrast"] .prose-user :is(code, pre) { background: hsl(var(--muted)); }
+
+/* the dividers between tiles. Side by side (TileArea Gutter) and stacked (a column's Allotment,
+   .tile-stack) look and act the same: a 1px line in the border colour, a 9px grab zone with a resize cursor, and a
+   3px line in the accent on hover and while dragged. */
+.tile-divider { background: hsl(var(--border)); }
+.tile-divider::before {
+  content: ""; position: absolute; inset-block: 0; left: -1px; width: 3px; z-index: 11; pointer-events: none;
+  background: transparent; transition: background-color 0.1s ease-out;
+}
+.tile-divider:hover::before, .tile-divider[data-active]::before { background: hsl(var(--primary) / 0.75); }
+.tile-stack { --separator-border: hsl(var(--border)); --sash-size: 9px; }
+.tile-stack > [class*="sashContainer"] > [class*="sash-module_sash"][class*="horizontal"]::before {
+  height: 3px; top: calc(50% - 1.5px);
+}
+.tile-stack > [class*="sashContainer"] > [class*="sash-module_sash"][class*="horizontal"]:hover::before,
+.tile-stack > [class*="sashContainer"] > [class*="sash-module_sash"][class*="horizontal"][class*="active"]::before {
+  background: hsl(var(--primary) / 0.75);
+}
+
+/* a tile being dragged fades in place. */
+[data-tile][data-lifted] { opacity: 0.4; transition: opacity 0.12s; }
+
+/* a zoomed tile (Ctrl+Shift+F) fills the app window as it is (snapped, maximized or not; the window
+   never changes size or mode): our title bar is not drawn at all. The very top edge slides in the tile's own thin bar
+   (src/TileTitle.tsx ZoomEdgeBar). src/tiles.ts maximizeTile. */
+[data-tile-zoom] :is([data-el="titlebar"], [data-el="titlebar-fallback"]) { display: none !important; }
+
+/* a tile's handle is its own top row (src/TileTitle.tsx): its own controls at the left, its name
+   centred, zoom / close at the right end shown only on hover, over the row (no room kept for them). On hover the row
+   highlights (not while the pointer is on one of its own controls; zoom / close keep it), the grab cursor says it
+   drags. Zoom / close sit on the highlight with a short fade, so a long name runs under them, not beside a gap. */
+[data-tile] [data-tile-head] { cursor: grab; transition: background-color 0.1s ease-out; }
+[data-tile] [data-tile-head] :is(button, a, input, select, textarea, [role="button"]) { cursor: pointer; }
+.tile-head-show { opacity: 0; pointer-events: none; transition: opacity 0.1s ease-out; }
+[data-tile-head]:hover .tile-head-show, [data-tile-head]:has(:focus-visible) .tile-head-show { opacity: 1; pointer-events: auto; }
+/* Carl 11-24: no hover highlight on the row; zoom / x sit on the tile's own background so a long name runs under them. */
+[data-tile] [data-tile-head] .tile-head-actions { background: none; } /* Carl 11-24: no darker band behind full screen / x */
+
+/* (Carl 11-24 "try thinner") every tile's handle row is one thin height (the chat header's 32px),
+   Notes, Settings, PDF and file rows included. Their controls keep their look, only the vertical padding goes. */
+[data-tile] [data-tile-head] { height: 26px !important; min-height: 0 !important; padding-top: 0 !important; padding-bottom: 0 !important; box-sizing: border-box; }
+[data-tile] [data-tile-head] :is(button, [role="button"]) { max-height: 22px; }
+
+/* (Carl 11-24 "a bad look") every tile's handle row looks the same, so rows of tiles side by side
+   read as one line: the tile's own background (no band: the PDF toolbar's grey and blur go), one 1px bottom line in
+   the theme's border colour, the same muted 11px text, 26px high (above). The focused tile has no box around it: its
+   row's text is the foreground colour instead (src/TileArea.tsx). */
+[data-tile] [data-tile-head] {
+  background: transparent !important;
+  backdrop-filter: none !important;
+  border-bottom: 1px solid hsl(var(--border)) !important;
+  border-top: 0 !important;
+  color: hsl(var(--muted-foreground)) !important;
+  font-size: 11px !important;
+}
+[data-tile] [data-tile-head] :is(span, div, time, input) { font-size: 11px !important; }
+[data-tile] [data-tile-head] :is(span, div):not([class*="text-destructive"]):not([class*="text-primary"]) { color: inherit; }
+[data-tile][data-focused] [data-tile-head] { color: hsl(var(--foreground)) !important; }

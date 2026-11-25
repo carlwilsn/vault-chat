@@ -4,7 +4,8 @@
 // of the pane (DockHeader); in fullscreen chat and the popout it sits in the window's own top bar (BarTitle).
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import { MoreHorizontal } from "lucide-react";
-import { useStore } from "../../store";
+import { useScopedStore } from "../../chatScope";
+import { TileHeadActions, useTileAround } from "../../TileTitle";
 import { useProjects } from "../../ProjectChip";
 import { projectName } from "../../projects";
 import { uiChoice } from "../../uiChoices";
@@ -13,7 +14,8 @@ import { chatMenuItems, subscribeChatMenuItems } from "../../chatMenuItems";
 import { emitChatEvent, setMenuOpen, useChatMenu } from "./model";
 
 function useTitle(): { title: string; project: string } {
-  const conv = useStore((s) => s.conversations.find((c) => c.id === s.activeConversationId));
+  // in a chat tile, that tile's chat (src/chatScope.ts); elsewhere the active one.
+  const conv = useScopedStore((s) => s.conversations.find((c) => c.id === s.activeConversationId));
   const projects = useProjects();
   // A project's own thread is named after the project already.
   const project = conv?.project && conv.kind !== "project" ? projectName(conv.project, projects) : "";
@@ -21,7 +23,7 @@ function useTitle(): { title: string; project: string } {
 }
 
 function useTotalCost(): string | undefined {
-  const cost = useStore((s) => {
+  const cost = useScopedStore((s) => {
     if (uiChoice("cost") !== "total") return undefined;
     const c = s.conversations.find((x) => x.id === s.activeConversationId);
     return c?.costUsd ?? s.messages.reduce((n, m) => n + (m.costUsd ?? m.usage?.costUsd ?? 0), 0);
@@ -90,22 +92,41 @@ export function ChatMenu({ align = "right" }: { align?: "left" | "right" }) {
   );
 }
 
-/** The docked pane's header: a slim row, the chat's name on the left, the cost and ⋯ on the right. */
+/** The docked pane's header: a slim row, the chat's name on the left, the cost and ⋯ on the right. in
+ *  a chat tile it is the tile's handle (src/TileTitle.tsx): the ⋯ and the cost at the left, the name centred, zoom and
+ *  close at the right end on hover only. */
 export function DockHeader() {
   const { title, project } = useTitle();
   const cost = useTotalCost();
+  const ref = useRef<HTMLDivElement>(null);
+  const inTile = !!useTileAround(ref);
+  const name = (
+    <div className={`flex-1 min-w-0 flex items-baseline gap-1.5 text-[12px] ${inTile ? "justify-center select-none" : ""}`} data-el="chat-header-title">
+      <span className="text-foreground/80 truncate">{title}</span>
+      {project && <span className="text-muted-foreground truncate">· {project}</span>}
+    </div>
+  );
+  const costEl = cost && (
+    <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums select-none" data-el="total-cost" title="What this conversation has cost so far">
+      {cost}
+    </span>
+  );
   return (
-    <div data-el="chat-header" className="shrink-0 h-8 px-3 flex items-center gap-2">
-      <div className="flex-1 min-w-0 flex items-baseline gap-1.5 text-[12px]" data-el="chat-header-title">
-        <span className="text-foreground/80 truncate">{title}</span>
-        {project && <span className="text-muted-foreground truncate">· {project}</span>}
-      </div>
-      {cost && (
-        <span className="text-[11px] text-muted-foreground tabular-nums" data-el="total-cost" title="What this conversation has cost so far">
-          {cost}
-        </span>
+    <div ref={ref} data-el="chat-header" data-tile-head={inTile ? "" : undefined} className={`relative shrink-0 h-8 flex items-center gap-2 ${inTile ? "pl-1.5 pr-3" : "px-3"}`}>
+      {inTile ? (
+        <>
+          <ChatMenu align="left" />
+          {costEl}
+          {name}
+          <TileHeadActions />
+        </>
+      ) : (
+        <>
+          {name}
+          {costEl}
+          <ChatMenu />
+        </>
       )}
-      <ChatMenu />
     </div>
   );
 }

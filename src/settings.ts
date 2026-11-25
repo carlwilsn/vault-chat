@@ -58,6 +58,7 @@ function cache(key: SettingKey, v: SettingValue): void {
   try {
     if (key === "theme") keepTheme(isTheme(v) ? v : "graphite");
     else if (key === "chatSidebar") localStorage.setItem("vc_chat_sidebar", v ? "1" : "0");
+    else if (key === "titleBarAutoHide") localStorage.setItem("vc_titlebar_autohide", v ? "1" : "0");
     else if (key === "voice") localStorage.setItem("vault_chat_elevenlabs_voice", String(v));
   } catch {
     /* the records are the truth */

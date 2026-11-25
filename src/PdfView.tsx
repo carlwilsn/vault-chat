@@ -8,6 +8,7 @@ import { readShownBytes } from "./liveReload";
 import { reportScroll } from "./scrollTarget";
 import { decodeTarget, landPdf } from "./viewTarget";
 import { registerZoom, setZoomOf, zoomMoved } from "./plugins/viewer/zoom";
+import { TileHeadActions, useFileTile } from "./TileTitle";
 
 
 const MIN_ZOOM = 0.25;
@@ -113,6 +114,8 @@ export function PdfView({
   // two) and stays visually identical to a plain PDF.
   extraToolbar?: React.ReactNode;
 }) {
+  // the file tile showing this PDF (its toolbar is then the tile's handle).
+  const tile = useFileTile(paneId ?? undefined);
   const closePane = useStore((s) => s.closePane);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -988,14 +991,18 @@ export function PdfView({
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-muted/20">
-      <div className="sticky top-0 z-10 bg-muted/80 backdrop-blur border-b border-border/60 px-6 py-2 flex items-center gap-3 text-[11px] text-muted-foreground shrink-0">
-        {relPath && (
-          <span className="font-mono truncate select-none">{relPath}</span>
-        )}
-        {pages > 0 && (
-          <span className="font-mono shrink-0">{pages} page{pages === 1 ? "" : "s"}</span>
-        )}
-        <div className="ml-auto flex items-center gap-1">
+      {/* in a tile this toolbar is the tile's handle (src/TileTitle.tsx): its buttons at the left,
+          the path and page count centred, zoom / close at the right end on hover only. */}
+      <div data-tile-head={tile ? "" : undefined} className="sticky top-0 z-10 bg-muted/80 backdrop-blur border-b border-border/60 px-6 py-2 flex items-center gap-3 text-[11px] text-muted-foreground shrink-0">
+        <div data-el="tile-head-name" className={cn("flex items-center gap-3 min-w-0", tile ? "order-2 flex-1 justify-center" : "contents")}>
+          {relPath && (
+            <span className="font-mono truncate select-none">{relPath}</span>
+          )}
+          {pages > 0 && (
+            <span className="font-mono shrink-0 select-none">{pages} page{pages === 1 ? "" : "s"}</span>
+          )}
+        </div>
+        <div className={cn("flex items-center gap-1", tile ? "order-1 shrink-0 -ml-1.5" : "ml-auto")}>
           {extraToolbar}
           <button data-offer="app/viewer.capture"
             onClick={() => {
@@ -1044,7 +1051,7 @@ export function PdfView({
           >
             <ZoomIn className="h-3 w-3" />
           </button>
-          {paneId && (
+          {paneId && !tile && (
             <button data-offer="app/viewer.closePane"
               onClick={(e) => {
                 e.stopPropagation();
@@ -1057,6 +1064,7 @@ export function PdfView({
             </button>
           )}
         </div>
+        {tile && <TileHeadActions right={8} />}
       </div>
       {error && (
         <div className="p-8 text-destructive text-sm font-mono flex items-center gap-2">

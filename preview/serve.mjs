@@ -14,7 +14,7 @@
 import { spawn, execFileSync } from "node:child_process";
 import { createServer, request as httpRequest } from "node:http";
 import { connect } from "node:net";
-import { existsSync, readFileSync, mkdirSync, symlinkSync, statSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, symlinkSync, statSync, appendFileSync } from "node:fs";
 import { join, resolve, dirname, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -141,6 +141,29 @@ const server = createServer(async (req, res) => {
     return proxy(req, res, side);
   }
   try {
+    if (url.pathname === "/api/interactions" && req.method === "POST") {
+      // The interaction recorder (runtime/record.ts): a batch of events, one JSON line each.
+      let body = "";
+      for await (const c of req) body += c;
+      const serverAt = new Date().toISOString();
+      const lines = [].concat(JSON.parse(body || "[]")).map((x) => JSON.stringify({ ...x, serverAt }) + "\n").join("");
+      const out = process.env.VC_INTERACTIONS ?? "/tmp/vault-chat-scratch/tiles/interactions.jsonl";
+      mkdirSync(dirname(out), { recursive: true });
+      appendFileSync(out, lines);
+      res.setHeader("content-type", "application/json");
+      return void res.end('{"ok":true}');
+    }
+    if (url.pathname === "/api/annotate" && req.method === "POST") {
+      // The annotation tool (runtime/annotate.ts): one JSON line per note.
+      let body = "";
+      for await (const c of req) body += c;
+      const line = JSON.stringify({ ...JSON.parse(body || "{}"), serverAt: new Date().toISOString() });
+      const out = process.env.VC_ANNOTATIONS ?? "/tmp/vault-chat-scratch/tiles/annotations.jsonl";
+      mkdirSync(dirname(out), { recursive: true });
+      appendFileSync(out, line + "\n");
+      res.setHeader("content-type", "application/json");
+      return void res.end('{"ok":true}');
+    }
     if (url.pathname === "/api/config") {
       res.setHeader("content-type", "application/json");
       return void res.end(JSON.stringify(config()));
@@ -179,7 +202,34 @@ const server = createServer(async (req, res) => {
     res.statusCode = 502;
     res.end(String(e?.message ?? e));
   }
-}).listen(PORT, "127.0.0.1", () => {
+});
+
+// Websockets (Vite's HMR socket under /before/ or /after/): a raw pipe to that side's dev server, the
+// upgrade request re-sent as it came. Without this the client's same-origin socket fails and Vite falls
+// back to ws://127.0.0.1:<side port>, which a page opened through another host (the box's tailnet
+// proxy, Carl's viewer) can't reach and the preview's network guard refuses: no hot reload there.
+server.on("upgrade", (req, socket, head) => {
+  const side = sideOf(new URL(req.url ?? "/", "http://x").pathname);
+  if (!side) return void socket.destroy();
+  const up = connect(PORTS[side], "127.0.0.1", () => {
+    const lines = [`${req.method} ${req.url} HTTP/${req.httpVersion}`];
+    for (let i = 0; i < req.rawHeaders.length; i += 2) lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+    up.write(lines.join("\r\n") + "\r\n\r\n");
+    if (head?.length) up.write(head);
+    up.pipe(socket);
+    socket.pipe(up);
+  });
+  const close = () => {
+    up.destroy();
+    socket.destroy();
+  };
+  up.on("error", close);
+  socket.on("error", close);
+  up.on("close", close);
+  socket.on("close", close);
+});
+
+server.listen(PORT, "127.0.0.1", () => {
   console.log(`\n  vault-chat preview  →  http://localhost:${PORT}\n`);
   for (const [k, v] of Object.entries(config().sides)) console.log(`  ${k.padEnd(6)} ${v.url}  ${v.label}`);
   console.log("");

@@ -7,12 +7,16 @@
 // "leftPanel" is the file tree; "chat" is the right panel (or the full-screen chat).
 import { useStore } from "./store";
 import { PANE_SIDES, relToVault, sideOf } from "./paneLayout";
+import { invoke } from "@tauri-apps/api/core";
+import { isUnreadableAsText } from "./fileKind";
+import { SPOTS, closeTile, ensureChatTile, ensureTilesStarted, fileTilesInPlace, fillTile, findLeaf, findSlot, focusTile, leaves, maximizeTile, moveTile, newChatAt, openAt, openFilling, placeTile, restoreTiles, restoredFrom, setSplit, takeMigration, tileAtSide, tilesFromLegacy, tileOfPane, tilesForLayout, useTiles, type SavedTiles, type TileWhat } from "./tiles";
 import type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult, PaneSide, WebPageSeen } from "./layoutTypes";
-import { isPicking, isWebAddress, openWebInPane, paneKey, webPageAct } from "./webPane";
+import { isPicking, isWebAddress, navigateWebPane, openWebInPane, paneKey, webPageAct } from "./webPane";
 import { signOutOfSites } from "./webProfile";
+import { onSettingsChanged, saveSetting, setting } from "./settings";
 export type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult, WebPageSeen } from "./layoutTypes";
 
-export const LAYOUT_OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "fullscreenChat", "chatSidebar", "resize", "signOutOfSites"] as const;
+export const LAYOUT_OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "fullscreenChat", "chatSidebar", "resize", "signOutOfSites", "maximize", "moveTile", "page", "newChat", "autoHideTitleBar"] as const;
 
 /** The outer split's own resize (Allotment's, registered by src/App.tsx): what dragging a sash does, in pixels per column. */
 let outerResize: ((sizes: number[]) => void) | null = null;
@@ -24,11 +28,43 @@ export function registerOuterResize(fn: (sizes: number[]) => void): () => void {
 }
 
 /**
+ * At start, the tiles the box kept for this vault (GET /api/v2/layout; src/tiles.ts restoreTiles), unless a core swap
+ * already put this window's own back. An older layout kept there (a split, the chat column) becomes tiles once
+ * (tilesFromLegacy); the box backs it up when it hears of it. Never throws.
+ */
+export async function restoreKeptTiles(get: () => Promise<{ layout?: unknown } | null>, vault: string): Promise<string> {
+  try {
+    if (restoredFrom()) return `already put back (${restoredFrom()})`;
+    const r = await get();
+    const l = (r?.layout ?? null) as (Partial<HostLayout> & { tiles?: unknown; tileSplit?: SavedTiles["tileSplit"] }) | null;
+    if (!l || restoredFrom()) return "nothing kept";
+    // The chats first (a chat tile names one).
+    const listed = () => useStore.getState().conversationsLoaded && useStore.getState().conversations.length > 0;
+    for (let i = 0; i < 80 && !listed(); i++) await new Promise((res) => setTimeout(res, 100));
+    const read = async (abs: string) => (isUnreadableAsText(abs) ? "" : await invoke<string>("read_text_file", { path: abs }));
+    if (Array.isArray(l.tiles)) {
+      const ok = await restoreTiles({ tiles: l.tiles as SavedTiles["tiles"], tileSplit: l.tileSplit }, { vault, read, how: "box" });
+      return ok ? "tiles put back" : "the kept tiles did not fit";
+    }
+    if (!Array.isArray(l.panes)) return "nothing kept";
+    const files = l.panes.map((p) => ("file" in p ? p.file : p.url)).filter((f): f is string => typeof f === "string" && !!f);
+    const active = Math.max(0, l.panes.findIndex((p) => p.active));
+    const chat = useStore.getState().activeConversationId;
+    const saved = tilesFromLegacy({ files, stacked: l.direction === "stacked", active, chat, chat_at: l.chatFullscreen ? "full" : l.rightPanelOpen ? "right" : null });
+    if (!saved.tiles.length) return "nothing kept";
+    const ok = await restoreTiles(saved, { vault, read, how: "legacy", from: { box: l } });
+    return ok ? "the older layout became tiles" : "the older layout did not fit";
+  } catch (e) {
+    return `not put back: ${(e as Error).message}`;
+  }
+}
+
+/**
  * Tell the box the layout when it changes, whoever changed it (a sash dragged, a panel toggled, a file opened): the
  * workspace noun's state and its watch (server/model/workspace.ts). Compared as read back; sent at most every 300 ms.
  * Returns the undo.
  */
-export function pushLayoutChanges(post: (layout: HostLayout) => void, measure: () => Pick<HostLayout, "viewport" | "sizes"> = domMeasure): () => void {
+export function pushLayoutChanges(post: (layout: HostLayout, migratedFrom?: unknown) => void, measure: () => Pick<HostLayout, "viewport" | "sizes"> = domMeasure, postFirst = false): () => void {
   let last = "";
   let t: ReturnType<typeof setTimeout> | null = null;
   const check = () => {
@@ -38,7 +74,10 @@ export function pushLayoutChanges(post: (layout: HostLayout) => void, measure: (
     if (j === last) return;
     const first = last === "";
     last = j;
-    if (!first) post(l);
+    if (!first || postFirst) {
+      const m = takeMigration();
+      post(l, ...(m !== null ? [m] : []));
+    }
   };
   const soon = () => {
     if (!t) t = setTimeout(check, 300);
@@ -53,9 +92,13 @@ export function pushLayoutChanges(post: (layout: HostLayout) => void, measure: (
   const win = typeof window !== "undefined" && typeof window.addEventListener === "function" ? window : null;
   win?.addEventListener("resize", onWin);
   const offSash = onSashMoved(soon);
+  const offTiles = useTiles.subscribe(soon);
+  const offSettings = onSettingsChanged(soon);
   return () => {
+    offSettings();
     offStore();
     offSash();
+    offTiles();
     win?.removeEventListener("resize", onWin);
     if (t) clearTimeout(t);
   };
@@ -151,6 +194,7 @@ export function domMeasure(): Pick<HostLayout, "viewport" | "sizes"> {
 
 /** The layout now, read from the store. */
 export function readLayout(measure: () => Pick<HostLayout, "viewport" | "sizes"> = domMeasure): HostLayout {
+  ensureTilesStarted();
   const s = useStore.getState();
   const vault = s.vaultPath;
   const split = s.panes.length >= 2;
@@ -160,8 +204,10 @@ export function readLayout(measure: () => Pick<HostLayout, "viewport" | "sizes">
     isWebAddress(f)
       ? { url: f, ...(s.webTitles[f] ? { title: s.webTitles[f] } : {}), ...(s.webPages[f] ? { page: s.webPages[f] } : {}), ...(isPicking(key) ? { picking: true } : {}) }
       : { file: relToVault(vault, f) };
+  // Two or more files: in place order (the tiles'), "left" and "right" the first two (src/tiles.ts tileAtSide).
+  const inPlace = fileTilesInPlace().map((l) => s.panes.find((p) => p.id === l.content.paneId)).filter((p): p is (typeof s.panes)[number] => !!p);
   const panes: HostLayout["panes"] = split
-    ? s.panes.slice(0, 2).map((p, i) => ({ side: PANE_SIDES[i]!, ...content(p.file, paneKey(p.id)), active: p.id === s.activePaneId }))
+    ? (inPlace.length >= 2 ? inPlace : s.panes).slice(0, 2).map((p, i) => ({ side: PANE_SIDES[i]!, ...content(p.file, paneKey(p.id)), active: p.id === s.activePaneId }))
     : s.currentFile
       ? [{ side: "single" as const, ...content(s.currentFile, paneKey(null)), active: true }]
       : [];
@@ -174,15 +220,24 @@ export function readLayout(measure: () => Pick<HostLayout, "viewport" | "sizes">
     currentFile: s.currentFile && !web ? relToVault(vault, s.currentFile) : null,
     ...(web ? { currentUrl: s.currentFile! } : {}),
     activePane,
-    leftPanelOpen: !s.leftCollapsed && !s.chatFullscreen,
-    rightPanelOpen: !s.rightCollapsed && !s.popoutOpen && !s.chatFullscreen,
-    chatFullscreen: s.chatFullscreen,
+    leftPanelOpen: !s.leftCollapsed,
+    rightPanelOpen: s.chatSidebarOpen,
+    chatFullscreen: chatZoomed(),
     chatPoppedOut: s.popoutOpen,
     chatSidebarOpen: s.chatSidebarOpen,
+    titleBarAutoHide: setting("titleBarAutoHide") === true,
+    tiles: tilesForLayout((p) => relToVault(vault, p)),
+    tileSplit: { ...useTiles.getState().split },
     ...measure(),
     ...(s.webDownloads.length ? { downloads: s.webDownloads } : {}),
   };
 }
+
+/** The open chat's tile is full screen (the old full-screen chat). */
+const chatZoomed = (): boolean => {
+  const t = useTiles.getState();
+  return !!t.maximized && findSlot(t.slots, t.maximized)?.content?.type === "chat";
+};
 
 const sideOk = (v: unknown): v is PaneSide => PANE_SIDES.includes(v as PaneSide);
 const done = (note?: string) => ({ ok: true, ...(note ? { note } : {}) });
@@ -200,31 +255,65 @@ async function applyOne(op: LayoutOp, io: LayoutIO): Promise<{ ok: boolean; note
     }
     case "openRightPanel":
     case "closeRightPanel": {
+      // The right panel is Chats (the chat list): every chat itself is a tile.
       const open = op.op === "openRightPanel";
-      if (st().popoutOpen) return no("the chat is popped out into its own window; it has no right panel");
-      if (st().rightCollapsed === !open) return done(`the chat panel was already ${open ? "open" : "closed"}`);
-      st().toggleRight();
+      if (st().chatSidebarOpen === open) return done(`Chats was already ${open ? "open" : "closed"}`);
+      st().toggleChatSidebar();
       return done();
     }
     case "closePane": {
+      if (op.tile) return closeTile(op.tile) ? done() : no(`no tile "${op.tile}" (see the layout's tiles)`);
       if (op.pane !== undefined && !sideOk(op.pane)) return no(`pane is "left" or "right", not "${String((op as { pane?: unknown }).pane)}"`);
       const s = st();
       if (s.panes.length < 2) {
-        // No split: the one file or page closes (as its own Close does), when no side was named.
-        if (op.pane) return no("there is no split: only one file is open, so there is no second pane to close (leave pane out to close it)");
-        if (!s.currentFile) return done("nothing was open");
-        s.setCurrentFile(null, "");
+        // One file: it closes (as its tile's Close does), when no side was named.
+        if (op.pane) return no("there is no split: only one file is open, so there is no second pane to close (leave pane out to close it, or name its tile)");
+        const one = tileOfPane(null);
+        if (!one) return done("no file was open");
+        closeTile(one.id);
         return done();
       }
-      if (!op.pane) return no('closePane in a split needs pane: "left" or "right"');
-      s.closePane(s.panes[op.pane === "left" ? 0 : 1]!.id);
+      if (!op.pane) return no('closePane with several files open needs pane: "left" or "right", or tile');
+      const t = tileAtSide(op.pane);
+      if (!t) return no(`no ${op.pane} pane`);
+      closeTile(t.id);
       return done();
     }
     case "openInPane": {
       if (op.pane !== undefined && !sideOk(op.pane)) return no(`pane is "left" or "right", not "${String((op as { pane?: unknown }).pane)}"`);
       if ("url" in op && op.url !== undefined) {
         if (!isWebAddress(op.url)) return no("openInPane's url is an http(s) address");
+        // a web tile (its id) goes to the url, as its address bar's Enter.
+        if (op.tile) {
+          const c = findSlot(useTiles.getState().slots, op.tile)?.content;
+          if (c?.type !== "file") return no(`no web tile "${op.tile}" (see the layout's tiles)`);
+          const cur = c.paneId ? st().panes.find((p) => p.id === c.paneId)?.file : st().currentFile;
+          if (!cur || !isWebAddress(cur)) return no(`tile "${op.tile}" shows a file, not a web page`);
+          navigateWebPane(c.paneId, op.url.trim());
+          return done();
+        }
         return done(openWebInPane(op.url.trim(), op.pane).landed);
+      }
+      if (op.chat || op.tile || op.spot || (!op.pane && op.path)) {
+        // a file or a chat in a spot (a half, a quarter or full, as a drag there; or a spot's id: in it);
+        // neither: where new things go (an empty spot, else the whole viewer). No stacking: what it covers closes.
+        if (op.tile && !findSlot(useTiles.getState().slots, op.tile)) return no(`no tile "${op.tile}" (see the layout's tiles)`);
+        if (op.spot && op.spot !== "full" && !(op.spot in SPOTS)) return no(`spot is one of full, ${Object.keys(SPOTS).join(", ")}`);
+        let what: TileWhat;
+        if (op.chat) {
+          if (op.chat !== "main" && !st().conversations.some((c) => c.id === op.chat)) return no(`no chat "${op.chat}"`);
+          what = { chat: op.chat };
+        } else if (typeof op.path === "string" && op.path) {
+          const vault = st().vaultPath ?? "";
+          const abs = /^([a-zA-Z]:)?[\\/]/.test(op.path) ? op.path : `${vault.replace(/[\\/]+$/, "")}/${op.path}`;
+          const text = isUnreadableAsText(abs) ? "" : await invoke<string>("read_text_file", { path: abs });
+          what = { file: abs, text };
+        } else return no("openInPane needs a path or a chat");
+        if (op.spot === "full") return openFilling(what), done();
+        if (op.spot) return openAt(what, SPOTS[op.spot]) ? done() : no("it can't go there");
+        if (op.tile) return openAt(what, op.tile) ? done() : no("it can't go there");
+        placeTile(what);
+        return done();
       }
       const path = (op as { path?: unknown }).path;
       if (typeof path !== "string" || !path) return no("openInPane needs a path (a vault file) or a url (a web page)");
@@ -239,27 +328,84 @@ async function applyOne(op: LayoutOp, io: LayoutIO): Promise<{ ok: boolean; note
       const s = st();
       if (op.on) return s.panes.length >= 2 ? done("already split") : no("a split needs two files: openInPane a second file with the other pane");
       if (s.panes.length < 2) return done("already not split");
-      // Off: the active pane stays, the other closes.
-      const other = s.panes.find((p) => p.id !== s.activePaneId) ?? s.panes[1]!;
-      s.closePane(other.id);
+      // Off: the active file's tile fills the viewer (the others close, as a drop in the center).
+      const keep = tileOfPane(s.activePaneId ?? s.panes[0]!.id);
+      if (keep) fillTile(keep.id);
       return done();
     }
     case "focus": {
       const s = st();
       if (op.target === "chat") {
         if (s.popoutOpen) return no("the chat is popped out into its own window");
-        if (s.rightCollapsed && !s.chatFullscreen) s.toggleRight();
+        if (s.activeConversationId) ensureChatTile(s.activeConversationId);
         if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") window.dispatchEvent(new CustomEvent("vc-focus-composer"));
         return done();
       }
+      if (findSlot(useTiles.getState().slots, op.target)) return focusTile(op.target), done();
       if (!sideOk(op.target)) return no(`focus is "left", "right" or "chat", not "${String((op as { target?: unknown }).target)}"`);
       if (s.panes.length < 2) return no("there is no split: only one file is open");
-      s.setActivePane(s.panes[op.target === "left" ? 0 : 1]!.id);
+      const t = tileAtSide(op.target);
+      if (!t) return no(`no ${op.target} pane`);
+      focusTile(t.id);
+      return done();
+    }
+    case "page": {
+      // Settings and Notes are modals over everything (never tiles), as their title-bar buttons.
+      const s = st();
+      if (op.page === "settings") s.setShowSettings(!!op.open);
+      else if (op.page === "notes") s.setShowNotesPanel(!!op.open);
+      else return no('page is "settings" or "notes"');
+      return done();
+    }
+    case "moveTile": {
+      // As dragging a tile to an edge, a corner or the center: it takes that half, quarter or the whole viewer; the
+      // tiles it covers close (no stacking), its old spot is left empty.
+      if (!findLeaf(useTiles.getState().slots, op.tile)) return no(`no tile "${String(op.tile)}" (see the layout's tiles)`);
+      if (op.spot !== "full" && !(op.spot in SPOTS)) return no(`spot is one of full, ${Object.keys(SPOTS).join(", ")}`);
+      return moveTile(op.tile, op.spot === "full" ? { x: 0, y: 0, w: 2, h: 2 } : SPOTS[op.spot]) ? done() : done(`it is in ${op.spot} already`);
+    }
+    case "newChat": {
+      const cc = await import("./chat-controller");
+      if (op.tile) {
+        if (findSlot(useTiles.getState().slots, op.tile)?.content?.type !== "chat") return no(`"${op.tile}" is not a chat tile (see the layout's tiles)`);
+        return cc.newChatInTile(op.tile) ? done() : no("no new chat");
+      }
+      if (op.spot && op.spot !== "full" && !(op.spot in SPOTS)) return no(`spot is one of full, ${Object.keys(SPOTS).join(", ")}`);
+      const place = op.place ?? null;
+      const at = op.spot === "full" ? { fill: true as const } : op.spot ? { rect: SPOTS[op.spot] } : null;
+      if (at) newChatAt(() => cc.newChatIn(place), at);
+      else cc.newChatIn(place);
+      return done();
+    }
+    case "autoHideTitleBar": {
+      if (typeof op.on !== "boolean") return no("autoHideTitleBar needs on: true or false");
+      if ((setting("titleBarAutoHide") === true) === op.on) return done(`the title bar was already ${op.on ? "auto-hidden" : "shown"}`);
+      const why = await saveSetting("titleBarAutoHide", op.on);
+      return why ? no(why) : done();
+    }
+    case "maximize": {
+      if (!op.on) return maximizeTile(null), done();
+      const id = op.tile ?? useTiles.getState().focused;
+      if (!id || !findLeaf(useTiles.getState().slots, id)) return no(`no tile "${String(op.tile)}" (see the layout's tiles)`);
+      maximizeTile(id);
       return done();
     }
     case "fullscreenChat": {
-      if (st().chatFullscreen === !!op.on) return done(`the chat was already ${op.on ? "full screen" : "not full screen"}`);
-      st().toggleChatFullscreen();
+      // The open chat's tile full screen (as its row's full-screen button), or back.
+      const was = chatZoomed() || st().chatFullscreen;
+      if (was === !!op.on) return done(`the chat was already ${op.on ? "full screen" : "not full screen"}`);
+      if (!op.on) {
+        // (An older full-screen chat state, as a popout's frame has, ends too.)
+        if (st().chatFullscreen) st().toggleChatFullscreen();
+        if (chatZoomed()) maximizeTile(null);
+        return done();
+      }
+      const id = st().activeConversationId;
+      if (!id) return no("no chat is open");
+      ensureChatTile(id);
+      const t = leaves(useTiles.getState().slots).find((l) => l.content.type === "chat" && l.content.chatId === id);
+      if (!t) return no("the chat has no tile");
+      maximizeTile(t.id);
       return done();
     }
     case "chatSidebar": {
@@ -268,6 +414,12 @@ async function applyOne(op: LayoutOp, io: LayoutIO): Promise<{ ok: boolean; note
       return done();
     }
     case "resize": {
+      // the lines between spots, as dragging their dividers (a spot dragged away is not collapsed here).
+      if (op.tiles) {
+        // x alone: the line between the sides in both rows; with xb: the top row's (x) and the bottom row's (xb).
+        setSplit(op.tiles.x !== undefined && op.tiles.xb === undefined ? { ...op.tiles, xb: op.tiles.x } : op.tiles);
+        if (op.leftPanel === undefined && op.chat === undefined) return done();
+      }
       const why = resizeColumns({ leftPanel: op.leftPanel, chat: op.chat }, io.measure);
       return why ? no(why) : done();
     }
@@ -282,6 +434,7 @@ async function applyOne(op: LayoutOp, io: LayoutIO): Promise<{ ok: boolean; note
 
 /** Apply the ops in order (a failed one is reported and the rest still run), then read the layout back. */
 export async function applyLayoutOps(ops: LayoutOp[], io: LayoutIO): Promise<LayoutResult> {
+  ensureTilesStarted();
   const results: LayoutOpResult[] = [];
   for (const op of ops) {
     let r: { ok: boolean; note?: string; error?: string };

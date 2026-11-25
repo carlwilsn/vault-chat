@@ -43,7 +43,7 @@ import { RETRY_TEXT, makeChatView, type ChatView } from "./convlog/view";
 import { subscribeTranslators } from "./convlog/translators";
 import { MAIN_ID, threadKindOf } from "./threads";
 import { startOfferHistory } from "./offerHistory";
-import { pushLayoutChanges } from "./layoutOps";
+import { pushLayoutChanges, restoreKeptTiles } from "./layoutOps";
 import { isPopout } from "./windowKind";
 import { probeLaptopReleaseHealth } from "./laptopReleaseHealth";
 
@@ -380,8 +380,16 @@ class BoxChatSession {
     if (!headless() && !isPopout) {
       const offH = startOfferHistory((events) => httpPost(this.link, "/api/v2/offer-events", { events, client: "laptop" }, []));
       // The layout as it changes by hand: box:workspace's state and watch (src/layoutOps.ts).
-      const offL = pushLayoutChanges((layout) => void httpPost(this.link, "/api/v2/layout", { layout }, []).catch(() => {}));
-      this.unsubHistory = () => (offH(), offL());
+      // The tiles the box kept for this vault come back first; then the layout as it is now, and as it changes.
+      let offL = () => {};
+      let gone = false;
+      void restoreKeptTiles(() => httpGet(this.link, "/api/v2/layout", 8_000), this.vault)
+        .then((how) => vlog("layout", `start: ${how}`))
+        .finally(() => {
+          if (gone) return;
+          offL = pushLayoutChanges((layout, migratedFrom) => void httpPost(this.link, "/api/v2/layout", { layout, ...(migratedFrom !== undefined ? { migratedFrom } : {}) }, []).catch(() => {}), undefined, true);
+        });
+      this.unsubHistory = () => (offH(), (gone = true), offL());
     }
     let lastActive = useStore.getState().activeConversationId;
     this.unsub = useStore.subscribe((s) => {

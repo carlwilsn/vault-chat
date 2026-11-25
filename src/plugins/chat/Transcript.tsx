@@ -28,8 +28,11 @@ import { MessageBubble, PinnedPlan, PlanRow } from "../chat-rows/rows";
 import { LiveTail } from "../chat-rows/tail";
 import { CHAT_REVEAL_EVENT, setVisibleRows } from "../../chatRows";
 import { ChatHeaderSlot } from "../../ChatHeader";
+import { DockHeader } from "./Header";
 import { isPopout } from "../../windowKind";
 import { emitChatEvent, paneScrolled, setPaneScroll } from "./model";
+import { scopedState, useChatScope, useScopedStore } from "../../chatScope";
+import { TileComposer } from "../../TileComposer";
 
 const NO_SUBAGENTS: SubagentRec[] = [];
 
@@ -57,18 +60,28 @@ export function Transcript() {
   // every keystroke to rebuild the entire message list because the
   // agent's streamingText/liveTools updates were waking this component
   // 60+ times per second.
-  const messages = useStore((s) => s.messages);
-  const busy = useStore((s) => s.busy);
+  // A chat tile (src/chatScope.ts): this view is of that chat; none, the active one.
+  const scope = useChatScope();
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  // A tile of a chat that is not the active one (the focused chat tile is the active chat: it has the real composer
+  // and the pane's offers).
+  const foreign = useStore((s) => !!scope && scope !== s.activeConversationId);
+  const foreignRef = useRef(foreign);
+  foreignRef.current = foreign;
+  const convNow = () => scopedState(useStore.getState(), scopeRef.current).activeConversationId;
+  const messages = useScopedStore((s) => s.messages);
+  const busy = useScopedStore((s) => s.busy);
   // Fullscreen chat and the popout draw the header in their own top bar (src/FullscreenChat.tsx).
-  const inOwnBar = useStore((s) => isPopout || (s.chatFullscreen && !s.popoutOpen));
-  const streamingText = useStore((s) => s.streamingText);
-  const streamingReasoning = useStore((s) => s.streamingReasoning);
-  const liveTools = useStore((s) => s.liveTools);
+  const inOwnBar = useStore((s) => !scope && (isPopout || (s.chatFullscreen && !s.popoutOpen)));
+  const streamingText = useScopedStore((s) => s.streamingText);
+  const streamingReasoning = useScopedStore((s) => s.streamingReasoning);
+  const liveTools = useScopedStore((s) => s.liveTools);
   // Hooks must live above the early returns below (the box starting, no box): React's
   // Rules of Hooks require the same hook-call order on every render.
   const conversations = useStore((s) => s.conversations);
   const openableThreadIds = useStore(useShallow((s) => s.conversations.map((c) => c.id)));
-  const activeConversationId = useStore((s) => s.activeConversationId);
+  const activeConversationId = useScopedStore((s) => s.activeConversationId);
   const activeConv = conversations.find((c) => c.id === activeConversationId);
   // What the thread shows beside the text (chatExtras.tsx; uiChoices.ts picks
   // where each goes while Carl decides). Stable props, so the bubbles' memo
@@ -87,15 +100,15 @@ export function Transcript() {
   }), [messages, subagents]);
   const runningTasks = useMemo(() => subagents.filter((s) => taskState(s) === "running"), [subagents]);
   const answerAsk = useCallback((answer: string) => {
-    const id = useStore.getState().activeConversationId;
+    const id = convNow();
     if (boxChatOn() && id) void boxAnswer(id, answer);
     else dispatchChatAction({ kind: "send", text: answer });
   }, []);
   const retryTurn = useCallback(() => {
-    void boxRetry(useStore.getState().activeConversationId);
+    void boxRetry(convNow());
   }, []);
   const controlSubagent = useCallback((sid: string, op: "steer" | "stop", text?: string) => {
-    const id = useStore.getState().activeConversationId;
+    const id = convNow();
     return id ? boxSubagent(id, sid, op, text) : Promise.resolve<string | null>("No conversation.");
   }, []);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -125,6 +138,7 @@ export function Transcript() {
   // The agent's scrollTo (app/chat-rows) asks for a row above the window: draw from it down.
   useEffect(() => {
     const onReveal = (e: Event) => {
+      if (foreignRef.current) return;
       const at = Number((e as CustomEvent<{ index?: number }>).detail?.index);
       const msgs = useStore.getState().messages;
       if (!Number.isInteger(at) || at < 0 || at >= msgs.length) return;
@@ -194,8 +208,10 @@ export function Transcript() {
     el.scrollTop = h.pinned ? el.scrollHeight : h.top;
     return true;
   };
-  scrollHold.hold = holdScroll;
-  scrollHold.restore = restoreHeldScroll;
+  if (!foreign) {
+    scrollHold.hold = holdScroll;
+    scrollHold.restore = restoreHeldScroll;
+  }
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -226,6 +242,7 @@ export function Transcript() {
   const scrollLive = useRef({ shownCount, activeConversationId });
   scrollLive.current = { shownCount, activeConversationId };
   useEffect(() => {
+    if (foreign) return;
     const visible = () => useStore.getState().messages.filter((m) => !m.hidden && !m.waiting).length;
     return setPaneScroll({
       state: () => {
@@ -257,7 +274,7 @@ export function Transcript() {
         }
       },
     });
-  }, []);
+  }, [foreign]);
 
   // The background-task strip, for the offers' tasksChanged (only when the running set changes).
   const taskKey = runningTasks.map((t) => t.threadId).join(" ");
@@ -312,10 +329,10 @@ export function Transcript() {
   windowStartRef.current = windowStart;
 
   return (
-    <div className="h-full flex flex-col bg-card border-l border-border relative" data-el="chat-transcript">
+    <div className={`h-full flex flex-col bg-card relative ${scope ? "" : "border-l border-border"}`} data-el="chat-transcript">
       {/* The pane's header (the chat's name, the cost, the ⋯ menu): this plugin's header part, with a
           built-in fallback (src/ChatHeader.tsx). Fullscreen chat and the popout draw it in their top bar instead. */}
-      {!inOwnBar && <ChatHeaderSlot />}
+      {!inOwnBar && (foreign ? <DockHeader /> : <ChatHeaderSlot />)}
       <div
         className="flex-1 min-h-0 overflow-auto px-3 py-4 pb-8 relative"
         data-el="chat-scroll"
@@ -348,6 +365,7 @@ export function Transcript() {
           onSubagent={controlSubagent}
           onRetry={retryTurn}
           plans={plans}
+          scoped={foreign}
         />
 
 
@@ -389,7 +407,7 @@ export function Transcript() {
               verdict={uiChoice("verdict") === "ongoing"}
             />
           )}
-          <ComposerSlot />
+          {foreign && scope ? <TileComposer chatId={scope} /> : <ComposerSlot />}
         </div>
       </div>
     </div>
@@ -401,8 +419,9 @@ export function Transcript() {
  * (its own root) never re-walks the history: only a new message, the window or the
  * run state redraws it. */
 const HistoryList = memo(function HistoryList({
-  messages, windowStart, lastVisible, busy, messageSubagents, openableThreadIds, onAsk, onOpenSubagent, onSubagent, onRetry, plans,
+  messages, windowStart, lastVisible, busy, messageSubagents, openableThreadIds, onAsk, onOpenSubagent, onSubagent, onRetry, plans, scoped,
 }: {
+  scoped?: boolean;
   messages: ChatMessage[];
   windowStart: number;
   lastVisible: number;
@@ -417,7 +436,7 @@ const HistoryList = memo(function HistoryList({
   plans: PlanCard[];
 }) {
   // What is on screen, for the agent (src/chatRows.ts visibleRows; read only when asked).
-  useEffect(() => setVisibleRows(messages, windowStart, isCompactionDivider as (m: unknown) => boolean), [messages, windowStart]);
+  useEffect(() => void (!scoped && setVisibleRows(messages, windowStart, isCompactionDivider as (m: unknown) => boolean)), [messages, windowStart, scoped]);
   return (
     <>
       {messages.map((m, i) =>

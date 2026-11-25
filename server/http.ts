@@ -706,8 +706,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // The laptop's layout as it changed by hand (src/layoutOps.ts pushLayoutChanges): box:workspace's state and watch.
   if (path === "/api/v2/layout" && method === "POST") {
     const b = await jsonBody(req);
-    (await import("./layoutTool")).keepLaptopLayout(b.layout);
+    (await import("./layoutTool")).keepLaptopLayout(b.layout, open.name, b.migratedFrom);
     return json(res, 200, { ok: true });
+  }
+  // The open vault's last kept layout (its tiles): the laptop's start puts them back.
+  if (path === "/api/v2/layout" && method === "GET") {
+    const k = (await import("./layoutTool")).storedLayout(open.name);
+    return json(res, 200, { layout: k?.layout ?? null, open: k?.open ?? null, at: k?.at ?? null });
   }
   if (path === "/api/v2/offer-events" && method === "POST") {
     const out = (await import("./offerLog")).offerEventsRoute(vault, await jsonBody(req));

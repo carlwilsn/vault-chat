@@ -5,6 +5,7 @@
 import { isArchivedThread } from "./conversations";
 import { newChatInProject } from "./projects";
 import { placeOf } from "./threads";
+import { newChatAt, useTiles } from "./tiles";
 import { useStore, type ChatAttachment, type FileUpload } from "./store";
 
 /** The open vault's box chat, started if it is not yet. Null: no box for this vault. */
@@ -61,6 +62,11 @@ export function stopAgent(): void {
   void import("./boxChat").then((bc) => bc.boxChatOn() && bc.boxStop(id));
 }
 
+/** Stop one chat's run by its id (a chat tile's Stop; the composer's stop {id}). */
+export function stopChat(id: string): void {
+  void import("./boxChat").then((bc) => bc.boxChatOn() && bc.boxStop(id));
+}
+
 /** A message into a running thread steers it on the box — nothing is cut short here. */
 export async function interruptAndSend(text: string, contextPreamble?: string, attachments?: ChatAttachment[]): Promise<void> {
   await sendMessage(text, contextPreamble, attachments);
@@ -83,6 +89,22 @@ export function newChatIn(place: string | null): string {
   const conv = s.conversations.find((c) => c.id === s.activeConversationId);
   const slug = place === null ? placeOf({ id: conv?.id ?? "", project: conv?.project ?? null }) : place === "main" ? null : place;
   return slug ? newChatInProject(slug) : s.newConversation();
+}
+
+/** The place a chat is in: "main" or its project's slug. */
+export function placeOfChat(chatId: string): string {
+  if (chatId === "main") return "main";
+  const conv = useStore.getState().conversations.find((c) => c.id === chatId);
+  return placeOf({ id: chatId, project: conv?.project ?? null }) ?? "main";
+}
+
+/** A chat tile's New chat (and the workspace's newChatInTile): a new chat in the same place as the tile's chat
+ *  (its project, or Main), in that same tile in place of it. Nothing else moves; the old chat stays in the list. */
+export function newChatInTile(tileId: string): string | null {
+  const slot = useTiles.getState().slots.find((s) => s.id === tileId);
+  if (slot?.content?.type !== "chat") return null;
+  const place = placeOfChat(slot.content.chatId);
+  return newChatAt(() => newChatIn(place), { tile: tileId });
 }
 
 /** "Delete": the active conversation goes. */

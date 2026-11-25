@@ -17,6 +17,7 @@ import { useStore } from "../../store";
 import { aiBlockedNow, chatGateOf } from "../../chatGate";
 import { EFFORTS, EFFORT_LABEL, chatModelsNow, isEffort, labelFor, setChatModel } from "../../chatModels";
 import { Composer } from "./Composer";
+import { stopChat } from "../../chat-controller";
 import { attachPaths, clearDraft, detachItem, hasDraft, onDraftEvent, pickName, queuedMessages, sendDraft, sendQueuedNow, setInput, stopAgent, unqueue, useDraft } from "./draft";
 import { onSettingsChanged } from "../../settings";
 import { loadUsage, setUsageOpen, useUsage, watchUsage } from "../../UsagePopover";
@@ -247,8 +248,16 @@ export function composerOffers() {
         },
       },
       stop: {
-        description: "Stop the agent's run in this chat (Esc), or, held for the usage limit, don't pick it up at the reset.",
-        run: () => {
+        description: "Stop the agent's run in this chat (Esc), or, held for the usage limit, don't pick it up at the reset. id: another chat's run (a chat tile's Stop).",
+        args: { type: "object", properties: { id: { type: "string" } }, additionalProperties: false },
+        run: (a: Record<string, unknown> = {}) => {
+          if (typeof a.id === "string" && a.id && a.id !== S().activeConversationId) {
+            const c = S().conversations.find((x) => x.id === a.id);
+            if (!c) throw new Error(`no chat "${a.id}"`);
+            if (c.status !== "running") throw new Error("nothing is running in that chat");
+            stopChat(a.id);
+            return { stopped: true, id: a.id };
+          }
           const g = chatGateOf(S());
           if (!S().busy && !g.held) throw new Error("nothing is running in this chat");
           stopAgent();

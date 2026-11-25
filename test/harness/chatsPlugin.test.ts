@@ -89,7 +89,8 @@ test("the chat list is a registered app plugin, named by 'chats' / 'chat list'",
   assert.match(shell, /<PlaceMount place="chats\.sidebar" fallback=/);
   assert.match(shell, /placeModule\(CHATS_PLUGIN, \(\) => chatsPlugin\.sidebar, "sidebar"\)/);
   assert.doesNotMatch(shell, /ThreadRow|ThreadsList|place-show-more|chat-menu/);
-  assert.match(fs.readFileSync("src/App.tsx", "utf8"), /<ChatsPanel \/>/);
+  // Chats is the right side panel (Ctrl+Shift+B); every chat itself is a tile.
+  assert.match(fs.readFileSync("src/App.tsx", "utf8"), /<ChatsSidebar \/>/);
 });
 
 let handle: ReturnType<typeof mountPlugin> | null = null;
@@ -132,7 +133,8 @@ test("read: the places as the screen has them; Main is expanded (Carl is in it),
   assert.equal(physics.expanded, false);
   assert.equal(physics.working, true);
   assert.deepEqual(r.state!.selected, { id: "m0", title: "Main chat 0", place: "main" });
-  assert.deepEqual(r.state!.panel, { surface: "overlay", open: false });
+  // The list is Chats, the right side panel (every chat is a tile).
+  assert.deepEqual(r.state!.panel, { surface: "sidebar", open: S().chatSidebarOpen });
 });
 
 test("act round trip: expand a project, open its chat, show more on Main; the list on screen follows", async () => {
@@ -200,12 +202,13 @@ test("actions on the list: new chat in a place, renames and deletes are box:chat
   r = await actOffers("chats", "open", { id: "zzz" });
   assert.match(r.error!, /no chat with id "zzz"/);
   assert.equal(handle!.error, null, "a failing action leaves the plugin running");
-  // The panel: opened and closed in the app.
+  // The panel (Chats, the right side panel): closed and opened in the app.
+  r = await actOffers("chats", "closePanel", {});
+  assert.equal(S().chatSidebarOpen, false);
+  assert.deepEqual(r.result, { surface: "sidebar", open: false });
   r = await actOffers("chats", "openPanel", {});
-  assert.equal(S().showChatsPanel, true);
-  assert.deepEqual(r.result, { surface: "overlay", open: true });
-  await actOffers("chats", "closePanel", {});
-  assert.equal(S().showChatsPanel, false);
+  assert.equal(S().chatSidebarOpen, true);
+  assert.deepEqual(r.result, { surface: "sidebar", open: true });
 });
 
 test("unmounted (the supervisor's stop), it offers nothing", async () => {

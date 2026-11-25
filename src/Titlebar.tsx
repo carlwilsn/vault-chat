@@ -56,7 +56,7 @@ export function TitlebarFallback({ info }: { info: PluginFallbackInfo }) {
           </button>
         </div>
       )}
-      <div data-tauri-drag-region className="flex-1 h-full" />
+      <div data-tauri-drag-region className="flex-1 h-full flex items-center justify-center min-w-0" />
       <div className="flex items-center">
         <button data-offer="box:workspace.openRightPanel"
           onClick={toggleRight}

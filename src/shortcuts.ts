@@ -46,10 +46,10 @@ export type Shortcut = {
 export const SHORTCUTS = [
   // ---- Chat & composer
   { id: "chat.new", keys: ["Mod+T"], label: "Go to Main", group: "Chat & composer", where: "anywhere", files: ["src/App.tsx", "src/ChatWindow.tsx"] },
-  { id: "chat.send", keys: ["Enter"], label: "Send / steer", group: "Chat & composer", where: "the composer, Ctrl+K/L, a note, voice text", files: ["src/plugins/composer/Composer.tsx", "src/ComposerPanel.tsx", "src/plugins/ask/Prompt.tsx", "src/NotePopup.tsx", "src/plugins/voice/TextPanel.tsx"] },
+  { id: "chat.send", keys: ["Enter"], label: "Send / steer", group: "Chat & composer", where: "the composer, Ctrl+K/L, a note, voice text", files: ["src/plugins/composer/Composer.tsx", "src/ComposerPanel.tsx", "src/plugins/ask/Prompt.tsx", "src/NotePopup.tsx", "src/plugins/voice/TextPanel.tsx", "src/TileComposer.tsx"] },
   { id: "chat.newline", keys: ["Shift+Enter"], label: "New line", group: "Chat & composer", where: "the composer", files: ["src/plugins/composer/Composer.tsx"] },
   { id: "chat.queue", keys: ["Tab"], label: "Queue a follow-up", group: "Chat & composer", where: "the composer, while the agent works", files: ["src/plugins/composer/Composer.tsx"] },
-  { id: "chat.stop", keys: ["Esc"], label: "Stop the agent", group: "Chat & composer", where: "the composer, while the agent works", files: ["src/plugins/composer/Composer.tsx", "src/ComposerPanel.tsx", "src/plugins/ask/Prompt.tsx"] },
+  { id: "chat.stop", keys: ["Esc"], label: "Stop the agent", group: "Chat & composer", where: "the composer, while the agent works", files: ["src/plugins/composer/Composer.tsx", "src/ComposerPanel.tsx", "src/plugins/ask/Prompt.tsx", "src/TileComposer.tsx"] },
   { id: "chat.menuMove", keys: ["ArrowUp", "ArrowDown"], label: "Move in menus", group: "Chat & composer", where: "@file and /command menus", files: ["src/plugins/composer/Composer.tsx", "src/plugins/ask/Prompt.tsx", "src/NotePopup.tsx"] },
   { id: "chat.menuPick", keys: ["Tab", "Enter"], label: "Pick from menu", group: "Chat & composer", where: "@file and /command menus", files: ["src/plugins/composer/Composer.tsx", "src/plugins/ask/Prompt.tsx", "src/NotePopup.tsx"] },
   { id: "chat.chipDelete", keys: ["Backspace", "Delete"], label: "Delete file chip", group: "Chat & composer", where: "next to a file chip in the composer (it goes whole)", files: ["src/plugins/composer/chips.ts"] },
@@ -61,13 +61,14 @@ export const SHORTCUTS = [
   { id: "voice.mute", keys: ["Ctrl+Shift+M"], label: "Mute / unmute", group: "Voice", where: "during a call", files: ["src/App.tsx"] },
 
   // ---- Views & windows
-  { id: "view.files", keys: ["Mod+B"], label: "Files / chats panel", group: "Views & windows", where: "anywhere (fullscreen: the chats)", files: ["src/App.tsx", "src/ChatWindow.tsx"] },
-  { id: "view.chat", keys: ["Mod+Shift+B"], label: "Chat panel", group: "Views & windows", where: "the main window", files: ["src/App.tsx"] },
-  { id: "view.fullscreen", keys: ["Mod+Shift+F"], label: "Fullscreen chat", group: "Views & windows", where: "the main window", files: ["src/App.tsx"] },
+  { id: "view.files", keys: ["Mod+B"], label: "Files panel", group: "Views & windows", where: "anywhere (a tile full screen too)", files: ["src/App.tsx", "src/ChatWindow.tsx"] },
+  { id: "view.chat", keys: ["Mod+Shift+B"], label: "Chats panel", group: "Views & windows", where: "the main window (a tile full screen too)", files: ["src/App.tsx"] },
+  { id: "view.fullscreen", keys: ["Mod+Shift+F"], label: "Full screen tile", group: "Views & windows", where: "the main window: the focused tile fills it (again: back)", files: ["src/App.tsx", "src/TileTitle.tsx"] },
   { id: "view.terminal", keys: ["Mod+J"], label: "Terminal", group: "Views & windows", where: "anywhere (the box's, for a box vault)", files: ["src/App.tsx"] },
   { id: "view.terminalOther", keys: ["Mod+Shift+J"], label: "Laptop terminal", group: "Views & windows", where: "anywhere", files: ["src/App.tsx"] },
   { id: "view.theme", keys: ["Alt+L"], label: "Light / dark", group: "Views & windows", where: "anywhere", files: ["src/App.tsx"] },
   { id: "view.vaultActionMove", keys: ["ArrowDown", "ArrowUp", "Home", "End"], label: "Move between actions", group: "Views & windows", where: "the vault picker's folder-action menu", files: ["src/plugins/vaults/Picker.tsx"] },
+  { id: "view.menuMove", keys: ["ArrowDown", "ArrowUp"], label: "Move in a menu", group: "Views & windows", where: "a right-click menu (the title bar's, the chats list's)", files: ["src/ui.tsx"] },
   { id: "view.vaultActionLeave", keys: ["Tab", "Shift+Tab"], label: "Leave folder actions", group: "Views & windows", where: "the vault picker's folder-action menu; normal tabbing continues", files: ["src/plugins/vaults/Picker.tsx"] },
   {
     id: "view.close",
@@ -100,6 +101,9 @@ export const SHORTCUTS = [
       "src/HtmlView.tsx",
       "src/ImageView.tsx",
       "src/chatExtras.tsx",
+      "src/TileArea.tsx",
+      "src/tileDrag.ts",
+      "src/ui.tsx",
     ],
   },
 

@@ -6,6 +6,8 @@ import { report } from "../overlay";
 import * as fs from "../shims/memfs";
 import { gitDirty } from "./memgit";
 import { MemoryBox } from "../../../src/convlog/memoryBox";
+import { emptySettings, isSettingKey } from "../../../src/settingsRecords";
+import { canonicalKeyName } from "../../../src/keyEnv";
 import { answerComplete } from "../llm";
 import { parseLiveNeeds } from "../../../src/liveBridge";
 import { foldPluginState, logSignal, stateQuery, stateSignal, type PluginState } from "../../../src/pluginRecords";
@@ -218,6 +220,73 @@ function boxDiskGet(u: URL): { status: number; body: string } | null {
   return null;
 }
 // The fake box's live state for box-mode chat.
+/** The fake box's settings (server/settings.ts GET / POST /api/v2/settings): kept for this frame's ns in
+ *  sessionStorage, so a setting outlives a reload as the box's records do. */
+const boxSettingsKey = () => `vcp-box-settings:${new URLSearchParams(location.search).get("ns") ?? ""}`;
+function boxSettings(): Record<string, unknown> {
+  try {
+    return JSON.parse(sessionStorage.getItem(boxSettingsKey()) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+function boxSettingsAnswer() {
+  const set = boxSettings();
+  return { seq: Object.keys(set).length, values: { ...emptySettings().values, ...set }, set: Object.fromEntries(Object.keys(set).map((k) => [k, true])) };
+}
+function boxSettingsPost(b: any) {
+  const set = boxSettings();
+  if (b && typeof b.migrate === "object") for (const [k, v] of Object.entries(b.migrate)) if (isSettingKey(k) && !(k in set)) set[k] = v;
+  if (b && isSettingKey(b.key)) b.value === null ? delete set[b.key] : (set[b.key] = b.value);
+  sessionStorage.setItem(boxSettingsKey(), JSON.stringify(set));
+  return { ok: true, ...(b && isSettingKey(b.key) ? { key: b.key, value: b.value } : {}), ...boxSettingsAnswer() };
+}
+
+/** The fake box's kept layout (server/layoutTool.ts GET / POST /api/v2/layout): this frame's ns in sessionStorage, so
+ *  the tiles come back on a reload as the box keeps them. */
+const boxLayoutKey = () => `vcp-box-layout:${new URLSearchParams(location.search).get("ns") ?? ""}`;
+function boxLayout(): { layout: unknown; at: number | null } {
+  try {
+    return JSON.parse(sessionStorage.getItem(boxLayoutKey()) ?? "null") ?? { layout: null, at: null };
+  } catch {
+    return { layout: null, at: null };
+  }
+}
+
+/** The keys removed in Settings (their names), kept for this frame's ns in sessionStorage like the box's settings, so
+ *  a removed key stays removed across a reload: the scenario's seeded keys skip them (setHostConfig, and the key
+ *  registry in boot.ts seedLocalStorage). Adding a key with that name again brings it back. */
+export const removedKeysKey = () => `vcp-box-keys-removed:${new URLSearchParams(location.search).get("ns") ?? ""}`;
+export function removedKeys(): Set<string> {
+  try {
+    return new Set(JSON.parse(sessionStorage.getItem(removedKeysKey()) ?? "[]"));
+  } catch {
+    return new Set();
+  }
+}
+function markKeyRemoved(entry: string, removed: boolean): void {
+  if (!entry.startsWith("user.")) return;
+  const set = removedKeys();
+  const name = entry.slice(5);
+  if (removed) set.add(name);
+  else set.delete(name);
+  sessionStorage.setItem(removedKeysKey(), JSON.stringify([...set]));
+}
+
+/** Whether Claude is signed out on the fake box: Sign out in Settings (keychain_delete of the Claude credential) sets
+ *  it, a sign-in clears it, and it is kept for this frame's ns in sessionStorage like the removed keys, so a reload
+ *  stays signed out. Until either happens, `&claude=out` in the URL starts the scenario signed out. */
+export const claudeOutKey = () => `vcp-box-claude:${new URLSearchParams(location.search).get("ns") ?? ""}`;
+export function claudeSignedOut(): boolean {
+  const v = sessionStorage.getItem(claudeOutKey());
+  if (v !== null) return v === "out";
+  return new URLSearchParams(location.search).get("claude") === "out";
+}
+function setClaudeSignedOut(out: boolean): void {
+  sessionStorage.setItem(claudeOutKey(), out ? "out" : "in");
+}
+const CLAUDE_KEY = "service.claude-code";
+
 let box = new MemoryBox();
 let boxPollDelay = 0;
 let boxDown = false;
@@ -292,7 +361,8 @@ export function setHostConfig(c: HostConfig, now: () => number): void {
   boxPosts.length = 0;
   keys.clear();
   const defaults: Record<string, string> = { "api.openrouter": "sk-or-PREVIEW-0000000000000000000000000000000000000000", "service.elevenlabs": "sk_PREVIEW0000000000000000000000000000000000" };
-  for (const [k, v] of Object.entries({ ...defaults, ...(cfg.keys ?? {}) })) if (v) keys.set(k, v);
+  const gone = removedKeys();
+  for (const [k, v] of Object.entries({ ...defaults, ...(cfg.keys ?? {}) })) if (v && !gone.has(canonicalKeyName(k) ?? "")) keys.set(k, v);
   // The hot core: its records outlive a core swap's load, as the box's log does.
   setCoreConfig(c?.core);
   for (const sig of coreSignals()) box.emit(null, { type: "signal", signal: sig } as any);
@@ -451,7 +521,8 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
           keyNames: names,
           keys: { openrouter: has("api.openrouter"), elevenlabs: has("service.elevenlabs") },
           // The box runs Claude Code and is signed in (src/engineHealth.ts claudeOf).
-          engine: { engines: { claude: { signedIn: true, version: "2.1.319", tokenOk: true } } },
+          // Signed out when Carl signed out in Settings, or the URL says &claude=out (claudeSignedOut).
+          engine: { engines: { claude: { signedIn: !claudeSignedOut(), version: "2.1.319", tokenOk: true } } },
           // The box's account and the requested vault's working copy (the terminal button's ssh target).
           user: "carl",
           vaults: (b.vaults ?? []).map((name) => ({ name, path: `/home/carl/vaults/${name}` })),
@@ -522,6 +593,8 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       }
       return ok({ notes: [...byId.values()] });
     }
+    if (u.pathname.endsWith("/api/v2/settings")) return ok(boxSettingsAnswer());
+    if (u.pathname.endsWith("/api/v2/layout")) return ok({ ...boxLayout(), open: null });
     if (p === "/api/v2/plugin/app-state") {
       // The app plugins' own state (server/pluginState.ts appPluginStateRoute): the fake box's log, folded the box's way.
       const states = new Map<string, PluginState>();
@@ -578,6 +651,41 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       b = {};
     }
     boxPosts.push({ path, body: b, vault: u.searchParams.get("vault") });
+    // The box's notes noun (server/model/notes.ts): add, edit, delete, status, write, kept in the vault's notes.jsonl as
+    // one line per change (GET /notes above reads the newest line per id), so the panel's edits stay in the preview.
+    const notesOp = /\/notes(?:\/(edit|delete|status|write))?$/.exec(u.pathname);
+    if (notesOp && laptopVault) {
+      const file = `${laptopVault}/.vault-chat/notes.jsonl`;
+      const cur = fs.readText(file) ?? "";
+      const byId = new Map<string, any>();
+      for (const line of cur.split("\n")) {
+        try {
+          const n = JSON.parse(line);
+          if (n && typeof n.id === "string") byId.set(n.id, n);
+        } catch { /* a blank line */ }
+      }
+      const at = new Date().toISOString();
+      const put = (n: any) => fs.writeFileSync(file, `${cur.replace(/\n?$/, "\n")}${JSON.stringify(n)}\n`);
+      const one = byId.get(String(b.id ?? ""));
+      switch (notesOp[1]) {
+        case undefined:
+          put({ id: String(b.id ?? `n${Date.now()}`), timestamp: at, last_updated: at, anchors: b.anchors ?? [], turns: b.turns ?? [], user_draft: String(b.text ?? ""), status: "open" });
+          break;
+        case "edit":
+          if (one) put({ ...one, user_draft: String(b.text ?? ""), turns: [], formatted: null, title: null, last_updated: at });
+          break;
+        case "delete":
+          if (one) put({ ...one, status: "cleared", last_updated: at });
+          break;
+        case "status":
+          if (one) put({ ...one, status: b.status, last_updated: at });
+          break;
+        case "write":
+          fs.writeFileSync(file, (Array.isArray(b.notes) ? b.notes : []).map((n: unknown) => JSON.stringify(n)).join("\n") + "\n");
+          break;
+      }
+      return { status: 200, body: JSON.stringify({ ok: true }) };
+    }
     // One chat's model and effort (src/chatModels.ts): the box keeps the choice
     // on the conversation, so the preview just answers that it took it.
     const modelOf = /^\/api\/v1\/conversations\/([^/]+)\/model$/.exec(path);
@@ -770,6 +878,11 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       await sleep(1500);
       throw `error sending request for url (${u.href}): operation timed out`;
     }
+    if (path.endsWith("/api/v2/settings")) return { status: 200, body: JSON.stringify(boxSettingsPost(b)) };
+    if (path.endsWith("/api/v2/layout")) {
+      sessionStorage.setItem(boxLayoutKey(), JSON.stringify({ layout: b?.layout ?? null, at: Date.now() }));
+      return { status: 200, body: JSON.stringify({ ok: true }) };
+    }
     // Intents: the box writes their effect into its feed (src/convlog/memoryBox.ts intent()).
     const routed = await box.route("POST", path, new URLSearchParams(), b);
     if (routed) return { status: routed.status, body: JSON.stringify(routed.body) };
@@ -780,12 +893,29 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
   keychain_get: ({ key }) => keys.get(key) ?? null,
   keychain_set: ({ key, value }) => {
     keys.set(key, String(value));
+    markKeyRemoved(String(key), false);
+    if (key === CLAUDE_KEY) setClaudeSignedOut(false);
     return null;
   },
   keychain_delete: ({ key }) => {
     keys.delete(key);
+    markKeyRemoved(String(key), true);
+    // Sign out (src/ClaudeCodeSignIn.tsx signOut): the box loses its copy too, as the key push that follows does.
+    if (key === CLAUDE_KEY) setClaudeSignedOut(true);
     return null;
   },
+
+  // ---- Claude sign-in (src-tauri/src/claude_signin.rs): the one-click flow, faked to succeed after a second ----
+  claude_signin_available: () => true,
+  claude_setup_token_cli: () => ({ version: "2.1.319" }),
+  claude_cli_ensure: () => ({ cli: "claude", version: "2.1.319" }),
+  claude_signin_run: async () => {
+    await sleep(1000);
+    keys.set(CLAUDE_KEY, "sk-ant-oat01-PREVIEW" + "0".repeat(90));
+    setClaudeSignedOut(false);
+    return null;
+  },
+  claude_signin_cancel: () => null,
   keystore_encrypt: ({ plaintext }) => "PREVIEW:" + btoa(unescape(encodeURIComponent(String(plaintext)))),
   keystore_decrypt: ({ blob }) => {
     const s = String(blob);

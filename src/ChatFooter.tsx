@@ -1,36 +1,46 @@
 // The right side of the line under the composer: the run's elapsed time, the context ring, New chat and the Chats
 // toggle. Drawn by the composer plugin (src/plugins/composer) and by its built-in fallback (src/ComposerPanel.tsx), so
 // New chat and the way to the chat list stay whatever happens to the composer.
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { MessageSquare, Plus } from "lucide-react";
 import { useStore } from "./store";
+import { useChatScope, useScopedStore } from "./chatScope";
+import { useTiles } from "./tiles";
 import { isPopout } from "./sync";
-import { newChatHere } from "./chat-controller";
+import { newChatHere, newChatInTile } from "./chat-controller";
 import { UsagePopover } from "./UsagePopover";
 
 export function ChatFooterTools({ ready, archived }: { ready: boolean; archived: boolean }) {
-  const busy = useStore((s) => s.busy);
-  const lastContext = useStore((s) => s.lastContext);
-  const boxWindow = useStore((s) => (s.boxChat?.on ? s.conversations.find((c) => c.id === s.activeConversationId)?.contextWindow : undefined));
+  // in a chat tile, that tile's chat (src/chatScope.ts); elsewhere the active one.
+  const busy = useScopedStore((s) => s.busy);
+  const lastContext = useScopedStore((s) => s.lastContext);
+  const boxWindow = useScopedStore((s) => (s.boxChat?.on ? s.conversations.find((c) => c.id === s.activeConversationId)?.contextWindow : undefined));
   // The box's model window (reported with its usage); unknown until it reports one.
   const ctxWindow = boxWindow ? { tokens: boxWindow, known: true } : { tokens: 200_000, known: false };
   // Fullscreen chat shows the chats as its left sidebar (FullscreenChat.tsx), so the button opens and closes that; the
   // docked layout keeps the overlay. The popout window is the fullscreen chat.
   const chatFullscreen = useStore((s) => isPopout || (s.chatFullscreen && !s.popoutOpen));
-  const chatsShown = useStore((s) => (isPopout || (s.chatFullscreen && !s.popoutOpen) ? s.chatSidebarOpen : s.showChatsPanel));
+  // the Chats list is a side panel now (chatSidebarOpen), in every layout.
+  const chatsShown = useStore((s) => s.chatSidebarOpen);
   // For chats you can't see: "running" (something is still thinking) takes priority, else "unseen" (a background chat
   // finished and you haven't looked). Mirrors the per-row dot.
   const indicatorKind = useStore((s): "running" | "unseen" | null => {
     const off = s.conversations.filter((c) => c.id !== s.activeConversationId);
     return off.some((c) => c.status === "running") ? "running" : off.some((c) => c.unread) ? "unseen" : null;
   });
+  // In a chat tile: its New chat replaces the tile's chat (same place), and there is no Chats toggle (Carl 11-24).
+  // The composer plugin mounts in its own React root (no ChatScope through it): then the tile it sits in says.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [domScope, setDomScope] = useState<string | null>(null);
+  useLayoutEffect(() => setDomScope(rootRef.current?.closest<HTMLElement>("[data-chat-tile]")?.dataset.chatTile ?? null), []);
+  const scope = useChatScope() ?? domScope;
+  const tileId = useTiles((t) => (scope ? (t.slots.find((s) => s.content?.type === "chat" && s.content.chatId === scope)?.id ?? null) : null));
   const toggleChatsPanel = () => {
     const s = useStore.getState();
-    if (chatFullscreen) s.toggleChatSidebar();
-    else s.setShowChatsPanel(!s.showChatsPanel);
+    s.toggleChatSidebar();
   };
   return (
-    <div className="flex items-center gap-2">
+    <div ref={rootRef} className="flex items-center gap-2">
       {busy && <ElapsedTimer />}
       {lastContext > 0 && (
         <UsagePopover
@@ -49,7 +59,8 @@ export function ChatFooterTools({ ready, archived }: { ready: boolean; archived:
       {!archived && (
         <button data-offer="app/chats.newChat"
           onClick={() => {
-            newChatHere();
+            if (tileId) newChatInTile(tileId);
+            else newChatHere();
             window.dispatchEvent(new CustomEvent("vc-focus-composer"));
           }}
           disabled={!ready}
@@ -61,7 +72,7 @@ export function ChatFooterTools({ ready, archived }: { ready: boolean; archived:
           <span>New chat</span>
         </button>
       )}
-      {!isPopout && !chatFullscreen && (
+      {!isPopout && !chatFullscreen && !tileId && (
         <button data-offer="app/chats.openPanel"
           onClick={toggleChatsPanel}
           className={`relative flex items-center gap-1 text-[11px] hover:text-foreground transition-colors ${chatsShown ? "text-foreground" : "text-muted-foreground"}`}
@@ -100,7 +111,7 @@ function ElapsedTimer() {
   // sent), so it's correct for EVERY source — manual, voice, mission, worker,
   // phone — and survives open/close and reload. Falls back to the global
   // busyStartedAt, then to mount time, if a start somehow wasn't recorded.
-  const startedAt = useStore((s) => {
+  const startedAt = useScopedStore((s) => {
     const active = s.conversations.find((c) => c.id === s.activeConversationId);
     return active?.runStartedAt ?? s.busyStartedAt;
   });

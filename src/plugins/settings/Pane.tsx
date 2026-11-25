@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { TileHeadActions } from "../../TileTitle";
 import { ArrowLeft, X, Plus } from "lucide-react";
 import { useStore, type Theme } from "../../store";
 import { Button, Input } from "../../ui";
@@ -63,14 +64,15 @@ export const SETTINGS_SECTIONS: readonly { id: string; title: string }[] = [
 export function Pane() {
   const setShowSettings = useStore((s) => s.setShowSettings);
   return (
-    <div className="h-full flex flex-col bg-card border-l border-border" data-el="settings-pane">
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
+    <div className="h-full min-h-0 flex flex-col bg-card" data-el="settings-pane">
+      <div data-tile-head="" className="relative flex items-center gap-2 px-3 py-2 border-b border-border">
         <Button data-offer="app/settings.close" variant="ghost" size="icon" onClick={() => setShowSettings(false)} data-el="settings-back">
           <ArrowLeft className="h-3.5 w-3.5" />
         </Button>
-        <span className="text-[13px] font-semibold">Settings</span>
+        <span className="flex-1 min-w-0 truncate text-center select-none text-[13px] font-semibold">Settings</span>
+        <TileHeadActions />
       </div>
-      <div className="flex-1 overflow-auto p-5 space-y-8" data-el="settings-scroll">
+      <div className="flex-1 min-h-0 overflow-auto px-4 py-3 space-y-5" data-el="settings-scroll">
         <div data-settings="account">
           <ClaudeAccountLine />
         </div>
@@ -167,7 +169,9 @@ function KeysSection() {
         </div>
       )}
       {names.length > 0 ? (
-        <ul className="divide-y divide-border/40 rounded-md border border-border/60">
+        // A long list scrolls inside its own box (about eight rows), so the section's head, its + and the add row
+        // stay in view above it and the rest of Settings stays near (Carl 11-24: many keys).
+        <ul data-el="key-list" className="divide-y divide-border/40 rounded-md border border-border/60 max-h-[156px] overflow-y-auto overscroll-contain">
           {names.map((n) => (
             <li key={n} className="flex items-center justify-between px-3 py-1 text-[12px]" data-key={n}>
               <span className="font-mono text-foreground/90">{n}</span>

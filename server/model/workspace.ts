@@ -21,6 +21,7 @@ const LAYOUT_PARTS = new Set(["app/viewer", "app/chats", "app/titlebar", "app/ch
 
 const when = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace("T", " ") + " UTC";
 const PANE = { type: "string", enum: ["left", "right"], description: "left or right (stacked: left is the top)" };
+const SPOT = { type: "string", enum: ["full", "left", "right", "top", "bottom", "top-left", "top-right", "bottom-left", "bottom-right"], description: "a half or a quarter of the viewer, or full: the whole viewer" };
 const obj = (props: Record<string, unknown> = {}, required: string[] = []) => ({ type: "object", properties: props, required, additionalProperties: false });
 
 export type WorkspaceCtx = { vault: string; emit?: (ev: Record<string, unknown>) => void; ackMs?: number; dev?: (port: number) => Promise<{ origin: string } | { error: string }> };
@@ -57,24 +58,29 @@ export function workspaceNoun(ctx: WorkspaceCtx): Noun {
     actions: {
       openLeftPanel: action("open the left panel (the file tree)", "openLeftPanel"),
       closeLeftPanel: action("close the left panel (the file tree)", "closeLeftPanel"),
-      openRightPanel: action("open the chat panel", "openRightPanel"),
-      closeRightPanel: action("close the chat panel", "closeRightPanel"),
-      closePane: action("close one pane of the split (back to one file); with no split, leave pane out to close the one file or page", "closePane", obj({ pane: PANE })),
+      openRightPanel: action("open Chats (the chat list at the right; every chat is a tile)", "openRightPanel"),
+      closeRightPanel: action("close Chats (the chat list at the right)", "closeRightPanel"),
+      closePane: action("close one pane of the split (back to one file); with no split, leave pane out to close the one file or page; or a tile by its id: its spot stays, empty; an empty spot's id takes the spot away (its neighbour grows)", "closePane", obj({ pane: PANE, tile: { type: "string", description: "a tile id from layout.tiles" } })),
       openInPane: action(
-        "put a vault file (path + pane) or a web page (url; pane left out: in place of the active pane's) in a pane, turning the split on when one other is open; a pane already on a page goes to the url. A url http://localhost:<port> is your StartJob dev server, through the box. To open a file at a place, use Show",
+        "put a vault file (path + pane) or a web page (url; pane left out: in place of the active pane's) in a pane, turning the split on when one other is open; a pane already on a page goes to the url. A url http://localhost:<port> is your StartJob dev server, through the box. To open a file at a place, use Show. Or a file or a chat (its id) in a spot (a half, a quarter, or full: the whole viewer, as a drag there) or in a tile's spot (a web tile with url: it goes to that address, as its address bar); with neither pane nor spot: where new things go (an empty spot, else the whole viewer). No stacking: a tile it covers completely closes (it stays in Files / Chats), one it covers in part shrinks into the rest of its room",
         "openInPane",
-        obj({ path: { type: "string", description: "vault-relative" }, url: { type: "string", description: "http(s)" }, pane: PANE }),
+        obj({ path: { type: "string", description: "vault-relative" }, url: { type: "string", description: "http(s)" }, chat: { type: "string" }, pane: PANE, tile: { type: "string", description: "a tile id: open it in that spot" }, spot: SPOT }),
       ),
       webPage: action(
         "the web page in a pane (left out: the active one): its title row's back, forward, reload, browser (opens it, or url, in his browser); and inside a public page: read (its text and elements again, into panes[].page), click (ref from page.elements, or text), type (value into ref / a field's text; enter: true presses Enter), scroll (by pixels, \"top\" / \"bottom\", or to ref), select (with ref: that element goes to his composer as a chip; without: Select, Carl clicks one). Answers with the page read back",
         "webPage",
         obj({ do: { type: "string", enum: ["back", "forward", "reload", "browser", "read", "click", "type", "scroll", "select"] }, pane: PANE, url: { type: "string" }, ref: { type: "string" }, text: { type: "string" }, value: { type: "string" }, enter: { type: "boolean" }, by: { description: "pixels (negative: up), \"top\" or \"bottom\"" } }, ["do"]),
       ),
+      moveTile: action("drag a tile to a spot as Windows Snap: it takes that half, quarter or the whole viewer (full); onto exactly one tile of the same size and shape (half and half, quarter and quarter) they swap; otherwise a tile it covers completely closes, one it covers in part shrinks into the rest of its room (no stacking), and its old spot is left empty", "moveTile", obj({ tile: { type: "string" }, spot: SPOT }, ["tile", "spot"])),
+      newChat: action("a new chat: with tile (a chat tile's id), in that chat's place (its project or Main), replacing it in that tile, as the tile's New chat; else in place (\"main\" or a project's slug; left out: where Carl is) at spot (left out: where new things go), as \"+ New chat\" or a project row dropped there", "newChat", obj({ tile: { type: "string" }, place: { type: "string" }, spot: SPOT })),
+      autoHideTitleBar: action("the title bar auto-hidden (on: it slides in when the pointer rests at the top edge) or always shown (off), as its right-click menu's Auto-hide title bar; layout.titleBarAutoHide says which", "autoHideTitleBar", obj({ on: { type: "boolean" } }, ["on"])),
+      page: action("open or close Settings or Notes: a modal centred over everything (never a tile), as its title-bar button", "page", obj({ page: { type: "string", enum: ["settings", "notes"] }, open: { type: "boolean" } }, ["page", "open"])),
+      maximize: action("a tile fills the app window (its own row the one bar), or (on: false) back to the arrangement", "maximize", obj({ tile: { type: "string" }, on: { type: "boolean" } }, ["on"])),
       split: action("turn the split on or off (off keeps the active pane)", "split", obj({ on: { type: "boolean" } }, ["on"])),
-      focus: action("focus a pane or the chat", "focus", obj({ target: { type: "string", enum: ["left", "right", "chat"] } }, ["target"])),
-      fullscreenChat: action("full-screen chat on or off", "fullscreenChat", obj({ on: { type: "boolean" } }, ["on"])),
-      chatSidebar: action("the chat list beside full-screen chat, open or closed", "chatSidebar", obj({ open: { type: "boolean" } }, ["open"])),
-      resize: action("set the columns' widths as dragging the sashes does: leftPanel (the file tree) and/or chat, in pixels; the viewer takes the rest", "resize", obj({ leftPanel: { type: "number", minimum: 0 }, chat: { type: "number", minimum: 0 } })),
+      focus: action("focus a pane, a tile (its id) or the chat", "focus", obj({ target: { type: "string", description: '"left", "right", "chat" or a tile id' } }, ["target"])),
+      fullscreenChat: action("the open chat's tile full screen, or back (as maximize)", "fullscreenChat", obj({ on: { type: "boolean" } }, ["on"])),
+      chatSidebar: action("Chats (the chat list at the right) open or closed, as Ctrl+Shift+B", "chatSidebar", obj({ open: { type: "boolean" } }, ["open"])),
+      resize: action("set the columns' widths as dragging the sashes does: leftPanel (the file tree) and/or chat, in pixels; the viewer takes the rest. tiles: the lines between the viewer's spots as dragging their dividers does, fractions: x (the left side's share of the width; alone: in both rows), xb (the bottom row's own, when the rows' lines differ: four quarters, or a bottom row split under a top half), left / right (that side's top spot's share of its height; one line across when a spot spans both sides: left). Four quarters: rows' lines apart keep one line across, sides' lines apart keep one line down", "resize", obj({ leftPanel: { type: "number", minimum: 0 }, chat: { type: "number", minimum: 0 }, tiles: obj({ x: { type: "number", minimum: 0, maximum: 1 }, xb: { type: "number", minimum: 0, maximum: 1 }, left: { type: "number", minimum: 0, maximum: 1 }, right: { type: "number", minimum: 0, maximum: 1 } }) })),
       signOutOfSites: action(
         "sign out of every site in the laptop's web pages (viewer panes and chat pages share one browser profile, kept across restarts): wipes its cookies, storage and cache and reloads the pages open, as Settings' Sign out of all sites. Only when Carl asks",
         "signOutOfSites",

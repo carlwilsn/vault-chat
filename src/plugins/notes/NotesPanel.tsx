@@ -108,18 +108,13 @@ export function NotesPanel({ host, view: given }: { host: HostApi; view?: NotesV
   };
 
   return (
-    // pointer-events-none on the outer so the PDF/viewer behind stays
-    // interactive (and scroll-into-anchor is visible). The drawer
-    // itself re-enables pointer events. Close via Esc or the X button.
-    <div className="fixed inset-0 z-40 flex justify-end pointer-events-none">
-      <div
-        className="h-full w-[420px] max-w-[92vw] bg-card border-l border-border shadow-xl flex flex-col pointer-events-auto"
-      >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border/60">
-          <div className="flex items-center gap-2">
-            <StickyNote className="h-3.5 w-3.5 text-muted-foreground" />
+    // A modal: close via Esc, the X button or a click outside.
+    <NotesFrame onClose={onClose}>
+        <div className="relative flex items-center justify-between gap-2 px-4 py-3 border-b border-border/60">
+          <div className="flex-1 min-w-0 flex items-center gap-2">
+            <StickyNote className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             <span className="text-[13px] font-semibold">Notes</span>
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-[11px] text-muted-foreground truncate">
               {filtered.length} of {visibleCount}
             </span>
           </div>
@@ -164,7 +159,7 @@ export function NotesPanel({ host, view: given }: { host: HostApi; view?: NotesV
           />
         </div>
 
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 min-h-0 overflow-auto">
           {filtered.length === 0 ? (
             <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
               {query ? "No matches." : filter === "resolved" ? "No resolved notes yet." : `No notes yet. ${shortcutHint("files.note")} to capture one.`}
@@ -213,7 +208,15 @@ export function NotesPanel({ host, view: given }: { host: HostApi; view?: NotesV
             </button>
           </div>
         )}
-      </div>
+    </NotesFrame>
+  );
+}
+
+/** Notes is never a tile: a modal centred over everything; Esc (above) or a click outside closes it. */
+function NotesFrame({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  return (
+    <div data-el="notes-modal" className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="w-[560px] max-w-[92vw] max-h-[min(720px,86vh)] rounded-lg overflow-hidden bg-card border border-border shadow-2xl flex flex-col">{children}</div>
     </div>
   );
 }

@@ -5,13 +5,17 @@
 // openChat {id} switches the chat pane through the chat list's own offer (app/chats `open`, the PluginAct path: a
 // {type:"plugin"} signal, so every app that has that offer does it), then reads the layout back.
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { waitAck, type Ack } from "./show";
 import { loopbackUrl } from "./devProxy";
 import { controlDown, laptopElsewhere, noteAnswer, unansweredNote, vaultName } from "./deviceLink";
 
-const OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "fullscreenChat", "chatSidebar", "resize", "signOutOfSites", "openChat"] as const;
+const OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "fullscreenChat", "chatSidebar", "resize", "signOutOfSites", "openChat", "moveTile", "newChat", "autoHideTitleBar", "maximize", "page"] as const;
+// The viewer's Snap spots (src/tiles.ts SPOTS), and full: the whole viewer. No stacking: a tile covered by a move or
+// an open closes.
+const SPOTS = ["full", "left", "right", "top", "bottom", "top-left", "top-right", "bottom-left", "bottom-right"];
 type Op = Record<string, unknown> & { op: string };
 
 export type LayoutDeps = {
@@ -38,6 +42,51 @@ function parseOps(a: Record<string, unknown>): Op[] | string {
     if (action === "get") continue;
     if (!(OPS as readonly string[]).includes(action)) return `Unknown layout action "${action}". Use get or one of: ${OPS.join(", ")}.`;
     const op: Op = { op: action };
+    // A tile by its id (layout.tiles), a spot by name, a chat or a page, as the UI does them.
+    const tileArgs = typeof o.tile === "string" || typeof o.spot === "string" || typeof o.chat === "string";
+    if (o.spot !== undefined && !SPOTS.includes(String(o.spot))) return `spot is one of: ${SPOTS.join(", ")}.`;
+    if ((action === "closePane" || action === "openInPane") && tileArgs) {
+      for (const k of ["tile", "spot", "chat"]) if (o[k] !== undefined) op[k] = o[k];
+      if (typeof o.path === "string" && o.path.trim()) op.path = o.path.trim();
+      // A web tile (tile) to an address (url), as its address bar's Enter.
+      if (action === "openInPane" && typeof o.tile === "string" && o.url !== undefined) {
+        if (!httpUrl(o.url)) return "openInPane's url is an http(s) address.";
+        op.url = String(o.url).trim();
+      }
+      if (action === "closePane" && typeof o.tile !== "string") return "closePane needs tile (an id from layout.tiles) or pane.";
+      out.push(op);
+      continue;
+    }
+    if (action === "moveTile") {
+      if (typeof o.tile !== "string" || typeof o.spot !== "string") return `moveTile needs tile (an id from layout.tiles) and spot (${SPOTS.join(", ")}).`;
+      out.push({ op: action, tile: o.tile, spot: o.spot });
+      continue;
+    }
+    if (action === "autoHideTitleBar") {
+      if (typeof o.on !== "boolean") return "autoHideTitleBar needs on: true or false.";
+      out.push({ op: action, on: o.on });
+      continue;
+    }
+    if (action === "newChat") {
+      // A chat tile's New chat (tile), or a new chat in a place ("main" or a project's slug) at a spot.
+      out.push({ op: action, ...(typeof o.tile === "string" ? { tile: o.tile } : {}), ...(typeof o.place === "string" ? { place: o.place } : {}), ...(typeof o.spot === "string" ? { spot: o.spot } : {}) });
+      continue;
+    }
+    if (action === "page") {
+      if ((o.page !== "settings" && o.page !== "notes") || typeof o.open !== "boolean") return 'page needs page: "settings" or "notes" and open: true or false.';
+      out.push({ op: action, page: o.page, open: o.open });
+      continue;
+    }
+    if (action === "maximize") {
+      if (typeof o.on !== "boolean") return "maximize needs on: true or false.";
+      out.push({ op: action, on: o.on, ...(typeof o.tile === "string" ? { tile: o.tile } : {}) });
+      continue;
+    }
+    if (action === "openInPane" && typeof o.path === "string" && o.path.trim() && o.pane === undefined && o.url === undefined) {
+      // No pane: where new things go (the tiles' placement).
+      out.push({ op: action, path: o.path.trim() });
+      continue;
+    }
     // pane: needed to put a file in a pane; left out of a page (in place of the active pane's), of a closePane with no
     // split (the one file or page) and of webPage (the active pane's page).
     if (action === "closePane" || action === "openInPane" || action === "webPage") {
@@ -96,14 +145,24 @@ function parseOps(a: Record<string, unknown>): Op[] | string {
         if (typeof o[k] !== "number" || !Number.isFinite(o[k])) return `resize: ${k} is a width in pixels.`;
         op[k] = o[k];
       }
-      if (op.leftPanel === undefined && op.chat === undefined) return "resize needs leftPanel and/or chat (pixels).";
+      if (o.tiles !== undefined) {
+        const t = o.tiles as Record<string, unknown> | null;
+        if (!t || typeof t !== "object") return "resize: tiles is { x?, xb?, left?, right? }, fractions between 0 and 1.";
+        const tiles: { x?: number; xb?: number; left?: number; right?: number } = {};
+        for (const k of ["x", "xb", "left", "right"] as const) if (t[k] !== undefined) {
+          const v = t[k]; if (typeof v !== "number" || !(v > 0 && v < 1)) return `resize: tiles.${k} is a fraction between 0 and 1.`;
+          tiles[k] = v;
+        }
+        op.tiles = tiles;
+      }
+      if (op.leftPanel === undefined && op.chat === undefined && op.tiles === undefined) return "resize needs leftPanel and/or chat (pixels), or tiles (fractions).";
     }
     if (action === "openChat") {
       if (typeof o.id !== "string" || !o.id.trim()) return 'openChat needs id: a chat\'s id, "main", or "project-<slug>".';
       op.id = o.id.trim();
     }
     if (action === "focus") {
-      if (o.target !== "left" && o.target !== "right" && o.target !== "chat") return 'focus needs target: "left", "right" or "chat".';
+      if (typeof o.target !== "string" || !o.target) return 'focus needs target: "left", "right", "chat" or a tile id.';
       op.target = o.target;
     }
     out.push(op);
@@ -140,28 +199,93 @@ async function openChat(d: LayoutDeps, chat: string, ms: number): Promise<{ step
   return { step: { op: "openChat", ok: true, note: `open now: ${JSON.stringify(open)}` }, open };
 }
 
-/** The last layout the laptop read back (any layout ack, by anyone), kept on the box: the workspace noun's state. */
+/** The last layout the laptop read back (any layout ack, by anyone), kept on the box: the workspace noun's state. It
+ *  outlives a box restart: each vault's last layout is kept in <state>/workspace.json (written a moment after it
+ *  changes), and the laptop puts its tiles back from it at start (GET /api/v2/layout). */
 export type KeptLayout = { layout: unknown; at: number; open?: unknown };
 let kept: KeptLayout | null = null;
 const keptListeners = new Set<() => void>();
-export const keptLayout = (): KeptLayout | null => kept;
+export const keptLayout = (): KeptLayout | null => (loadStored(), kept);
 export function onLayoutKept(fn: () => void): () => void {
   keptListeners.add(fn);
   return () => keptListeners.delete(fn);
 }
-function keep(layout: unknown, open: unknown): void {
+function keep(layout: unknown, open: unknown, vault?: string, migratedFrom?: unknown): void {
+  loadStored();
   const was = kept ? JSON.stringify(kept.layout) : "";
   kept = { layout, at: Date.now(), ...(open !== undefined ? { open } : kept?.open !== undefined ? { open: kept.open } : {}) };
+  if (vault) store(vault, kept, migratedFrom);
   if (JSON.stringify(layout) !== was || open !== undefined) for (const f of [...keptListeners]) f();
 }
 /** The laptop's own word that its layout changed (POST /api/v2/layout: Carl dragged a sash, toggled a panel, opened a
- *  file): kept as the read-back, and the workspace noun's watchers hear it. */
-export function keepLaptopLayout(layout: unknown): void {
-  if (layout && typeof layout === "object") keep(layout, undefined);
+ *  file), for its open vault: kept as the read-back, and the workspace noun's watchers hear it. migratedFrom: the
+ *  laptop just turned an older layout into tiles (the box backs up what it had first). */
+export function keepLaptopLayout(layout: unknown, vault?: string, migratedFrom?: unknown): void {
+  if (layout && typeof layout === "object") keep(layout, undefined, vault, migratedFrom);
 }
-/** Tests: forget it. */
+/** A vault's last kept layout (null: none yet): the laptop's start puts its tiles back from it. */
+export function storedLayout(vault: string): KeptLayout | null {
+  loadStored();
+  return stored.vaults[vault] ?? null;
+}
+/** Tests: forget it (in memory; the file stays). */
 export function resetKeptLayout(): void {
   kept = null;
+  stored = { vaults: {} };
+  loaded = false;
+}
+
+// ---- kept on disk, per vault
+type Stored = { vaults: Record<string, KeptLayout> };
+let stored: Stored = { vaults: {} };
+let loaded = false;
+let writeTimer: ReturnType<typeof setTimeout> | null = null;
+const stateDir = () => process.env.VC_STATE_DIR || join(homedir(), ".local", "state", "vault-chat-server");
+const storeFile = () => join(stateDir(), "workspace.json");
+const hasTiles = (l: unknown) => Array.isArray((l as { tiles?: unknown } | null)?.tiles);
+function loadStored(): void {
+  if (loaded) return;
+  loaded = true;
+  try {
+    const j = JSON.parse(readFileSync(storeFile(), "utf8")) as Stored;
+    if (j && typeof j.vaults === "object" && j.vaults) stored = { vaults: j.vaults };
+  } catch {
+    /* none yet, or unreadable: start empty (a bad file is replaced on the next write) */
+  }
+  // The newest vault's layout is the read-back until the laptop says more.
+  if (!kept) kept = Object.values(stored.vaults).sort((x, y) => y.at - x.at)[0] ?? null;
+}
+function store(vault: string, k: KeptLayout, migratedFrom: unknown): void {
+  const before = stored.vaults[vault];
+  // The first tiles for a vault whose layout was the older split (or the laptop says it just migrated one): what the
+  // box had is written to a backup first, never lost.
+  if ((before && !hasTiles(before.layout) && hasTiles(k.layout)) || migratedFrom !== undefined) {
+    try {
+      const dir = join(stateDir(), "backups", "workspace");
+      mkdirSync(dir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      writeFileSync(join(dir, `layout-before-tiles-${stamp}.json`), JSON.stringify({ vault, at: new Date().toISOString(), before: before ?? null, migratedFrom: migratedFrom ?? null }, null, 2) + "\n", { mode: 0o600 });
+    } catch (e) {
+      console.warn("[workspace] the layout backup could not be written:", (e as Error).message);
+    }
+  }
+  stored.vaults[vault] = k;
+  if (writeTimer) return;
+  writeTimer = setTimeout(flushStored, 500);
+  (writeTimer as { unref?: () => void }).unref?.();
+}
+/** Write the kept layouts now (atomically: a temp file renamed over). */
+export function flushStored(): void {
+  if (writeTimer) clearTimeout(writeTimer);
+  writeTimer = null;
+  try {
+    mkdirSync(stateDir(), { recursive: true });
+    const tmp = `${storeFile()}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(stored), { mode: 0o600 });
+    renameSync(tmp, storeFile());
+  } catch (e) {
+    console.warn("[workspace] the layout could not be kept:", (e as Error).message);
+  }
 }
 
 export async function layoutTool(d: LayoutDeps, args: Record<string, unknown>): Promise<{ ok: boolean; text: string; layout?: unknown }> {

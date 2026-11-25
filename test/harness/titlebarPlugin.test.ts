@@ -158,10 +158,11 @@ test("act: the panels are the layout's ops (box:workspace, one route), Settings,
   assert.deepEqual(winCalls(), ["toggle_maximize", "minimize"]);
   assert.equal(win.closed, 0);
   win.minimized = false;
-  useStore.setState({ popoutOpen: true } as any);
+  // The right panel is Chats (the list), so the chat popped out doesn't take it away.
+  useStore.setState({ popoutOpen: true, chatSidebarOpen: false } as any);
   const pop = await applyLayoutOps([{ op: "openRightPanel" }], io);
-  assert.equal(pop.ok, false);
-  assert.match(pop.results[0]!.error ?? "", /popped out/);
+  assert.equal(pop.ok, true);
+  assert.equal(S().chatSidebarOpen, true);
   useStore.setState({ popoutOpen: false } as any);
 });
 

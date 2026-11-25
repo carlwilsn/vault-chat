@@ -6,6 +6,7 @@
 //  - turned off, or failing to mount or render, a plain pane stands in (SettingsFallback): back to the chat and one
 //    line that says what happened with Turn on / Reload. The agent's box:settings still
 //    changes every setting meanwhile.
+import { TileHeadActions } from "./TileTitle";
 import { ArrowLeft } from "lucide-react";
 import { useStore } from "./store";
 import { SETTINGS_PLUGIN } from "./appPlugins";
@@ -29,11 +30,12 @@ export function SettingsFallback({ info }: { info: PluginFallbackInfo }) {
   const setShowSettings = useStore((s) => s.setShowSettings);
   return (
     <div className="h-full flex flex-col bg-card border-l border-border" data-el="settings-fallback">
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
+      <div data-tile-head="" className="relative flex items-center gap-2 px-3 py-2 border-b border-border">
         <Button data-offer="app/settings.close" variant="ghost" size="icon" onClick={() => setShowSettings(false)} data-el="settings-back" title="Back">
           <ArrowLeft className="h-3.5 w-3.5" />
         </Button>
-        <span className="text-[13px] font-semibold">Settings</span>
+        <span className="flex-1 min-w-0 truncate text-center select-none text-[13px] font-semibold">Settings</span>
+        <TileHeadActions />
       </div>
       <div className="flex-1 overflow-auto p-5 space-y-4">
         {info.off ? (

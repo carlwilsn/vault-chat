@@ -35,6 +35,8 @@ export const COVERAGE: Record<string, Coverage> = {
 
   // ---------------------------------------------------------------- laptop: components (src/*.tsx)
   "src/App.tsx": { state: ["app/titlebar"] },
+  // the auto-hidden title bar: box:workspace's layout.titleBarAutoHide, set by its autoHideTitleBar.
+  "src/AutoHideTitlebar.tsx": { state: ["box:workspace"] },
   "src/ChangeKeeper.tsx": { state: ["app/changes"] },
   "src/ChangeLine.tsx": { state: ["app/changes"] },
   "src/fileChip.tsx": { state: ["app/composer", "box:workspace"] },
@@ -75,6 +77,9 @@ export const COVERAGE: Record<string, Coverage> = {
   "src/SearchPicker.tsx": { none: "the picker primitive (Settings): each use names its own offer" },
   "src/SettingsPane.tsx": { state: ["app/settings", "box:settings"] },
   "src/TexView.tsx": { state: ["app/viewer"] },
+  "src/TileArea.tsx": { state: ["box:workspace"] },
+  "src/TileComposer.tsx": { state: ["box:chats"] },
+  "src/TileTitle.tsx": { state: ["box:workspace"] },
   "src/Titlebar.tsx": { state: ["app/titlebar"] },
   "src/ui.tsx": { none: "UI primitives" },
   "src/UnsupportedView.tsx": { state: ["app/viewer"] },

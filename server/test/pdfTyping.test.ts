@@ -90,8 +90,8 @@ async function run(cdp: any): Promise<Run> {
     const composer = `document.querySelector('[data-perf-target="composer"]') || document.querySelector('[data-el="composer"] textarea')`;
     let ready = false;
     for (let t = Date.now(); !ready && Date.now() - t < 150_000; await sleep(300))
-      ready = await evalIn(cdp, sid, `!!(window.__preview && __preview.ready && __preview.stepsDone && (${composer}))`).catch(() => false);
-    if (!ready) throw new Error("the app did not come up with a composer");
+      ready = await evalIn(cdp, sid, `!!(window.__preview && __preview.ready && __preview.stepsDone && document.querySelector("[data-el=tile-grid]"))`).catch(() => false);
+    if (!ready) throw new Error("the app did not come up");
     let note = "# Notes beside the book\n\n";
     for (let i = 1; i <= 60; i++) note += `## Section ${i}\n\nA paragraph about section ${i}, with $x_${i}$ and **bold**, long enough to wrap in the pane.\n\n- a\n- b\n\n`;
     const opened = await evalIn(
@@ -99,19 +99,23 @@ async function run(cdp: any): Promise<Run> {
       sid,
       `(async () => {
         const { useStore } = await import("${new URL(origin).pathname}/src/store.ts");
+        const T = await import("${new URL(origin).pathname}/src/tiles.ts");
         const S = () => useStore.getState();
         S().setMode("edit");
-        S().setCurrentFile(S().vaultPath + "/notes/beside.md", ${JSON.stringify(note)});
+        // Tiles: the chat (its composer) filling the viewer, then the note and the book down its left, as Carl works.
+        T.openFilling({ chat: S().activeConversationId ?? "main" });
+        await new Promise((r) => setTimeout(r, 300));
+        T.openAt({ file: S().vaultPath + "/notes/beside.md", text: ${JSON.stringify(note)} }, T.SPOTS["top-left"]);
         await new Promise((r) => setTimeout(r, 500));
-        S().splitWith(S().vaultPath + "/books/big.pdf", "", "right");
+        T.openAt({ file: S().vaultPath + "/books/big.pdf", text: "" }, T.SPOTS["bottom-left"]);
         for (let t = performance.now(); performance.now() - t < 120000; await new Promise((r) => setTimeout(r, 100))) {
           const c = document.querySelector('canvas.pdf-page[data-page="1"]');
-          if (c && c.width > 0 && document.querySelector(".cm-content")) return true;
+          if (c && c.width > 0 && document.querySelector(".cm-content") && (${composer})) return true;
         }
         return false;
       })()`,
     );
-    if (!opened) throw new Error("the PDF did not open in split view beside the note");
+    if (!opened) throw new Error("the PDF did not open in a tile beside the note");
     // A laptop's speed, from here on: the box's cores are several times a laptop's.
     await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 }, sid);
     await sleep(4000);

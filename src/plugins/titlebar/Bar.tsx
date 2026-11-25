@@ -43,6 +43,9 @@ export function Bar() {
   const popoutOpen = useStore((s) => s.popoutOpen);
   const toggleLeft = useStore((s) => s.toggleLeft);
   const toggleRight = useStore((s) => s.toggleRight);
+  // The right button shows or hides the Chats side panel (Ctrl+Shift+B).
+  const chatsOpen = useStore((s) => s.chatSidebarOpen);
+  const toggleChats = useStore((s) => s.toggleChatSidebar);
   const setShowNotesPanel = useStore((s) => s.setShowNotesPanel);
   const showNotesPanel = useStore((s) => s.showNotesPanel);
   const openNotes = useStore((s) => s.notes.some((n) => n.status === "open"));
@@ -118,7 +121,7 @@ export function Bar() {
         <TitlebarItems side="left" />
       </div>
 
-      <div data-tauri-drag-region className="flex-1 h-full" />
+      <div data-tauri-drag-region className="flex-1 h-full flex items-center justify-center min-w-0" />
 
       <TitlebarItems side="right" />
 
@@ -128,14 +131,10 @@ export function Bar() {
 
       <div className="flex items-center">
         <button data-offer="box:workspace.openRightPanel"
-          onClick={toggleRight}
-          disabled={popoutOpen}
-          className={`h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover mr-1 disabled:opacity-40 disabled:cursor-not-allowed ${rightCollapsed ? "text-titlebar-muted" : "text-titlebar-foreground"}`}
-          title={
-            popoutOpen
-              ? "Chat is popped out — close the popout window to dock"
-              : `${rightCollapsed ? "Show" : "Hide"} chat panel (${shortcutHint("view.chat")})`
-          }
+          data-el="titlebar-chats-toggle"
+          onClick={toggleChats}
+          className={`h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover mr-1 ${chatsOpen ? "text-titlebar-foreground" : "text-titlebar-muted"}`}
+          title={`${chatsOpen ? "Hide" : "Show"} Chats (${shortcutHint("view.chat")})`}
         >
           <PanelRight className="h-3.5 w-3.5" />
         </button>

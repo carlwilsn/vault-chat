@@ -58,7 +58,7 @@ test("the turn prefix says the layout in Show's names: which file is in the left
   placeInPane("left", abs("hw/hw3.pdf"), "");
   placeInPane("right", abs("notes/lecture6_typed.md"), read("notes/lecture6_typed.md"));
   const text = buildViewportContextText(S());
-  assert.match(text, /^Split screen on \(side by side\): left pane: hw\/hw3\.pdf · right pane: notes\/lecture6_typed\.md \(active\) \(Show's pane: "left" \/ "right" puts a file in one\)/);
+  assert.match(text, /^Tiles: left: hw\/hw3\.pdf · right: notes\/lecture6_typed\.md \(focused\) \(Show's pane: "left" \/ "right" puts a file in one\)/);
   assert.match(text, />>> USER IS CURRENTLY VIEWING .*lecture6_typed\.md <<</);
   assert.match(text, /OTHER pane \(left\) document: .*hw3\.pdf \(no text content\)/);
   // One file: no split line.

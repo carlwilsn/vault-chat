@@ -3,8 +3,8 @@
 // chats, "Show more", spinners and the unseen dot, the right-click menus (rename, delete) and "New project" (Carl's
 // design E2, 2026-11-24: no "Chats" header, no Main row). Two surfaces show the same list: the overlay from the
 // chat pane's chats button (ChatsOverlay) and fullscreen chat's left sidebar (ChatsSidebarView).
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, X as XIcon, Folder, FolderPlus, PanelLeftClose, ChevronRight } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Plus, X as XIcon, Folder, FolderPlus, ChevronRight } from "lucide-react";
 import { useStore } from "../../store";
 import { useProjects } from "../../ProjectChip";
 import { newChatIn } from "../../chat-controller";
@@ -12,11 +12,11 @@ import { createProjectThread, deleteProject, openThread, projectName, renameProj
 import { panelModel, visibleChats, nextChatLevel, type PanelChat, type PanelEntry } from "../../threads";
 import { canDeleteChat, deleteChats, renameChat } from "../../chatDelete";
 import { cn } from "../../lib/utils";
+import { MENU_PANEL, menuItemClass } from "../../ui";
 import { ROW_HOVER, ROW_INSET, ROW_SELECTED, ROW_SHAPE } from "../../lib/rows";
 import { NewProjectForm } from "../../NewProjectForm";
 import { usePlaceOpen } from "../../placeOpen";
 import { chatLevels, useChatLevel } from "./view";
-import { shortcutHint } from "../../shortcuts";
 
 /** Composer focus is owned by ChatPane (the event App.tsx and the popout send too). */
 export const focusComposer = () => window.dispatchEvent(new CustomEvent("vc-focus-composer"));
@@ -87,21 +87,10 @@ export function ChatsOverlay() {
 
 /** Fullscreen chat's (and the popout's) left sidebar: the same list, docked, collapsible. */
 export function ChatsSidebarView() {
-  const toggle = useStore((s) => s.toggleChatSidebar);
+  // no hide button of its own: the title bar's Chats button and Ctrl+Shift+B hide it.
   return (
-    <aside data-el="chats-sidebar" className="h-full w-[272px] shrink-0 bg-background flex flex-col">
-      <ThreadsList data-offer="box:workspace.chatSidebar"
-        onFocusComposer={focusComposer}
-        trailing={
-          <button
-            onClick={toggle}
-            className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
-            title={`Hide (${shortcutHint("view.files")})`}
-          >
-            <PanelLeftClose className="h-3.5 w-3.5" />
-          </button>
-        }
-      />
+    <aside data-el="chats-sidebar" className="h-full w-full min-w-0 bg-background flex flex-col border-l border-border">
+      <ThreadsList data-offer="box:workspace.chatSidebar" onFocusComposer={focusComposer} trailing={null} />
     </aside>
   );
 }
@@ -420,7 +409,7 @@ export function ThreadRow({
         ) : null}
       </button>
       {hasMenu && menu && (
-        <div ref={menuRef} data-el="project-menu-list" className="absolute right-2 top-full -mt-1 z-30 min-w-[150px] p-1 rounded-lg border border-border bg-popover shadow-lg text-[12px]">
+        <div ref={menuRef} data-el="project-menu-list" className={cn("absolute right-2 top-full -mt-1 z-30 min-w-[150px]", MENU_PANEL)}>
           {canEdit && (
             <>
               <MenuItem data-offer="box:chats.renameProject"
@@ -558,7 +547,7 @@ function MenuItem({ el, danger, onClick, children }: { el: string; danger?: bool
     <button data-offer-exempt="a UI primitive: each use names its own offer"
       data-el={el}
       onClick={onClick}
-      className={cn("w-full text-left px-2 py-1.5 rounded-md", danger ? "text-destructive hover:bg-destructive/10" : "text-foreground/85 hover:bg-accent hover:text-foreground")}
+      className={menuItemClass(danger)}
     >
       {children}
     </button>
@@ -592,6 +581,19 @@ function ChatItem({ chat: c, loose, onOpen, deleteOne }: { chat: PanelChat; loos
       document.removeEventListener("mousedown", away);
       document.removeEventListener("keydown", esc);
     };
+  }, [menu]);
+  // Keep the menu inside the row (the sidebar's width) and the window: shift it left, or above the click, when it
+  // would spill past an edge and be clipped.
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    const row = el?.parentElement;
+    if (!menu || !el || !row) return;
+    const r = row.getBoundingClientRect();
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    const right = Math.min(r.right, window.innerWidth) - 4;
+    el.style.left = `${Math.max(4, Math.min(menu.x, right - r.left - w))}px`;
+    el.style.top = r.top + menu.y + 4 + h > window.innerHeight - 4 ? `${menu.y - h - 4}px` : `${menu.y + 4}px`;
   }, [menu]);
   const rename = async () => {
     const to = draft.trim();
@@ -640,7 +642,8 @@ function ChatItem({ chat: c, loose, onOpen, deleteOne }: { chat: PanelChat; loos
           hasMenu
             ? (ev) => {
                 ev.preventDefault();
-                setMenu({ x: ev.nativeEvent.offsetX, y: ev.nativeEvent.offsetY });
+                const box = ev.currentTarget.getBoundingClientRect();
+                setMenu({ x: ev.clientX - box.left, y: ev.clientY - box.top });
               }
             : undefined
         }
@@ -671,8 +674,8 @@ function ChatItem({ chat: c, loose, onOpen, deleteOne }: { chat: PanelChat; loos
           <div
             ref={menuRef}
             data-el="chat-menu"
-            style={{ left: Math.max(loose ? 8 : 24, menu.x), top: menu.y + 4 }}
-            className="absolute z-30 min-w-[150px] p-1 rounded-lg border border-border bg-popover shadow-lg text-[12px]"
+            style={{ left: menu.x, top: menu.y + 4 }}
+            className={cn("absolute z-30 min-w-[150px]", MENU_PANEL)}
           >
             <MenuItem data-offer="box:chats.rename"
               el="chat-menu-rename"

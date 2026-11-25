@@ -17,7 +17,6 @@ import { memo, useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useStore } from "./store";
 import { loadSkills } from "./skills";
-import { SettingsPane } from "./SettingsPane";
 import { CHAT_PLUGIN } from "./appPlugins";
 import * as chatPlugin from "./plugins/chat";
 import { Transcript } from "./plugins/chat/Transcript";
@@ -90,7 +89,6 @@ export function ChatPane() {
 
 function ChatPaneView() {
   const vaultPath = useStore((s) => s.vaultPath);
-  const showSettings = useStore((s) => s.showSettings);
   const setSkills = useStore((s) => s.setSkills);
 
   useEffect(() => {
@@ -101,7 +99,6 @@ function ChatPaneView() {
     }
   }, [vaultPath, setSkills]);
 
-  if (showSettings) return <SettingsPane />;
   return (
     <>
       <TranscriptSlot />

@@ -27,6 +27,29 @@ export function renameTauriGlobals(code) {
     .replace(/\b__TAURI_EVENT_PLUGIN_INTERNALS__\b/g, TAURI_GLOBALS.__TAURI_EVENT_PLUGIN_INTERNALS__)
     .replace(/\(globalThis \|\| window\)\.isTauri\b/g, `(globalThis || window).${TAURI_GLOBALS.isTauri}`);
 }
+// This dev server's identity: after a lost HMR socket the client asks for it (/__preview/boot) and
+// reconnects when it is the same server (a proxy hiccup) instead of reloading the page; a restarted
+// server (a new id) still reloads, as Vite does.
+const BOOT_ID = `${process.pid}-${Date.now().toString(36)}`;
+const VITE_CLIENT = /[\\/]vite[\\/]dist[\\/]client[\\/]client\.mjs(\?|$)/;
+
+/** Vite's HMR client, for a page opened through any host: the socket stays on the page's own origin, and a lost one reconnects in place. */
+function patchViteClient(code, base) {
+  // The fallback target is the dev server's own 127.0.0.1:<port>, which only a browser on this machine reaches
+  // (and the network guard refuses from any other host): fall back to the same origin again instead.
+  let out = code.replace("const directSocketHost = __HMR_DIRECT_TARGET__;", "const directSocketHost = socketHost;");
+  out = out.replace(/await waitForSuccessfulPing\(url\.href\);\s*location\.reload\(\);/, (m) =>
+    [
+      "await waitForSuccessfulPing(url.href);",
+      `let vcSame = false; try { vcSame = (await (await fetch(${JSON.stringify(base + "__preview/boot")}, { cache: "no-store" })).text()) === ${JSON.stringify(BOOT_ID)}; } catch {}`,
+      'if (vcSame) { console.log("[vite] same server: reconnecting without a reload"); await new Promise((r) => setTimeout(r, 1000)); transport.connect(createHMRHandler(handleMessage)); }',
+      "else location.reload();",
+    ].join("\n"),
+  );
+  if (out === code || !out.includes("vcSame")) console.warn("[preview] vite client: HMR patch did not apply (Vite changed?)");
+  return out;
+}
+
 const TAURI_MODULE = /[\\/]@tauri-apps[\\/][^?]*\.[cm]?js(\?|$)/;
 /** The same rename for Vite's dependency pre-bundling (esbuild), where plugin transforms don't run. */
 export const tauriGlobalsEsbuild = {
@@ -213,6 +236,11 @@ export function previewPlugin(opts) {
           res.setHeader("cache-control", "max-age=3600");
           return void res.end(readFileSync(p));
         }
+        if (url.pathname === "/__preview/boot") {
+          res.setHeader("content-type", "text/plain");
+          res.setHeader("cache-control", "no-store");
+          return void res.end(BOOT_ID);
+        }
         if (url.pathname === "/__preview/info") {
           res.setHeader("content-type", "application/json");
           return void res.end(JSON.stringify({ side: opts.side, tree: opts.tree, label: opts.label, bases: Object.keys(baseDirs()) }));
@@ -283,6 +311,7 @@ export function previewPlugin(opts) {
     },
     transform(code, id) {
       // @tauri-apps/* served unbundled (excluded from, or not yet in, the pre-bundle): the preview's names too.
+      if (VITE_CLIENT.test(id)) return { code: patchViteClient(code, opts.base ?? "/"), map: null };
       return TAURI_MODULE.test(id) ? { code: renameTauriGlobals(code), map: null } : null;
     },
     resolveId(id, importer) {

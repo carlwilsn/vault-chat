@@ -102,7 +102,8 @@ test("records unknown or the plugin off: the same transcript in the app's tree; 
   set({ boxChat: { on: false, starting: true } });
   assert.match(renderToStaticMarkup(createElement(ChatPane)), /data-el="box-starting"/);
   set({ boxChat: BOX, showSettings: true });
-  assert.doesNotMatch(renderToStaticMarkup(createElement(ChatPane)), /chat-transcript/, "Settings in its place");
+  // Settings is a modal over everything (src/TileArea.tsx): the chat stays drawn under it.
+  assert.match(renderToStaticMarkup(createElement(ChatPane)), /chat-transcript/, "the chat under the Settings modal");
   set({ showSettings: false, messages: [] });
 });
 

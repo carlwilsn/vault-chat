@@ -13,15 +13,16 @@
 // sessionStorage: index.html paints it as the very first frame, and the restored screen replaces it in one frame once it
 // is drawn under it (no fade: Carl wants the swap still). The theme rides along (src/firstTheme.ts): the first frame is
 // never the wrong colour.
-// The layout comes back exactly: the panes (a web page's address too), split, active, the side panels, full-screen chat,
-// and the widths: the columns (file tree, viewer, chat: src/layoutOps.ts resizeColumns, what dragging the sashes does)
-// and the viewer's own split. The new window's first file listing refits the file tree; the kept widths win over it
+// The layout comes back exactly: the tiles (src/tiles.ts snapshotTiles: each spot's file, web page or chat, the lines
+// between them, which is focused; an older core's split and chat column become tiles), the side panels, and the
+// columns' widths (file tree, viewer, Chats: src/layoutOps.ts resizeColumns, what dragging the sashes does). The new window's first file listing refits the file tree; the kept widths win over it
 // (keepColumns). Nothing asks "Reload site?" on the swap's load (src/swapHold.ts).
 import { useStore, type Pane, type SplitDirection } from "./store";
 import { isTheme, type Theme } from "./firstTheme";
 import { holdForSwap, releaseSwapHold } from "./swapHold";
 import { isWebAddress } from "./webPane";
-import { domMeasure, keepColumns, paneSplitSizes, resizeColumns, resizePaneSplit } from "./layoutOps";
+import { domMeasure, keepColumns, resizeColumns } from "./layoutOps";
+import { restoreTiles, snapshotTiles, tilesFromLegacy, type SavedTiles } from "./tiles";
 
 /** index.html reads this key by name before any script loads: keep the two in step. */
 export const SWAP_KEY = "vc.coreSwap";
@@ -54,11 +55,14 @@ export type SwapState = {
   mode?: "view" | "edit";
   /** The columns' widths in pixels (0: a closed panel), null when there is no split on screen (full-screen chat). */
   sizes?: { leftPanel: number; viewer: number; chat: number } | null;
-  /** The viewer's split: its two panes' sizes in pixels. */
+  /** An older core's viewer split: its two panes' sizes in pixels (not used: tiles keep their own lines). */
   paneSizes?: number[] | null;
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   chatFullscreen: boolean;
+  /** The tiles (src/tiles.ts snapshotTiles, absolute paths). A record without them is an older core's: its split and
+   *  chat column become tiles (tilesFromLegacy). */
+  tiles?: SavedTiles;
 };
 
 const ss = (): Storage | null => {
@@ -90,10 +94,10 @@ export function swapStateNow(draft: SwapState["draft"], now = Date.now()): SwapS
     currentContent: s.currentContent.length <= PANE_TEXT_MAX ? s.currentContent : null,
     mode: s.mode,
     sizes: domMeasure().sizes,
-    paneSizes: paneSplitSizes(),
     leftCollapsed: s.leftCollapsed,
     rightCollapsed: s.rightCollapsed,
     chatFullscreen: s.chatFullscreen,
+    tiles: snapshotTiles((p) => p),
   };
 }
 
@@ -219,57 +223,34 @@ export async function restoreSwapState(st: SwapState, d: RestoreDeps): Promise<s
   const done: string[] = [];
   const s = useStore.getState();
   if (st.vault && s.vaultPath !== st.vault) return done; // another vault opened since: nothing of it applies
-  const panes: Pane[] = [];
-  // A web page has no text to read: its address is the pane.
-  const text = async (file: string, kept: string | null) => kept ?? (isWebAddress(file) ? "" : await d.read(file));
-  for (const p of st.panes) {
-    try {
-      panes.push({ id: `p_${Math.random().toString(36).slice(2)}`, file: p.file, mode: p.mode, content: await text(p.file, p.content) });
-    } catch {
-      /* gone since */
-    }
-  }
-  if (panes.length >= 2) {
-    const a = panes[Math.min(st.active, panes.length - 1)]!;
-    useStore.setState({ panes, splitDirection: st.split, activePaneId: a.id, currentFile: a.file, currentContent: a.content });
-    done.push("panes");
-  } else if (st.currentFile) {
-    try {
-      useStore.getState().setCurrentFile(st.currentFile, await text(st.currentFile, st.currentContent));
-      if (st.mode) useStore.getState().setMode(st.mode);
-      done.push("file");
-    } catch {
-      /* gone since */
-    }
-  }
-  useStore.setState({ leftCollapsed: st.leftCollapsed, rightCollapsed: st.rightCollapsed, chatFullscreen: st.chatFullscreen });
-  if (st.sizes || st.paneSizes) {
+  // The tiles: this core's own record, or an older core's split and chat column turned into tiles (kept text first).
+  const kept = new Map<string, string>();
+  for (const p of st.panes) if (p.content !== null) kept.set(p.file, p.content);
+  if (st.currentFile && st.currentContent !== null) kept.set(st.currentFile, st.currentContent);
+  // (A record whose tiles were never drawn, a window with no screen: its panes, as an older core's.)
+  const legacy = !st.tiles?.tiles?.length;
+  const files = st.panes.length >= 2 ? st.panes.map((p) => p.file) : st.currentFile ? [st.currentFile] : [];
+  const saved: SavedTiles = !legacy && st.tiles ? st.tiles : tilesFromLegacy({ files, modes: st.panes.length >= 2 ? st.panes.map((p) => p.mode) : undefined, stacked: st.split === "vertical", active: st.active, chat: st.conv, chat_at: st.chatFullscreen ? "full" : st.rightCollapsed ? null : "right" });
+  if (saved.tiles.some((t) => t.chat)) await d.chatsLoaded();
+  const back = await restoreTiles(saved, {
+    vault: st.vault ?? s.vaultPath ?? "",
+    read: async (f) => kept.get(f) ?? (isWebAddress(f) ? "" : await d.read(f)),
+    how: legacy ? "legacy" : "swap",
+    ...(legacy ? { from: { coreSwap: { panes: st.panes.map((p) => p.file), split: st.split, active: st.active, currentFile: st.currentFile, conv: st.conv, rightCollapsed: st.rightCollapsed, chatFullscreen: st.chatFullscreen } } } : {}),
+  }).catch(() => false);
+  if (back) done.push(legacy ? "tiles (from the split)" : "tiles");
+  if (back && st.mode && useStore.getState().panes.length === 0) useStore.getState().setMode(st.mode);
+  useStore.setState({ leftCollapsed: st.leftCollapsed, rightCollapsed: st.rightCollapsed, chatFullscreen: false });
+  if (st.sizes) {
     // The panels open or shut and the file listing in (it refits the tree), then the widths as they were.
     await d.filesLoaded?.();
     await d.frame();
     let sized = false;
     try {
-      if (st.sizes && !st.chatFullscreen) {
+      if (st.sizes) {
         const c = { ...(st.sizes.leftPanel > 0 ? { leftPanel: st.sizes.leftPanel } : {}), ...(st.sizes.chat > 0 ? { chat: st.sizes.chat } : {}) };
         keepColumns(c, KEEP_COLUMNS_MS);
         sized = resizeColumns(c) === null;
-      }
-      if (st.paneSizes && panes.length >= 2) {
-        // The viewer's split lays its two panes out over a few frames after they mount: once they hold still, its
-        // sash goes where it was (again, should that first layout still land after it).
-        let last = "";
-        for (let i = 0; i < 20; i++) {
-          const now = JSON.stringify(paneSplitSizes());
-          if (now !== "null" && now === last) break;
-          last = now;
-          await d.frame();
-        }
-        const want = JSON.stringify(st.paneSizes);
-        for (let i = 0; i < 3 && JSON.stringify(paneSplitSizes()) !== want; i++) {
-          if (!paneSplitSizes() || !resizePaneSplit(st.paneSizes)) break;
-          sized = true;
-          await d.frame();
-        }
       }
     } catch (e) {
       console.warn("[core] the widths did not go back:", e);

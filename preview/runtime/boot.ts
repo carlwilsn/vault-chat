@@ -13,7 +13,7 @@ import { report, reports, setOverlayHidden } from "./overlay";
 import * as fs from "./shims/memfs";
 import { conversationsWriteAll } from "../../server/commands/conversations";
 import { dispatch, calls, unknownCommands, setOverrides, knownCommands } from "./backend/index";
-import { setHostConfig, boxNext, boxPlay, boxPostLog, type BoxConv, type HostConfig } from "./backend/host";
+import { setHostConfig, removedKeys, boxNext, boxPlay, boxPostLog, type BoxConv, type HostConfig } from "./backend/host";
 import { seedHistory, setGitClock } from "./backend/memgit";
 import { emitFromBackend } from "./ipc";
 import { scenarios } from "../scenarios/index";
@@ -67,7 +67,8 @@ function seedVault(vault: string, base: Base, sc: Scenario, t: number): void {
 
 function seedLocalStorage(vault: string, sc: Scenario): void {
   localStorage.clear();
-  sessionStorage.clear();
+  // The fake box's settings (backend/host.ts boxSettings) outlive a reload, as the box's records do.
+  for (const k of Object.keys(sessionStorage)) if (!/^vcp-box-(settings|keys-removed|claude|layout):/.test(k)) sessionStorage.removeItem(k);
   const ls: Record<string, string> = {
     vault_chat_last_vault: vault,
     vault_chat_tracked_vaults: JSON.stringify([vault]),
@@ -80,6 +81,10 @@ function seedLocalStorage(vault: string, sc: Scenario): void {
   };
   if (sc.activeConversation) ls[`vault_chat_active_conv:${vault}`] = sc.activeConversation;
   for (const [k, v] of Object.entries({ ...ls, ...(sc.localStorage ?? {}) })) localStorage.setItem(k, v.replace(/\{vault\}/g, vault));
+  // Keys removed in Settings stay removed across a reload (backend/host.ts removedKeys).
+  const gone = removedKeys();
+  const names = localStorage.getItem("vault_chat_user_keys");
+  if (names && gone.size) localStorage.setItem("vault_chat_user_keys", JSON.stringify((JSON.parse(names) as string[]).filter((n) => !gone.has(n))));
 }
 
 function speedTimers(map: Record<number, number> | undefined): void {
@@ -213,7 +218,7 @@ export function boot(base: Base): void {
     // Opened directly, a scenario with beats plays narrated (captions, a human
     // pace); &narrate=0 — and any checker (navigator.webdriver) — plays `open`.
     const narrated = !!sc.narrate?.length && narrateWanted(q);
-    (narrated ? narrate({ beats: sc.narrate!, surface: "desktop", exec: (s) => runSteps([s], vault) }) : runSteps(sc.open, vault))
+    (narrated ? narrate({ beats: sc.narrate!, surface: "desktop", exec: (s) => runSteps([s], vault) }) : runSteps([...(q.get("reopen") === "0" ? [] : sc.open), ...(q.get("open") ? [{ file: q.get("open")! } as any] : []), ...(q.get("click") ? [{ sleep: 400 } as any, { click: q.get("click")! } as any] : [])], vault))
       .then(() => {
         api.stepsDone = true;
       })
@@ -230,3 +235,4 @@ export function boot(base: Base): void {
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", waitMount);
   else waitMount();
 }
+

@@ -57,7 +57,8 @@ test("the screen is kept before a swap and put back after it: chat, scroll, draf
   let setDraft: unknown = null;
   const reads: string[] = [];
   const done = await S.restoreSwapState(st, { read: async (p) => (reads.push(p), "from disk"), chatsLoaded: async () => {}, setDraft: (d) => void (setDraft = d), frame: async () => {} });
-  assert.deepEqual(done, ["panes", "draft", "chat", "scroll"]);
+  // A window whose tiles were never drawn keeps its panes: they come back as tiles (two files and the chat column).
+  assert.deepEqual(done, ["tiles (from the split)", "draft", "chat", "scroll"]);
   const s = useStore.getState();
   assert.equal(s.activeConversationId, "c2");
   assert.deepEqual(s.panes.map((p) => [p.file, p.content, p.mode]), [[`${vault}/a.md`, "A (unsaved edit)", "edit"], [`${vault}/b.md`, "B", "view"]]);
@@ -153,11 +154,12 @@ function drawSplits(cols: number[], panes: number[] | null) {
   }
 }
 
-test("layout identical across a swap: panes (a web page too), split, active, panels, column widths, the viewer's split", async () => {
+test("layout identical across a swap: the tiles (a web page too), the lines between them, active, panels, column widths", async () => {
   const L = await import("../../src/layoutOps.ts");
   G.window ??= globalThis;
   G.innerWidth = 1400;
   G.innerHeight = 860;
+  (await import("../../src/tiles.ts")).useTiles.setState({ slots: [], focused: null, maximized: null });
   useStore.setState({
     vaultPath: vault,
     conversations: [conv("c1")],
@@ -175,7 +177,13 @@ test("layout identical across a swap: panes (a web page too), split, active, pan
     chatFullscreen: false,
   } as any);
   drawSplits([210, 670, 520], [260, 410]);
-  const before = { layout: L.readLayout(), panes: L.paneSplitSizes() };
+  const T = await import("../../src/tiles.ts");
+  T.ensureTilesStarted();
+  T.setSplit({ x: 0.38 });
+  // The tiles' ids are new after a swap; everything else is the same.
+  const same = (l: any) => ({ ...l, tiles: (l.tiles as any[]).map(({ tile: _t, ...rest }) => rest) });
+  const before = { layout: same(L.readLayout()) };
+  assert.deepEqual(before.layout.tiles.map((t: any) => [t.spot, t.file]), [["left", "a.md"], ["right", "https://example.com/page"]]);
   const kept = JSON.parse(JSON.stringify(S.swapStateNow(null, 2000)));
   // Too big to keep the pane text: a web page is still put back (it has no file to read).
   for (const p of kept.panes) p.content = null;
@@ -190,9 +198,9 @@ test("layout identical across a swap: panes (a web page too), split, active, pan
   try {
     const reads: string[] = [];
     const done = await S.restoreSwapState(kept, { read: async (p) => (reads.push(p), "A"), chatsLoaded: async () => {}, setDraft: () => {}, frame: async () => {}, filesLoaded: async () => {} });
-    assert.ok(done.includes("panes") && done.includes("sizes"), done.join(","));
+    assert.ok(done.includes("tiles") && done.includes("sizes"), done.join(","));
     assert.deepEqual(reads, [`${vault}/a.md`], "only the file is read again, never the web page's address");
-    const after = { layout: L.readLayout(), panes: L.paneSplitSizes() };
+    const after = { layout: same(L.readLayout()) };
     assert.deepEqual(after, before);
     // The new window's first file listing refits the columns (src/App.tsx): the kept widths win for a while after.
     drawSplits([180, 780, 440], inner);

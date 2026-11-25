@@ -11,6 +11,7 @@
 // Forward, Reload, Open in browser) as one action the layout op `webPage` and the pane's own title row both call.
 import { useStore } from "./store";
 import { placeInPane, type PaneSide } from "./paneLayout";
+import { sideOfPane, tileAtSide } from "./tiles";
 import { publicWebUrl } from "./inlineWeb";
 import { driveOpFor, pickOf, type DriveOp } from "./webDrive";
 
@@ -92,11 +93,14 @@ export function registerWebPane(key: string, h: WebPaneHandle): () => void {
 }
 export const webPaneHandle = (key: string): WebPaneHandle | null => handles.get(key) ?? null;
 
-/** The pane a side means now (a split's left / right; with no split, the one viewer), and the address it holds. */
+/** The pane a side means now (src/tiles.ts tileAtSide: with two or more files, the first / second file tile in place
+ *  order; left out: the active one; with one, the one viewer), and the address it holds. */
 export function paneAt(side?: PaneSide): { key: string; file: string | null; paneId: string | null } | { error: string } {
   const s = useStore.getState();
   if (s.panes.length >= 2) {
-    const p = side ? s.panes[side === "left" ? 0 : 1] : s.panes.find((x) => x.id === s.activePaneId) ?? s.panes[0];
+    const t = side ? tileAtSide(side) : null;
+    const id = t ? (t.content as { paneId: string | null }).paneId : side ? undefined : (s.panes.find((x) => x.id === s.activePaneId) ?? s.panes[0])?.id;
+    const p = id ? s.panes.find((x) => x.id === id) : undefined;
     return p ? { key: paneKey(p.id), file: p.file, paneId: p.id } : { error: "no such pane" };
   }
   return { key: paneKey(null), file: s.currentFile, paneId: null };
@@ -104,14 +108,19 @@ export function paneAt(side?: PaneSide): { key: string; file: string | null; pan
 
 /** The side a pane is on, for the agent's own actions (undefined: no split, the one viewer). */
 export function paneSideOf(paneId: string | null | undefined): PaneSide | undefined {
-  const s = useStore.getState();
-  if (!paneId || s.panes.length < 2) return undefined;
-  const i = s.panes.findIndex((p) => p.id === paneId);
-  return i === 0 ? "left" : i === 1 ? "right" : undefined;
+  return sideOfPane(paneId) ?? undefined;
 }
 
 /** Put a web page in the viewer: in the `pane` side (turning the split on when one other thing is open, as a file
  *  does), or in place of what the active pane shows. A page already there only becomes the active pane. */
+/** a web tile goes to another address (its address bar's Enter; the workspace's openInPane {tile,
+ *  url}): the store's pane (or the single page) changes, so the page, the noun and Files follow. */
+export function navigateWebPane(paneId: string | null | undefined, to: string): void {
+  const s = useStore.getState();
+  if (paneId) s.setPaneFile(paneId, to, "");
+  else useStore.setState({ currentFile: to, currentContent: "" });
+}
+
 export function openWebInPane(url: string, pane?: PaneSide): { landed: string } {
   const st = useStore.getState();
   // The viewer must be on screen: the full-screen chat has none.

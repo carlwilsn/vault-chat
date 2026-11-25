@@ -77,7 +77,11 @@ function healBoxSignIn(body: unknown): void {
 /** Forget the cached health, so the next read asks the box again (after a sign-in or sign-out). */
 export function forgetClaudeHealth(): void {
   lastHealth = null;
+  // Every surface on screen asks again now, not at its next 30 s tick: a
+  // sign-out in Settings must not keep reading "Signed in" for half a minute.
+  for (const f of healthForgotten) f();
 }
+const healthForgotten = new Set<() => void>();
 
 /**
  * The answer for a React surface. `known` is false until one of the two sources
@@ -98,9 +102,11 @@ export function useClaudeSignedIn(): ClaudeAuth {
     // A sign-in done on the box, or a box that has just come up, lands here
     // without Carl reloading anything.
     const t = window.setInterval(read, HEALTH_FRESH_MS);
+    healthForgotten.add(read);
     return () => {
       alive = false;
       window.clearInterval(t);
+      healthForgotten.delete(read);
     };
   }, [on, vault]);
   if (typeof laptopKey === "string" && laptopKey.trim() !== "") return { signedIn: true, known: true };

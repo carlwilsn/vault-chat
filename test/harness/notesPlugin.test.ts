@@ -122,7 +122,8 @@ test("the plugin's view is the panel as it was: open from the store, its rows, c
   assert.equal(renderToStaticMarkup(createElement(NotesPanel, { host })), "", "closed: nothing");
   Object.assign(snapshot, { showNotesPanel: true });
   const html = renderToStaticMarkup(createElement(NotesPanel, { host }));
-  assert.match(html, /^<div class="fixed inset-0 z-40 flex justify-end pointer-events-none"><div class="h-full w-\[420px\] max-w-\[92vw\] bg-card border-l border-border shadow-xl flex flex-col pointer-events-auto">/);
+  // A modal centred over everything (never a tile).
+  assert.match(html, /^<div data-el="notes-modal" class="fixed inset-0 z-\[80\] flex items-center justify-center bg-black\/40"><div class="w-\[560px\] max-w-\[92vw\]/);
   assert.match(html, />Notes<\/span>/);
   assert.match(html, />1 of 2<\/span>/, "N of M: open shown, open + resolved counted");
   assert.match(html, /data-note-id="n1"/);

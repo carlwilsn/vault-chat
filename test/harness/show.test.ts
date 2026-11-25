@@ -362,7 +362,7 @@ test("pane: two files side by side — Show left, then Show right; the result na
   assert.equal(S().panes.length, 0);
   const b = await Show({ path: "papers/lec7.pdf", pane: "right" });
   assert.equal(b.ok, true, b.text);
-  assert.equal(b.text, "Shown on the laptop: opened lec7.pdf in the right pane. Split screen on (side by side): left pane: hw/hw4.md · right pane: papers/lec7.pdf (active).");
+  assert.equal(b.text, "Shown on the laptop: opened lec7.pdf in the right pane. Tiles: left: hw/hw4.md · right: papers/lec7.pdf (focused).");
   assert.equal(S().splitDirection, "horizontal");
   assert.equal(panesNow(), "hw4.md | lec7.pdf*");
 });
@@ -370,21 +370,22 @@ test("pane: two files side by side — Show left, then Show right; the result na
 test("pane: a new file replaces that pane only; one already in the other pane swaps; a place still lands", async () => {
   const c = await Show({ path: "code/vi.py", pane: "left", line: 12 });
   assert.equal(c.ok, true, c.text);
-  assert.match(c.text, /^Shown on the laptop: opened vi\.py in the left pane; scrolled to line 12 in vi\.py\. Split screen on \(side by side\): left pane: code\/vi\.py \(active\) · right pane: papers\/lec7\.pdf\.$/);
+  assert.match(c.text, /^Shown on the laptop: opened vi\.py in the left pane; scrolled to line 12 in vi\.py\. Tiles: left: code\/vi\.py \(focused\) · right: papers\/lec7\.pdf\.$/);
   assert.equal(panesNow(), "vi.py* | lec7.pdf");
   const n = opens.length;
   const d = await Show({ path: "papers/lec7.pdf", pane: "left", page: 3 });
   assert.equal(d.ok, true, d.text);
-  assert.match(d.text, /lec7\.pdf is in the left pane; scrolled to page 3 of 6 in lec7\.pdf\. Split screen on \(side by side\): left pane: papers\/lec7\.pdf \(active\) · right pane: code\/vi\.py\.$/);
+  assert.match(d.text, /lec7\.pdf is in the left pane; scrolled to page 3 of 6 in lec7\.pdf\. Tiles: left: papers\/lec7\.pdf \(focused\) · right: code\/vi\.py\.$/);
   assert.equal(panesNow(), "lec7.pdf* | vi.py");
   assert.equal(opens.length, n, "a file already on screen is moved, never reopened");
 });
 
-test("without pane, in a split: the active pane's file is replaced (as before) and the result still says the layout", async () => {
+test("without pane, with every spot taken: it fills the viewer, as a click in Files does (Carl 11-25: the others close)", async () => {
   const r = await Show({ path: "hw/hw4.md" });
   assert.equal(r.ok, true, r.text);
-  assert.match(r.text, /opened hw4\.md\. Split screen on \(side by side\): left pane: hw\/hw4\.md \(active\) · right pane: code\/vi\.py\.$/);
-  assert.equal(panesNow(), "hw4.md* | vi.py");
+  assert.match(r.text, /opened hw4\.md\.$/);
+  assert.equal(panesNow(), "", "one file: the single view");
+  assert.match(S().currentFile ?? "", /hw4\.md$/);
 });
 
 test("pane is for the laptop: refused for the phone before anything is sent", async () => {
