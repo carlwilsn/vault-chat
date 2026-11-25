@@ -72,3 +72,15 @@ test("an empty @ lists recent files first, then the vault's top level in tree or
   assert.deepEqual(names(hits), ["a/deep.md", "a", "b.md", "c.md"]);
   assert.deepEqual(names(rankMentions(files, V, "")), ["a", "b.md", "c.md"]);
 });
+
+test("rankNames: the / menu's fuzzy match by name, best first, ties in list order, empty keeps the list", async () => {
+  const { rankNames } = await import("../../src/plugins/composer/mentionMatch.ts");
+  const skills = ["review", "commit", "code-review", "simplify", "security-review"].map((name) => ({ name }));
+  const by = (q: string) => rankNames(skills, (s) => s.name, q).map((h) => h.item.name);
+  assert.deepEqual(by(""), ["review", "commit", "code-review", "simplify", "security-review"]);
+  assert.equal(by("rev")[0], "review");
+  assert.ok(by("cr").includes("code-review"));
+  assert.deepEqual(rankNames(skills, (s) => s.name, "com")[0]!.idx, [0, 1, 2]);
+  assert.deepEqual(by("zzz"), []);
+  assert.equal(rankNames(Array.from({ length: 20 }, (_, i) => ({ name: `s${i}` })), (s) => s.name, "s").length, 8);
+});

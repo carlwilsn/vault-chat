@@ -47,11 +47,8 @@ import {
   useDraft,
   type MentionHit,
 } from "./draft";
-import { MENTION_ROWS, rankMentions } from "./mentionMatch";
-
-/** The @ picker: a popover this wide (narrower in a small window), rows this tall. */
-const PICKER_W = 360;
-const PICKER_ROW = 28;
+import { rankMentions, rankNames } from "./mentionMatch";
+import { ComposerMenu, Lit } from "./Menu";
 
 const AUDIO_EXTS = new Set(["mp3", "wav", "m4a", "ogg", "flac", "aac", "opus"]);
 const DATA_EXTS = new Set(["csv", "tsv", "json", "jsonl", "xlsx", "xls", "yaml", "yml", "toml", "parquet"]);
@@ -69,41 +66,6 @@ function MentionIcon({ hit }: { hit: MentionHit }) {
   if (kind === "html") return <Globe className={cls} />;
   if (kind === "code") return <FileCode className={cls} />;
   return <File className={cls} />;
-}
-
-/** Text with the matched letters lit. */
-function Lit({ text, idx }: { text: string; idx: number[] }) {
-  if (!idx.length) return <>{text}</>;
-  const on = new Set(idx);
-  const out: React.ReactNode[] = [];
-  let i = 0;
-  while (i < text.length) {
-    const hit = on.has(i);
-    let j = i;
-    while (j < text.length && on.has(j) === hit) j++;
-    out.push(hit ? <span key={i} className="mention-hit">{text.slice(i, j)}</span> : text.slice(i, j));
-    i = j;
-  }
-  return <>{out}</>;
-}
-
-/** Where the "@" at `at` sits horizontally inside the textarea (px from its left edge): a mirror of the box's text up to
- *  it, laid out with the same font, padding and wrapping. */
-function caretX(el: HTMLTextAreaElement, at: number): number {
-  const cs = getComputedStyle(el);
-  const m = document.createElement("div");
-  for (const k of ["fontFamily", "fontSize", "fontWeight", "letterSpacing", "lineHeight", "paddingLeft", "paddingRight", "paddingTop", "borderLeftWidth", "borderRightWidth", "boxSizing", "tabSize", "textIndent"] as const) {
-    (m.style as unknown as Record<string, string>)[k] = cs[k];
-  }
-  Object.assign(m.style, { position: "absolute", visibility: "hidden", top: "0", left: "-9999px", whiteSpace: "pre-wrap", overflowWrap: "break-word", width: `${el.clientWidth + parseFloat(cs.borderLeftWidth || "0") + parseFloat(cs.borderRightWidth || "0")}px` });
-  m.textContent = el.value.slice(0, at);
-  const mark = document.createElement("span");
-  mark.textContent = "@";
-  m.appendChild(mark);
-  document.body.appendChild(m);
-  const x = mark.offsetLeft - el.scrollLeft;
-  m.remove();
-  return x;
 }
 
 /** The composer grows with its text up to this height, then scrolls. */
@@ -150,7 +112,6 @@ export function Composer() {
   const [fileMentionIdx, setFileMentionIdx] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
-  const [pickerPos, setPickerPos] = useState<{ left: number; width: number; maxHeight: number } | null>(null);
 
   // A capture taken for the chat (the marquee over the viewer): into the draft.
   useEffect(() => {
@@ -276,7 +237,8 @@ export function Composer() {
     });
   };
 
-  const filteredSkills = skillMention ? skills.filter((s) => s.name.startsWith(skillMention.query)) : [];
+  const skillQuery = skillMention?.query ?? null;
+  const filteredSkills = useMemo(() => (skillQuery === null ? [] : rankNames(skills, (s) => s.name, skillQuery)), [skills, skillQuery]);
   const mentionQuery = fileMention?.query ?? null;
   const matchedFiles = useMemo(
     () => (mentionQuery === null ? [] : rankMentions(files, vaultPath, mentionQuery, recentFiles())),
@@ -284,110 +246,33 @@ export function Composer() {
   );
   const pickerOpen = !!fileMention && matchedFiles.length > 0;
 
-  // The @ picker sits just above the composer, its left edge at the "@", kept inside the panel. It is placed inside
-  // the composer (absolute, in the composer's own coordinates), so it moves with the chat panel by construction; the
-  // "@"'s offset and the panel clamp are measured again whenever the composer, the panel or the window changes size.
-  const mentionStart = fileMention?.start ?? -1;
-  useLayoutEffect(() => {
-    if (!pickerOpen) {
-      setPickerPos(null);
-      return;
-    }
-    const place = () => {
-      const box = boxRef.current;
-      const el = inputRef.current;
-      if (!box || !el) return;
-      const b = box.getBoundingClientRect();
-      const t = el.getBoundingClientRect();
-      // Kept inside what can show it: the nearest ancestor that clips (the chat panel, which the split view keeps in the
-      // window), else the window. Measured from the same moment as the composer, so the offsets hold when the panel only
-      // moves (a window resize can slide it without resizing it, which no ResizeObserver sees).
-      let lo = 0;
-      let hi = window.innerWidth;
-      for (let a = box.parentElement; a; a = a.parentElement) {
-        if (getComputedStyle(a).overflowX === "visible") continue;
-        ro?.observe(a);
-        const r = a.getBoundingClientRect();
-        lo = r.left;
-        hi = r.right;
-        break;
-      }
-      const width = Math.max(160, Math.min(PICKER_W, hi - lo - 16));
-      const at = t.left - b.left + caretX(el, mentionStart) - 14;
-      const left = Math.max(lo + 8 - b.left, Math.min(at, hi - 8 - width - b.left));
-      const maxHeight = Math.min(MENTION_ROWS * PICKER_ROW + 10, Math.max(120, b.top - 14));
-      setPickerPos((p) => (p && p.left === left && p.width === width && p.maxHeight === maxHeight ? p : { left, width, maxHeight }));
-    };
-    // Again whenever the composer, its parent or the panel that clips it changes size (a sash drag, fullscreen, the
-    // window), and a frame after a window resize, once the split view has laid itself out.
-    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => place());
-    if (ro && boxRef.current) {
-      ro.observe(boxRef.current);
-      if (boxRef.current.parentElement) ro.observe(boxRef.current.parentElement);
-    }
-    place();
-    let raf = 0;
-    const onResize = () => {
-      place();
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(place);
-    };
-    window.addEventListener("resize", onResize);
-    return () => {
-      ro?.disconnect();
-      cancelAnimationFrame(raf);
-      window.removeEventListener("resize", onResize);
-    };
-  }, [pickerOpen, mentionStart]);
-  useEffect(() => {
-    if (!pickerOpen) return;
-    boxRef.current?.querySelector(`[data-el="mention-row"][data-i="${fileMentionIdx}"]`)?.scrollIntoView({ block: "nearest" });
-  }, [pickerOpen, fileMentionIdx]);
-
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (skillMention && filteredSkills.length > 0) {
+    // The open menu (/ skills or @ files: one at a time) takes the keys first.
+    const menu =
+      skillMention && filteredSkills.length > 0
+        ? { n: filteredSkills.length, idx: skillMentionIdx, setIdx: setSkillMentionIdx, pick: (i: number) => pickSkill(filteredSkills[i]!.item.name), close: () => setSkillMention(null) }
+        : pickerOpen
+          ? { n: matchedFiles.length, idx: fileMentionIdx, setIdx: setFileMentionIdx, pick: (i: number) => pickMention(matchedFiles[i]!), close: () => setFileMention(null) }
+          : null;
+    if (menu) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setSkillMentionIdx((i) => Math.min(i + 1, filteredSkills.length - 1));
+        menu.setIdx((i) => Math.min(i + 1, menu.n - 1));
         return;
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
-        setSkillMentionIdx((i) => Math.max(i - 1, 0));
+        menu.setIdx((i) => Math.max(i - 1, 0));
         return;
       }
       if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
         e.preventDefault();
-        const hit = filteredSkills[skillMentionIdx] ?? filteredSkills[0];
-        pickSkill(hit.name);
+        menu.pick(Math.min(menu.idx, menu.n - 1));
         return;
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        setSkillMention(null);
-        return;
-      }
-    }
-    if (pickerOpen) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setFileMentionIdx((i) => Math.min(i + 1, matchedFiles.length - 1));
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setFileMentionIdx((i) => Math.max(i - 1, 0));
-        return;
-      }
-      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
-        e.preventDefault();
-        const hit = matchedFiles[fileMentionIdx] ?? matchedFiles[0];
-        pickMention(hit);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setFileMention(null);
+        menu.close();
         return;
       }
     }
@@ -545,60 +430,52 @@ export function Composer() {
           }}
         >
           {skillMention && filteredSkills.length > 0 && (
-            <div className="absolute bottom-full left-0 right-0 max-h-[240px] overflow-auto bg-popover border-t border-x border-border shadow-lg z-10">
-              {filteredSkills.slice(0, 8).map((s, i) => (
-                <div
-                  key={s.name}
-                  className={cn("flex items-baseline gap-3 px-3 py-2 cursor-pointer border-b border-border/40 last:border-b-0", i === skillMentionIdx ? "bg-accent" : "hover:bg-accent/60")}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    pickSkill(s.name);
-                  }}
-                  onMouseEnter={() => setSkillMentionIdx(i)}
-                >
-                  <span className="text-primary font-mono text-[12.5px] font-medium shrink-0">/{s.name}</span>
-                  {s.description && <span className="text-muted-foreground text-[11px] truncate">{s.description}</span>}
-                </div>
-              ))}
-            </div>
+            <ComposerMenu
+              kind="skill"
+              boxRef={boxRef}
+              inputRef={inputRef}
+              start={skillMention.start}
+              idx={skillMentionIdx}
+              onPick={(i) => pickSkill(filteredSkills[i]!.item.name)}
+              onHover={setSkillMentionIdx}
+              rows={filteredSkills.map(({ item: s, idx }) => ({
+                key: s.name,
+                name: (
+                  <>
+                    <span className="mention-dir">/</span>
+                    <Lit text={s.name} idx={idx} />
+                  </>
+                ),
+                detail: s.description,
+                lit: idx.length > 0,
+                title: s.description || undefined,
+              }))}
+            />
           )}
-          {pickerOpen && pickerPos && (
-            <div
-              className="mention-picker"
-              data-el="mention-picker"
-              role="listbox"
-              style={{ left: pickerPos.left, width: pickerPos.width, maxHeight: pickerPos.maxHeight }}
-            >
-              {matchedFiles.map((f, i) => (
-                <div
-                  key={f.path}
-                  role="option"
-                  aria-selected={i === fileMentionIdx}
-                  data-el="mention-row"
-                  data-i={i}
-                  title={f.rel}
-                  className={cn("mention-row", i === fileMentionIdx && "on", (f.ni.length > 0 || f.di.length > 0) && "lit")}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    pickMention(f);
-                  }}
-                  onMouseEnter={() => setFileMentionIdx(i)}
-                >
-                  <MentionIcon hit={f} />
-                  <span className="mention-name">
+          {pickerOpen && fileMention && (
+            <ComposerMenu
+              kind="mention"
+              boxRef={boxRef}
+              inputRef={inputRef}
+              start={fileMention.start}
+              idx={fileMentionIdx}
+              onPick={(i) => pickMention(matchedFiles[i]!)}
+              onHover={setFileMentionIdx}
+              rows={matchedFiles.map((f) => ({
+                key: f.path,
+                icon: <MentionIcon hit={f} />,
+                name: (
+                  <>
                     <Lit text={f.name} idx={f.ni} />
                     {f.isDir && <span className="mention-dir">/</span>}
-                  </span>
-                  {f.dir && (
-                    <span className="mention-dir mention-path">
-                      <bdi>
-                        <Lit text={f.dir} idx={f.di} />
-                      </bdi>
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
+                  </>
+                ),
+                detail: f.dir ? <Lit text={f.dir} idx={f.di} /> : undefined,
+                detailIsPath: true,
+                lit: f.ni.length > 0 || f.di.length > 0,
+                title: f.rel,
+              }))}
+            />
           )}
           {pendingFiles.length > 0 && (
             <div className="flex flex-wrap gap-1.5 px-3 pt-2" data-el="attached-files">

@@ -117,3 +117,17 @@ export function rankMentions(files: FileEntry[], vaultPath: string | null, query
   hits.sort((a, b) => b.score - a.score);
   return hits.slice(0, MENTION_ROWS).map(({ score: _s, ...h }) => h);
 }
+
+/** The / menu's rows (and any list matched by name alone): the items whose name has the query's letters in order,
+ *  best first (ties keep the list's order), with the matched letters; an empty query keeps the list as it is. */
+export function rankNames<T>(items: T[], nameOf: (t: T) => string, query: string, max = MENTION_ROWS): Array<{ item: T; idx: number[] }> {
+  const q = query.toLowerCase();
+  if (!q) return items.slice(0, max).map((item) => ({ item, idx: [] }));
+  const hits: Array<{ item: T; idx: number[]; score: number }> = [];
+  for (const item of items) {
+    const m = fuzzy(q, nameOf(item).toLowerCase());
+    if (m) hits.push({ item, idx: m.idx, score: m.score });
+  }
+  hits.sort((a, b) => b.score - a.score);
+  return hits.slice(0, max).map(({ item, idx }) => ({ item, idx }));
+}
