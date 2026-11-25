@@ -150,7 +150,7 @@ export function Composer() {
   const [fileMentionIdx, setFileMentionIdx] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
-  const [pickerPos, setPickerPos] = useState<{ left: number; bottom: number; width: number; maxHeight: number } | null>(null);
+  const [pickerPos, setPickerPos] = useState<{ left: number; width: number; maxHeight: number } | null>(null);
 
   // A capture taken for the chat (the marquee over the viewer): into the draft.
   useEffect(() => {
@@ -284,7 +284,9 @@ export function Composer() {
   );
   const pickerOpen = !!fileMention && matchedFiles.length > 0;
 
-  // The @ picker sits just above the composer, its left edge at the "@", kept inside the window.
+  // The @ picker sits just above the composer, its left edge at the "@", kept inside the panel. It is placed inside
+  // the composer (absolute, in the composer's own coordinates), so it moves with the chat panel by construction; the
+  // "@"'s offset and the panel clamp are measured again whenever the composer, the panel or the window changes size.
   const mentionStart = fileMention?.start ?? -1;
   useLayoutEffect(() => {
     if (!pickerOpen) {
@@ -297,15 +299,45 @@ export function Composer() {
       if (!box || !el) return;
       const b = box.getBoundingClientRect();
       const t = el.getBoundingClientRect();
-      const width = Math.min(PICKER_W, window.innerWidth - 16);
-      const at = t.left + caretX(el, mentionStart) - 14;
-      const left = Math.max(8, Math.min(at, window.innerWidth - width - 8));
-      const room = Math.max(120, b.top - 14);
-      setPickerPos({ left, bottom: window.innerHeight - b.top + 6, width, maxHeight: Math.min(MENTION_ROWS * PICKER_ROW + 10, room) });
+      // Kept inside what can show it: the nearest ancestor that clips (the chat panel, which the split view keeps in the
+      // window), else the window. Measured from the same moment as the composer, so the offsets hold when the panel only
+      // moves (a window resize can slide it without resizing it, which no ResizeObserver sees).
+      let lo = 0;
+      let hi = window.innerWidth;
+      for (let a = box.parentElement; a; a = a.parentElement) {
+        if (getComputedStyle(a).overflowX === "visible") continue;
+        ro?.observe(a);
+        const r = a.getBoundingClientRect();
+        lo = r.left;
+        hi = r.right;
+        break;
+      }
+      const width = Math.max(160, Math.min(PICKER_W, hi - lo - 16));
+      const at = t.left - b.left + caretX(el, mentionStart) - 14;
+      const left = Math.max(lo + 8 - b.left, Math.min(at, hi - 8 - width - b.left));
+      const maxHeight = Math.min(MENTION_ROWS * PICKER_ROW + 10, Math.max(120, b.top - 14));
+      setPickerPos((p) => (p && p.left === left && p.width === width && p.maxHeight === maxHeight ? p : { left, width, maxHeight }));
     };
+    // Again whenever the composer, its parent or the panel that clips it changes size (a sash drag, fullscreen, the
+    // window), and a frame after a window resize, once the split view has laid itself out.
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => place());
+    if (ro && boxRef.current) {
+      ro.observe(boxRef.current);
+      if (boxRef.current.parentElement) ro.observe(boxRef.current.parentElement);
+    }
     place();
-    window.addEventListener("resize", place);
-    return () => window.removeEventListener("resize", place);
+    let raf = 0;
+    const onResize = () => {
+      place();
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(place);
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      ro?.disconnect();
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", onResize);
+    };
   }, [pickerOpen, mentionStart]);
   useEffect(() => {
     if (!pickerOpen) return;
@@ -535,7 +567,7 @@ export function Composer() {
               className="mention-picker"
               data-el="mention-picker"
               role="listbox"
-              style={{ left: pickerPos.left, bottom: pickerPos.bottom, width: pickerPos.width, maxHeight: pickerPos.maxHeight }}
+              style={{ left: pickerPos.left, width: pickerPos.width, maxHeight: pickerPos.maxHeight }}
             >
               {matchedFiles.map((f, i) => (
                 <div
