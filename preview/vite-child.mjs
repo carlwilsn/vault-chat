@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { realpathSync, existsSync } from "node:fs";
-import { previewPlugin } from "./plugin.mjs";
+import { previewPlugin, tauriGlobalsEsbuild } from "./plugin.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, a, i, all) => (a.startsWith("--") ? [...acc, [a.slice(2), all[i + 1]]] : acc), []),
@@ -35,6 +35,7 @@ const server = await vite.createServer({
   // Before and after usually share one node_modules (a junction): each side
   // keeps its own optimized-deps cache, or the two servers overwrite each
   // other's and a cold frame gets 504 "outdated optimize dep" and never mounts.
+  // (An older pre-bundle with the real Tauri names is not reused: Vite's dep hash includes the esbuild plugins' names.)
   cacheDir: resolve(tree, "node_modules", `.vite-preview-${side}`),
   plugins: [react(), previewPlugin({ side, tree, label, base })],
   server: {
@@ -48,7 +49,8 @@ const server = await vite.createServer({
     // Tour's first phase, say) is not the one that waits for a cold compile.
     warmup: { clientFiles: ["./src/main.tsx"] },
   },
-  optimizeDeps: { entries: ["index.html"] },
+  // The pre-bundled @tauri-apps/* reads the preview's own globals (plugin.mjs TAURI_GLOBALS).
+  optimizeDeps: { entries: ["index.html"], esbuildOptions: { plugins: [tauriGlobalsEsbuild] } },
 });
 await server.listen();
 console.log(`[preview:${side}] ${label} → http://127.0.0.1:${port}${base}  (tree ${tree})`);

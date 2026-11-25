@@ -890,7 +890,7 @@ export function windowCommand(cmd: string, args: Record<string, any>): { handled
       return { handled: true, value: [{ label: "main" }] };
     case "close":
     case "destroy":
-      if ((window as any).__TAURI_INTERNALS__?.metadata?.currentWindow?.label !== "main") window.close();
+      if ((window as any).__VCP_TAURI_INTERNALS__?.metadata?.currentWindow?.label !== "main") window.close();
       else report("info", "the main window would close here");
       return { handled: true, value: null };
     case "create_webview_window":

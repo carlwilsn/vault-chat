@@ -155,7 +155,7 @@ export function boot(base: Base): void {
   applyCoreLook();
 
   installIpc(isPopout ? "chat-popout" : "main", dispatch, `${side}:${sc.id}`);
-  (window as any).__TAURI_INTERNALS__.convertFileSrc = convertFileSrc;
+  (window as any).__VCP_TAURI_INTERNALS__.convertFileSrc = convertFileSrc;
 
   window.addEventListener("error", (e) => report("error", String(e.message ?? e)));
   window.addEventListener("unhandledrejection", (e) => {

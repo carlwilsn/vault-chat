@@ -10,6 +10,31 @@ import { renderPhone } from "./phone.mjs";
 import { desktopInventory, phoneInventory, galleryModule } from "./inventory.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url)); // <harness>/preview
+
+/**
+ * The preview's own names for the globals @tauri-apps/* talks through. Framed inside the real app (the laptop viewer's
+ * dev pane, src/plugins/viewer/WebPane.tsx), WebView2 runs Tauri's init scripts in every subframe too (wry: "Windows:
+ * scripts are always added to subframes"), so the page already has a read-only `isTauri` and `__TAURI_INTERNALS__`
+ * (invoke, metadata... non-writable) whose IPC refuses the dev origin: the fake (runtime/ipc.ts) could not take them
+ * over and the app came up empty. The preview's copy of @tauri-apps/* reads these names instead, which nothing else
+ * sets; the fake also takes the real names where they are free (a plain browser, the gate's built core bundle).
+ */
+export const TAURI_GLOBALS = { __TAURI_INTERNALS__: "__VCP_TAURI_INTERNALS__", __TAURI_EVENT_PLUGIN_INTERNALS__: "__VCP_TAURI_EVENT_PLUGIN_INTERNALS__", isTauri: "__VCP_IS_TAURI__" };
+/** A @tauri-apps/* module's source, reading the preview's names (TAURI_GLOBALS). */
+export function renameTauriGlobals(code) {
+  return code
+    .replace(/\b__TAURI_INTERNALS__\b/g, TAURI_GLOBALS.__TAURI_INTERNALS__)
+    .replace(/\b__TAURI_EVENT_PLUGIN_INTERNALS__\b/g, TAURI_GLOBALS.__TAURI_EVENT_PLUGIN_INTERNALS__)
+    .replace(/\(globalThis \|\| window\)\.isTauri\b/g, `(globalThis || window).${TAURI_GLOBALS.isTauri}`);
+}
+const TAURI_MODULE = /[\\/]@tauri-apps[\\/][^?]*\.[cm]?js(\?|$)/;
+/** The same rename for Vite's dependency pre-bundling (esbuild), where plugin transforms don't run. */
+export const tauriGlobalsEsbuild = {
+  name: "vc-preview-tauri-globals",
+  setup(b) {
+    b.onLoad({ filter: /[\\/]@tauri-apps[\\/].*\.[cm]?js$/ }, (a) => ({ contents: renameTauriGlobals(readFileSync(a.path, "utf8")), loader: "js" }));
+  },
+};
 const HARNESS = resolve(HERE, "..");
 const GALLERY_ID = String.fromCharCode(0) + "vc-preview-gallery";
 const posix = (p) => p.replace(/\\/g, "/");
@@ -255,6 +280,10 @@ export function previewPlugin(opts) {
         const core = u.searchParams.get("core") === "1" && process.env.VC_PREVIEW_CORE_FILES ? coreEntry(process.env.VC_PREVIEW_CORE_FILES) : null;
         return html.replace(needle, (m) => tag + (core ?? m)).replace("<title>vault-chat</title>", `<title>vault-chat · ${opts.label}</title>`);
       },
+    },
+    transform(code, id) {
+      // @tauri-apps/* served unbundled (excluded from, or not yet in, the pre-bundle): the preview's names too.
+      return TAURI_MODULE.test(id) ? { code: renameTauriGlobals(code), map: null } : null;
     },
     resolveId(id, importer) {
       if (id === "/@vc-preview/gallery") return GALLERY_ID;

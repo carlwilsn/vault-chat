@@ -50,10 +50,16 @@ export function listenerCount(event: string): number {
 export function installIpc(windowLabel: string, handler: InvokeHandler, side: string): void {
   label = windowLabel;
   const w = window as any;
-  w.isTauri = true;
-  w.__TAURI_INTERNALS__ = w.__TAURI_INTERNALS__ ?? {};
-  w.__TAURI_EVENT_PLUGIN_INTERNALS__ = w.__TAURI_EVENT_PLUGIN_INTERNALS__ ?? {};
-  const internals = w.__TAURI_INTERNALS__;
+  // The preview's own names (plugin.mjs TAURI_GLOBALS: inside the real app's frame the real ones are Tauri's, read-only),
+  // and the real names too where they are free.
+  w.__VCP_IS_TAURI__ = true;
+  w.__VCP_TAURI_INTERNALS__ = w.__VCP_TAURI_INTERNALS__ ?? {};
+  w.__VCP_TAURI_EVENT_PLUGIN_INTERNALS__ = w.__VCP_TAURI_EVENT_PLUGIN_INTERNALS__ ?? {};
+  const free = (k: string) => !Object.getOwnPropertyDescriptor(w, k);
+  if (free("isTauri")) w.isTauri = true;
+  if (free("__TAURI_INTERNALS__")) w.__TAURI_INTERNALS__ = w.__VCP_TAURI_INTERNALS__;
+  if (free("__TAURI_EVENT_PLUGIN_INTERNALS__")) w.__TAURI_EVENT_PLUGIN_INTERNALS__ = w.__VCP_TAURI_EVENT_PLUGIN_INTERNALS__;
+  const internals = w.__VCP_TAURI_INTERNALS__;
 
   try {
     channel = new BroadcastChannel(`vc-preview-events:${side}`);
@@ -76,7 +82,7 @@ export function installIpc(windowLabel: string, handler: InvokeHandler, side: st
   internals.runCallback = (id: number, data: unknown) => callbacks.get(id)?.(data);
   internals.callbacks = callbacks;
   internals.plugins = { path: { sep: "/", delimiter: ":" } };
-  w.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener = (event: string, eventId: number) => {
+  w.__VCP_TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener = (event: string, eventId: number) => {
     const i = listeners.findIndex((l) => l.event === event && l.eventId === eventId);
     if (i >= 0) {
       callbacks.delete(listeners[i].handlerId);
