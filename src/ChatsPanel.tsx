@@ -100,7 +100,7 @@ export function ChatsFallback({ info, onPicked, trailing, onTrailing }: { info: 
           <div key={p.id} data-el="fallback-place" data-place={p.id}>
             <button data-offer="app/chats.open"
               onClick={() => open(p.id, p.type === "main" ? "Main" : p.title)}
-              className={`w-full text-left px-4 py-1.5 text-[12.5px] ${p.type === "main" ? "font-semibold" : ""} ${p.active ? "bg-accent" : "hover:bg-accent/40"}`}
+              className={`w-full text-left px-4 py-1.5 text-[12.5px] ${p.type === "main" ? "font-semibold" : ""} ${p.active && !p.chats.some((c) => c.active) ? "bg-accent" : "hover:bg-accent/40"}`}
             >
               {p.type === "main" ? "Main" : p.title}
             </button>

@@ -12,6 +12,7 @@ import { createProjectThread, deleteProject, openThread, projectName, renameProj
 import { panelModel, visibleChats, nextChatLevel, type PanelChat, type PanelEntry } from "../../threads";
 import { canDeleteChat, deleteChats, renameChat } from "../../chatDelete";
 import { cn } from "../../lib/utils";
+import { ROW_HOVER, ROW_INSET, ROW_SELECTED, ROW_SHAPE } from "../../lib/rows";
 import { NewProjectForm } from "../../NewProjectForm";
 import { usePlaceOpen } from "../../placeOpen";
 import { chatLevels, useChatLevel } from "./view";
@@ -259,7 +260,7 @@ function LooseChats({
           data-el="place-show-more"
           data-place={entry.id}
           onClick={() => chatLevels.set(entry.id, nextChatLevel(entry.chats.length, level))}
-          className="w-full text-left pl-4 py-1 text-[12px] text-muted-foreground/70 hover:text-foreground hover:bg-accent/40"
+          className={cn("w-[calc(100%-0.5rem)] text-left pl-3 py-1 text-[12px] text-muted-foreground/70 hover:text-foreground", ROW_INSET, ROW_SHAPE, ROW_HOVER)}
         >
           {vis.next === "more" ? "Show more" : "Show all"}
         </button>
@@ -315,6 +316,10 @@ export function ThreadRow({
   useEffect(() => () => void chatLevels.delete(entry.id), [entry.id]);
   // A place's spinner shows only while it is collapsed: open, its own chats show theirs (Carl, 2026-11-10, 2026-11-12).
   const spinning = running && !shown;
+  // One row is highlighted in the whole list: the open conversation's (Carl, 2026-11-24). This bar is it when the
+  // project's own thread is open, or when the open chat is inside and the list is shut (the same roll-up as the
+  // spinner); open, the chat's own row is the one.
+  const selected = shown ? active && !chats.some((c) => c.active) : active;
   // How far its list is opened ("Show more" / "Show all"): session state, not saved (./view.ts, shared with the offers).
   const level = useChatLevel(entry.id);
   const vis = visibleChats(chats, level);
@@ -384,7 +389,7 @@ export function ThreadRow({
       }
       // The same padding in every state, so the "+" sits at one x on every row (Carl: it jumped left on a row
       // with unseen chats). A working place shows its spinner where its icon was; the unseen dot follows the name.
-      className={cn("relative flex items-center gap-1 group pr-1.5", active ? "bg-accent" : "hover:bg-accent/40")}
+      className={cn("relative flex items-center gap-1 group pr-0.5", ROW_INSET, ROW_SHAPE, selected ? ROW_SELECTED : ROW_HOVER)}
     >
       <button data-offer="app/chats.expand"
         data-el="place-toggle"
@@ -392,7 +397,7 @@ export function ThreadRow({
         onClick={() => setOpened(!shown)}
         aria-label={shown ? `Hide ${name}'s chats` : `Show ${name}'s chats`}
         aria-expanded={shown}
-        className="flex-1 text-left px-4 py-1.5 gap-2 flex items-center min-w-0"
+        className="flex-1 text-left px-3 py-1.5 gap-2 flex items-center min-w-0"
       >
         <span data-el="place-chats" className="shrink-0 -ml-2 mr-0.5 h-4 w-4 flex items-center justify-center rounded text-muted-foreground">
           <ChevronRight className={cn("h-3 w-3 transition-transform", shown && "rotate-90")} />
@@ -405,7 +410,7 @@ export function ThreadRow({
         <span
           className={cn(
             "truncate flex-1 text-[12.5px]",
-            active ? "text-foreground font-medium" : running || unread ? "text-foreground" : "text-foreground/80",
+            selected ? "font-medium" : running || unread ? "text-foreground" : "text-foreground/80",
           )}
         >
           {name}
@@ -466,7 +471,7 @@ export function ThreadRow({
             data-el="place-show-more"
             data-place={entry.id}
             onClick={() => chatLevels.set(entry.id, nextChatLevel(chats.length, level))}
-            className="w-full text-left pl-11 py-1 text-[12px] text-muted-foreground/70 hover:text-foreground hover:bg-accent/40"
+            className={cn("w-[calc(100%-0.5rem)] text-left pl-10 py-1 text-[12px] text-muted-foreground/70 hover:text-foreground", ROW_INSET, ROW_SHAPE, ROW_HOVER)}
           >
             {vis.next === "more" ? "Show more" : "Show all"}
           </button>
@@ -629,7 +634,7 @@ function ChatItem({ chat: c, loose, onOpen, deleteOne }: { chat: PanelChat; loos
   return (
     <>
       <div
-        className="relative group/chat"
+        className={cn("relative group/chat", ROW_INSET)}
         {...press}
         onContextMenu={
           hasMenu
@@ -647,18 +652,19 @@ function ChatItem({ chat: c, loose, onOpen, deleteOne }: { chat: PanelChat; loos
           className={cn(
             "relative w-full text-left py-1 flex items-center gap-2 text-[12px] min-w-0",
             // Room at the right only for what is there: the spinner while it works, the dot when unseen.
-            loose ? "pl-4" : "pl-11",
-            c.running || c.unread ? "pr-7" : "pr-3",
-            c.active ? "bg-accent text-foreground font-medium" : "hover:bg-accent/40 text-foreground/75",
+            loose ? "pl-3" : "pl-10",
+            c.running || c.unread ? "pr-6" : "pr-2",
+            ROW_SHAPE,
+            c.active ? cn(ROW_SELECTED, "font-medium") : cn(ROW_HOVER, "text-foreground/75"),
           )}
         >
           <span className="truncate flex-1">{c.title}</span>
           {c.running ? (
-            <span className="absolute right-3.5 top-1/2 -translate-y-1/2 inline-flex">
+            <span className="absolute right-2.5 top-1/2 -translate-y-1/2 inline-flex">
               <Spinner className="h-2.5 w-2.5" />
             </span>
           ) : c.unread ? (
-            <span className="absolute right-4 top-1/2 -translate-y-1/2 h-1.5 w-1.5 rounded-full bg-primary" title="Done — unseen" role="img" aria-label="Done — unseen" />
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 h-1.5 w-1.5 rounded-full bg-primary" title="Done — unseen" role="img" aria-label="Done — unseen" />
           ) : null}
         </button>
         {menu && (

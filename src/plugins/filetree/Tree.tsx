@@ -8,6 +8,7 @@ import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Tras
 import { useStore, type FileEntry } from "../../store";
 import { isExternalFileDrop, copyExternalFilesInto, treeDrag } from "../../dnd";
 import { cn } from "../../lib/utils";
+import { ROW_HOVER, ROW_INSET, ROW_SELECTED, ROW_SHAPE } from "../../lib/rows";
 import { openOutside } from "../../opener";
 import {
   clickRow,
@@ -693,7 +694,7 @@ export function Tree() {
           const isOpen = it.open;
           const isRenaming = renaming?.path === f.path;
           return (
-            <div key={f.path} className="mx-1 rounded-sm" style={{ height: ROW_H }}>
+            <div key={f.path} className={cn(ROW_INSET, ROW_SHAPE)} style={{ height: ROW_H }}>
               {isRenaming ? (
                 <div
                   className="flex items-center gap-1 px-2 h-[25px] text-[12.5px] rounded-sm bg-accent/30"
@@ -720,11 +721,12 @@ export function Tree() {
               ) : (
                 <div data-offer="app/filetree.select"
                   className={cn(
-                    "flex items-center gap-1 px-2 h-[25px] text-[12.5px] cursor-pointer select-none rounded-sm",
+                    "flex items-center gap-1 px-2 h-[25px] text-[12.5px] cursor-pointer select-none",
+                    ROW_SHAPE,
                     f.is_dir
                       ? "text-muted-foreground hover:text-foreground/90"
-                      : "hover:bg-accent/60",
-                    isActive && "bg-accent text-accent-foreground",
+                      : ROW_HOVER,
+                    isActive && ROW_SELECTED,
                     isSelectedDir && "bg-accent/40",
                     isMultiSelected && "bg-primary/15 text-foreground",
                   )}

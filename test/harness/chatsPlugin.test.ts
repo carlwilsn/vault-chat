@@ -109,7 +109,7 @@ test("mounted through the host (the sidebar surface), it renders the list and de
   assert.match(h, /data-el="chats-new-chat"/);
   assert.ok(h.indexOf('data-el="chats-new-chat"') < h.indexOf('data-chat="m0"') && h.indexOf('data-chat="m0"') < h.indexOf('data-el="projects-label"'));
   assert.ok(!h.includes('data-el="thread-main"') && !h.includes(">Chats<") && !h.includes(">Main<"), "no header, no Main row");
-  assert.match(h, /data-chat="m0"[^>]*class="[^"]*pl-4|class="[^"]*pl-4[^"]*"[^>]*data-chat="m0"/, "flush left");
+  assert.match(h, /data-chat="m0"[^>]*class="[^"]*pl-3|class="[^"]*pl-3[^"]*"[^>]*data-chat="m0"/, "flush left");
   assert.match(h, /data-el="new-project"/);
   const d = listOffers().find((p) => p.id === "app/chats")!;
   assert.ok(d, "listed while it runs");
@@ -148,7 +148,10 @@ test("act round trip: expand a project, open its chat, show more on Main; the li
   assert.equal(r.ok, true, r.error);
   assert.equal(S().activeConversationId, "p1");
   assert.deepEqual(r.state!.selected, { id: "p1", title: "Kinematics", place: "physics" });
-  await waitFor("p1's row is active", () => /data-chat="p1"[^>]*class="[^"]*bg-accent text-foreground/.test(html(host)) || /class="[^"]*bg-accent text-foreground[^"]*"[^>]*data-chat="p1"/.test(html(host)));
+  await waitFor("p1's row is active", () => /data-chat="p1"[^>]*class="[^"]*bg-accent text-accent-foreground/.test(html(host)) || /class="[^"]*bg-accent text-accent-foreground[^"]*"[^>]*data-chat="p1"/.test(html(host)));
+  // One highlight only (Carl, 2026-11-24): Physics is open, so its bar is not highlighted too.
+  assert.equal(highlighted(html(host)), 1, "only the open chat's row");
+  assert.ok(!physicsBarSelected(html(host)));
 
   // The chats without a project always show (no bar to shut), even while Carl is in Physics.
   assert.ok(html(host).includes('data-chat="m0"'));
@@ -171,7 +174,14 @@ test("act round trip: expand a project, open its chat, show more on Main; the li
   assert.equal(a.places.find((p: any) => p.place === "physics").expanded, false);
   assert.equal(chatLevels.get("project-physics"), 0);
   await waitFor("Physics hides its chats", () => !html(host).includes('data-chat="p1"'));
+  // Shut with the open chat inside: the highlight rolls up onto the project's bar (as the spinner does).
+  assert.ok(physicsBarSelected(html(host)), "the collapsed project's bar is the highlighted row");
+  assert.equal(highlighted(html(host)), 1);
 });
+
+const highlighted = (h: string) => (h.match(/class="[^"]*bg-accent text-accent-foreground/g) ?? []).length;
+const physicsBarSelected = (h: string) =>
+  /<div[^>]*data-thread="project-physics"[^>]*>/.exec(h)?.[0].includes("bg-accent text-accent-foreground") ?? false;
 
 test("actions on the list: new chat in a place, renames and deletes are box:chats' (one route); bad input refused", async () => {
   let r = await actOffers("chats", "newChat", { place: "essays" });
