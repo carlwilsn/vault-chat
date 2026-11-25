@@ -449,3 +449,28 @@ test("three columns (Carl 11-25): the agent makes them with the drop's own op an
   r = await api.layout.apply({ op: "closePane", tile: mid });
   assert.equal(spots(r.layout), "left=a.md top-right=c.md bottom-right=b.md");
 });
+
+test("zoom (Carl 11-25): Ctrl+= / Ctrl+- / Ctrl+0 and the agent's zoom are one op on one tile's content; the step is the viewers' 1.1", async () => {
+  const alive = () => true;
+  const fx = { add: (_n: string, f: () => void) => f } as any;
+  const api = createHostApi(appHostBackend, fx, alive, (f) => f);
+  const { hit } = await import("../../src/shortcuts.ts");
+  const key = (k: string, code: string, shiftKey = false) => ({ key: k, code, ctrlKey: true, metaKey: false, shiftKey, altKey: false });
+  assert.equal(hit(key("=", "Equal") as any, "view.zoomIn", false), true);
+  assert.equal(hit(key("+", "Equal", true) as any, "view.zoomIn", false), true);
+  assert.equal(hit(key("-", "Minus") as any, "view.zoomOut", false), true);
+  assert.equal(hit(key("0", "Digit0") as any, "view.zoomReset", false), true);
+  let r = await api.layout.apply([{ op: "openInPane", path: "a.md", pane: "left" }, { op: "openInPane", path: "b.md", pane: "right" }]);
+  const tiles = (l: any) => l.tiles as any[];
+  const b = tiles(r.layout).find((t) => t.file?.endsWith("b.md")).tile;
+  r = await api.layout.apply({ op: "zoom", tile: b, zoom: "in" });
+  r = await api.layout.apply({ op: "zoom", tile: b, zoom: "in" });
+  assert.equal(tiles(r.layout).find((t) => t.tile === b).zoom, 1.21);
+  assert.equal(tiles(r.layout).find((t) => t.file?.endsWith("a.md")).zoom, undefined);
+  r = await api.layout.apply({ op: "zoom", tile: b, zoom: "out" });
+  assert.equal(tiles(r.layout).find((t) => t.tile === b).zoom, 1.1);
+  r = await api.layout.apply({ op: "zoom", tile: b, zoom: "reset" });
+  assert.equal(tiles(r.layout).find((t) => t.tile === b).zoom, undefined);
+  r = await api.layout.apply({ op: "zoom", tile: b, zoom: "big" as any });
+  assert.equal(r.ok, false);
+});

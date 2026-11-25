@@ -12,7 +12,7 @@ import { waitAck, type Ack } from "./show";
 import { loopbackUrl } from "./devProxy";
 import { controlDown, laptopElsewhere, noteAnswer, unansweredNote, vaultName } from "./deviceLink";
 
-const OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "chatSidebar", "resize", "signOutOfSites", "openChat", "moveTile", "newChat", "autoHideTitleBar", "page", "newWindow", "closeWindow"] as const;
+const OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "chatSidebar", "resize", "signOutOfSites", "openChat", "moveTile", "zoom", "newChat", "autoHideTitleBar", "page", "newWindow", "closeWindow"] as const;
 // The viewer's Snap spots (src/tiles.ts SPOTS), and full: the whole viewer. No stacking: a tile covered by a move or
 // an open closes.
 const SPOTS = ["full", "left", "right", "top", "bottom", "top-left", "top-right", "bottom-left", "bottom-right", "left-third", "middle-third", "right-third", "top-left-third", "bottom-left-third", "top-middle-third", "bottom-middle-third", "top-right-third", "bottom-right-third"];
@@ -55,6 +55,12 @@ function parseOps(a: Record<string, unknown>): Op[] | string {
       }
       if (action === "closePane" && typeof o.tile !== "string") return "closePane needs tile (an id from layout.tiles) or pane.";
       out.push(op);
+      continue;
+    }
+    if (action === "zoom") {
+      const z = o.zoom;
+      if (!(z === "in" || z === "out" || z === "reset" || (typeof z === "number" && z > 0))) return 'zoom needs zoom: "in", "out", "reset" or a factor > 0 (tile left out: the focused one).';
+      out.push({ op: action, zoom: z, ...(typeof o.tile === "string" ? { tile: o.tile } : {}) });
       continue;
     }
     if (action === "moveTile") {

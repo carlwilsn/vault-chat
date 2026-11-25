@@ -63,6 +63,9 @@ export const SHORTCUTS = [
   // ---- Views & windows
   { id: "view.files", keys: ["Mod+B"], label: "Files panel", group: "Views & windows", where: "anywhere", files: ["src/App.tsx", "src/ChatWindow.tsx"] },
   { id: "view.chat", keys: ["Mod+Shift+B"], label: "Chats panel", group: "Views & windows", where: "the main window", files: ["src/App.tsx"] },
+  { id: "view.zoomIn", keys: ["Mod+=", "Mod+Shift+="], label: "Zoom the tile in", group: "Views & windows", where: "the focused tile (its content, not the app)", files: ["src/App.tsx"] },
+  { id: "view.zoomOut", keys: ["Mod+-"], label: "Zoom the tile out", group: "Views & windows", where: "the focused tile", files: ["src/App.tsx"] },
+  { id: "view.zoomReset", keys: ["Mod+0"], label: "Reset tile zoom", group: "Views & windows", where: "the focused tile", files: ["src/App.tsx"] },
   { id: "view.terminal", keys: ["Mod+J"], label: "Terminal", group: "Views & windows", where: "anywhere (the box's, for a box vault)", files: ["src/App.tsx"] },
   { id: "view.terminalOther", keys: ["Mod+Shift+J"], label: "Laptop terminal", group: "Views & windows", where: "anywhere", files: ["src/App.tsx"] },
   { id: "view.theme", keys: ["Alt+L"], label: "Light / dark", group: "Views & windows", where: "anywhere", files: ["src/App.tsx"] },
@@ -152,6 +155,9 @@ export function parseChord(chord: string): { mod: boolean; ctrl: boolean; shift:
 function keyIs(e: KeyLike, key: string): boolean {
   if (key === "Esc") return e.key === "Escape";
   if (key === "/") return e.key === "/" || e.code === "Slash";
+  // "=" is also "+" (Shift+=, the keypad's), "-" the keypad's too: the zoom keys.
+  if (key === "=") return e.key === "=" || e.key === "+" || e.code === "Equal" || e.code === "NumpadAdd";
+  if (key === "-") return e.key === "-" || e.key === "_" || e.code === "Minus" || e.code === "NumpadSubtract";
   if (key.length === 1) {
     if (e.key.toLowerCase() === key.toLowerCase()) return true;
     // Option+L on a Mac types "¬": the physical key decides there.

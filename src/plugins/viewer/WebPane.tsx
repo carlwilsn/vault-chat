@@ -25,6 +25,7 @@ import type { WebPageSeen } from "../../layoutTypes";
 import { boxDevUrl, embedKind, frameArrived, frameHistory, frameStep, openTyped, paneKey, paneSideOf, registerWebPane, setPickingPane, webPageAct, type WebPageDo } from "../../webPane";
 import { answerOf, driveScript, pickOf, seenOf, type DriveOp } from "../../webDrive";
 import { TileHeadActions, useFileTile } from "../../TileTitle";
+import { useTiles } from "../../tiles";
 
 const iconBtn = "inline-flex items-center gap-1 hover:text-foreground disabled:opacity-40";
 
@@ -272,6 +273,15 @@ function NativeWebPane({ paneId, url }: { paneId?: string; url: string }) {
   if (!view.current) view.current = nativeView(id, () => viewUrl.current, "web_embed_open", setMoving);
 
   const setAddress = useSetAddress(paneId, viewUrl);
+
+  // The tile's zoom (Ctrl+= / Ctrl+- / Ctrl+0, src/tiles.ts zoomTile): the page's own, set again after every load.
+  const tileId = useFileTile(paneId);
+  const tileZoom = useTiles((t) => t.slots.find((s) => s.id === tileId)?.zoom ?? 1);
+  useEffect(() => {
+    if (failed || loading || !view.current?.open) return;
+    const js = `(document.documentElement.style.zoom = ${JSON.stringify(tileZoom === 1 ? "" : String(tileZoom))}, "1")`;
+    void inOrder(id, () => invoke<string>("web_embed_eval", { id, js })).catch(() => undefined);
+  }, [tileZoom, loading, failed, id]);
 
   const loadingRef = useRef(true);
   // Where the page is now, from the view itself (WebView2's Source): a site that changes pages without loading one

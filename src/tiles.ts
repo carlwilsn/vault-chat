@@ -15,6 +15,7 @@
 import { create } from "zustand";
 import { useStore, type Pane } from "./store";
 import type { Draft } from "./plugins/composer/draft";
+import { ZOOM_STEP, setZoomOf, zoomOf } from "./plugins/viewer/zoom";
 
 /** What a tile shows. Settings and Notes are never tiles: they are modals over everything (src/TileArea.tsx). */
 export type TileContent = { type: "file"; paneId: string | null } | { type: "chat"; chatId: string };
@@ -50,7 +51,7 @@ export const spotName = (r: Rect): SpotName => (!r.t && r.w === 2 && r.h === 2 ?
 
 /** A spot: where it is, and what it shows (null: empty). Its id is the tile's id (the agent's `tile`). Spots never
  *  overlap (no stacking): they cover the viewer exactly. */
-export type Slot = { id: string; rect: Rect; content: TileContent | null };
+export type Slot = { id: string; rect: Rect; content: TileContent | null; /** its content drawn larger or smaller (zoomTile; none: 1) */ zoom?: number };
 /** A tile: a spot with something in it. */
 export type TileLeaf = { kind: "leaf"; id: string; content: TileContent };
 
@@ -577,7 +578,8 @@ export function closeTile(id: string): boolean {
     return true;
   }
   both(() => {
-    setSlots(withContent(slots(), id, null));
+    // Its zoom goes with it.
+    setSlots(slots().map((s) => (s.id === id ? { id: s.id, rect: s.rect, content: null } : s)));
     dropContent(slot.content);
   });
   useTiles.setState({ focused: id });
@@ -588,7 +590,7 @@ export function closeTile(id: string): boolean {
 
 /** The arrangement as data (the workspace noun's `tiles` and `tileSplit`, kept on the box and in a core swap): each
  *  spot by name, what it shows (a vault-relative file, a web address, a chat id; nothing: empty), which is focused. */
-export type SavedTile = { spot: SpotName; file?: string; chat?: string; empty?: boolean; focused?: boolean; /** the active file (the context a chat gets) when the focus is on a chat */ active?: boolean; /** a file's edit mode */ mode?: "view" | "edit" };
+export type SavedTile = { spot: SpotName; file?: string; chat?: string; empty?: boolean; focused?: boolean; /** the active file (the context a chat gets) when the focus is on a chat */ active?: boolean; /** a file's edit mode */ mode?: "view" | "edit"; /** its content's zoom (zoomTile; left out: 1) */ zoom?: number };
 export type SavedTiles = { tiles: SavedTile[]; tileSplit?: Split };
 
 const isUrl = (f: string) => /^https?:\/\//i.test(f);
@@ -606,6 +608,7 @@ export function snapshotTiles(rel: (p: string) => string): SavedTiles {
       ...(t.focused === n.id ? { focused: true } : {}),
       ...(c?.type === "file" && c.paneId && c.paneId === st.activePaneId && t.focused !== n.id ? { active: true } : {}),
       ...(c?.type === "file" && c.paneId && st.panes.find((p) => p.id === c.paneId)?.mode === "edit" ? { mode: "edit" as const } : {}),
+      ...(c && n.zoom ? { zoom: n.zoom } : {}),
     };
   });
   return { tiles, tileSplit: { ...t.split } };
@@ -676,7 +679,8 @@ export async function restoreTiles(saved: SavedTiles, d: { vault: string; read: 
   const next: Slot[] = rows.map((_, i) => {
     const g = got[i];
     const content: TileContent | null = !g ? null : "chat" in g ? { type: "chat", chatId: g.chat } : { type: "file", paneId: panes.length ? panes[fi++]!.id : null };
-    return { id: newId("t_"), rect: { ...rects[i]! }, content };
+    const z = Number(rows[i]!.zoom);
+    return { id: newId("t_"), rect: { ...rects[i]! }, content, ...(content && Number.isFinite(z) && z > 0 && z !== 1 ? { zoom: z } : {}) };
   });
   const fIdx = rows.findIndex((r, i) => r.focused && next[i]!.content);
   const focused = next[fIdx >= 0 ? fIdx : next.findIndex((n) => n.content)]?.id ?? next[0]!.id;
@@ -701,6 +705,39 @@ export async function restoreTiles(saved: SavedTiles, d: { vault: string; read: 
   restored = d.how;
   if (d.from !== undefined) migration = d.from;
   return true;
+}
+
+// ------------------------------------------------------------------ zoom: one tile's content, not the app
+
+/** The file a tile shows (absolute, or a web address), or null (a chat, an empty spot). */
+function fileOf(c: TileContent | null): string | null {
+  if (c?.type !== "file") return null;
+  const st = useStore.getState();
+  return (c.paneId ? st.panes.find((p) => p.id === c.paneId)?.file : st.currentFile) ?? null;
+}
+const TILE_ZOOM = { min: 0.5, max: 3 };
+/** How far a tile's content is zoomed (1: as drawn). A file whose viewer zooms (a PDF, an image): that viewer's zoom. */
+export function zoomOfTile(s: Slot): number {
+  const f = fileOf(s.content);
+  return (f ? zoomOf(f) : null) ?? s.zoom ?? 1;
+}
+/**
+ * Zoom a tile's content (Ctrl+= / Ctrl+- / Ctrl+0 on the focused tile, the agent's box:workspace zoom; Carl 11-25: the
+ * tile, not the whole app): one ZOOM_STEP in or out (the viewers' own step), reset, or a factor. A file whose viewer
+ * zooms (a PDF, an image) zooms there, as its own − / + buttons; anything else (markdown, code, a chat, a web page) is
+ * drawn larger or smaller. Null: no such tile, or nothing in it. id null: the focused tile.
+ */
+export function zoomTile(id: string | null, want: number | "in" | "out" | "reset"): number | null {
+  const s = findSlot(slots(), id ?? useTiles.getState().focused);
+  if (!s?.content) return null;
+  const f = fileOf(s.content);
+  if (f && zoomOf(f) !== null) return setZoomOf(f, want).zoom;
+  const now = s.zoom ?? 1;
+  const raw = want === "in" ? now * ZOOM_STEP : want === "out" ? now / ZOOM_STEP : want === "reset" ? 1 : Number(want);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  const z = Math.round(Math.max(TILE_ZOOM.min, Math.min(TILE_ZOOM.max, raw)) * 100) / 100;
+  useTiles.setState((t) => ({ slots: t.slots.map((x) => (x.id === s.id ? { ...x, zoom: z === 1 ? undefined : z } : x)) }));
+  return z;
 }
 
 // ------------------------------------------------------------------ what the tiles are called
@@ -851,6 +888,7 @@ export function tilesForLayout(rel: (p: string) => string): unknown {
       spot: spotName(n.rect),
       ...(!c ? { empty: true } : c.type === "file" ? { file: rel((c.paneId ? s.panes.find((p) => p.id === c.paneId)?.file : s.currentFile) ?? "") } : { chat: c.chatId }),
       ...(t.focused === n.id ? { focused: true } : {}),
+      ...(c && zoomOfTile(n) !== 1 ? { zoom: zoomOfTile(n) } : {}),
     };
   });
 }

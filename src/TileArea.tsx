@@ -20,6 +20,7 @@ import { cn } from "./lib/utils";
 import { HEAD_CONTROLS } from "./TileTitle";
 import { pressToDrag, tileDrag, type TileDragWhat } from "./tileDrag";
 import { newChatIn } from "./chat-controller";
+import { boxDevUrl } from "./webPane";
 import { SPOTS, HALF_SPLIT, inThirds, onScreen, snapTo, twoHalves, acrossBoth, boxOf, collapseSpots, focusTile, moveTile, openAt, fillTile, newChatAt, openFilling, setSplit, spotName, tileTitle, useTiles, normSplit, type Rect, type Slot, type Split, type TileLeaf } from "./tiles";
 
 type Target = { spot: Rect; fill?: boolean; box: { left: number; top: number; width: number; height: number } } | null;
@@ -498,6 +499,11 @@ function Dividers({ areaRef }: { areaRef: React.RefObject<HTMLDivElement | null>
 const LeafView = memo(function LeafView({ leaf, several }: { leaf: TileLeaf; several: boolean }) {
   const focused = useTiles((t) => t.focused === leaf.id);
   const c = leaf.content;
+  // Its content's zoom (Ctrl+= / Ctrl+- / Ctrl+0, src/tiles.ts zoomTile): drawn larger or smaller in the same room. A
+  // public web page is in its own native view over the tile: the page zooms itself (WebPane), its row stays.
+  const zoom = useTiles((t) => t.slots.find((s) => s.id === leaf.id)?.zoom ?? 1);
+  const file = useStore((s) => (c.type === "file" ? ((c.paneId ? s.panes.find((p) => p.id === c.paneId)?.file : s.currentFile) ?? null) : null));
+  const cssZoom = file && /^https?:\/\//i.test(file) && !boxDevUrl(file) ? 1 : zoom;
   // a tile's handle is its own top row ([data-tile-head]: a file's breadcrumb row, a chat's header, Notes' and
   // Settings' header; src/TileTitle.tsx). Pressing an empty part of it (not a control) drags the tile. Nothing lies
   // over the content.
@@ -535,7 +541,7 @@ const LeafView = memo(function LeafView({ leaf, several }: { leaf: TileLeaf; sev
       onPointerDownCapture={() => focusTile(leaf.id)}
     >
       {/* The focused tile: no box around it (Carl 11-24); its handle row's text is brighter (App.css). */}
-      <div className="flex-1 min-h-0 relative">
+      <div className="flex-1 min-h-0 relative" style={cssZoom !== 1 ? { zoom: cssZoom } : undefined}>
         {c.type === "file" ? <MarkdownView paneId={c.paneId ?? undefined} /> : <ChatTile chatId={c.chatId} />}
       </div>
     </div>

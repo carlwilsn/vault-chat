@@ -27,6 +27,8 @@ export type LayoutOp =
   | { op: "webPage"; do: "back" | "forward" | "reload" | "browser" | "read" | "click" | "type" | "scroll" | "select"; pane?: PaneSide; url?: string; ref?: string; text?: string; value?: string; enter?: boolean; by?: number | "top" | "bottom" }
   | { op: "page"; page: "settings" | "notes"; open: boolean }
   | { op: "moveTile"; tile: string; spot: TileSpot }
+  /** A tile's content zoomed (left out: the focused tile), as Ctrl+= / Ctrl+- / Ctrl+0: "in" / "out" one step, "reset", or a factor. */
+  | { op: "zoom"; tile?: string; zoom: number | "in" | "out" | "reset" }
   /** The title bar auto-hidden (on) or always shown (off): the same setting as its right-click menu. */
   | { op: "autoHideTitleBar"; on: boolean }
   /** A new chat: tile (a chat tile): in its place (its project or Main), replacing that tile's chat, as its New chat;

@@ -49,7 +49,7 @@ import {
 } from "./vaultSync";
 import { startActivityWatch } from "./activity";
 import { clearSavedLayouts } from "./paneLayout";
-import { startTiles } from "./tiles";
+import { startTiles, zoomTile } from "./tiles";
 import { startChatRowDrag, startDevDragHook } from "./tileDrag";
 import { MAIN_ID } from "./threads";
 import { afterVaultReady, bootMark } from "./bootTiming";
@@ -237,6 +237,14 @@ export default function App() {
       }
       const mod = isMod(e);
       if (!mod) return;
+      // Ctrl+= / Ctrl+- / Ctrl+0: the focused tile's content zooms (src/tiles.ts zoomTile), never the whole app (the web
+      // view's own page zoom is kept off: held keys repeat here too).
+      const zoomKey = hit(e, "view.zoomIn") ? "in" : hit(e, "view.zoomOut") ? "out" : hit(e, "view.zoomReset") ? "reset" : null;
+      if (zoomKey) {
+        e.preventDefault();
+        zoomTile(null, zoomKey);
+        return;
+      }
       // Holding a Ctrl-shortcut auto-repeats the keydown at the OS rate
       // (~30 Hz). Without this guard, Ctrl+B flickers the pane on/off,
       // Ctrl+J spawns a terminal per repeat, etc. One press = one fire.

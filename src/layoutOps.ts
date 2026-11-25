@@ -6,10 +6,11 @@
 // Names: the two panes of a split are "left" and "right" (src/paneLayout.ts; in a stacked split left is the top one).
 // "leftPanel" is the file tree; "chat" is the right panel (or the full-screen chat).
 import { useStore } from "./store";
+import { onZoomMoved } from "./plugins/viewer/zoom";
 import { PANE_SIDES, relToVault, sideOf } from "./paneLayout";
 import { invoke } from "@tauri-apps/api/core";
 import { isUnreadableAsText } from "./fileKind";
-import { SPOTS, rectEq, closeTile, ensureChatTile, ensureTilesStarted, fileTilesInPlace, fillTile, findLeaf, findSlot, focusTile, moveTile, newChatAt, openAt, openFilling, placeTile, restoreTiles, restoredFrom, setSplit, takeMigration, tileAtSide, tilesFromLegacy, tileOfPane, tilesForLayout, useTiles, type SavedTiles, type TileWhat } from "./tiles";
+import { SPOTS, rectEq, zoomTile, closeTile, ensureChatTile, ensureTilesStarted, fileTilesInPlace, fillTile, findLeaf, findSlot, focusTile, moveTile, newChatAt, openAt, openFilling, placeTile, restoreTiles, restoredFrom, setSplit, takeMigration, tileAtSide, tilesFromLegacy, tileOfPane, tilesForLayout, useTiles, type SavedTiles, type TileWhat } from "./tiles";
 import type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult, PaneSide, WebPageSeen } from "./layoutTypes";
 import { isPicking, isWebAddress, navigateWebPane, openWebInPane, paneKey, webPageAct } from "./webPane";
 import { signOutOfSites } from "./webProfile";
@@ -18,7 +19,7 @@ import { closeWindow, openWindow } from "./newWindow";
 import { isSecondWindow, windowNo } from "./windowKind";
 export type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult, WebPageSeen } from "./layoutTypes";
 
-export const LAYOUT_OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "chatSidebar", "resize", "signOutOfSites", "moveTile", "page", "newChat", "autoHideTitleBar", "newWindow", "closeWindow"] as const;
+export const LAYOUT_OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "chatSidebar", "resize", "signOutOfSites", "moveTile", "zoom", "page", "newChat", "autoHideTitleBar", "newWindow", "closeWindow"] as const;
 
 /** The outer split's own resize (Allotment's, registered by src/App.tsx): what dragging a sash does, in pixels per column. */
 let outerResize: ((sizes: number[]) => void) | null = null;
@@ -95,8 +96,11 @@ export function pushLayoutChanges(post: (layout: HostLayout, migratedFrom?: unkn
   win?.addEventListener("resize", onWin);
   const offSash = onSashMoved(soon);
   const offTiles = useTiles.subscribe(soon);
+  // A PDF's or image's own zoom (its buttons, Ctrl+wheel, a pinch, Ctrl+= on its tile): layout.tiles[].zoom.
+  const offZoom = onZoomMoved(soon);
   const offSettings = onSettingsChanged(soon);
   return () => {
+    offZoom();
     offSettings();
     offStore();
     offSash();
@@ -361,6 +365,13 @@ async function applyOne(op: LayoutOp, io: LayoutIO): Promise<{ ok: boolean; note
       const to = op.spot === "full" ? { x: 0, y: 0, w: 2, h: 2 } : SPOTS[op.spot];
       if (moveTile(op.tile, to)) return done();
       return rectEq(findSlot(useTiles.getState().slots, op.tile)!.rect, to) ? done(`it is in ${op.spot} already`) : no(`it can't go to ${op.spot} (three columns come only from two halves, for something new; in three columns, only columns, their halves or full; at most 4 spots)`);
+    }
+    case "zoom": {
+      // As Ctrl+= / Ctrl+- / Ctrl+0 on that tile: its content, not the app.
+      const id = op.tile ?? useTiles.getState().focused;
+      if (!findLeaf(useTiles.getState().slots, id)) return no(`no tile "${String(op.tile ?? "focused")}" (see the layout's tiles)`);
+      const z = zoomTile(id, op.zoom);
+      return z === null ? no('zoom is "in", "out", "reset" or a factor > 0') : done(`zoom ${z}`);
     }
     case "newChat": {
       const cc = await import("./chat-controller");
