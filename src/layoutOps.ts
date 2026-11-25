@@ -14,9 +14,11 @@ import type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult, PaneSide, WebP
 import { isPicking, isWebAddress, navigateWebPane, openWebInPane, paneKey, webPageAct } from "./webPane";
 import { signOutOfSites } from "./webProfile";
 import { onSettingsChanged, saveSetting, setting } from "./settings";
+import { closeWindow, openWindow } from "./newWindow";
+import { isSecondWindow, windowNo } from "./windowKind";
 export type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult, WebPageSeen } from "./layoutTypes";
 
-export const LAYOUT_OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "fullscreenChat", "chatSidebar", "resize", "signOutOfSites", "maximize", "moveTile", "page", "newChat", "autoHideTitleBar"] as const;
+export const LAYOUT_OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "fullscreenChat", "chatSidebar", "resize", "signOutOfSites", "maximize", "moveTile", "page", "newChat", "autoHideTitleBar", "newWindow", "closeWindow"] as const;
 
 /** The outer split's own resize (Allotment's, registered by src/App.tsx): what dragging a sash does, in pixels per column. */
 let outerResize: ((sizes: number[]) => void) | null = null;
@@ -214,6 +216,7 @@ export function readLayout(measure: () => Pick<HostLayout, "viewport" | "sizes">
   const activePane = split ? sideOf(s, s.activePaneId) : s.currentFile ? "single" : null;
   const web = isWebAddress(s.currentFile);
   return {
+    ...(isSecondWindow ? { window: windowNo } : {}),
     split,
     direction: split ? (s.splitDirection === "vertical" ? "stacked" : "side-by-side") : null,
     panes,
@@ -423,6 +426,11 @@ async function applyOne(op: LayoutOp, io: LayoutIO): Promise<{ ok: boolean; note
       const why = resizeColumns({ leftPanel: op.leftPanel, chat: op.chat }, io.measure);
       return why ? no(why) : done();
     }
+    case "newWindow":
+      // The main window opens it (a New window's own button is not drawn).
+      return openWindow();
+    case "closeWindow":
+      return closeWindow(op.window ?? (isSecondWindow ? windowNo : undefined));
     case "signOutOfSites": {
       const r = await signOutOfSites();
       return r.ok ? done(r.note) : no(r.error ?? "not signed out");
@@ -459,5 +467,5 @@ export function layoutText(l: HostLayout): string {
   const where = l.split ? `split ${l.direction}: ${l.panes.map((p) => `${p.side}=${what(p)}${p.active ? " (active)" : ""}`).join(", ")}` : one ? ("url" in one ? `one web ${what(one)}` : `one file: ${one.file}`) : "nothing open in the viewer";
   const chat = l.chatFullscreen ? "chat full screen" : l.chatPoppedOut ? "chat popped out" : `chat panel ${l.rightPanelOpen ? "open" : "closed"}`;
   const size = l.viewport ? `; window ${l.viewport.width}x${l.viewport.height}${l.sizes ? ` (left panel ${l.sizes.leftPanel}px, viewer ${l.sizes.viewer}px, chat ${l.sizes.chat}px)` : ""}` : "";
-  return `${where}; left panel ${l.leftPanelOpen ? "open" : "closed"}; ${chat}${size}`;
+  return `${l.window ? `window ${l.window}: ` : ""}${where}; left panel ${l.leftPanelOpen ? "open" : "closed"}; ${chat}${size}`;
 }

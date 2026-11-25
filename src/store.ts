@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { WebDownload, WebPageSeen } from "./layoutTypes";
 import { firstPaintTheme, keepTheme, type Theme } from "./firstTheme";
-import { isPopout } from "./windowKind";
+import { isPopout, isSecondWindow } from "./windowKind";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import type { Skill } from "./skills";
@@ -278,7 +278,8 @@ function savedActiveConvId(vault: string | null): string | null {
   }
 }
 function persistActiveConvId(vault: string | null, id: string | null): void {
-  if (!vault) return;
+  // The main window's open chat is the one a start comes back to; a New window's is its own.
+  if (!vault || isSecondWindow) return;
   try {
     if (id) localStorage.setItem(activeConvKey(vault), id);
     else localStorage.removeItem(activeConvKey(vault));
@@ -703,11 +704,12 @@ export const useStore = create<State>((set) => ({
   busy: false,
   showSettings: false,
   mode: "view",
-  leftCollapsed: false,
+  // A New window (src/newWindow.ts) starts with Files and Chats closed: its own, never the saved setting.
+  leftCollapsed: isSecondWindow,
   rightCollapsed: true,
   popoutOpen: false,
   chatFullscreen: false,
-  chatSidebarOpen: readChatSidebarOpen(),
+  chatSidebarOpen: isSecondWindow ? false : readChatSidebarOpen(),
   voiceMode: false,
   followAlong: true,
   voiceListening: false,
@@ -1193,6 +1195,8 @@ export const useStore = create<State>((set) => ({
   toggleChatSidebar: () => {
     // A setting (src/settings.ts): open or closed here now, and the record every app follows.
     const next = !useStore.getState().chatSidebarOpen;
+    // A New window's Chats is its own: the setting (every app's) stays the main window's.
+    if (isSecondWindow) return set({ chatSidebarOpen: next });
     try {
       localStorage.setItem(CHAT_SIDEBAR_STORAGE, next ? "1" : "0");
     } catch {

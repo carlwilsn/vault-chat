@@ -9,7 +9,8 @@ import { useStore } from "../../store";
 import { NOTES_PLUGIN_ID } from "../../appPlugins";
 import { usePluginDesired } from "../../pluginSupervisorApp";
 import { runningTaskCount } from "../../backgroundTasks";
-import { openChatPopout } from "../../sync";
+import { applyLayoutOps } from "../../layoutOps";
+import { isSecondWindow } from "../../windowKind";
 import { VoiceCockpit, VoiceMicGroup } from "../../voiceParts";
 import { VaultPicker } from "../../VaultPicker";
 import { WindowControls } from "../../WindowControls";
@@ -138,14 +139,17 @@ export function Bar() {
         >
           <PanelRight className="h-3.5 w-3.5" />
         </button>
-        <button data-offer="app/titlebar.popOutChat"
-          onClick={() => openChatPopout().catch((err) => console.error("[popout] failed:", err))}
-          disabled={popoutOpen}
-          className="h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover text-titlebar-muted mr-1 disabled:opacity-40 disabled:cursor-not-allowed"
-          title={popoutOpen ? "Chat is popped out" : "Pop out chat"}
-        >
-          <ExternalLink className="h-3.5 w-3.5" />
-        </button>
+        {/* New window (src/newWindow.ts): box:workspace's newWindow, the agent's path too. A New window has none. */}
+        {!isSecondWindow && (
+          <button data-offer="box:workspace.newWindow"
+            data-el="new-window"
+            onClick={() => void applyLayoutOps([{ op: "newWindow" }], { openInPane: async () => ({ ok: false }) }).then((r) => r.ok || console.warn("[new window]", r.results))}
+            className="h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover text-titlebar-muted mr-1"
+            title="New window"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </button>
+        )}
         <TerminalButton vaultPath={vaultPath} />
         <button data-offer="app/titlebar.toggleSettings"
           onClick={() => setShowSettings(!showSettings)}

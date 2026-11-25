@@ -244,7 +244,12 @@ function boxSettingsPost(b: any) {
 
 /** The fake box's kept layout (server/layoutTool.ts GET / POST /api/v2/layout): this frame's ns in sessionStorage, so
  *  the tiles come back on a reload as the box keeps them. */
-const boxLayoutKey = () => `vcp-box-layout:${new URLSearchParams(location.search).get("ns") ?? ""}`;
+// A New window (?window=2, src/newWindow.ts) keeps its own, as the box keeps each window's.
+const boxLayoutKey = () => {
+  const q = new URLSearchParams(location.search);
+  const win = Number(q.get("window") ?? 1);
+  return `vcp-box-layout:${q.get("ns") ?? ""}${win > 1 ? `:window-${win}` : ""}`;
+};
 function boxLayout(): { layout: unknown; at: number | null } {
   try {
     return JSON.parse(sessionStorage.getItem(boxLayoutKey()) ?? "null") ?? { layout: null, at: null };
@@ -880,7 +885,8 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     }
     if (path.endsWith("/api/v2/settings")) return { status: 200, body: JSON.stringify(boxSettingsPost(b)) };
     if (path.endsWith("/api/v2/layout")) {
-      sessionStorage.setItem(boxLayoutKey(), JSON.stringify({ layout: b?.layout ?? null, at: Date.now() }));
+      if (b?.closed === true) sessionStorage.removeItem(boxLayoutKey());
+      else sessionStorage.setItem(boxLayoutKey(), JSON.stringify({ layout: b?.layout ?? null, at: Date.now() }));
       return { status: 200, body: JSON.stringify({ ok: true }) };
     }
     // Intents: the box writes their effect into its feed (src/convlog/memoryBox.ts intent()).

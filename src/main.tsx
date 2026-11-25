@@ -31,6 +31,8 @@ import { installAppLiveBridge } from "./liveBridgeApp";
 import { installAppShip } from "./appShip";
 import { installDiagShortcut } from "./diag";
 import { installLaptopPerf } from "./laptopPerf";
+import { isSecondWindow } from "./windowKind";
+import { startSecondWindow } from "./newWindow";
 
 // Install the freeze diagnostic logger before anything else runs, so a
 // crash during boot still leaves a trail.
@@ -65,7 +67,12 @@ const isPopout = view === "chat";
 // Every native webview has its own document, listeners and delivery queue.
 installLaptopPerf({ popout: isPopout });
 
-if (isPopout) {
+if (isSecondWindow) {
+  // A New window (src/newWindow.ts): the app with its own tiles. The vault's sync, the autosave, the core and server
+  // follow, the client events, setup and background mode stay the main window's.
+  hydrateKeychain().catch((e) => console.warn("[keys] hydrate failed:", e));
+  startSecondWindow();
+} else if (isPopout) {
   installPopoutSync();
   // Popouts need their own copy of API keys — the main-window snapshot
   // broadcast doesn't include them, and without hydrate the chat
@@ -139,7 +146,7 @@ vlog("pre-render", { isPopout });
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <Root />
-    {!isPopout && <LaptopReleaseHealthMount />}
+    {!isPopout && !isSecondWindow && <LaptopReleaseHealthMount />}
   </React.StrictMode>,
 );
 vlog("post-render");

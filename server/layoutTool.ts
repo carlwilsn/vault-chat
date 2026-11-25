@@ -12,7 +12,7 @@ import { waitAck, type Ack } from "./show";
 import { loopbackUrl } from "./devProxy";
 import { controlDown, laptopElsewhere, noteAnswer, unansweredNote, vaultName } from "./deviceLink";
 
-const OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "fullscreenChat", "chatSidebar", "resize", "signOutOfSites", "openChat", "moveTile", "newChat", "autoHideTitleBar", "maximize", "page"] as const;
+const OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "fullscreenChat", "chatSidebar", "resize", "signOutOfSites", "openChat", "moveTile", "newChat", "autoHideTitleBar", "maximize", "page", "newWindow", "closeWindow"] as const;
 // The viewer's Snap spots (src/tiles.ts SPOTS), and full: the whole viewer. No stacking: a tile covered by a move or
 // an open closes.
 const SPOTS = ["full", "left", "right", "top", "bottom", "top-left", "top-right", "bottom-left", "bottom-right"];
@@ -65,6 +65,16 @@ function parseOps(a: Record<string, unknown>): Op[] | string {
     if (action === "autoHideTitleBar") {
       if (typeof o.on !== "boolean") return "autoHideTitleBar needs on: true or false.";
       out.push({ op: action, on: o.on });
+      continue;
+    }
+    if (action === "newWindow") {
+      out.push({ op: action });
+      continue;
+    }
+    if (action === "closeWindow") {
+      const w = o.window ?? 2;
+      if (typeof w !== "number" || !Number.isInteger(w) || w < 2) return "closeWindow's window is a New window's number (2); the main window is the app.";
+      out.push({ op: action, window: w });
       continue;
     }
     if (action === "newChat") {
@@ -173,18 +183,19 @@ function parseOps(a: Record<string, unknown>): Op[] | string {
 
 type Step = { op: string; ok: boolean; note?: string; error?: string };
 
-async function ask(d: LayoutDeps, type: string, fields: Record<string, unknown>, ms: number): Promise<Ack | null> {
+async function ask(d: LayoutDeps, type: string, fields: Record<string, unknown>, ms: number, win = 1): Promise<Ack | null> {
   const id = `${type}-${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
   const got = waitAck(id, ms);
-  d.emit({ type, id, to: "laptop", ...fields });
+  // A New window (2) answers only what names it; the main window what names none (src/boxChat.ts signal).
+  d.emit({ type, id, to: "laptop", ...fields, ...(win > 1 ? { window: win } : {}) });
   const ack = await got;
   noteAnswer("laptop", type, !!ack);
   return ack;
 }
 
 /** openChat: the chat list's own `open` (app/chats, as PluginAct runs it). The chat open afterwards, or why not. */
-async function openChat(d: LayoutDeps, chat: string, ms: number): Promise<{ step: Step; open?: unknown }> {
-  const ack = await ask(d, "plugin", { op: "act", plugin: "app/chats", action: "open", args: { id: chat } }, ms);
+async function openChat(d: LayoutDeps, chat: string, ms: number, win = 1): Promise<{ step: Step; open?: unknown }> {
+  const ack = await ask(d, "plugin", { op: "act", plugin: "app/chats", action: "open", args: { id: chat } }, ms, win);
   if (!ack) return { step: { op: "openChat", ok: false, error: `the laptop did not answer within ${Math.round(ms / 1000)} s` } };
   const raw = (ack.data as { answer?: unknown } | undefined)?.answer;
   let x: { ok?: boolean; error?: string; result?: { open?: unknown }; state?: { selected?: unknown } } | null = null;
@@ -204,40 +215,96 @@ async function openChat(d: LayoutDeps, chat: string, ms: number): Promise<{ step
  *  changes), and the laptop puts its tiles back from it at start (GET /api/v2/layout). */
 export type KeptLayout = { layout: unknown; at: number; open?: unknown };
 let kept: KeptLayout | null = null;
+/** A New window's (src/newWindow.ts, window 2) last layout, by vault and window number: each window has its own tiles.
+ *  Kept while the window is open and across a restart (the laptop opens it again); dropped when it is closed. */
+let keptVault: string | null = null;
 const keptListeners = new Set<() => void>();
 export const keptLayout = (): KeptLayout | null => (loadStored(), kept);
 export function onLayoutKept(fn: () => void): () => void {
   keptListeners.add(fn);
   return () => keptListeners.delete(fn);
 }
+const heard = () => {
+  for (const f of [...keptListeners]) f();
+};
+/** A layout's window (2, 3, …: a New window), or 1: the main window. */
+const windowOf = (w: unknown, layout?: unknown): number => {
+  const n = typeof w === "number" ? w : (layout as { window?: unknown } | null)?.window;
+  return typeof n === "number" && Number.isInteger(n) && n >= 2 ? n : 1;
+};
 function keep(layout: unknown, open: unknown, vault?: string, migratedFrom?: unknown): void {
   loadStored();
+  const win = windowOf(undefined, layout);
+  if (win > 1) {
+    // A New window's own read-back (its ack, or its own word): kept by window, beside the main window's.
+    const v = vault ?? keptVault;
+    if (!v) return;
+    const was = stored.windows[v]?.[String(win)];
+    if (was && JSON.stringify(was.layout) === JSON.stringify(layout)) return;
+    stored.windows[v] = { ...(stored.windows[v] ?? {}), [String(win)]: { layout, at: Date.now() } };
+    schedule();
+    heard();
+    return;
+  }
   const was = kept ? JSON.stringify(kept.layout) : "";
   kept = { layout, at: Date.now(), ...(open !== undefined ? { open } : kept?.open !== undefined ? { open: kept.open } : {}) };
-  if (vault) store(vault, kept, migratedFrom);
-  if (JSON.stringify(layout) !== was || open !== undefined) for (const f of [...keptListeners]) f();
+  if (vault) {
+    keptVault = vault;
+    store(vault, kept, migratedFrom);
+  }
+  if (JSON.stringify(layout) !== was || open !== undefined) heard();
 }
 /** The laptop's own word that its layout changed (POST /api/v2/layout: Carl dragged a sash, toggled a panel, opened a
  *  file), for its open vault: kept as the read-back, and the workspace noun's watchers hear it. migratedFrom: the
- *  laptop just turned an older layout into tiles (the box backs up what it had first). */
-export function keepLaptopLayout(layout: unknown, vault?: string, migratedFrom?: unknown): void {
-  if (layout && typeof layout === "object") keep(layout, undefined, vault, migratedFrom);
+ *  laptop just turned an older layout into tiles (the box backs up what it had first). window: a New window's (2),
+ *  whose own tiles are kept beside the main window's; closed: that window was closed, its tiles are dropped. */
+export function keepLaptopLayout(layout: unknown, vault?: string, migratedFrom?: unknown, window?: unknown, closed?: unknown): void {
+  const win = windowOf(window, layout);
+  if (closed === true) {
+    if (win > 1) dropWindow(vault ?? keptVault, win);
+    return;
+  }
+  if (layout && typeof layout === "object") keep(win > 1 ? { ...(layout as object), window: win } : layout, undefined, vault, migratedFrom);
 }
-/** A vault's last kept layout (null: none yet): the laptop's start puts its tiles back from it. */
-export function storedLayout(vault: string): KeptLayout | null {
+function dropWindow(vault: string | null, win: number): void {
   loadStored();
+  if (!vault || !stored.windows[vault]?.[String(win)]) return;
+  const { [String(win)]: _gone, ...rest } = stored.windows[vault]!;
+  if (Object.keys(rest).length) stored.windows[vault] = rest;
+  else delete stored.windows[vault];
+  schedule();
+  heard();
+}
+/** A vault's last kept layout (null: none yet), the main window's or a New window's (window ≥ 2): the laptop's start
+ *  puts its tiles back from it. */
+export function storedLayout(vault: string, window = 1): KeptLayout | null {
+  loadStored();
+  if (window > 1) return stored.windows[vault]?.[String(window)] ?? null;
   return stored.vaults[vault] ?? null;
+}
+/** The New windows kept for a vault (their numbers): open, or open when the app last closed. */
+export function keptWindowNumbers(vault: string): number[] {
+  loadStored();
+  return Object.keys(stored.windows[vault] ?? {}).map(Number).filter((n) => n >= 2).sort((a, b) => a - b);
+}
+/** Every window's last layout for the vault the laptop has open (the main window first): box:workspace's windows. */
+export function keptWindows(): { window: number; layout: unknown; at: number; open?: unknown }[] {
+  loadStored();
+  const v = keptVault ?? Object.entries(stored.vaults).sort((x, y) => y[1].at - x[1].at)[0]?.[0] ?? null;
+  const others = v ? keptWindowNumbers(v).map((n) => ({ window: n, ...stored.windows[v]![String(n)]! })) : [];
+  return [...(kept ? [{ window: 1, ...kept }] : []), ...others];
 }
 /** Tests: forget it (in memory; the file stays). */
 export function resetKeptLayout(): void {
   kept = null;
-  stored = { vaults: {} };
+  keptVault = null;
+  stored = { vaults: {}, windows: {} };
   loaded = false;
 }
 
-// ---- kept on disk, per vault
-type Stored = { vaults: Record<string, KeptLayout> };
-let stored: Stored = { vaults: {} };
+// ---- kept on disk, per vault (and per New window)
+type Stored = { vaults: Record<string, KeptLayout>; windows: Record<string, Record<string, KeptLayout>> };
+let stored: Stored = { vaults: {}, windows: {} };
 let loaded = false;
 let writeTimer: ReturnType<typeof setTimeout> | null = null;
 const stateDir = () => process.env.VC_STATE_DIR || join(homedir(), ".local", "state", "vault-chat-server");
@@ -247,13 +314,17 @@ function loadStored(): void {
   if (loaded) return;
   loaded = true;
   try {
-    const j = JSON.parse(readFileSync(storeFile(), "utf8")) as Stored;
-    if (j && typeof j.vaults === "object" && j.vaults) stored = { vaults: j.vaults };
+    const j = JSON.parse(readFileSync(storeFile(), "utf8")) as Partial<Stored>;
+    if (j && typeof j.vaults === "object" && j.vaults) stored = { vaults: j.vaults, windows: j.windows && typeof j.windows === "object" ? j.windows : {} };
   } catch {
     /* none yet, or unreadable: start empty (a bad file is replaced on the next write) */
   }
   // The newest vault's layout is the read-back until the laptop says more.
-  if (!kept) kept = Object.values(stored.vaults).sort((x, y) => y.at - x.at)[0] ?? null;
+  if (!kept) {
+    const newest = Object.entries(stored.vaults).sort((x, y) => y[1].at - x[1].at)[0];
+    kept = newest?.[1] ?? null;
+    keptVault ??= newest?.[0] ?? null;
+  }
 }
 function store(vault: string, k: KeptLayout, migratedFrom: unknown): void {
   const before = stored.vaults[vault];
@@ -270,6 +341,9 @@ function store(vault: string, k: KeptLayout, migratedFrom: unknown): void {
     }
   }
   stored.vaults[vault] = k;
+  schedule();
+}
+function schedule(): void {
   if (writeTimer) return;
   writeTimer = setTimeout(flushStored, 500);
   (writeTimer as { unref?: () => void }).unref?.();
@@ -291,8 +365,13 @@ export function flushStored(): void {
 export async function layoutTool(d: LayoutDeps, args: Record<string, unknown>): Promise<{ ok: boolean; text: string; layout?: unknown }> {
   const ops = parseOps(args);
   if (typeof ops === "string") return { ok: false, text: ops };
+  // Which window (window: 2, a New window; left out: the main window). Opening and closing windows is the main one's.
+  const win = args.window === undefined ? 1 : Number(args.window);
+  if (!Number.isInteger(win) || win < 1) return { ok: false, text: "window is a window's number: 1 the main window, 2 a New window (see windows)." };
+  if (win > 1 && ops.some((o) => o.op === "newWindow" || o.op === "closeWindow")) return { ok: false, text: "newWindow and closeWindow are the main window's: leave window out (closeWindow takes window: 2 as its own argument)." };
   const down = controlDown("laptop");
   if (down) return { ok: false, text: `${down} So its layout can't be read or changed. Only the laptop app has panes. Say so; don't guess.` };
+  if (win > 1 && !keptWindows().some((w) => w.window === win)) return { ok: false, text: `There is no window ${win} open on the laptop (windows lists them). newWindow opens one.` };
   // The panes show the vault the laptop has open (the one truth: server/deviceLink.ts laptopElsewhere). A path that is
   // a file there opens there; one only in this chat's vault would open the wrong file, so Show (which switches) does it.
   const elsewhere = laptopElsewhere(d.vault);
@@ -319,7 +398,7 @@ export async function layoutTool(d: LayoutDeps, args: Record<string, unknown>): 
   let allOk = true;
   let lost = false;
   const flush = async (): Promise<boolean> => {
-    ack = await ask(d, "layout", { ops: batch }, ms);
+    ack = await ask(d, "layout", { ops: batch }, ms, win);
     batch = [];
     if (!ack) return false;
     const data = (ack.data ?? {}) as { results?: Step[] };
@@ -336,7 +415,7 @@ export async function layoutTool(d: LayoutDeps, args: Record<string, unknown>): 
       lost = true;
       break;
     }
-    const r = await openChat(d, String(op.id), ms);
+    const r = await openChat(d, String(op.id), ms, win);
     results.push(r.step);
     if (!r.step.ok) allOk = false;
     else open = r.open;

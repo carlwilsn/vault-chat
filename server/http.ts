@@ -706,13 +706,17 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // The laptop's layout as it changed by hand (src/layoutOps.ts pushLayoutChanges): box:workspace's state and watch.
   if (path === "/api/v2/layout" && method === "POST") {
     const b = await jsonBody(req);
-    (await import("./layoutTool")).keepLaptopLayout(b.layout, open.name, b.migratedFrom);
+    // window: a New window's (2) own tiles; closed: that window was closed (its tiles are dropped).
+    (await import("./layoutTool")).keepLaptopLayout(b.layout, open.name, b.migratedFrom, b.window, b.closed);
     return json(res, 200, { ok: true });
   }
-  // The open vault's last kept layout (its tiles): the laptop's start puts them back.
+  // The open vault's last kept layout (its tiles): the laptop's start puts them back. ?window=2: a New window's own;
+  // the main window's answer also names the New windows kept (open when the app last closed): it opens them again.
   if (path === "/api/v2/layout" && method === "GET") {
-    const k = (await import("./layoutTool")).storedLayout(open.name);
-    return json(res, 200, { layout: k?.layout ?? null, open: k?.open ?? null, at: k?.at ?? null });
+    const lt = await import("./layoutTool");
+    const win = Number(url.searchParams.get("window") ?? 1);
+    const k = lt.storedLayout(open.name, Number.isInteger(win) ? win : 1);
+    return json(res, 200, { layout: k?.layout ?? null, open: k?.open ?? null, at: k?.at ?? null, ...(win > 1 ? {} : { windows: lt.keptWindowNumbers(open.name) }) });
   }
   if (path === "/api/v2/offer-events" && method === "POST") {
     const out = (await import("./offerLog")).offerEventsRoute(vault, await jsonBody(req));

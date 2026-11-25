@@ -38,7 +38,12 @@ export type LayoutOp =
   | { op: "chatSidebar"; open: boolean }
   | { op: "resize"; leftPanel?: number; chat?: number; tiles?: { x?: number; xb?: number; left?: number; right?: number } }
   /** The web pages' browser profile wiped (src/webProfile.ts): signed out of every site, cookies and storage gone. */
-  | { op: "signOutOfSites" };
+  | { op: "signOutOfSites" }
+  /** A second app window on this vault (the title bar's New window, src/newWindow.ts): its own tiles, Files and Chats
+   *  closed at first; open already: brought to the front. */
+  | { op: "newWindow" }
+  /** Close a New window (window: 2; in that window, left out: itself): its tiles are dropped on the box. */
+  | { op: "closeWindow"; window?: number };
 
 /** What a page in a pane shows: its visible text (trimmed and capped; textLength is the whole) and `at`, when it was
  *  read. A dev-server page reports itself (server/devProxy.ts frameScript): also console and uncaught errors, and
@@ -60,6 +65,8 @@ export type WebPageSeen = {
 export type WebDownload = { name: string; /** vault-relative */ path: string; /** bytes; null when it failed */ size: number | null; at: string; ok: boolean; /** the source's host */ from?: string };
 
 export type HostLayout = {
+  /** Which window this is, when it is not the main one (2: a New window, src/newWindow.ts): each has its own tiles. */
+  window?: number;
   /** The title bar hides until the pointer rests at the top edge (its right-click menu's Auto-hide). */
   titleBarAutoHide?: boolean;
   /** Two files side by side or stacked. */

@@ -19,6 +19,8 @@ import { webEmbedCommands } from "./webEmbed";
 import { report } from "../overlay";
 
 type Fn = (a: Record<string, any>) => unknown;
+/** The preview's New windows (popups), by number. */
+const previewWindows = new Map<number, Window>();
 
 const table: Record<string, Fn> = {
   ...(fsCommands as Record<string, Fn>),
@@ -33,6 +35,34 @@ const table: Record<string, Fn> = {
   default_assistant_prompt: () => DEFAULT_ASSISTANT_MD,
   // Trees from before Phase 3 still seed ask.md (the ask agent is gone since).
   default_ask_prompt: () => "",
+  // New window (src-tauri/src/app_windows.rs): a popup of this page with &window=<n>, as the native window loads it.
+  app_window_open: (a) => {
+    const n = Number(a.n);
+    const was = previewWindows.get(n);
+    if (was && !was.closed) {
+      if (a.focus) was.focus();
+      return false;
+    }
+    const url = new URL(location.href);
+    url.searchParams.set("window", String(n));
+    url.hash = "";
+    const w = window.open(url.toString(), `vault-chat-window-${n}`, `popup,width=${Math.max(640, Math.round(window.outerWidth * 0.85))},height=${Math.max(480, Math.round(window.outerHeight * 0.9))}`);
+    if (!w) throw "the window could not be opened (a popup blocker?)";
+    previewWindows.set(n, w);
+    return true;
+  },
+  app_window_close: (a) => {
+    const n = Number(a.n);
+    if (Number(new URLSearchParams(location.search).get("window") ?? 1) === n) {
+      setTimeout(() => window.close(), 0);
+      return true;
+    }
+    const w = previewWindows.get(n);
+    previewWindows.delete(n);
+    const open = !!w && !w.closed;
+    w?.close();
+    return open;
+  },
 };
 
 export type CallRecord = { at: number; cmd: string; args: unknown; ok: boolean; ms: number; error?: string; unknown?: boolean };

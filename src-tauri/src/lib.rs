@@ -12,6 +12,7 @@ mod box_sync;
 mod master;
 mod vault_page;
 mod web_embed;
+mod app_windows;
 mod self_test;
 mod core_loader;
 mod safety;
@@ -5762,6 +5763,8 @@ pub fn run() {
     let (handler, commands) = shell_commands![
 
             vault_page::vault_page_root,
+            app_windows::app_window_open,
+            app_windows::app_window_close,
             web_embed::web_embed_open,
             web_embed::web_embed_open_dev,
             web_embed::web_embed_place,
@@ -5913,7 +5916,12 @@ pub fn run() {
                     if let Some(drive) = window.app_handle().get_webview_window("vc-drive") {
                         let _ = drive.destroy();
                     }
+                    // The New windows (app_windows.rs) go with the main one; their tiles stay kept for the next start.
+                    app_windows::close_all(window.app_handle());
                 }
+                // A window gone takes the web pages laid over it (web_embed.rs).
+                use tauri::Manager;
+                web_embed::drop_window(window.app_handle(), window.label());
             }
             // Close-to-tray: when "run in background" is on, intercept the
             // main window's close and hide it instead of letting the app

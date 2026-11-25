@@ -53,6 +53,7 @@ import { startTiles, toggleMaximizeFocused, useTiles } from "./tiles";
 import { startChatRowDrag, startDevDragHook } from "./tileDrag";
 import { MAIN_ID } from "./threads";
 import { afterVaultReady, bootMark } from "./bootTiming";
+import { isSecondWindow } from "./windowKind";
 import "./App.css";
 
 // The built-in modules mounted over either layout (src/places.ts place "overlay").
@@ -113,7 +114,7 @@ export default function App() {
         const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: saved });
         if (!cancelled) setFiles(listed, saved);
         bootMark("tree", { files: listed.length });
-        gitInitIfNeeded(saved).catch(() => {});
+        if (!isSecondWindow) gitInitIfNeeded(saved).catch(() => {});
       } catch {
         if (!cancelled) {
           localStorage.removeItem("vault_chat_last_vault");
@@ -372,6 +373,8 @@ export default function App() {
   // start a loop for every tracked vault that has sync enabled. Loops are
   // torn down only on app unmount.
   useEffect(() => {
+    // The vault's sync is the main window's (a New window, src/newWindow.ts, shows what it brings).
+    if (isSecondWindow) return;
     void (async () => {
       const { shadowedByFolder } = await import("./master");
       for (const v of trackedVaults()) {
@@ -403,7 +406,7 @@ export default function App() {
   // gets the cheap local-commit-only loop; an enabled one the full sync loop)
   // and point the status row at it.
   useEffect(() => {
-    if (!vaultPath) return;
+    if (!vaultPath || isSecondWindow) return;
     void ensureVaultSyncLoop(vaultPath);
     focusVaultSync();
   }, [vaultPath]);
@@ -415,7 +418,7 @@ export default function App() {
   // file gets created on first read; auto-sync (item #6) propagates
   // it to other machines via git so both sides converge.
   useEffect(() => {
-    if (!vaultPath) return;
+    if (!vaultPath || isSecondWindow) return;
     // Ensure the vault has a stable id file (vault identity).
     void (async () => {
       try {
@@ -451,7 +454,7 @@ export default function App() {
   // pruning the disk copies only invalidates the path reference (used
   // when the agent is asked to embed the image in a markdown file).
   useEffect(() => {
-    if (!vaultPath) return;
+    if (!vaultPath || isSecondWindow) return;
     const RETENTION_HOURS = 6;
     void invoke("cleanup_old_captures", {
       vault: vaultPath,
@@ -515,6 +518,7 @@ export default function App() {
   // in fullscreen chat, which has no titlebar.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (isSecondWindow) return;
       if (hit(e, "voice.toggle")) {
         e.preventDefault();
         toggleVoice("ctrl+d");
@@ -544,10 +548,11 @@ export default function App() {
       <PlaceMount place="overlay" />
       <PlaceMount place="offers" />
       {/* Voice: a plugin (src/plugins/voice): its text box here, its controls in the title bar and the composer. */}
-      <VoiceSlot />
-      <Notices />
+      {/* Voice, the update notices and the change keeper are the main window's (one call, one card). */}
+      {!isSecondWindow && <VoiceSlot />}
+      {!isSecondWindow && <Notices />}
       {/* Changes reach Carl as lines in a chat (src/changeFlow.ts); this keeps what they stand on. Core, never a plugin. */}
-      <ChangeKeeper />
+      {!isSecondWindow && <ChangeKeeper />}
     </>
   );
 

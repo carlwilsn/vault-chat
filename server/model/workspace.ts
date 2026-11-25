@@ -11,7 +11,7 @@
 import { controlDown } from "../deviceLink";
 import { signalLog } from "../convlog/log";
 import { OFFER_EVENT } from "../offerLog";
-import { keptLayout, layoutTool, onLayoutKept } from "../layoutTool";
+import { keptLayout, keptWindows, layoutTool, onLayoutKept } from "../layoutTool";
 import type { ActResult, Noun, NounAction } from "./index";
 
 /** How fresh a read-back must be to answer without asking the laptop again (an action's own ack, just now). */
@@ -22,6 +22,7 @@ const LAYOUT_PARTS = new Set(["app/viewer", "app/chats", "app/titlebar", "app/ch
 const when = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace("T", " ") + " UTC";
 const PANE = { type: "string", enum: ["left", "right"], description: "left or right (stacked: left is the top)" };
 const SPOT = { type: "string", enum: ["full", "left", "right", "top", "bottom", "top-left", "top-right", "bottom-left", "bottom-right"], description: "a half or a quarter of the viewer, or full: the whole viewer" };
+const WINDOW = { type: "integer", minimum: 1, description: "which window: 2 a New window (its own tiles; see windows); left out: the main window" };
 const obj = (props: Record<string, unknown> = {}, required: string[] = []) => ({ type: "object", properties: props, required, additionalProperties: false });
 
 export type WorkspaceCtx = { vault: string; emit?: (ev: Record<string, unknown>) => void; ackMs?: number; dev?: (port: number) => Promise<{ origin: string } | { error: string }> };
@@ -29,11 +30,14 @@ export type WorkspaceCtx = { vault: string; emit?: (ev: Record<string, unknown>)
 export function workspaceNoun(ctx: WorkspaceCtx): Noun {
   const run = (op: string) => async (a: Record<string, unknown>): Promise<ActResult> => {
     if (!ctx.emit) return { ok: false, text: "this box has no link to the laptop here; nothing changed." };
-    const args = op === "arrange" ? { ops: a.ops } : { action: op, ...a };
+    const args = op === "arrange" ? { ops: a.ops, ...(a.window !== undefined ? { window: a.window } : {}) } : { action: op, ...a };
     const r = await layoutTool({ vault: ctx.vault, emit: ctx.emit, ackMs: ctx.ackMs, dev: ctx.dev, brief: true }, args);
     return { ok: r.ok, text: r.text };
   };
-  const action = (description: string, op: string, args = obj()): NounAction => ({ description, args, run: run(op) });
+  // Every arranging action takes window: 2 to act in a New window (left out: the main window); opening and closing
+  // windows are the main window's own.
+  const withWindow = (args: Record<string, unknown>) => ({ ...args, properties: { ...(args.properties as object), window: WINDOW } });
+  const action = (description: string, op: string, args = obj()): NounAction => ({ description, args: op === "newWindow" || op === "closeWindow" ? args : withWindow(args), run: run(op) });
   return {
     id: "workspace",
     name: "Workspace",
@@ -52,6 +56,17 @@ export function workspaceNoun(ctx: WorkspaceCtx): Noun {
             return { error: r.text, ...(n ? { last: n.layout, readAt: when(n.at) } : {}) };
           }
           return { laptop: down ?? "no link to the laptop here", ...(k ? { last: k.layout, readAt: when(k.at) } : { last: null }) };
+        },
+      },
+      windows: {
+        description:
+          "every vault-chat window on the laptop, each with its own tiles: window 1 the main one (as layout), window 2 a New window (Files and Chats closed at first), each as its last read-back (it says its layout when anything in it changes) and when; a New window is kept across a restart (the app opens it again) and gone once closed. Act in one with window: 2 on any action",
+        read: async () => {
+          const down = controlDown("laptop");
+          return {
+            ...(down ? { laptop: down } : {}),
+            windows: keptWindows().map((w) => ({ window: w.window, ...(w.layout as object), ...(w.window === 1 && w.open !== undefined ? { openChat: w.open } : {}), readAt: when(w.at) })),
+          };
         },
       },
     },
@@ -86,6 +101,8 @@ export function workspaceNoun(ctx: WorkspaceCtx): Noun {
         "signOutOfSites",
       ),
       openChat: action('switch the chat pane to a chat (its id, "main", or "project-<slug>"), through the chat list\'s own open', "openChat", obj({ id: { type: "string" } }, ["id"])),
+      newWindow: action("open a second vault-chat window (a New window, window 2) on this vault, as the title bar's New window button: the same box and chats, its own tiles (at most 4, the same rules), Files and Chats closed at first; open already: brought to the front. Then act in it with window: 2", "newWindow"),
+      closeWindow: action("close a New window (window: 2, the default), as its own close button: its tiles are dropped and it does not come back at the next start", "closeWindow", obj({ window: { type: "integer", minimum: 2 } })),
       arrange: action("several of these in order: ops [{action, ...its args}]", "arrange", obj({ ops: { type: "array", items: { type: "object" } } }, ["ops"])),
     },
     watch: (fn) => {

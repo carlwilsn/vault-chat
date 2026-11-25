@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main", "chat-popout"],
+  "description": "Capability for the main window, the chat popout and the New windows (src-tauri/src/app_windows.rs: win-2 and up, the same app)",
+  "windows": ["main", "chat-popout", "win-*"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

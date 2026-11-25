@@ -15,6 +15,14 @@
   "sig": "app_status_write(status:Reported)->Result<(),String>",
   "v": "f7fb7ec5"
  },
+ "app_window_close": {
+  "sig": "app_window_close(n:u32)->Result<bool,String>",
+  "v": "c7ad1656"
+ },
+ "app_window_open": {
+  "sig": "app_window_open(n:u32,focus:bool)->Result<bool,String>",
+  "v": "5bb1bc77"
+ },
  "append_debug_log": {
   "sig": "append_debug_log(vault_path:String,text:String)->Result<(),String>",
   "v": "a254f87c"

@@ -289,8 +289,24 @@ fn bounds(x: f64, y: f64, width: f64, height: f64) -> Rect {
     }
 }
 
+/// Drops every page laid over the window `label` (it is closing, or gone): called on the main thread (the app's window
+/// events, app_windows.rs). The pages that went are told `gone`.
+pub fn drop_window(app: &AppHandle, label: &str) {
+    let gone: Vec<String> = EMBEDS.with(|m| {
+        let mut m = m.borrow_mut();
+        let ids: Vec<String> = m.iter().filter(|(_, e)| e.window == label).map(|(k, _)| k.clone()).collect();
+        for k in &ids {
+            m.remove(k);
+        }
+        ids
+    });
+    for k in gone {
+        emit(app, &k, "gone", None, None, None);
+    }
+}
+
 /// Runs `f` on the main thread (where the views live) and hands back its result.
-async fn on_main<T: Send + 'static>(app: &AppHandle, f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+pub(crate) async fn on_main<T: Send + 'static>(app: &AppHandle, f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.run_on_main_thread(move || {
         let _ = tx.send(f());

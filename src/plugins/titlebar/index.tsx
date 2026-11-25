@@ -22,7 +22,6 @@ import { useStore } from "../../store";
 import { NOTES_PLUGIN_ID } from "../../appPlugins";
 import { pluginDesiredNow, subscribePluginDesired } from "../../pluginSupervisorApp";
 import { runningTaskCount } from "../../backgroundTasks";
-import { openChatPopout } from "../../sync";
 import { openTerminal } from "../../terminal";
 import { subscribeBoxSync, type BoxSyncState } from "../../vaultSync";
 import { subscribeTitlebarItems, titlebarItemNamed, titlebarItems, type TitlebarItem } from "../../titlebarItems";
@@ -135,14 +134,6 @@ export function titlebarOffers(_api: Pick<PluginApi, "host">, sync: () => BoxSyn
           const s = useStore.getState();
           s.setShowSettings(want(a, s.showSettings));
           return { settings: useStore.getState().showSettings };
-        },
-      },
-      popOutChat: {
-        description: "Pop the chat out into its own window (the bar's pop-out button).",
-        run: async () => {
-          if (useStore.getState().popoutOpen) return { poppedOut: true, note: "already popped out" };
-          await openChatPopout();
-          return { poppedOut: true };
         },
       },
       refreshTree: {

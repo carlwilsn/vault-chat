@@ -13,6 +13,7 @@
 import { isTheme, keepTheme } from "./firstTheme";
 import { useEffect, useState } from "react";
 import { useStore } from "./store";
+import { isSecondWindow } from "./windowKind";
 import { boxGet, boxLinkFor, boxPost, type Link } from "./boxChat";
 import {
   SETTINGS,
@@ -78,7 +79,8 @@ function show(key: SettingKey, was: SettingValue): void {
   const v = shown(key);
   const st = useStore.getState();
   if (key === "theme" && isTheme(v) && st.theme !== v) st.applyTheme(v);
-  if (key === "chatSidebar" && typeof v === "boolean" && st.chatSidebarOpen !== v) useStore.setState({ chatSidebarOpen: v });
+  // A New window's Chats is its own (src/newWindow.ts): the setting is the main window's.
+  if (key === "chatSidebar" && !isSecondWindow && typeof v === "boolean" && st.chatSidebarOpen !== v) useStore.setState({ chatSidebarOpen: v });
   if ((key === "model" || key === "effort") && was !== v && st.vaultPath) void import("./chatModels").then((m) => m.refreshChatModels(st.vaultPath!)).catch(() => {});
   if (was !== v) for (const f of [...subs]) f();
 }

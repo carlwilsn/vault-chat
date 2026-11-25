@@ -44,7 +44,8 @@ import { subscribeTranslators } from "./convlog/translators";
 import { MAIN_ID, threadKindOf } from "./threads";
 import { startOfferHistory } from "./offerHistory";
 import { pushLayoutChanges, restoreKeptTiles } from "./layoutOps";
-import { isPopout } from "./windowKind";
+import { isPopout, isSecondWindow, windowNo } from "./windowKind";
+import { openWindow, setWindowBoxPost, windowClosing } from "./newWindow";
 import { probeLaptopReleaseHealth } from "./laptopReleaseHealth";
 
 export const BOX_UNREACHABLE = "Box unreachable";
@@ -378,16 +379,29 @@ class BoxChatSession {
   start(): void {
     this.applyCache();
     if (!headless() && !isPopout) {
-      const offH = startOfferHistory((events) => httpPost(this.link, "/api/v2/offer-events", { events, client: "laptop" }, []));
-      // The layout as it changes by hand: box:workspace's state and watch (src/layoutOps.ts).
-      // The tiles the box kept for this vault come back first; then the layout as it is now, and as it changes.
+      // The offer events are the main window's (a New window's own layout reaches the box below).
+      const offH = isSecondWindow ? () => {} : startOfferHistory((events) => httpPost(this.link, "/api/v2/offer-events", { events, client: "laptop" }, []));
+      // The layout as it changes by hand: box:workspace's state and watch (src/layoutOps.ts), each window's its own
+      // (a New window says which it is: src/newWindow.ts).
+      // The tiles the box kept for this window come back first; then the layout as it is now, and as it changes.
+      const which = isSecondWindow ? { window: windowNo } : {};
+      setWindowBoxPost((body) => httpPost(this.link, "/api/v2/layout", body, []));
       let offL = () => {};
       let gone = false;
-      void restoreKeptTiles(() => httpGet(this.link, "/api/v2/layout", 8_000), this.vault)
-        .then((how) => vlog("layout", `start: ${how}`))
+      let kept: { windows?: unknown } | null = null;
+      void restoreKeptTiles(async () => (kept = await httpGet(this.link, `/api/v2/layout${isSecondWindow ? `?window=${windowNo}` : ""}`, 8_000)), this.vault)
+        .then((how) => {
+          vlog("layout", `start: ${how}`);
+          // The main window opens again the New windows that were open when the app last closed (their tiles kept).
+          const others = (kept as { windows?: unknown } | null)?.windows;
+          if (!isSecondWindow && Array.isArray(others)) for (const n of others) if (typeof n === "number" && n > 1) void openWindow(n, true);
+        })
         .finally(() => {
           if (gone) return;
-          offL = pushLayoutChanges((layout, migratedFrom) => void httpPost(this.link, "/api/v2/layout", { layout, ...(migratedFrom !== undefined ? { migratedFrom } : {}) }, []).catch(() => {}), undefined, true);
+          offL = pushLayoutChanges((layout, migratedFrom) => {
+            if (windowClosing()) return;
+            void httpPost(this.link, "/api/v2/layout", { layout, ...which, ...(migratedFrom !== undefined ? { migratedFrom } : {}) }, []).catch(() => {});
+          }, undefined, true);
         });
       this.unsubHistory = () => (offH(), (gone = true), offL());
     }
@@ -409,7 +423,9 @@ class BoxChatSession {
         device: "laptop",
         idleMs: LAPTOP_IDLE_MS,
         convId: () => useStore.getState().activeConversationId,
-        post: (b) => httpPost(this.link, "/api/v1/attention", b),
+        // A New window is the same laptop: it says only that he is looking (its beats lapse on the box when he is
+        // not); "not looking" is the main window's to say.
+        post: (b) => (isSecondWindow && !b.looking ? undefined : httpPost(this.link, "/api/v1/attention", b)),
       });
     } catch {
       /* no window here (tests): nothing to say */
@@ -747,6 +763,10 @@ class BoxChatSession {
   }
 
   private signal(e: Record<string, unknown>, seq?: number): void {
+    // The agent's requests to the laptop's screen go to one window: the one they name (window: 2, a New window), else
+    // the main window. A New window leaves the vault's sync to the main window too.
+    if (SCREEN_SIGNALS.has(String(e.type)) && (typeof e.window === "number" ? e.window : 1) !== windowNo) return;
+    if (isSecondWindow && e.type === "vault_changed") return;
     switch (e.type) {
       case "setting":
         // One of Carl's settings changed (the agent's box:settings, the phone, another window): shown here now.
@@ -1140,6 +1160,9 @@ class BoxChatSession {
     }
   }
 }
+
+/** The feed's signals that act on one window's screen (src/boxChat.ts signal). */
+const SCREEN_SIGNALS = new Set(["show", "layout", "plugin", "capture", "build", "follow"]);
 
 let session: BoxChatSession | null = null;
 
