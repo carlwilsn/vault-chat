@@ -374,8 +374,8 @@ function NativeWebPane({ paneId, url }: { paneId?: string; url: string }) {
   }, [failed, zoom]);
   placeRef.current = place;
 
-  // Follow the pane: opening, splitting and unsplitting, the split's divider, the window, scrolling, the other pane
-  // changing kind, and a 200 ms tick for what fires no event (the pane moving without resizing, a menu over it).
+  // Follow the pane: opening, splitting and unsplitting, the split's divider and the sashes (hidden while they move),
+  // the window, the other pane changing kind, a menu or dialog over it, and a 200 ms tick for what fires no event.
   useEffect(() => (failed ? undefined : followPlaceholder(body.current, place)), [place, failed]);
 
   // A new address for this pane (the agent's openInPane / Show, not the page's own navigation): the view goes there,
