@@ -77,10 +77,14 @@ export function nativeBounds(b: Box, zoom = 1): { x: number; y: number; width: n
   return { x, y, width: Math.ceil(b.right * zoom) - x, height: Math.ceil(b.bottom * zoom) - y };
 }
 
-/** Points to test for something of the app's lying over the view (a menu, a dialog, a toast): a 3x3 grid inside it. */
-export function probePoints(b: Box, inset = 6): [number, number][] {
-  const xs = [b.left + inset, (b.left + b.right) / 2, b.right - inset];
-  const ys = [b.top + inset, (b.top + b.bottom) / 2, b.bottom - inset];
+/** Points to test for something of the app's lying over the view (a menu, a dialog, a toast): a grid inside it, at
+ *  most `step` px apart (3 x 3 at least), so a menu as small as a step is always hit wherever it opens over the view. */
+export function probePoints(b: Box, inset = 6, step = 140): [number, number][] {
+  const axis = (lo: number, hi: number) => {
+    const n = Math.max(3, Math.min(9, Math.ceil((hi - lo - 2 * inset) / step) + 1));
+    return Array.from({ length: n }, (_, i) => lo + inset + ((hi - lo - 2 * inset) * i) / (n - 1));
+  };
+  const xs = axis(b.left, b.right), ys = axis(b.top, b.bottom);
   return ys.flatMap((y) => xs.map((x) => [Math.round(x), Math.round(y)] as [number, number]));
 }
 
@@ -99,46 +103,140 @@ export function inOrder<T>(id: string, f: () => Promise<T>): Promise<T> {
 
 export type ViewCalls = { open(b: Bounds): Promise<unknown>; place(b: Bounds): Promise<unknown>; close(): Promise<unknown> };
 
+/** How long the placeholder's size must stay put before a view hidden for the motion shows again. */
+export const SETTLE_MS = 140;
+/** Size changes this close together (each within SETTLE_MS of the last) are a drag or a resize under way. */
+export const MOVING_AFTER = 3;
+const FRAME_MS = 8;
+
+export type PlacerOptions = {
+  settleMs?: number;
+  now?: () => number;
+  /** The view went into hiding for a drag / resize (true), or showed again at the end of it (false). */
+  onMoving?: (moving: boolean) => void;
+};
+
 /** One native view kept exactly on its placeholder. `to(b)` with where the placeholder is now (src/InlineWebPage.tsx
- *  measure), as often as anything moves: the view is made the first time it is seen, then moved there. Every call goes
- *  through the view's queue (inOrder), after `before` (the start-over close), and the open takes the placeholder's
- *  bounds when it runs, not when it was asked for: a split settling while the view is being made (the new pane first
- *  laid out narrow at the left pane's place) is never lost, and a move is never sent for a view that does not exist
- *  yet (the shell drops those). A move that fails is sent again by the next `to`. `close` comes after anything asked
- *  before it, so a pane that goes leaves no view behind. */
-export function viewPlacer(id: string, calls: ViewCalls, before: () => Promise<unknown> = () => Promise.resolve()) {
+ *  measure), as often as anything moves: the view is made the first time it is seen, then moved there.
+ *
+ *  The shell answers each call after an IPC hop and a turn of its main thread (tens of ms when it is busy), slower
+ *  than a drag moves the placeholder. So at most one call per view is on its way, and when it answers the newest place
+ *  goes next: what is sent is always where the placeholder is now, never a queue of where it was (a queue was the
+ *  lag: under a 40 ms main thread a sash drag left the view up to 385 px over the chat, still replaying 1.5 s after the
+ *  drag ended). And while its size keeps changing (MOVING_AFTER changes, each within SETTLE_MS: a sash, a split
+ *  divider, the window's edge) the view hides, and shows again at the final place once the size has held for
+ *  SETTLE_MS: a native view resized every frame always trails the app's own layout (it bled over the next column) and
+ *  makes the page lay itself out again every frame. A single change (a panel toggled, the split turned on) just moves
+ *  it. Scrolling moves it without hiding.
+ *
+ *  Every call goes through the view's queue (inOrder), after `before` (the start-over close), and the open takes the
+ *  placeholder's bounds when it runs, not when it was asked for: a split settling while the view is being made is
+ *  never lost, and a move is never sent for a view that does not exist yet (the shell drops those). A move that fails
+ *  is sent again by the next `to`. `close` comes after anything asked before it, so a pane that goes leaves no view
+ *  behind. */
+export function viewPlacer(id: string, calls: ViewCalls, before: () => Promise<unknown> = () => Promise.resolve(), opts: PlacerOptions = {}) {
+  const settleMs = opts.settleMs ?? SETTLE_MS;
+  const now = opts.now ?? (() => performance.now());
   let want: Bounds | null = null;
   /** What the shell was last asked for (null: nothing it is sure to have). */
   let sent: Bounds | null = null;
   let open = false;
+  /** The call on its way (at most one). */
+  let busy: Promise<unknown> | null = null;
+  /** The size last seen, when it last changed, and how many changes came each within settleMs of the one before. */
+  let size: { w: number; h: number } | null = null;
+  let changedAt = -Infinity;
+  let run = 0;
+  let moving = false;
+  let rest: ReturnType<typeof setTimeout> | null = null;
+  const setMoving = (m: boolean) => {
+    if (moving === m) return;
+    moving = m;
+    opts.onMoving?.(m);
+  };
+  /** Where the view should be now: the placeholder, or hidden while it moves. */
+  const target = (): Bounds => (moving && want!.visible ? { ...want!, visible: false } : want!);
+  const pump = (): Promise<unknown> | null => {
+    if (!open || busy || !want) return null;
+    const b = target();
+    if (sameBounds(sent, b)) return null;
+    sent = b;
+    const p: Promise<unknown> = inOrder(id, () => calls.place(b)).then(
+      () => {
+        if (busy !== p) return;
+        busy = null;
+        pump(); // the placeholder moved while this was on its way: the newest place goes now
+      },
+      () => {
+        if (busy === p) busy = null;
+        if (sent === b) sent = null; // not taken as done: the next `to` sends it again
+      },
+    );
+    busy = p;
+    return p;
+  };
+  const stopRest = () => {
+    if (rest) clearTimeout(rest);
+    rest = null;
+  };
   return {
     get open() { return open; },
+    get moving() { return moving; },
     to(b: Bounds): Promise<unknown> | null {
       want = b;
+      if (b.visible) {
+        const t = now();
+        if (size && (size.w !== b.width || size.h !== b.height)) {
+          // Changes in one frame (a layout settling) count once; a drag changes it frame after frame.
+          if (t - changedAt >= FRAME_MS) run = t - changedAt < settleMs ? run + 1 : 1;
+          changedAt = t;
+          if (run >= MOVING_AFTER) setMoving(true);
+          stopRest();
+          rest = setTimeout(() => {
+            rest = null;
+            run = 0;
+            setMoving(false);
+            pump();
+          }, settleMs);
+        }
+        size = { w: b.width, h: b.height };
+      }
       if (!open) {
         if (!b.visible) return null; // made the first time it is seen
         open = true;
         sent = b;
-        return inOrder(id, async () => {
+        const p: Promise<unknown> = inOrder(id, async () => {
           await before();
-          sent = want!;
-          return calls.open(want!);
-        }).catch((e: unknown) => {
-          open = false;
-          sent = null;
-          throw e;
+          sent = target();
+          return calls.open(sent);
         });
+        busy = p;
+        p.then(
+          () => {
+            if (busy !== p) return;
+            busy = null;
+            pump();
+          },
+          () => {
+            if (busy === p) busy = null;
+            open = false;
+            sent = null;
+          },
+        );
+        return p;
       }
-      if (sameBounds(sent, b)) return null;
-      sent = b;
-      return inOrder(id, () => calls.place(b)).catch(() => { if (sent === b) sent = null; });
+      return pump();
     },
     /** Forget what the shell has: the next `to` makes the view again (after a close of its own). */
-    reset() { open = false; sent = null; },
+    reset() { open = false; sent = null; busy = null; },
     close(): Promise<unknown> | null {
+      stopRest();
+      setMoving(false);
+      run = 0;
       if (!open) return null;
       open = false;
       sent = null;
+      busy = null;
       return inOrder(id, () => calls.close()).catch(() => undefined);
     },
   };

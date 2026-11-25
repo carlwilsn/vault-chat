@@ -35,13 +35,13 @@ let seq = 0;
 export const newId = () => `w${Date.now().toString(36)}${(seq++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 /** The native view `id` kept on its placeholder (src/inlineWeb.ts viewPlacer): made with `open` (web_embed_open, or the
- *  dev variant) at the address `url()` holds when the call runs. */
-export function nativeView(id: string, url: () => string, open = "web_embed_open"): ViewPlacer {
+ *  dev variant) at the address `url()` holds when the call runs. `onMoving`: hidden for a drag / resize, and back. */
+export function nativeView(id: string, url: () => string, open = "web_embed_open", onMoving?: (moving: boolean) => void): ViewPlacer {
   return viewPlacer(id, {
     open: (b) => invoke(open, { id, url: url(), ...b }),
     place: (b) => invoke("web_embed_place", { id, ...b }),
     close: () => invoke("web_embed_close", { id }),
-  }, ready);
+  }, ready, { onMoving });
 }
 
 /** Where the window's logical pixels are, per CSS pixel: the page zoom (devicePixelRatio over the window's scale
@@ -67,26 +67,61 @@ export function useZoom(onChange: () => void): () => number {
   return useCallback(() => (window.devicePixelRatio || 1) / (scale.current || window.devicePixelRatio || 1), []);
 }
 
-/** Calls `place` whenever the placeholder `el` may have moved: its size (ResizeObserver), the window's size, any
- *  scroll, the page showing again, the layout around it (the body's size: panels, splits), and a 200 ms tick for what
- *  fires no event (a pane moving without resizing, a menu opening over it). At most once a frame. */
+/** Calls `place` whenever the placeholder `el` may have moved, as soon as the frame that moved it is drawn (a task
+ *  right after it, not the next frame's requestAnimationFrame: the view's move leaves a frame earlier, and sees the
+ *  layout settled, not the first pass of a panel opening): its size (ResizeObserver: a sash, a split, a panel, full
+ *  screen), the window's size, any scroll. Something of the app's opening over it (a menu, Ctrl+K, Settings, a dialog): checked on
+ *  the next frame after a key or a click and after the app adds or removes an element (at most every 50 ms), and
+ *  again shortly after (a menu mounts a moment after the click that opens it). And a 200 ms tick for what fires none
+ *  of these (a pane moving without resizing). */
 export function followPlaceholder(el: HTMLElement | null, place: () => void, also?: () => void): () => void {
   let raf = 0;
+  let late: ReturnType<typeof setTimeout> | null = null;
+  let lastDom = 0;
   const run = () => { raf = 0; place(); };
   const soon = () => { if (!raf) raf = requestAnimationFrame(run); };
-  const ro = el && typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => { also?.(); soon(); }) : null;
+  let queued = false;
+  const ch = typeof MessageChannel !== "undefined" ? new MessageChannel() : null;
+  if (ch) ch.port1.onmessage = () => { queued = false; place(); };
+  const asap = () => {
+    if (!ch) return soon();
+    if (!queued) { queued = true; ch.port2.postMessage(0); }
+  };
+  /** Input or the DOM changed: maybe a menu or a dialog over the view. Next frame, and once more a little later. */
+  const recheck = () => {
+    soon();
+    if (late) clearTimeout(late);
+    late = setTimeout(() => { late = null; soon(); }, 120);
+  };
+  let domLater: ReturnType<typeof setTimeout> | null = null;
+  const onDom = () => {
+    const t = performance.now();
+    if (t - lastDom >= 50) { lastDom = t; soon(); return; }
+    // A streaming reply changes the DOM every frame: one check per 50 ms, the last change always checked.
+    domLater ??= setTimeout(() => { domLater = null; lastDom = performance.now(); soon(); }, 50 - (t - lastDom));
+  };
+  const ro = el && typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => { also?.(); asap(); }) : null;
   if (el) { ro?.observe(el); ro?.observe(document.body); }
-  window.addEventListener("scroll", soon, true);
-  window.addEventListener("resize", soon);
+  const mo = typeof MutationObserver !== "undefined" ? new MutationObserver(onDom) : null;
+  mo?.observe(document.body, { childList: true, subtree: true });
+  const opts = { capture: true, passive: true } as const;
+  window.addEventListener("scroll", asap, opts);
+  window.addEventListener("resize", asap);
+  for (const k of ["pointerdown", "pointerup", "keydown", "keyup"] as const) window.addEventListener(k, recheck, opts);
   document.addEventListener("visibilitychange", soon);
   // The tick measures now, not on a frame: it keeps working while no frame comes.
   const tick = setInterval(place, 200);
   soon();
   return () => {
     cancelAnimationFrame(raf);
+    if (late) clearTimeout(late);
+    if (domLater) clearTimeout(domLater);
     ro?.disconnect();
-    window.removeEventListener("scroll", soon, true);
-    window.removeEventListener("resize", soon);
+    mo?.disconnect();
+    ch?.port1.close();
+    window.removeEventListener("scroll", asap, opts);
+    window.removeEventListener("resize", asap);
+    for (const k of ["pointerdown", "pointerup", "keydown", "keyup"] as const) window.removeEventListener(k, recheck, opts);
     document.removeEventListener("visibilitychange", soon);
     clearInterval(tick);
   };
@@ -148,7 +183,8 @@ function LiveWebPage({ src, label, sizeHint, onFail, onClose }: { src: string; l
   const urlRef = useRef(src);
   urlRef.current = url;
   const view = useRef<ViewPlacer | null>(null);
-  if (!view.current) view.current = nativeView(id, () => urlRef.current);
+  const [moving, setMoving] = useState(false);
+  if (!view.current) view.current = nativeView(id, () => urlRef.current, "web_embed_open", setMoving);
 
   // The page's own reports: where it went, its title, a refused link or download.
   useEffect(() => {
@@ -296,7 +332,7 @@ function LiveWebPage({ src, label, sizeHint, onFail, onClose }: { src: string; l
             <button data-offer="app/chat-rows.inline" type="button" className="underline underline-offset-2 hover:text-foreground" onClick={() => setResting(false)} data-el="chat-web-wake">Show the page again</button>
           </span>
         ) : (
-          <span className="absolute inset-0 flex items-center justify-center text-[12px] text-muted-foreground italic">Loading {displayHost(url)}…</span>
+          <span className="absolute inset-0 flex items-center justify-center text-[12px] text-muted-foreground italic">{moving ? displayHost(url) : `Loading ${displayHost(url)}…`}</span>
         )}
       </span>
       {!big && (

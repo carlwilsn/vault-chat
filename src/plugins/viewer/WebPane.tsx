@@ -246,7 +246,9 @@ function NativeWebPane({ paneId, url }: { paneId?: string; url: string }) {
   const viewUrl = useRef(url);
   /** The native view, kept on this pane's own body (src/inlineWeb.ts viewPlacer). */
   const view = useRef<ViewPlacer | null>(null);
-  if (!view.current) view.current = nativeView(id, () => viewUrl.current);
+  /** Hidden while the pane is being resized (a sash, the split divider, the window's edge): it shows again at rest. */
+  const [moving, setMoving] = useState(false);
+  if (!view.current) view.current = nativeView(id, () => viewUrl.current, "web_embed_open", setMoving);
 
   const setAddress = useSetAddress(paneId, viewUrl);
 
@@ -424,7 +426,7 @@ function NativeWebPane({ paneId, url }: { paneId?: string; url: string }) {
             <span data-el="web-pane-why">Opens in the browser: {failed}.</span>
           </div>
         ) : (
-          <div className="absolute inset-0 flex items-center justify-center text-[12px] text-muted-foreground italic">Loading {displayHost(url)}…</div>
+          <div className="absolute inset-0 flex items-center justify-center text-[12px] text-muted-foreground italic" data-el="web-pane-under">{moving ? displayHost(url) : `Loading ${displayHost(url)}…`}</div>
         )}
       </div>
     </PaneShell>
