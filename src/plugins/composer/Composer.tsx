@@ -577,7 +577,7 @@ export function Composer() {
                   data-el="mention-row"
                   data-i={i}
                   title={f.rel}
-                  className={cn("mention-row", i === fileMentionIdx && "on")}
+                  className={cn("mention-row", i === fileMentionIdx && "on", (f.ni.length > 0 || f.di.length > 0) && "lit")}
                   onMouseDown={(e) => {
                     e.preventDefault();
                     pickMention(f);
