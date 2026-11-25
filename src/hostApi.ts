@@ -211,7 +211,7 @@ export const noHost: HostBackend = {
   applyLayout: async (ops) => ({ ok: false, results: ops.map((o) => ({ op: o.op, ok: false, error: "no screen here" })), layout: NO_LAYOUT }),
 };
 
-const NO_LAYOUT: HostLayout = { split: false, direction: null, panes: [], currentFile: null, activePane: null, leftPanelOpen: false, rightPanelOpen: false, chatFullscreen: false, chatPoppedOut: false, chatSidebarOpen: false, viewport: null, sizes: null };
+const NO_LAYOUT: HostLayout = { split: false, direction: null, panes: [], currentFile: null, activePane: null, leftPanelOpen: false, rightPanelOpen: false, chatPoppedOut: false, chatSidebarOpen: false, viewport: null, sizes: null };
 const EVENTS: readonly string[] = ["file-opened", "chat-message", "selection-changed"];
 
 /**

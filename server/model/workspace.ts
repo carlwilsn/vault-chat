@@ -1,6 +1,6 @@
 // The workspace noun (report 24 §4, noun 4): what is on Carl's laptop screen and how it is arranged: the viewer's panes
 // (a split of two files, "left" and "right"; stacked: left is the top), the left panel (file tree), the chat (the right
-// panel, full screen, its sidebar) and which chat is open. Only the laptop app has panes, so its state is what the
+// panel, its sidebar) and which chat is open. Only the laptop app has panes, so its state is what the
 // laptop reads back from its own screen (src/layoutOps.ts readLayout), kept on the box with when it was read: read live
 // when the laptop is up, the last read-back (and since when the laptop is away) when it is not. The actions are the
 // app's own layout ops (src/layoutOps.ts LAYOUT_OPS: a pane holds a vault file or a web page, src/webPane.ts, the same ones a plugin has as api.host.layout and the title bar's
@@ -44,7 +44,7 @@ export function workspaceNoun(ctx: WorkspaceCtx): Noun {
     state: {
       layout: {
         description:
-          "Carl's laptop screen, read back from it: downloads (files the web pages saved this session, newest first: name, path under .vault-chat/downloads, size, at, ok); panes and their files or web pages (url and title; Carl's own navigation shows here; `page`: the visible text as Carl sees it, for a public page also its interactive elements with refs (one line each, like e12 button 'Sign in'; password fields only filled / empty) and scroll, for a dev server's page console errors and failed requests with status, as the page reported them; picking: its Select is on) (split, side-by-side or stacked, the active pane), the left panel (file tree) open, the chat panel open / full screen / popped out, its sidebar, the open chat when known, window and column sizes; when the laptop is away, the last read-back and since when",
+          "Carl's laptop screen, read back from it: downloads (files the web pages saved this session, newest first: name, path under .vault-chat/downloads, size, at, ok); panes and their files or web pages (url and title; Carl's own navigation shows here; `page`: the visible text as Carl sees it, for a public page also its interactive elements with refs (one line each, like e12 button 'Sign in'; password fields only filled / empty) and scroll, for a dev server's page console errors and failed requests with status, as the page reported them; picking: its Select is on) (split, side-by-side or stacked, the active pane), the left panel (file tree) open, the chat panel open / popped out, its sidebar, the open chat when known, window and column sizes; when the laptop is away, the last read-back and since when",
         read: async () => {
           const k = keptLayout();
           const down = controlDown("laptop");
@@ -90,10 +90,8 @@ export function workspaceNoun(ctx: WorkspaceCtx): Noun {
       newChat: action("a new chat: with tile (a chat tile's id), in that chat's place (its project or Main), replacing it in that tile, as the tile's New chat; else in place (\"main\" or a project's slug; left out: where Carl is) at spot (left out: where new things go), as \"+ New chat\" or a project row dropped there", "newChat", obj({ tile: { type: "string" }, place: { type: "string" }, spot: SPOT })),
       autoHideTitleBar: action("the title bar auto-hidden (on: it slides in when the pointer rests at the top edge) or always shown (off), as its right-click menu's Auto-hide title bar; layout.titleBarAutoHide says which", "autoHideTitleBar", obj({ on: { type: "boolean" } }, ["on"])),
       page: action("open or close Settings or Notes: a modal centred over everything (never a tile), as its title-bar button", "page", obj({ page: { type: "string", enum: ["settings", "notes"] }, open: { type: "boolean" } }, ["page", "open"])),
-      maximize: action("a tile fills the app window (its own row the one bar), or (on: false) back to the arrangement", "maximize", obj({ tile: { type: "string" }, on: { type: "boolean" } }, ["on"])),
       split: action("turn the split on or off (off keeps the active pane)", "split", obj({ on: { type: "boolean" } }, ["on"])),
       focus: action("focus a pane, a tile (its id) or the chat", "focus", obj({ target: { type: "string", description: '"left", "right", "chat" or a tile id' } }, ["target"])),
-      fullscreenChat: action("the open chat's tile full screen, or back (as maximize)", "fullscreenChat", obj({ on: { type: "boolean" } }, ["on"])),
       chatSidebar: action("Chats (the chat list at the right) open or closed, as Ctrl+Shift+B", "chatSidebar", obj({ open: { type: "boolean" } }, ["open"])),
       resize: action("set the columns' widths as dragging the sashes does: leftPanel (the file tree) and/or chat, in pixels; the viewer takes the rest. tiles: the lines between the viewer's spots as dragging their dividers does, fractions: x (the left side's share of the width; alone: in both rows), xb (the bottom row's own, when the rows' lines differ: four quarters, or a bottom row split under a top half), left / right (that side's top spot's share of its height; one line across when a spot spans both sides: left). Four quarters: rows' lines apart keep one line across, sides' lines apart keep one line down", "resize", obj({ leftPanel: { type: "number", minimum: 0 }, chat: { type: "number", minimum: 0 }, tiles: obj({ x: { type: "number", minimum: 0, maximum: 1 }, xb: { type: "number", minimum: 0, maximum: 1 }, left: { type: "number", minimum: 0, maximum: 1 }, right: { type: "number", minimum: 0, maximum: 1 } }) })),
       signOutOfSites: action(

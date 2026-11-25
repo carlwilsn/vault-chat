@@ -40,7 +40,7 @@ export function layoutLine(s: LayoutState, vault: string | null | undefined): st
   if (rows.length >= 2 || rows.some((r) => r.content?.type === "chat")) {
     const each = rows.map((r) => {
       const what = !r.content ? "empty" : r.content.type === "chat" ? `chat "${tileTitle(r.content)}"` : relToVault(vault, (r.content.paneId ? s.panes.find((p) => p.id === (r.content as { paneId: string }).paneId)?.file : s.currentFile) ?? "");
-      return `${spotName(r.rect)}: ${what}${t.maximized === r.id ? " (full screen)" : t.focused === r.id && r.content ? " (focused)" : ""}`;
+      return `${spotName(r.rect)}: ${what}${t.focused === r.id && r.content ? " (focused)" : ""}`;
     });
     return `Tiles: ${each.join(" · ")}`;
   }

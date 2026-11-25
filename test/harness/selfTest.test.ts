@@ -191,7 +191,7 @@ test("the recorded tour the Mac job runs is a valid steps file, paced, every sur
   const p = plan as Exclude<typeof plan, string>;
   assert.ok((p.pace ?? 0) >= 500, "steps pause so the recording is watchable");
   const all = JSON.stringify(p.steps);
-  for (const want of ["Mod+K", "Mod+L", "Mod+Shift+F", "Mod+M", "chat-popout", "settings-pane", "\"drag\"", "Rename", "noFile", "ask-answer", "composer"]) assert.ok(all.includes(want), `the tour covers ${want}`);
+  for (const want of ["Mod+K", "Mod+L", "Mod+M", "chat-popout", "settings-pane", "\"drag\"", "Rename", "noFile", "ask-answer", "composer"]) assert.ok(all.includes(want), `the tour covers ${want}`);
   assert.ok(!/Control\+|Ctrl\+|Meta\+/.test(all), "keys go through Mod, so the same tour is Ctrl on Linux and Cmd on a Mac");
 });
 

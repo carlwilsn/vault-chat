@@ -49,7 +49,7 @@ import {
 } from "./vaultSync";
 import { startActivityWatch } from "./activity";
 import { clearSavedLayouts } from "./paneLayout";
-import { startTiles, toggleMaximizeFocused, useTiles } from "./tiles";
+import { startTiles } from "./tiles";
 import { startChatRowDrag, startDevDragHook } from "./tileDrag";
 import { MAIN_ID } from "./threads";
 import { afterVaultReady, bootMark } from "./bootTiming";
@@ -130,10 +130,6 @@ export default function App() {
   const popoutOpen = useStore((s) => s.popoutOpen);
   const chatFullscreen = useStore((s) => s.chatFullscreen);
   const chatsOpen = useStore((s) => s.chatSidebarOpen);
-  // a zoomed tile fills the window (src/tiles.ts maximizeTile closes the side panels and puts them back;
-  // Ctrl+B / Ctrl+Shift+B still open them beside it); our title bar is not drawn (App.css). The window itself never
-  // changes size or mode (no OS fullscreen: a snapped window stays snapped).
-  const tileMaximized = useTiles((t) => !!t.maximized);
   const files = useStore((s) => s.files);
   const vaultPath = useStore((s) => s.vaultPath);
   const fitWidth = useMemo(() => computeFitWidth(files), [files]);
@@ -240,12 +236,6 @@ export default function App() {
         return;
       }
       const mod = isMod(e);
-      if (e.key === "Escape" && !e.defaultPrevented && useTiles.getState().maximized && !document.querySelector('[role="dialog"], [role="menu"]')) {
-        // Esc ends a zoom (as Ctrl+Shift+F again), unless a menu or dialog is open (Esc is theirs).
-        e.preventDefault();
-        toggleMaximizeFocused();
-        return;
-      }
       if (!mod) return;
       // Holding a Ctrl-shortcut auto-repeats the keydown at the OS rate
       // (~30 Hz). Without this guard, Ctrl+B flickers the pane on/off,
@@ -324,12 +314,6 @@ export default function App() {
         // Ctrl+Shift+B shows or hides the Chats panel (there is no chat panel: chats are tiles).
         e.preventDefault();
         useStore.getState().toggleChatSidebar();
-      } else if (hit(e, "view.fullscreen")) {
-        // Ctrl+Shift+F — maximize / restore the focused tile (its header's button). There is no separate
-        // full-screen mode: a chat tile filling the area is what full-screen chat was.
-        e.preventDefault();
-        if (useStore.getState().chatFullscreen) useStore.getState().toggleChatFullscreen();
-        else toggleMaximizeFocused();
       } else if (hit(e, "chat.new")) {
         // Ctrl+T — back to Main (one main conversation: there are no new chats to start). The
         // webview's native "new tab" is already swallowed by Tauri.
@@ -561,13 +545,13 @@ export default function App() {
   // when the chat is popped out (the popout window is the fullscreen chat).
   // The chat pane itself is ChatPaneHost's, at the same place in either layout: <ChatPane /> in a layout is a slot it
   // moves into (src/ChatPane.tsx), so switching layouts never rebuilds the transcript.
-  // no full-screen chat and no chat panel: a chat is a tile (src/tiles.ts); a maximized chat tile is what
-  // full-screen chat was. The side panels: Files (left), Chats (right), Notes (its own).
+  // no full-screen chat and no chat panel: a chat is a tile (src/tiles.ts); full screen is one tile filling the
+  // viewer (Ctrl+B / Ctrl+Shift+B close the panels; the title bar can auto-hide). The side panels: Files (left), Chats (right), Notes (its own).
   void chatFullscreen;
   void captureOver;
   return (
     <>
-    <div className="relative h-full w-full bg-background flex flex-col" data-tile-zoom={tileMaximized ? "" : undefined}>
+    <div className="relative h-full w-full bg-background flex flex-col">
       <AutoHideTitlebar><Titlebar /></AutoHideTitlebar>
       <div className="flex-1 min-h-0">
         {/* Viewer navigation cannot replace the conversation's React owner.

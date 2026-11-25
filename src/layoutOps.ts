@@ -9,7 +9,7 @@ import { useStore } from "./store";
 import { PANE_SIDES, relToVault, sideOf } from "./paneLayout";
 import { invoke } from "@tauri-apps/api/core";
 import { isUnreadableAsText } from "./fileKind";
-import { SPOTS, closeTile, ensureChatTile, ensureTilesStarted, fileTilesInPlace, fillTile, findLeaf, findSlot, focusTile, leaves, maximizeTile, moveTile, newChatAt, openAt, openFilling, placeTile, restoreTiles, restoredFrom, setSplit, takeMigration, tileAtSide, tilesFromLegacy, tileOfPane, tilesForLayout, useTiles, type SavedTiles, type TileWhat } from "./tiles";
+import { SPOTS, closeTile, ensureChatTile, ensureTilesStarted, fileTilesInPlace, fillTile, findLeaf, findSlot, focusTile, moveTile, newChatAt, openAt, openFilling, placeTile, restoreTiles, restoredFrom, setSplit, takeMigration, tileAtSide, tilesFromLegacy, tileOfPane, tilesForLayout, useTiles, type SavedTiles, type TileWhat } from "./tiles";
 import type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult, PaneSide, WebPageSeen } from "./layoutTypes";
 import { isPicking, isWebAddress, navigateWebPane, openWebInPane, paneKey, webPageAct } from "./webPane";
 import { signOutOfSites } from "./webProfile";
@@ -18,7 +18,7 @@ import { closeWindow, openWindow } from "./newWindow";
 import { isSecondWindow, windowNo } from "./windowKind";
 export type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult, WebPageSeen } from "./layoutTypes";
 
-export const LAYOUT_OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "fullscreenChat", "chatSidebar", "resize", "signOutOfSites", "maximize", "moveTile", "page", "newChat", "autoHideTitleBar", "newWindow", "closeWindow"] as const;
+export const LAYOUT_OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "chatSidebar", "resize", "signOutOfSites", "moveTile", "page", "newChat", "autoHideTitleBar", "newWindow", "closeWindow"] as const;
 
 /** The outer split's own resize (Allotment's, registered by src/App.tsx): what dragging a sash does, in pixels per column. */
 let outerResize: ((sizes: number[]) => void) | null = null;
@@ -52,7 +52,7 @@ export async function restoreKeptTiles(get: () => Promise<{ layout?: unknown } |
     const files = l.panes.map((p) => ("file" in p ? p.file : p.url)).filter((f): f is string => typeof f === "string" && !!f);
     const active = Math.max(0, l.panes.findIndex((p) => p.active));
     const chat = useStore.getState().activeConversationId;
-    const saved = tilesFromLegacy({ files, stacked: l.direction === "stacked", active, chat, chat_at: l.chatFullscreen ? "full" : l.rightPanelOpen ? "right" : null });
+    const saved = tilesFromLegacy({ files, stacked: l.direction === "stacked", active, chat, chat_at: (l as { chatFullscreen?: boolean }).chatFullscreen ? "full" : l.rightPanelOpen ? "right" : null });
     if (!saved.tiles.length) return "nothing kept";
     const ok = await restoreTiles(saved, { vault, read, how: "legacy", from: { box: l } });
     return ok ? "the older layout became tiles" : "the older layout did not fit";
@@ -225,7 +225,6 @@ export function readLayout(measure: () => Pick<HostLayout, "viewport" | "sizes">
     activePane,
     leftPanelOpen: !s.leftCollapsed,
     rightPanelOpen: s.chatSidebarOpen,
-    chatFullscreen: chatZoomed(),
     chatPoppedOut: s.popoutOpen,
     chatSidebarOpen: s.chatSidebarOpen,
     titleBarAutoHide: setting("titleBarAutoHide") === true,
@@ -235,12 +234,6 @@ export function readLayout(measure: () => Pick<HostLayout, "viewport" | "sizes">
     ...(s.webDownloads.length ? { downloads: s.webDownloads } : {}),
   };
 }
-
-/** The open chat's tile is full screen (the old full-screen chat). */
-const chatZoomed = (): boolean => {
-  const t = useTiles.getState();
-  return !!t.maximized && findSlot(t.slots, t.maximized)?.content?.type === "chat";
-};
 
 const sideOk = (v: unknown): v is PaneSide => PANE_SIDES.includes(v as PaneSide);
 const done = (note?: string) => ({ ok: true, ...(note ? { note } : {}) });
@@ -386,31 +379,6 @@ async function applyOne(op: LayoutOp, io: LayoutIO): Promise<{ ok: boolean; note
       const why = await saveSetting("titleBarAutoHide", op.on);
       return why ? no(why) : done();
     }
-    case "maximize": {
-      if (!op.on) return maximizeTile(null), done();
-      const id = op.tile ?? useTiles.getState().focused;
-      if (!id || !findLeaf(useTiles.getState().slots, id)) return no(`no tile "${String(op.tile)}" (see the layout's tiles)`);
-      maximizeTile(id);
-      return done();
-    }
-    case "fullscreenChat": {
-      // The open chat's tile full screen (as its row's full-screen button), or back.
-      const was = chatZoomed() || st().chatFullscreen;
-      if (was === !!op.on) return done(`the chat was already ${op.on ? "full screen" : "not full screen"}`);
-      if (!op.on) {
-        // (An older full-screen chat state, as a popout's frame has, ends too.)
-        if (st().chatFullscreen) st().toggleChatFullscreen();
-        if (chatZoomed()) maximizeTile(null);
-        return done();
-      }
-      const id = st().activeConversationId;
-      if (!id) return no("no chat is open");
-      ensureChatTile(id);
-      const t = leaves(useTiles.getState().slots).find((l) => l.content.type === "chat" && l.content.chatId === id);
-      if (!t) return no("the chat has no tile");
-      maximizeTile(t.id);
-      return done();
-    }
     case "chatSidebar": {
       if (st().chatSidebarOpen === !!op.open) return done(`the sidebar was already ${op.open ? "open" : "closed"}`);
       st().toggleChatSidebar();
@@ -465,7 +433,7 @@ export function layoutText(l: HostLayout): string {
   const what = (p: HostLayout["panes"][number]) => ("url" in p ? `page ${p.url}${p.title ? ` "${p.title}"` : ""}${seen(p)}` : p.file);
   const one = l.panes[0];
   const where = l.split ? `split ${l.direction}: ${l.panes.map((p) => `${p.side}=${what(p)}${p.active ? " (active)" : ""}`).join(", ")}` : one ? ("url" in one ? `one web ${what(one)}` : `one file: ${one.file}`) : "nothing open in the viewer";
-  const chat = l.chatFullscreen ? "chat full screen" : l.chatPoppedOut ? "chat popped out" : `chat panel ${l.rightPanelOpen ? "open" : "closed"}`;
+  const chat = l.chatPoppedOut ? "chat popped out" : `chat panel ${l.rightPanelOpen ? "open" : "closed"}`;
   const size = l.viewport ? `; window ${l.viewport.width}x${l.viewport.height}${l.sizes ? ` (left panel ${l.sizes.leftPanel}px, viewer ${l.sizes.viewer}px, chat ${l.sizes.chat}px)` : ""}` : "";
   return `${l.window ? `window ${l.window}: ` : ""}${where}; left panel ${l.leftPanelOpen ? "open" : "closed"}; ${chat}${size}`;
 }

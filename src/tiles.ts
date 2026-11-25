@@ -61,8 +61,8 @@ export function normSplit(slots: Slot[], sp: Split): Split {
   return x === sp.x && xb === sp.xb && left === sp.left && right === sp.right ? sp : { x, xb, left, right };
 }
 
-export type TilesState = { slots: Slot[]; focused: string | null; maximized: string | null; reveal: number; split: Split };
-export const useTiles = create<TilesState>(() => ({ slots: [], focused: null, maximized: null, reveal: 0, split: { ...HALF_SPLIT } }));
+export type TilesState = { slots: Slot[]; focused: string | null; reveal: number; split: Split };
+export const useTiles = create<TilesState>(() => ({ slots: [], focused: null, reveal: 0, split: { ...HALF_SPLIT } }));
 
 /** A drop in the center box: the tile fills the viewer, and every other tile closes (no stacking). */
 export function fillTile(id: string): void {
@@ -240,7 +240,6 @@ const setSlots = (slots: Slot[]) => {
     slots,
     split: normSplit(slots, t.split),
     focused: findSlot(slots, t.focused) ? t.focused : ([...slots].sort(byPlace)[0]?.id ?? null),
-    maximized: findLeaf(slots, t.maximized) ? t.maximized : null,
   }));
   // The store's panes in place order too (panes[0] is the first file tile, top row left to right), so every older name
   // for them ("left" = panes[0]) means what Carl sees.
@@ -364,10 +363,6 @@ function existingTile(what: TileWhat): TileLeaf | undefined {
 function contentFor(what: TileWhat): TileContent {
   return "file" in what ? addFilePane(what.file, what.text) : { type: "chat", chatId: what.chat };
 }
-function endZoom(): void {
-  // Something opened or moved while zoomed: the zoom ends (the panels as they were); a tile filling the viewer too.
-  if (useTiles.getState().maximized) maximizeTile(null);
-}
 
 /**
  * Open something (a click in Files or Chats, New chat, the agent's Show / openInPane): open already,
@@ -384,7 +379,6 @@ export function placeTile(what: TileWhat): string {
     setSlots(r.slots);
     id = r.id;
     for (const c of r.replaced) dropContent(c);
-    endZoom();
   });
   focusTile(id, true);
   return id;
@@ -402,7 +396,6 @@ export function openFilling(what: TileWhat): string {
     setSlots(r.slots);
     id = r.id;
     for (const c of r.replaced) dropContent(c);
-    endZoom();
   });
   focusTile(id, true);
   return id;
@@ -423,7 +416,6 @@ export function openAt(what: TileWhat, to: Rect | string): string | null {
     id = r.id;
     // No stacking: what the drop covers closes.
     for (const c of r.dropped) dropContent(c);
-    endZoom();
   });
   focusTile(id, true);
   return id;
@@ -434,7 +426,6 @@ export function openAt(what: TileWhat, to: Rect | string): string | null {
 export function moveTile(id: string, to: Rect): string | null {
   const r = snapTo(slots(), id, to);
   if (!r) return null;
-  endZoom();
   both(() => {
     setSlots(r.slots);
     for (const c of r.dropped) dropContent(c);
@@ -508,7 +499,6 @@ export function placeAtSide(side: "left" | "right", what: { file: string; text: 
 export function closeTile(id: string): boolean {
   const slot = findSlot(slots(), id);
   if (!slot) return false;
-  if (useTiles.getState().maximized === id) maximizeTile(null);
   if (!slot.content) {
     setSlots(removeSpot(slots(), id));
     return true;
@@ -518,38 +508,6 @@ export function closeTile(id: string): boolean {
     dropContent(slot.content);
   });
   useTiles.setState({ focused: id });
-  return true;
-}
-
-/** Zoom (Ctrl+Shift+F, a tile's zoom button, a double-click on its handle, the workspace's maximize): the tile fills
- *  the whole app window as it is (no OS fullscreen; snapped stays snapped). Our title bar is not drawn (App.css);
- *  both side panels close; Ctrl+B / Ctrl+Shift+B still bring them beside the zoomed tile. Back (again, Esc, null): the
- *  panels as they were before the zoom. One path for the UI and the agent (src/layoutOps.ts maximize). */
-let beforeZoom: { files: boolean; chats: boolean } | null = null;
-export function maximizeTile(id: string | null): void {
-  if (id && !findLeaf(slots(), id)) return;
-  const was = useTiles.getState().maximized;
-  const s = useStore.getState();
-  if (id && !was) {
-    beforeZoom = { files: !s.leftCollapsed, chats: s.chatSidebarOpen };
-    if (!s.leftCollapsed) s.toggleLeft();
-    if (s.chatSidebarOpen) s.toggleChatSidebar();
-  } else if (!id && was && beforeZoom) {
-    if (beforeZoom.files === s.leftCollapsed) s.toggleLeft();
-    if (beforeZoom.chats !== s.chatSidebarOpen) s.toggleChatSidebar();
-    beforeZoom = null;
-  }
-  useTiles.setState({ maximized: id });
-  if (id) focusTile(id);
-  else if (was) focusTile(was, true);
-}
-/** Ctrl+Shift+F: the focused tile zooms to the whole window, or comes back. */
-export function toggleMaximizeFocused(): boolean {
-  const t = useTiles.getState();
-  if (t.maximized) return maximizeTile(null), true;
-  const id = findLeaf(t.slots, t.focused)?.id ?? leaves(t.slots)[0]?.id ?? null;
-  if (!id) return false;
-  maximizeTile(id);
   return true;
 }
 
@@ -612,7 +570,7 @@ export function takeMigration(): unknown {
 /**
  * Put a kept arrangement back (a core swap's, the box's, or an older layout's): its files read again (one gone since
  * leaves its spot empty), its chats (a chat deleted since: empty), the lines where they were. The spots must cover the
- * viewer exactly (else nothing changes: false). Nothing is zoomed. `how` names where it came from (restoredFrom);
+ * viewer exactly (else nothing changes: false). `how` names where it came from (restoredFrom);
  * `from`, an older layout migrated, goes to the box with the next layout (takeMigration).
  */
 export async function restoreTiles(saved: SavedTiles, d: { vault: string; read: (abs: string) => Promise<string>; how: "swap" | "box" | "legacy"; from?: unknown }): Promise<boolean> {
@@ -651,7 +609,6 @@ export async function restoreTiles(saved: SavedTiles, d: { vault: string; read: 
   const focused = next[fIdx >= 0 ? fIdx : next.findIndex((n) => n.content)]?.id ?? next[0]!.id;
   const fc = findSlot(next, focused)?.content;
   both(() => {
-    if (useTiles.getState().maximized) maximizeTile(null);
     if (panes.length) {
       const aIdx = rows.findIndex((r, i) => r.active && next[i]!.content?.type === "file");
       const marked = aIdx >= 0 ? (next[aIdx]!.content as { paneId: string | null }).paneId : null;
@@ -663,7 +620,7 @@ export async function restoreTiles(saved: SavedTiles, d: { vault: string; read: 
     }
     const chat = fc?.type === "chat" ? fc.chatId : (next.find((n) => n.content?.type === "chat")?.content as { chatId: string } | undefined)?.chatId;
     if (chat && useStore.getState().activeConversationId !== chat) useStore.getState().selectConversation(chat);
-    useTiles.setState({ slots: next, focused, maximized: null, split: normSplit(next, { ...HALF_SPLIT, ...(saved.tileSplit ?? {}) }) });
+    useTiles.setState({ slots: next, focused, split: normSplit(next, { ...HALF_SPLIT, ...(saved.tileSplit ?? {}) }) });
   });
   // The chats' first load, and the app settling on its saved chat, open no tile of their own over this.
   firstLoad = true;
@@ -821,7 +778,6 @@ export function tilesForLayout(rel: (p: string) => string): unknown {
       spot: spotName(n.rect),
       ...(!c ? { empty: true } : c.type === "file" ? { file: rel((c.paneId ? s.panes.find((p) => p.id === c.paneId)?.file : s.currentFile) ?? "") } : { chat: c.chatId }),
       ...(t.focused === n.id ? { focused: true } : {}),
-      ...(t.maximized === n.id ? { maximized: true } : {}),
     };
   });
 }

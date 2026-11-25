@@ -159,7 +159,7 @@ test("layout identical across a swap: the tiles (a web page too), the lines betw
   G.window ??= globalThis;
   G.innerWidth = 1400;
   G.innerHeight = 860;
-  (await import("../../src/tiles.ts")).useTiles.setState({ slots: [], focused: null, maximized: null });
+  (await import("../../src/tiles.ts")).useTiles.setState({ slots: [], focused: null });
   useStore.setState({
     vaultPath: vault,
     conversations: [conv("c1")],

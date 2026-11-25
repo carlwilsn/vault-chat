@@ -80,7 +80,7 @@ test("get: the agent sees the real layout, read back from the app's store", asyn
   assert.deepEqual(l.panes, []);
   assert.equal(l.leftPanelOpen, true);
   assert.equal(l.rightPanelOpen, true);
-  assert.equal(l.chatFullscreen, false);
+  assert.equal("chatFullscreen" in l, false, "no full-screen state in the layout");
   assert.equal(sent.at(-1)!.type, "layout");
 });
 
@@ -136,14 +136,9 @@ test("panels and full-screen chat: several ops at once, each reported, the final
   await Layout({ action: "openRightPanel" });
   assert.equal(S().leftCollapsed, false);
   assert.equal(S().chatSidebarOpen, true);
-  // Full-screen chat: the open chat's tile fills the window (the side panels out of the way), and back.
-  l = layoutOf((await Layout({ action: "fullscreenChat", on: true })).text);
-  assert.equal(l.chatFullscreen, true);
-  assert.equal(l.leftPanelOpen, false, "a full-screen chat has no file tree on screen");
-  assert.ok((l.tiles as any[]).some((t) => t.chat && t.maximized), "its tile is the one full screen");
-  l = layoutOf((await Layout({ action: "fullscreenChat", on: false })).text);
-  assert.equal(l.chatFullscreen, false);
-  assert.equal(l.leftPanelOpen, true, "the file tree back as it was");
+  // No zoom (Carl 11-25): full screen is one tile filling the viewer; the noun has no fullscreen / maximize action.
+  for (const action of ["fullscreenChat", "maximize"]) assert.match((await Layout({ action, on: true })).text, /unknown|not an action|no action|isn't|is not/i, action);
+  assert.equal("chatFullscreen" in l, false, "no full-screen state in the layout");
 });
 
 test("a pane holds a web page: opened, read back with its address and title, navigated, driven, closed", async () => {

@@ -275,9 +275,6 @@ test("the fullscreen frame through the host: the sidebar, the bar, the pane; its
   assert.equal(side.ok, true);
   assert.equal(S().chatSidebarOpen, true);
   await waitFor("the sidebar toggle gone", () => !/data-el="chats-sidebar-open"/.test(html(host)));
-  const leave = await applyLayoutOps([{ op: "fullscreenChat", on: false }], io as never);
-  assert.equal(leave.ok, true);
-  assert.equal(S().chatFullscreen, false);
   ho.unmount();
   h.unmount();
   await tick();

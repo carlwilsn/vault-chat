@@ -12,7 +12,7 @@ import { waitAck, type Ack } from "./show";
 import { loopbackUrl } from "./devProxy";
 import { controlDown, laptopElsewhere, noteAnswer, unansweredNote, vaultName } from "./deviceLink";
 
-const OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "fullscreenChat", "chatSidebar", "resize", "signOutOfSites", "openChat", "moveTile", "newChat", "autoHideTitleBar", "maximize", "page", "newWindow", "closeWindow"] as const;
+const OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "chatSidebar", "resize", "signOutOfSites", "openChat", "moveTile", "newChat", "autoHideTitleBar", "page", "newWindow", "closeWindow"] as const;
 // The viewer's Snap spots (src/tiles.ts SPOTS), and full: the whole viewer. No stacking: a tile covered by a move or
 // an open closes.
 const SPOTS = ["full", "left", "right", "top", "bottom", "top-left", "top-right", "bottom-left", "bottom-right"];
@@ -87,11 +87,6 @@ function parseOps(a: Record<string, unknown>): Op[] | string {
       out.push({ op: action, page: o.page, open: o.open });
       continue;
     }
-    if (action === "maximize") {
-      if (typeof o.on !== "boolean") return "maximize needs on: true or false.";
-      out.push({ op: action, on: o.on, ...(typeof o.tile === "string" ? { tile: o.tile } : {}) });
-      continue;
-    }
     if (action === "openInPane" && typeof o.path === "string" && o.path.trim() && o.pane === undefined && o.url === undefined) {
       // No pane: where new things go (the tiles' placement).
       out.push({ op: action, path: o.path.trim() });
@@ -142,7 +137,7 @@ function parseOps(a: Record<string, unknown>): Op[] | string {
       if ((o.do === "click" || o.do === "type") && op.ref === undefined && op.text === undefined) return `webPage ${o.do} needs ref (from panes[].page.elements) or text.`;
       if (o.do === "type" && op.value === undefined) return "webPage type needs value.";
     }
-    if (action === "split" || action === "fullscreenChat") {
+    if (action === "split") {
       if (typeof o.on !== "boolean") return `${action} needs on: true or false.`;
       op.on = o.on;
     }

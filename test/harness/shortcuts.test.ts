@@ -122,7 +122,7 @@ test("on a Mac every app shortcut is Cmd: Ctrl+letter stays the Mac's own text k
   // Cmd fires the app's shortcuts, Mod and Ctrl chords alike.
   assert.equal(hit(ev("k", { metaKey: true }), "edit.inline", mac), true);
   assert.equal(hit(ev("l", { metaKey: true }), "edit.ask", mac), true);
-  assert.equal(hit(ev("F", { metaKey: true, shiftKey: true }), "view.fullscreen", mac), true);
+  assert.equal(hit(ev("B", { metaKey: true, shiftKey: true }), "view.chat", mac), true);
   assert.equal(hit(ev("d", { metaKey: true }), "voice.toggle", mac), true);
   assert.equal(hit(ev("M", { metaKey: true, shiftKey: true }), "voice.mute", mac), true);
   // Ctrl is not: Ctrl+K/E/B/N/T/D are kill-line, end, back, next line, transpose, delete in every Mac text field.

@@ -5,7 +5,7 @@
 // empty spot (plain space). The dividers between spots drag (a Windows Snap group): the line between the sides
 // moves both sides' spots, a side's own line its two; a spot stops at its minimum, or, empty, collapses when dragged
 // past it (the spot across takes its room).
-import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "./store";
@@ -20,7 +20,7 @@ import { cn } from "./lib/utils";
 import { HEAD_CONTROLS } from "./TileTitle";
 import { pressToDrag, tileDrag } from "./tileDrag";
 import { newChatIn } from "./chat-controller";
-import { SPOTS, acrossBoth, boxOf, collapseSpots, focusTile, maximizeTile, moveTile, openAt, fillTile, newChatAt, openFilling, setSplit, spotName, tileTitle, useTiles, normSplit, type Rect, type Slot, type Split, type TileLeaf } from "./tiles";
+import { SPOTS, acrossBoth, boxOf, collapseSpots, focusTile, moveTile, openAt, fillTile, newChatAt, openFilling, setSplit, spotName, tileTitle, useTiles, normSplit, type Rect, type Slot, type Split, type TileLeaf } from "./tiles";
 
 type Target = { spot: Rect; fill?: boolean; box: { left: number; top: number; width: number; height: number } } | null;
 
@@ -61,7 +61,6 @@ function targetAt(area: HTMLElement, x: number, y: number, dragged: string | nul
   const a = area.getBoundingClientRect();
   if (x < a.left || x > a.right || y < a.top || y > a.bottom) return null;
   const t = useTiles.getState();
-  if (t.maximized) return null;
   if (zone === "center") {
     const box = { left: a.left, top: a.top, width: a.width, height: a.height };
     return { spot: { x: 0, y: 0, w: 2, h: 2 }, fill: true, box };
@@ -93,7 +92,6 @@ const keyOf = (s: Slot) => (!s.content ? `empty:${s.id}` : s.content.type === "f
 
 export function TileArea() {
   const slots = useTiles((t) => t.slots);
-  const maximized = useTiles((t) => t.maximized);
   const split = useTiles((t) => t.split);
   const areaRef = useRef<HTMLDivElement>(null);
   const [target, setTarget] = useState<Target>(null);
@@ -121,9 +119,6 @@ export function TileArea() {
     let lifted: HTMLElement | null = null;
     const tileMoved = () => {
       const d = tileDrag.current();
-      // Windows: dragging a maximized window's bar restores it at once and the same drag goes on: a zoomed tile's
-      // drag ends the zoom (the arrangement comes back), and it snaps like any other.
-      if (d?.what.kind === "tile" && useTiles.getState().maximized) maximizeTile(null);
       // The tile being moved fades where it was, so the drag image and the drop box are what reads.
       const id = d?.what.kind === "tile" ? d.what.tileId : null;
       if (lifted && lifted.dataset.tile !== id) (delete lifted.dataset.lifted, (lifted = null));
@@ -209,14 +204,14 @@ export function TileArea() {
               style={{ left: `${b.l * 100}%`, top: `${b.t * 100}%`, width: `${b.w * 100}%`, height: `${b.h * 100}%` }}
             >
               {s.content ? (
-                <LeafView leaf={{ kind: "leaf", id: s.id, content: s.content }} several={several} maximized={maximized === s.id} hidden={!!maximized && maximized !== s.id} areaRef={areaRef} />
+                <LeafView leaf={{ kind: "leaf", id: s.id, content: s.content }} several={several} />
               ) : (
                 <EmptySpot id={s.id} />
               )}
             </div>
             );
           })}
-          {!maximized && <Dividers areaRef={areaRef} />}
+          <Dividers areaRef={areaRef} />
         </div>
       )}
       <SettingsModal />
@@ -455,32 +450,17 @@ function Dividers({ areaRef }: { areaRef: React.RefObject<HTMLDivElement | null>
   );
 }
 
-/** One tile. Maximized, it is drawn over the whole area (kept mounted: nothing reloads). */
-const LeafView = memo(function LeafView({ leaf, several, maximized, hidden, areaRef }: { leaf: TileLeaf; several: boolean; maximized: boolean; hidden: boolean; areaRef: React.RefObject<HTMLDivElement | null> }) {
+/** One tile. */
+const LeafView = memo(function LeafView({ leaf, several }: { leaf: TileLeaf; several: boolean }) {
   const focused = useTiles((t) => t.focused === leaf.id);
-  const [box, setBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
-  useLayoutEffect(() => {
-    if (!maximized) return setBox(null);
-    const el = areaRef.current;
-    if (!el) return;
-    const fit = () => {
-      const r = el.getBoundingClientRect();
-      setBox({ left: r.left, top: r.top, width: r.width, height: r.height });
-    };
-    fit();
-    const ro = new ResizeObserver(fit);
-    ro.observe(el);
-    window.addEventListener("resize", fit);
-    return () => (ro.disconnect(), window.removeEventListener("resize", fit));
-  }, [maximized, areaRef]);
   const c = leaf.content;
   // a tile's handle is its own top row ([data-tile-head]: a file's breadcrumb row, a chat's header, Notes' and
-  // Settings' header; src/TileTitle.tsx). Pressing an empty part of it (not a control) drags the tile; a double-click
-  // zooms. Nothing lies over the content.
+  // Settings' header; src/TileTitle.tsx). Pressing an empty part of it (not a control) drags the tile. Nothing lies
+  // over the content.
   // Native listeners on the tile's element (a chat's header is mounted by the chat plugin in its own tree).
   const tileRef = useRef<HTMLDivElement>(null);
-  const live = useRef({ leaf, maximized });
-  live.current = { leaf, maximized };
+  const live = useRef({ leaf });
+  live.current = { leaf };
   useEffect(() => {
     const el = tileRef.current;
     if (!el) return;
@@ -498,25 +478,18 @@ const LeafView = memo(function LeafView({ leaf, several, maximized, hidden, area
       const l = live.current.leaf;
       pressToDrag(e, { kind: "tile", tileId: l.id, title: tileTitle(l.content) }, el);
     };
-    const dbl = (e: MouseEvent) => {
-      if (headOf(e)) maximizeTile(live.current.maximized ? null : live.current.leaf.id);
-    };
     el.addEventListener("pointerdown", down);
-    el.addEventListener("dblclick", dbl);
-    return () => (el.removeEventListener("pointerdown", down), el.removeEventListener("dblclick", dbl));
+    return () => el.removeEventListener("pointerdown", down);
   }, []);
   return (
     <div
       data-tile={leaf.id}
       data-tile-kind={c.type}
       data-focused={focused && several ? "1" : undefined}
-      data-zoomed={maximized ? "1" : undefined}
-      className={cn("h-full w-full flex flex-col bg-background", box ? "fixed z-[60]" : "relative", hidden && "invisible")}
-      style={box ?? undefined}
+      className="relative h-full w-full flex flex-col bg-background"
       ref={tileRef}
       onPointerDownCapture={() => focusTile(leaf.id)}
     >
-      {/* Zoomed: the tile's own top row is the one bar (Carl 11-24: no second edge bar). */}
       {/* The focused tile: no box around it (Carl 11-24); its handle row's text is brighter (App.css). */}
       <div className="flex-1 min-h-0 relative">
         {c.type === "file" ? <MarkdownView paneId={c.paneId ?? undefined} /> : <ChatTile chatId={c.chatId} />}

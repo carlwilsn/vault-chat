@@ -31,10 +31,8 @@ export type LayoutOp =
    *  else in place ("main" or a project's slug; left out: where Carl is) at spot (left out: where new things go), as
    *  "+ New chat" or a project row dropped there. */
   | { op: "newChat"; tile?: string; place?: string; spot?: TileSpot }
-  | { op: "maximize"; tile?: string; on: boolean }
   | { op: "split"; on: boolean }
   | { op: "focus"; target: PaneSide | "chat" | string }
-  | { op: "fullscreenChat"; on: boolean }
   | { op: "chatSidebar"; open: boolean }
   | { op: "resize"; leftPanel?: number; chat?: number; tiles?: { x?: number; xb?: number; left?: number; right?: number } }
   /** The web pages' browser profile wiped (src/webProfile.ts): signed out of every site, cookies and storage gone. */
@@ -82,13 +80,12 @@ export type HostLayout = {
   activePane: PaneSide | "single" | null;
   /** The file tree. */
   leftPanelOpen: boolean;
-  /** The chat as the right panel (false while it is full screen or popped out). */
+  /** Chats, the chat list at the right. */
   rightPanelOpen: boolean;
-  chatFullscreen: boolean;
   chatPoppedOut: boolean;
   /** The conversations sidebar inside the full-screen chat. */
   chatSidebarOpen: boolean;
-  /** the viewer's spots: [{ tile, spot: full|left|...|bottom-right, file|chat|page|empty, focused?, maximized? }]. */
+  /** the viewer's spots: [{ tile, spot: full|left|...|bottom-right, file|chat|page|empty, focused? }]. */
   tiles?: unknown;
   /** where the lines between spots are: x (left side's share of the width), left / right (each side's top
    *  spot's share of the height). */

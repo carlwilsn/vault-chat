@@ -66,7 +66,7 @@ export function chatOffers() {
   };
   const TASK = { type: "object", properties: { id: { type: "string", description: "The task's id (tasks: id)." } }, required: ["id"], additionalProperties: false };
   return {
-    // Fullscreen and its sidebar are box:workspace (fullscreenChat, chatSidebar): one route with the layout's other ops.
+    // Fullscreen and its sidebar are box:workspace (chatSidebar): one route with the layout's other ops.
     watch: (fn: () => void) => {
       const offs = [useStore.subscribe(fn), useChatMenu.subscribe(fn), subscribeChatMenuItems(fn), onPaneScroll(fn), onChatEvent(() => fn())];
       return () => offs.forEach((f) => f());

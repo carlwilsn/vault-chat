@@ -73,17 +73,6 @@
     { "expect": { "text": "Hello from the fake model", "timeout": 90000 }, "label": "chat: the reply streams in" },
     { "expect": { "text": "so the tour can watch it arrive", "timeout": 60000 }, "label": "chat: the whole reply" },
 
-    { "press": "Mod+Shift+F", "label": "Mod+Shift+F: full-screen chat" },
-    { "waitFor": "[data-perf-view=fullscreen]", "timeout": 10000 },
-    { "waitFor": "[data-el=chats-sidebar]", "timeout": 10000 },
-    { "wait": 1500 },
-    { "press": "Mod+B", "label": "Mod+B: hide the chats sidebar" },
-    { "waitFor": "[data-el=chats-sidebar-open]", "timeout": 5000 },
-    { "press": "Mod+B", "label": "Mod+B: the chats sidebar back" },
-    { "waitFor": "[data-el=chats-sidebar]", "timeout": 5000 },
-    { "press": "Mod+Shift+F", "label": "Mod+Shift+F: back" },
-    { "expect": { "gone": "[data-perf-view=fullscreen]", "timeout": 10000 }, "label": "full-screen chat left" },
-
     { "click": "button[title='Pop out chat']", "label": "pop out the chat" },
     { "expect": { "window": "chat-popout", "open": true, "timeout": 30000 }, "label": "the popout window is open" },
     { "waitFor": "button[title='Chat is popped out']", "timeout": 10000 },

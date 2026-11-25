@@ -768,21 +768,16 @@ input[type="number"]::-webkit-outer-spin-button {
 /* a tile being dragged fades in place. */
 [data-tile][data-lifted] { opacity: 0.4; transition: opacity 0.12s; }
 
-/* a zoomed tile (Ctrl+Shift+F) fills the app window as it is (snapped, maximized or not; the window
-   never changes size or mode): our title bar is not drawn at all. The very top edge slides in the tile's own thin bar
-   (src/TileTitle.tsx ZoomEdgeBar). src/tiles.ts maximizeTile. */
-[data-tile-zoom] :is([data-el="titlebar"], [data-el="titlebar-fallback"]) { display: none !important; }
-
 /* a tile's handle is its own top row (src/TileTitle.tsx): its own controls at the left, its name
-   centred, zoom / close at the right end shown only on hover, over the row (no room kept for them). On hover the row
-   highlights (not while the pointer is on one of its own controls; zoom / close keep it), the grab cursor says it
-   drags. Zoom / close sit on the highlight with a short fade, so a long name runs under them, not beside a gap. */
+   centred, close at the right end shown only on hover, over the row (no room kept for them). On hover the row
+   highlights (not while the pointer is on one of its own controls; close keeps it), the grab cursor says it
+   drags. Close sits on the highlight with a short fade, so a long name runs under them, not beside a gap. */
 [data-tile] [data-tile-head] { cursor: grab; transition: background-color 0.1s ease-out; }
 [data-tile] [data-tile-head] :is(button, a, input, select, textarea, [role="button"]) { cursor: pointer; }
 .tile-head-show { opacity: 0; pointer-events: none; transition: opacity 0.1s ease-out; }
 [data-tile-head]:hover .tile-head-show, [data-tile-head]:has(:focus-visible) .tile-head-show { opacity: 1; pointer-events: auto; }
-/* Carl 11-24: no hover highlight on the row; zoom / x sit on the tile's own background so a long name runs under them. */
-[data-tile] [data-tile-head] .tile-head-actions { background: none; } /* Carl 11-24: no darker band behind full screen / x */
+/* Carl 11-24: no hover highlight on the row; the x sits on the tile's own background so a long name runs under them. */
+[data-tile] [data-tile-head] .tile-head-actions { background: none; } /* Carl 11-24: no darker band behind the x */
 
 /* (Carl 11-24 "try thinner") every tile's handle row is one thin height (the chat header's 32px),
    Notes, Settings, PDF and file rows included. Their controls keep their look, only the vertical padding goes. */

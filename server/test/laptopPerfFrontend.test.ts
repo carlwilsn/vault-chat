@@ -85,12 +85,12 @@ it("a slow shortcut dispatch preserves the event start and a remounted root can 
   const { installLaptopPerf } = await import("../../src/laptopPerf");
   installLaptopPerf({ popout: false });
   const began = performance.now() - 2000;
-  listeners.keydown({ isTrusted: true, target: new TestElement("other"), ctrlKey: true, shiftKey: true, altKey: false, key: "f", timeStamp: began });
-  const old = { ...h.state }; h.state.chatFullscreen = true;
+  listeners.keydown({ isTrusted: true, target: new TestElement("other"), ctrlKey: true, shiftKey: true, altKey: false, key: "B", timeStamp: began });
+  const old = { ...h.state }; h.state.rightCollapsed = false;
   const query = vi.spyOn(document, "querySelector").mockReturnValueOnce(null);
   h.subscribe(h.state, old);
   await vi.advanceTimersByTimeAsync(4000);
-  expect(samples()).toContainEqual(expect.objectContaining({ metric: "fullscreen-transition", startPoint: "event", at: new Date(performance.timeOrigin + began).toISOString() }));
+  expect(samples()).toContainEqual(expect.objectContaining({ metric: "chat-panel-open", startPoint: "event", at: new Date(performance.timeOrigin + began).toISOString() }));
   query.mockRestore();
 });
 

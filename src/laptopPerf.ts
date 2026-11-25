@@ -139,16 +139,14 @@ export function installLaptopPerf({ popout = false }: { popout?: boolean } = {})
       frame = requestAnimationFrame(afterFrame);
     });
   };
-  let fullscreenKeyAt = -Infinity;
   let panelKeyAt = -Infinity;
   window.addEventListener("keydown", e => {
     if (!e.isTrusted) return;
     const eventAt = e.timeStamp >= performance.timeOrigin ? e.timeStamp - performance.timeOrigin : e.timeStamp;
     if (!e.repeat && isMod(e)) {
-      if (hit(e, "view.fullscreen")) fullscreenKeyAt = eventAt;
       if (hit(e, "view.chat")) panelKeyAt = eventAt;
       // Store shortcut actions run in this dispatch; do not reuse an old unrelated key.
-      queueMicrotask(() => { fullscreenKeyAt = panelKeyAt = -Infinity; });
+      queueMicrotask(() => { panelKeyAt = -Infinity; });
     }
     const metric = perfTarget(e.target);
     if (metric) {
@@ -167,9 +165,7 @@ export function installLaptopPerf({ popout = false }: { popout?: boolean } = {})
     }
     if (!popout && state.chatFullscreen !== old.chatFullscreen) {
       const expected = state.chatFullscreen;
-      const fromKey = Number.isFinite(fullscreenKeyAt);
-      estimate("fullscreen-transition", fromKey ? fullscreenKeyAt : performance.now(), () => useStore.getState().chatFullscreen === expected && !!document.querySelector('[data-perf-view="fullscreen"]') === expected, fromKey ? "event" : "state-change");
-      fullscreenKeyAt = -Infinity;
+      estimate("fullscreen-transition", performance.now(), () => useStore.getState().chatFullscreen === expected && !!document.querySelector('[data-perf-view="fullscreen"]') === expected, "state-change");
     }
     maybeLaunch();
     if (!popout && old.rightCollapsed && !state.rightCollapsed && !state.popoutOpen) {
