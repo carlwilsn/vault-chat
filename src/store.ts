@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { WebPageSeen } from "./layoutTypes";
 import { firstPaintTheme, keepTheme, type Theme } from "./firstTheme";
 import { isPopout } from "./windowKind";
 import { invoke } from "@tauri-apps/api/core";
@@ -369,6 +370,8 @@ type State = {
   activePaneId: string | null;
   /** A pane can hold a web page (its `file` is the http(s) address, src/webPane.ts): the pages' titles, by address. */
   webTitles: Record<string, string>;
+  /** What a dev-server page in a pane shows, by address, as its frame reported it (src/plugins/viewer/WebPane.tsx). */
+  webPages: Record<string, WebPageSeen>;
   messages: ChatMessage[];
   /** Every key, by name (src/keychain.ts): one mechanism for all of them. */
   keys: Keys;
@@ -549,6 +552,8 @@ type State = {
   splitWith: (path: string, content: string, side: DropSide) => void;
   setPaneFile: (paneId: string, path: string, content: string) => void;
   setWebTitle: (url: string, title: string | null) => void;
+  /** A dev page's report of what it shows (null: forget it). */
+  setWebPage: (url: string, seen: WebPageSeen | null) => void;
   closePane: (paneId: string) => void;
   setActivePane: (paneId: string) => void;
   updatePaneContent: (paneId: string, content: string) => void;
@@ -683,6 +688,7 @@ export const useStore = create<State>((set) => ({
   splitDirection: null,
   activePaneId: null,
   webTitles: {},
+  webPages: {},
   messages: [],
   keys: {}, // populated async via hydrateKeychain
   serviceKeys: {}, // populated async via hydrateKeychain
@@ -999,6 +1005,14 @@ export const useStore = create<State>((set) => ({
       if (t) next[url] = t;
       else delete next[url];
       return { webTitles: next };
+    }),
+  setWebPage: (url, seen) =>
+    set((s) => {
+      // Only the pages on screen keep what they showed.
+      const shown = new Set([s.currentFile, ...s.panes.map((p) => p.file)]);
+      const next = Object.fromEntries(Object.entries(s.webPages).filter(([u]) => shown.has(u) && u !== url));
+      if (seen && shown.has(url)) next[url] = seen;
+      return { webPages: next };
     }),
   closePane: (paneId) =>
     set((s) => {

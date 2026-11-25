@@ -7,9 +7,9 @@
 // "leftPanel" is the file tree; "chat" is the right panel (or the full-screen chat).
 import { useStore } from "./store";
 import { PANE_SIDES, relToVault, sideOf } from "./paneLayout";
-import type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult, PaneSide } from "./layoutTypes";
+import type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult, PaneSide, WebPageSeen } from "./layoutTypes";
 import { isWebAddress, openWebInPane, webPageAct } from "./webPane";
-export type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult } from "./layoutTypes";
+export type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult, WebPageSeen } from "./layoutTypes";
 
 export const LAYOUT_OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "fullscreenChat", "chatSidebar", "resize"] as const;
 
@@ -154,7 +154,7 @@ export function readLayout(measure: () => Pick<HostLayout, "viewport" | "sizes">
   const vault = s.vaultPath;
   const split = s.panes.length >= 2;
   // A pane's content: a vault file, or a web page (its address, and its title when the page said it).
-  const content = (f: string) => (isWebAddress(f) ? { url: f, ...(s.webTitles[f] ? { title: s.webTitles[f] } : {}) } : { file: relToVault(vault, f) });
+  const content = (f: string) => (isWebAddress(f) ? { url: f, ...(s.webTitles[f] ? { title: s.webTitles[f] } : {}), ...(s.webPages[f] ? { page: s.webPages[f] } : {}) } : { file: relToVault(vault, f) });
   const panes: HostLayout["panes"] = split
     ? s.panes.slice(0, 2).map((p, i) => ({ side: PANE_SIDES[i]!, ...content(p.file), active: p.id === s.activePaneId }))
     : s.currentFile
@@ -289,7 +289,8 @@ export async function applyLayoutOps(ops: LayoutOp[], io: LayoutIO): Promise<Lay
 
 /** A line for the agent / a log: what the layout is. */
 export function layoutText(l: HostLayout): string {
-  const what = (p: HostLayout["panes"][number]) => ("url" in p ? `page ${p.url}${p.title ? ` "${p.title}"` : ""}` : p.file);
+  const seen = (p: { page?: WebPageSeen }) => (p.page ? ` (${p.page.textLength} chars of text, ${p.page.errors.length} errors, ${p.page.failed.length} failed requests)` : "");
+  const what = (p: HostLayout["panes"][number]) => ("url" in p ? `page ${p.url}${p.title ? ` "${p.title}"` : ""}${seen(p)}` : p.file);
   const one = l.panes[0];
   const where = l.split ? `split ${l.direction}: ${l.panes.map((p) => `${p.side}=${what(p)}${p.active ? " (active)" : ""}`).join(", ")}` : one ? ("url" in one ? `one web ${what(one)}` : `one file: ${one.file}`) : "nothing open in the viewer";
   const chat = l.chatFullscreen ? "chat full screen" : l.chatPoppedOut ? "chat popped out" : `chat panel ${l.rightPanelOpen ? "open" : "closed"}`;

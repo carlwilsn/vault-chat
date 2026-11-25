@@ -174,7 +174,7 @@ describe("the proxy", () => {
     expect(withFrameScript(`<!doctype html><p>x`)).toBe(`<!doctype html>${tag}<p>x`);
     expect(withFrameScript(`<p>x`)).toBe(`${tag}<p>x`);
     // The script itself parses, and posts nothing from a top-level page or a frame the page nests.
-    const body = tag.replace(/^<script>|<\/script>$/g, "");
+    const body = tag.slice("<script>".length, tag.indexOf("</script>"));
     const posted: unknown[] = [];
     const win = (top: unknown, parent: unknown) => ({ top, parent, location: { href: "https://box.ts.net:1/", ancestorOrigins: ["http://tauri.localhost"] }, document: { title: "T", querySelector: () => null }, history: { pushState() {}, replaceState() {} }, addEventListener() {} });
     const app = { postMessage: (m: unknown, o: string) => posted.push([m, o]) };

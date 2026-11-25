@@ -22,13 +22,18 @@ export type LayoutOp =
   | { op: "chatSidebar"; open: boolean }
   | { op: "resize"; leftPanel?: number; chat?: number };
 
+/** What a dev-server page in a pane shows, as the page itself reported it (server/devProxy.ts frameScript): its visible
+ *  text (trimmed, at most 8000 characters; textLength is the whole), console and uncaught errors, and requests that
+ *  failed (status 0: no answer), the last ones of each; `at` is when the page last reported. */
+export type WebPageSeen = { text: string; textLength: number; errors: string[]; failed: { status: number; url: string; how?: string }[]; at: string };
+
 export type HostLayout = {
   /** Two files side by side or stacked. */
   split: boolean;
   direction: "side-by-side" | "stacked" | null;
   /** The viewer's panes, in order (one entry when there is no split, none when nothing is open): a vault file
    *  (vault-relative) or a web page (its address now, and its title when known). */
-  panes: ({ side: PaneSide | "single"; active: boolean } & ({ file: string } | { url: string; title?: string }))[];
+  panes: ({ side: PaneSide | "single"; active: boolean } & ({ file: string } | { url: string; title?: string; page?: WebPageSeen }))[];
   /** The file the viewer is on (the active pane's; null when that is a web page). */
   currentFile: string | null;
   /** The web page the viewer is on, when the active pane holds one. */

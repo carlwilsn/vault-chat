@@ -26,6 +26,7 @@ import { connect, type AddressInfo } from "node:net";
 import { readFileSync, readdirSync, readlinkSync, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { authorize, phoneToken } from "./auth";
+import { PAGE_SNAP_BRIDGE } from "../src/pageSnap";
 
 // ---------------------------------------------------------------- which ports are the agent's
 
@@ -156,12 +157,30 @@ export const APP_ORIGINS = ["http://tauri.localhost", "https://tauri.localhost",
 
 /** The message FRAME_SCRIPT posts to the app: {vcFrame: "at", url, title}. */
 export const FRAME_MESSAGE = "at";
+/** Its second message, what the page shows (the workspace noun's read of a dev pane):
+ *  {vcFrame: "page", url, title, text, errors, failed}. */
+export const FRAME_PAGE_MESSAGE = "page";
+/** Bounds on that report: the visible text (characters), console errors and failed requests (the last ones kept). */
+export const FRAME_PAGE_LIMITS = { text: 8000, errors: 20, failed: 30 } as const;
 
 /** Put in a page the app's pane frames (only when the app itself is its parent, never in a frame the page nests): posts
- *  the page's address and title to the app on load, title change and in-page navigation. It listens to nothing. The
- *  parent is an app origin (frame-ancestors says so); ancestorOrigins names which. */
+ *  the page's address and title to the app on load, title change and in-page navigation. It also reports what Carl
+ *  sees in it, so the agent can read it (parity: a read, not a picture): its visible text (trimmed, bounded), console
+ *  errors and uncaught errors, and requests that failed (status and address: fetch, XHR, and scripts / styles / images
+ *  by the resource timing), at most every 2 s after the page changes. It listens to nothing; PAGE_SNAP_BRIDGE (put in
+ *  beside it) answers the window drawing's request for a picture. The parent is an app origin (frame-ancestors says
+ *  so); ancestorOrigins names which. */
 export function frameScript(origins: string[] = APP_ORIGINS): string {
-  return `<script>(function(){try{if(window.top===window||window.parent!==window.top)return;var A=${JSON.stringify(origins)},o=location.ancestorOrigins&&location.ancestorOrigins[0],T=o&&A.indexOf(o)>=0?[o]:A,P=window.parent,last="";function say(){var u=location.href,t=document.title||"";if(u+" "+t===last)return;last=u+" "+t;for(var i=0;i<T.length;i++)try{P.postMessage({vcFrame:${JSON.stringify(FRAME_MESSAGE)},url:u,title:t},T[i])}catch(e){}}["pushState","replaceState"].forEach(function(k){var f=history[k];history[k]=function(){var r=f.apply(this,arguments);setTimeout(say,0);return r}});addEventListener("popstate",say);addEventListener("hashchange",say);addEventListener("DOMContentLoaded",function(){say();var h=document.querySelector("head");if(h&&window.MutationObserver)new MutationObserver(say).observe(h,{subtree:true,childList:true,characterData:true})});addEventListener("load",say);say()}catch(e){}})();</script>`;
+  const L = FRAME_PAGE_LIMITS;
+  return `<script>(function(){try{if(window.top===window||window.parent!==window.top)return;var A=${JSON.stringify(origins)},o=location.ancestorOrigins&&location.ancestorOrigins[0],T=o&&A.indexOf(o)>=0?[o]:A,P=window.parent,last="";function post(m){for(var i=0;i<T.length;i++)try{P.postMessage(m,T[i])}catch(e){}}function say(){var u=location.href,t=document.title||"";if(u+" "+t===last)return;last=u+" "+t;post({vcFrame:${JSON.stringify(FRAME_MESSAGE)},url:u,title:t});page()}` +
+    // What the page shows: errors, failed requests and its text, sent when something changed, at most every 2 s.
+    `var E=[],F=[],pt=0,pl=0,ps="",W=window,ST=W.setTimeout,C=W.console;function now(){return Date.now()}function clip(x,n){x=String(x);return x.length>n?x.slice(0,n)+"\\u2026":x}function str(a){try{if(a&&a.stack)return String(a.stack);if(a&&a.message)return String(a.message);if(a&&typeof a==="object")return JSON.stringify(a)}catch(e){}return String(a)}function abs(u){try{return new URL(u,location.href).href}catch(e){return String(u)}}function err(m){m=clip(m,400);if(E.length&&E[E.length-1]===m)return;E.push(m);if(E.length>${L.errors})E.shift();page()}function fail(st,u,how){u=clip(abs(u),300);for(var i=0;i<F.length;i++)if(F[i].url===u&&F[i].status===st)return;var f={status:st,url:u};if(how)f.how=how;F.push(f);if(F.length>${L.failed})F.shift();page()}` +
+    `function text(){var b=document.body;if(!b)return "";var x=String(b.innerText||b.textContent||"").replace(/[ \\t\\u00a0]+/g," ").replace(/ *\\n\\s*/g,"\\n").trim();return x}function send(){pt=0;pl=now();var x=text(),m={vcFrame:${JSON.stringify(FRAME_PAGE_MESSAGE)},url:location.href,title:document.title||"",text:clip(x,${L.text}),textLength:x.length,errors:E.slice(),failed:F.slice()},j=JSON.stringify(m);if(j===ps)return;ps=j;post(m)}function page(){if(pt||!ST)return;pt=ST(send,Math.max(600,2000-(now()-pl)))}` +
+    `if(C&&C.error){var ce=C.error;C.error=function(){try{err([].map.call(arguments,str).join(" "))}catch(e){}return ce.apply(this,arguments)}}addEventListener("error",function(e){var t=e&&e.target;if(t&&t!==W&&t.tagName){var s=t.src||t.href;if(s)fail(0,s,"load "+String(t.tagName).toLowerCase());return}err((e&&e.message||"error")+(e&&e.filename?" ("+e.filename+":"+e.lineno+")":""))},true);addEventListener("unhandledrejection",function(e){var r=e&&e.reason;if(r&&r.name==="AbortError")return;err("unhandled rejection: "+str(r))});` +
+    `if(W.fetch){var of=W.fetch;W.fetch=function(i,q){var u=typeof i==="string"?i:i&&i.url||String(i),m=q&&q.method||i&&i.method||"GET";return of.apply(this,arguments).then(function(r){if(r&&!r.ok&&r.type!=="opaque")fail(r.status,r.url||u,m);return r},function(x){if(!(x&&x.name==="AbortError"))fail(0,u,m+": "+clip(str(x),120));throw x})}}` +
+    `var X=W.XMLHttpRequest&&W.XMLHttpRequest.prototype;if(X){var xo=X.open,xs=X.send;X.open=function(m,u){this.__vc=[m,u];return xo.apply(this,arguments)};X.send=function(){var x=this;try{x.addEventListener("loadend",function(){if(x.status===0||x.status>=400)fail(x.status,x.responseURL||x.__vc&&x.__vc[1]||"",x.__vc&&x.__vc[0]||"GET")})}catch(e){}return xs.apply(this,arguments)}}` +
+    `if(W.PerformanceObserver)try{new PerformanceObserver(function(l){l.getEntries().forEach(function(n){if(n.responseStatus>=400&&n.initiatorType!=="fetch"&&n.initiatorType!=="xmlhttprequest")fail(n.responseStatus,n.name,n.initiatorType)})}).observe({type:"resource",buffered:true})}catch(e){}` +
+    `["pushState","replaceState"].forEach(function(k){var f=history[k];history[k]=function(){var r=f.apply(this,arguments);setTimeout(say,0);return r}});addEventListener("popstate",say);addEventListener("hashchange",say);addEventListener("DOMContentLoaded",function(){say();page();var h=document.querySelector("head");if(h&&W.MutationObserver)new MutationObserver(say).observe(h,{subtree:true,childList:true,characterData:true});if(document.body&&W.MutationObserver)new MutationObserver(page).observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true})});addEventListener("load",function(){say();page()});say()}catch(e){}})();</script>${PAGE_SNAP_BRIDGE}`;
 }
 
 /** A page's HTML with FRAME_SCRIPT in its head (after <head>, else after the doctype / <html>, else first). */

@@ -20,6 +20,7 @@ import { useStore } from "../../store";
 import { openUrl } from "../../opener";
 import { inOrder, measure, native, newId, ready, type Bounds } from "../../InlineWebPage";
 import { displayHost, sameBounds, WEB_EMBED_EVENT, type WebEmbedEvent } from "../../inlineWeb";
+import type { WebPageSeen } from "../../layoutTypes";
 import { boxDevUrl, embedKind, frameArrived, frameHistory, frameStep, paneKey, registerWebPane, type WebPageDo } from "../../webPane";
 
 const iconBtn = "inline-flex items-center gap-1 hover:text-foreground disabled:opacity-40";
@@ -101,7 +102,21 @@ function PaneShell(p: { paneId?: string; url: string; failed: string | null; loa
 }
 
 /** What the box's proxy script posts from a framed dev page (server/devProxy.ts frameScript). */
-type FrameReport = { vcFrame: "at"; url: string; title?: string };
+type FrameReport =
+  | { vcFrame: "at"; url: string; title?: string }
+  | { vcFrame: "page"; url: string; title?: string; text?: unknown; textLength?: unknown; errors?: unknown; failed?: unknown };
+
+/** A page report as the workspace noun shows it, bounded again here (the page is not trusted to keep the limits). */
+function pageSeen(d: Extract<FrameReport, { vcFrame: "page" }>): WebPageSeen {
+  const str = (x: unknown, n: number) => String(x ?? "").slice(0, n);
+  const text = str(d.text, 8000);
+  const errors = Array.isArray(d.errors) ? d.errors.slice(-20).map((e) => str(e, 400)) : [];
+  const failed = Array.isArray(d.failed)
+    ? d.failed.slice(-30).filter((f) => f && typeof f === "object").map((f: { status?: unknown; url?: unknown; how?: unknown }) => ({ status: Number(f.status) || 0, url: str(f.url, 300), ...(f.how ? { how: str(f.how, 140) } : {}) }))
+    : [];
+  const textLength = typeof d.textLength === "number" && d.textLength >= text.length ? d.textLength : text.length;
+  return { text, textLength, errors, failed, at: new Date().toISOString() };
+}
 
 /** The box's dev server in the app's own page. */
 function FrameWebPane({ paneId, url }: { paneId?: string; url: string }) {
@@ -134,12 +149,14 @@ function FrameWebPane({ paneId, url }: { paneId?: string; url: string }) {
     const on = (e: MessageEvent) => {
       const f = frame.current;
       const d = e.data as FrameReport | null;
-      if (!f || e.source !== f.contentWindow || !d || d.vcFrame !== "at" || typeof d.url !== "string" || !boxDevUrl(d.url)) return;
+      if (!f || e.source !== f.contentWindow || !d || (d.vcFrame !== "at" && d.vcFrame !== "page") || typeof d.url !== "string" || !boxDevUrl(d.url)) return;
       try {
         if (new URL(d.url).origin !== e.origin) return;
       } catch {
         return;
       }
+      // What the page shows: kept by its address (the pane's), so the workspace noun's read carries it.
+      if (d.vcFrame === "page") return void useStore.getState().setWebPage(d.url, pageSeen(d));
       hist.current = frameArrived(hist.current, d.url, sent.current);
       sent.current = false;
       setAddress(d.url);

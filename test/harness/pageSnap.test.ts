@@ -57,7 +57,9 @@ test("the page's side is valid script, answers only its parent, and every viewer
   const view = readFileSync(new URL("../../src/HtmlView.tsx", import.meta.url), "utf8");
   assert.match(view, /SCROLL_BRIDGE \+ PAGE_SNAP_BRIDGE \+/, "injectHeadScripts puts it in every viewer page's head");
   assert.match(view, /data-look-frame/, "the viewer frame carries the attribute the capture asks");
-  assert.equal(SNAP_FRAME_SELECTOR, "iframe[data-look-frame]");
+  assert.equal(SNAP_FRAME_SELECTOR, 'iframe[data-look-frame], iframe[data-el="web-pane-frame"]', "viewer pages and the box's dev servers in a pane");
+  const proxy = readFileSync(new URL("../../server/devProxy.ts", import.meta.url), "utf8");
+  assert.match(proxy, /<\/script>\$\{PAGE_SNAP_BRIDGE\}/, "the dev proxy puts the bridge in a framed dev page");
   const cap = readFileSync(new URL("../../src/screenCapture.ts", import.meta.url), "utf8");
   assert.match(cap, /el\.matches\(SNAP_FRAME_SELECTOR\)[\s\S]*snapFrame\(/, "the window's drawing asks each viewer frame");
 });

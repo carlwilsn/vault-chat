@@ -204,6 +204,12 @@ test("a pane holds a web page: opened, read back with its address and title, nav
   r = await layoutTool({ vault, emit, ackMs: 5000, dev: async (port) => ({ origin: `https://box.tail1.ts.net:${port}` }) }, { action: "openInPane", url: "http://localhost:1560/after/?scenario=x" });
   assert.equal(r.ok, true, r.text);
   assert.equal(S().currentFile, "https://box.tail1.ts.net:1560/after/?scenario=x");
+  // What the dev page shows, as its frame reported it (server/devProxy.ts frameScript): read back in its pane.
+  const seen = { text: "Hello\nOpen a vault", textLength: 18, errors: ["boom"], failed: [{ status: 401, url: "https://box.tail1.ts.net:1560/after/x.json", how: "GET" }], at: "2026-11-24T00:00:00.000Z" };
+  S().setWebPage("https://box.tail1.ts.net:1560/after/?scenario=x", seen);
+  r = await Layout({ action: "get" });
+  assert.deepEqual(layoutOf(r.text).panes[0].page, seen);
+  assert.match(r.text, /18 chars of text, 1 errors, 1 failed requests/);
   // Which addresses show: public pages (the native view) and the box's dev origin (an iframe); the rest a link with why.
   assert.equal(boxDevUrl("https://box.tail1.ts.net:1560/"), true);
   assert.equal(boxDevUrl("http://box.tail1.ts.net:1560/"), false);

@@ -89,8 +89,9 @@ export const PAGE_SNAP_BRIDGE = `<script>(function(){
   });
 })();</script>`;
 
-/** The frames the window's drawing asks to draw themselves: the viewer's HTML pages (they carry PAGE_SNAP_BRIDGE). */
-export const SNAP_FRAME_SELECTOR = "iframe[data-look-frame]";
+/** The frames the window's drawing asks to draw themselves: the viewer's HTML pages and the box's dev servers in a pane
+ *  (both carry PAGE_SNAP_BRIDGE: src/HtmlView.tsx, server/devProxy.ts). */
+export const SNAP_FRAME_SELECTOR = "iframe[data-look-frame], iframe[data-el=\"web-pane-frame\"]";
 
 type FrameLike = { contentWindow: { postMessage: (m: unknown, origin: string) => void } | null };
 type WinLike = { addEventListener: (t: "message", f: (e: MessageEvent) => void) => void; removeEventListener: (t: "message", f: (e: MessageEvent) => void) => void };

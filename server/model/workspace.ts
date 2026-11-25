@@ -39,7 +39,7 @@ export function workspaceNoun(ctx: WorkspaceCtx): Noun {
     state: {
       layout: {
         description:
-          "Carl's laptop screen, read back from it: panes and their files or web pages (url and title; Carl's own navigation shows here) (split, side-by-side or stacked, the active pane), the left panel (file tree) open, the chat panel open / full screen / popped out, its sidebar, the open chat when known, window and column sizes; when the laptop is away, the last read-back and since when",
+          "Carl's laptop screen, read back from it: panes and their files or web pages (url and title; Carl's own navigation shows here; a dev server's page also its `page`: the visible text as Carl sees it, console errors and failed requests with status, as the page reported them) (split, side-by-side or stacked, the active pane), the left panel (file tree) open, the chat panel open / full screen / popped out, its sidebar, the open chat when known, window and column sizes; when the laptop is away, the last read-back and since when",
         read: async () => {
           const k = keptLayout();
           const down = controlDown("laptop");
