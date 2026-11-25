@@ -371,6 +371,10 @@
   "sig": "web_embed_close(id:Option<String>)->Result<(),String>",
   "v": "a7863220"
  },
+ "web_embed_eval": {
+  "sig": "web_embed_eval(id:String,js:String)->Result<String,String>",
+  "v": "9445d346"
+ },
  "web_embed_go": {
   "sig": "web_embed_go(id:String,action:String,url:Option<String>)->Result<(),String>",
   "v": "d3c078a2"

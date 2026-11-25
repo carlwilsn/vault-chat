@@ -223,6 +223,106 @@ test("a pane holds a web page: opened, read back with its address and title, nav
   await Layout({ action: "closePane" });
 });
 
+test("a public page is driven: read with refs, click / type / scroll / select through the pane's view, read back", async () => {
+  const { registerWebPane, paneKey, setPickingPane } = await import("../../src/webPane.ts");
+  const { driveScript, answerOf, seenOf, driveOpFor, pickContext, TEXT_MAX, ELEMENTS_MAX } = await import("../../src/webDrive.ts");
+  const { useDraft, clearDraft } = await import("../../src/plugins/composer/draft.ts");
+  const { composerOffers } = await import("../../src/plugins/composer/index.tsx");
+  useStore.setState({ currentFile: null, currentContent: "", panes: [], activePaneId: null, splitDirection: null });
+  clearDraft();
+  const url = "https://example.com/login";
+  assert.equal((await Layout({ action: "openInPane", url })).ok, true);
+  // A stand-in for the native view: the page script's steps as the view would answer them (web_embed_eval).
+  const steps: Record<string, unknown>[] = [];
+  let text = "Sign in";
+  const page = (): Record<string, unknown> => ({ url, title: "Sign in", text, textLength: text.length, elements: ['e1 textbox "Email"', 'e2 password "Password" (filled)', 'e3 button "Sign in"'], scroll: { y: 0, max: 900 } });
+  const picks: boolean[] = [];
+  const off = registerWebPane(paneKey(null), {
+    live: true,
+    act: async () => undefined,
+    drive: async (op) => {
+      steps.push(op as Record<string, unknown>);
+      if (op.op === "click" && op.ref === "e9") return { error: "no element e9 on the page now (read it again)" };
+      if (op.op === "click") text = "Welcome";
+      if (op.op === "describe") return { picked: { url, ref: op.ref, tag: "button", label: "Sign in", text: "Sign in", html: '<button type="submit">Sign in</button>' } };
+      return op.op === "read" ? page() : { did: `${op.op} done` };
+    },
+    read: async () => void S().setWebPage(url, seenOf(page())),
+    pick: async (on) => void (picks.push(on), setPickingPane(paneKey(null), on)),
+  });
+  try {
+    // read: the page's text and elements, into the pane's read-back.
+    let r = await Layout({ action: "webPage", do: "read" });
+    assert.equal(r.ok, true, r.text);
+    let pg = layoutOf(r.text).panes[0].page;
+    assert.deepEqual(pg.elements, ['e1 textbox "Email"', 'e2 password "Password" (filled)', 'e3 button "Sign in"']);
+    assert.equal(pg.errors, undefined, "a public page claims no error count it never read");
+    assert.match(r.text, /3 elements/);
+    // type, then click by text: each step runs in the page, and the answer is the page read again.
+    r = await Layout({ action: "webPage", do: "type", ref: "e1", value: "carl@example.com", enter: true });
+    assert.equal(r.ok, true, r.text);
+    assert.deepEqual(steps.at(-1), { op: "type", ref: "e1", value: "carl@example.com", enter: true });
+    r = await Layout({ action: "webPage", do: "click", text: "Sign in" });
+    assert.equal(r.ok, true, r.text);
+    assert.equal(layoutOf(r.text).panes[0].page.text, "Welcome", "read back after the click");
+    r = await Layout({ action: "webPage", do: "scroll", by: "bottom" });
+    assert.deepEqual(steps.at(-1), { op: "scroll", by: "bottom" });
+    // A stale ref: the page's own word, not a success.
+    r = await Layout({ action: "webPage", do: "click", ref: "e9" });
+    assert.equal(r.ok, false);
+    assert.match(r.text, /no element e9/);
+    // select with a ref: the element is a chip in the composer (its state), and it goes with the message as context.
+    r = await Layout({ action: "webPage", do: "select", ref: "e3" });
+    assert.equal(r.ok, true, r.text);
+    const sel = (composerOffers().state.draft.read() as { selections?: { name: string; ref: string; html: string }[] }).selections;
+    assert.deepEqual(sel?.map((x) => [x.name, x.ref]), [["button · Sign in", "e3"]]);
+    assert.match(pickContext(useDraft.getState().picks), /e3 <button> "Sign in"[\s\S]*html: <button/);
+    composerOffers().actions.detach.run({ name: "button · Sign in" });
+    assert.equal(useDraft.getState().picks.length, 0, "the chip's x (detach) takes it off");
+    // select without one: Select is on (Carl picks), and the pane says so.
+    r = await Layout({ action: "webPage", do: "select" });
+    assert.equal(r.ok, true, r.text);
+    assert.deepEqual(picks, [true]);
+    assert.equal(layoutOf(r.text).panes[0].picking, true);
+    setPickingPane(paneKey(null), false);
+    // Bad input never reaches the page.
+    const n = steps.length;
+    assert.match((await Layout({ action: "webPage", do: "click" })).text, /needs ref/);
+    assert.match((await Layout({ action: "webPage", do: "type", ref: "e1" })).text, /needs value/);
+    assert.match((await Layout({ action: "webPage", do: "click", ref: "button" })).text, /like "e12"/);
+    assert.equal(steps.length, n);
+  } finally {
+    off();
+  }
+  // A pane without a drivable view (the dev server's iframe) says so.
+  const off2 = registerWebPane(paneKey(null), { live: true, act: async () => undefined });
+  const r = await Layout({ action: "webPage", do: "read" });
+  assert.equal(r.ok, false);
+  assert.match(r.text, /only a public page's view can be driven/);
+  off2();
+  await Layout({ action: "closePane" });
+
+  // The page script itself: valid JS for every step, and typed text kept exactly ("$&" is not a replacement pattern).
+  for (const op of [{ op: "read" }, { op: "click", text: "a" }, { op: "type", ref: "e1", value: "x$&y'\"</script>", enter: true }, { op: "scroll", by: -200 }, { op: "describe", ref: "e1" }, { op: "pickStart" }, { op: "pickPoll" }, { op: "pickStop" }] as const) {
+    const js = driveScript(op as never);
+    assert.doesNotThrow(() => new Function(js), `${op.op}: the script parses`);
+    assert.ok(js.includes(JSON.stringify(op)), `${op.op}: the op is in the script as JSON`);
+  }
+  // Answers as WebView2 (JSON of the script's JSON string) and WKWebView (the string) give them; nothing else is one.
+  assert.deepEqual(answerOf(JSON.stringify(JSON.stringify({ did: "x" }))), { did: "x" });
+  assert.deepEqual(answerOf(JSON.stringify({ did: "x" })), { did: "x" });
+  assert.equal(answerOf("null"), null);
+  assert.equal(answerOf("not json"), null);
+  // The page's word bounded again.
+  const big = seenOf({ text: "x".repeat(TEXT_MAX * 2), textLength: 5, elements: Array.from({ length: ELEMENTS_MAX + 50 }, (_, i) => `e${i} link`), elementCount: 999, scroll: { y: -3, max: "a" } });
+  assert.equal(big.text.length, TEXT_MAX);
+  assert.equal(big.textLength, TEXT_MAX, "never less than what is shown");
+  assert.equal(big.elements!.length, ELEMENTS_MAX);
+  assert.equal(big.elementCount, 999);
+  assert.deepEqual(big.scroll, { y: 0, max: 0 });
+  assert.deepEqual(driveOpFor("scroll", { by: "sideways" }), 'scroll\'s by is pixels (down; negative: up), "top" or "bottom"');
+});
+
 test("a dev-server pane (an iframe) keeps its own history from where the page says it is", async () => {
   const { frameHistory, frameArrived, frameStep } = await import("../../src/webPane.ts");
   const D = "https://box.tail1.ts.net:1560";

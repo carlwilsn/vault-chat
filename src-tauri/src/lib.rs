@@ -5767,6 +5767,7 @@ pub fn run() {
             web_embed::web_embed_place,
             web_embed::web_embed_go,
             web_embed::web_embed_url,
+            web_embed::web_embed_eval,
             web_embed::web_embed_close,
             web_embed::web_profile_vault,
             web_embed::web_profile_clear,

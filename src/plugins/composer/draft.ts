@@ -18,6 +18,7 @@ import { dispatchChatAction } from "../../sync";
 import { aiBlockedNow, chatGateOf } from "../../chatGate";
 
 import { splitFilesLine } from "../../filesLine";
+import { pickContext, type WebPick } from "../../webDrive";
 
 export type PendingImage = { imageDataUrl: string; sourcePath?: string; sourceAnchor?: string | null; capturedFilePath?: string };
 export type Mention = { rel: string; path: string; name: string; raw: string };
@@ -28,12 +29,14 @@ export type Draft = {
   mentions: Mention[];
   images: PendingImage[];
   files: FileUpload[];
+  /** Elements selected on web pages (a pane's Select, or the agent's webPage select): chips, sent as context. */
+  picks: WebPick[];
   attachError: string | null;
   /** Sends still resolving their files (the send intent not yet dispatched). */
   sending: number;
 };
 
-const EMPTY: Draft = { input: "", mentions: [], images: [], files: [], attachError: null, sending: 0 };
+const EMPTY: Draft = { input: "", mentions: [], images: [], files: [], picks: [], attachError: null, sending: 0 };
 export const useDraft = create<Draft>(() => ({ ...EMPTY }));
 const D = () => useDraft.getState();
 
@@ -58,8 +61,16 @@ export const setMentions = (u: Up<Mention[]>) => useDraft.setState({ mentions: a
 export const setImages = (u: Up<PendingImage[]>) => useDraft.setState({ images: apply(u, D().images) });
 export const setFiles = (u: Up<FileUpload[]>) => useDraft.setState({ files: apply(u, D().files) });
 export const setAttachError = (e: string | null) => useDraft.setState({ attachError: e });
-export const clearDraft = () => useDraft.setState({ input: "", mentions: [], images: [], files: [], attachError: null });
-export const hasDraft = (d: Draft = D()) => !!d.input.trim() || d.images.length > 0 || d.files.length > 0;
+export const clearDraft = () => useDraft.setState({ input: "", mentions: [], images: [], files: [], picks: [], attachError: null });
+export const hasDraft = (d: Draft = D()) => !!d.input.trim() || d.images.length > 0 || d.files.length > 0 || d.picks.length > 0;
+/** A chip's name: what the composer shows and detach takes. */
+export const pickName = (p: WebPick) => `${p.tag} · ${p.label}`;
+
+/** An element selected on a web page joins the draft as a chip (the same element again: once). Says `attached`. */
+export function addPick(p: WebPick): void {
+  if (!D().picks.some((x) => x.url === p.url && x.ref === p.ref)) useDraft.setState((d) => ({ picks: [...d.picks, p] }));
+  told(attachedFns, { name: pickName(p), kind: "selection" });
+}
 
 /** Files read when attached (attachFiles.ts), into the draft; the failures are the attach error. */
 export function addAttached(rs: Awaited<ReturnType<typeof attachPath>>[]): void {
@@ -89,7 +100,7 @@ export function addReference(m: Mention, inline = false): void {
 
 /** Take one thing off the draft (the × on a picture or a file, or the agent's detach by name): an @-reference's
  *  @name leaves the text too. Says `detached`. */
-export function detachItem(kind: "image" | "file" | "reference", index: number): string | null {
+export function detachItem(kind: "image" | "file" | "reference" | "selection", index: number): string | null {
   const d = D();
   let name: string | null = null;
   if (kind === "image" && d.images[index]) {
@@ -98,6 +109,9 @@ export function detachItem(kind: "image" | "file" | "reference", index: number):
   } else if (kind === "file" && d.files[index]) {
     name = d.files[index]!.name;
     setFiles((prev) => prev.filter((_, j) => j !== index));
+  } else if (kind === "selection" && d.picks[index]) {
+    name = pickName(d.picks[index]!);
+    useDraft.setState((x) => ({ picks: x.picks.filter((_, j) => j !== index) }));
   } else if (kind === "reference" && d.mentions[index]) {
     const ref = d.mentions[index]!;
     name = ref.name;
@@ -110,7 +124,7 @@ export function detachItem(kind: "image" | "file" | "reference", index: number):
 
 // ---- what happened, for the plugin's events ----------------------------------------------------------------------
 type Sent = { text: string; images: number; files: string[]; references: string[] };
-type Attached = { name: string; kind: "image" | "file" | "reference" };
+type Attached = { name: string; kind: "image" | "file" | "reference" | "selection" };
 const sentFns = new Set<(s: Sent) => void>();
 const attachedFns = new Set<(a: Attached) => void>();
 const detachedFns = new Set<(a: Attached) => void>();
@@ -288,8 +302,8 @@ export async function sendDraft(): Promise<string | null> {
   if (!chatGateOf(st).ready) return "the chat can't take a message now (no box, the box out of reach, or a read-only chat)";
   const draft = D();
   let text = draft.input.trim();
-  const { mentions, images: pendingImages, files: pendingFiles } = draft;
-  if (!text && pendingImages.length === 0 && pendingFiles.length === 0) return "nothing to send";
+  const { mentions, images: pendingImages, files: pendingFiles, picks } = draft;
+  if (!text && pendingImages.length === 0 && pendingFiles.length === 0 && picks.length === 0) return "nothing to send";
   const vaultPath = st.vaultPath;
   const files = st.files;
   useDraft.setState((d) => ({ sending: d.sending + 1 }));
@@ -351,11 +365,13 @@ export async function sendDraft(): Promise<string | null> {
     const resolved = Array.from(byPath.values());
     const mentionPreamble = await buildMentionPreamble(resolved);
     const viewportCtx = buildViewportContextText(useStore.getState());
-    const contextPreamble = [mentionPreamble, viewportCtx].filter(Boolean).join("\n\n---\n\n");
+    const contextPreamble = [mentionPreamble, pickContext(picks), viewportCtx].filter(Boolean).join("\n\n---\n\n");
     // Belt-and-suspenders: the resolved paths as a footer on the user turn too (stripped from the bubble).
     const pathFooter = resolved.length > 0 ? `\n\n[attached: ${resolved.map((r) => `@${r.rel.split("/").pop()} → ${r.path}`).join(", ")}]` : "";
     // The attached files' names on the message (chips on its bubble: splitFilesLine).
     const filesLn = filesLine(uploads.map((u) => u.name));
+    // Only a selection: the message names it (what it is goes in the context).
+    if (!text && picks.length) text = `Selected: ${picks.map(pickName).join(", ")}`;
     clearDraft();
     dispatchChatAction({
       kind: "send",

@@ -171,6 +171,8 @@ export async function contextImageFor(
 // ---------------------------------------------------------------- watching the editor
 
 const FOCUS_MIN_MS = 4000;
+/** A page just opened waits this long for its title before it is recorded without one. */
+const PAGE_TITLE_WAIT_MS = 2000;
 let stopWatch: (() => void) | null = null;
 
 const rel = (vault: string, p: string) => {
@@ -192,8 +194,11 @@ export function startActivityWatch(): () => void {
   let pendingFocus: ReturnType<typeof setTimeout> | null = null;
   const seenCaptures = new WeakSet<object>();
   const recentImages: string[] = [];
+  const isPage = (f: string | null | undefined): f is string => !!f && /^https?:\/\//i.test(f);
+  /** Pages just opened, waiting a moment for their title. */
+  const pagesWaiting = new Map<string, ReturnType<typeof setTimeout>>();
   const focus = (vault: string, path: string, where: string | undefined, text: string) => {
-    const key = `${path}|${where ?? ""}`;
+    const key = `${path}|${where ?? ""}|${text}`;
     if (key === lastFocusKey) return;
     const fire = () => {
       pendingFocus = null;
@@ -209,7 +214,26 @@ export function startActivityWatch(): () => void {
   const unsub = useStore.subscribe((s, prev) => {
     const vault = s.vaultPath;
     if (!vault) return;
-    if (s.currentFile && s.currentFile !== prev.currentFile) focus(vault, s.currentFile, undefined, /^https?:\/\//i.test(s.currentFile) ? "opened the page" : "opened the file");
+    if (s.currentFile && s.currentFile !== prev.currentFile && !isPage(s.currentFile)) focus(vault, s.currentFile, undefined, "opened the file");
+    // A web page in any pane: every address it goes to (a single-page site's own changes too, src/plugins/viewer/
+    // WebPane.tsx syncUrl), with its title once the page says it (or without, if none comes soon).
+    const pages = new Set([s.currentFile, ...s.panes.map((p) => p.file)].filter(isPage));
+    const before = new Set([prev.currentFile, ...prev.panes.map((p) => p.file)].filter(isPage));
+    for (const url of pages) {
+      const title = s.webTitles[url];
+      if (!before.has(url)) {
+        const t = setTimeout(() => {
+          pagesWaiting.delete(url);
+          const now = useStore.getState().webTitles[url];
+          focus(vault, url, undefined, now ? `opened the page "${now}"` : "opened the page");
+        }, title ? 0 : PAGE_TITLE_WAIT_MS);
+        pagesWaiting.set(url, t);
+      } else if (title && title !== prev.webTitles[url] && pagesWaiting.has(url)) {
+        clearTimeout(pagesWaiting.get(url)!);
+        pagesWaiting.delete(url);
+        focus(vault, url, undefined, `opened the page "${title}"`);
+      }
+    }
     const vp = s.viewport;
     if (vp?.page && vp.path && (vp.page !== prev.viewport?.page || vp.path !== prev.viewport?.path)) {
       focus(vault, vp.path, `page ${vp.page}${vp.totalPages ? ` of ${vp.totalPages}` : ""}`, "reading");
@@ -246,6 +270,7 @@ export function startActivityWatch(): () => void {
   stopWatch = () => {
     unsub();
     if (pendingFocus) clearTimeout(pendingFocus);
+    for (const t of pagesWaiting.values()) clearTimeout(t);
     stopWatch = null;
   };
   return stopWatch;

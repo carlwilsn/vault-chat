@@ -26,7 +26,7 @@ export type LayoutDeps = {
   dev?: (port: number) => Promise<{ origin: string } | { error: string }>;
 };
 
-const PAGE_DO = ["back", "forward", "reload", "browser"];
+const PAGE_DO = ["back", "forward", "reload", "browser", "read", "click", "type", "scroll", "select"];
 const httpUrl = (v: unknown): v is string => typeof v === "string" && /^https?:\/\/\S+$/i.test(v.trim());
 
 function parseOps(a: Record<string, unknown>): Op[] | string {
@@ -62,6 +62,26 @@ function parseOps(a: Record<string, unknown>): Op[] | string {
         if (o.do !== "browser" || !httpUrl(o.url)) return "webPage's url (an http(s) address) goes with do: browser.";
         op.url = o.url.trim();
       }
+      // Inside the page (src/webDrive.ts checks them again on the laptop): an element by ref or text, what to type.
+      if (o.ref !== undefined) {
+        if (typeof o.ref !== "string" || !/^e\d{1,6}$/.test(o.ref)) return 'webPage\'s ref is one the page\'s read gave, like "e12".';
+        op.ref = o.ref;
+      }
+      if (o.text !== undefined) {
+        if (typeof o.text !== "string" || !o.text.trim()) return "webPage's text is what the element reads.";
+        op.text = o.text;
+      }
+      if (o.value !== undefined) {
+        if (typeof o.value !== "string") return "webPage's value is the text to type.";
+        op.value = o.value;
+      }
+      if (o.enter !== undefined) op.enter = o.enter === true;
+      if (o.by !== undefined) {
+        if (!(o.by === "top" || o.by === "bottom" || (typeof o.by === "number" && Number.isFinite(o.by)))) return 'webPage\'s by is pixels, "top" or "bottom".';
+        op.by = o.by;
+      }
+      if ((o.do === "click" || o.do === "type") && op.ref === undefined && op.text === undefined) return `webPage ${o.do} needs ref (from panes[].page.elements) or text.`;
+      if (o.do === "type" && op.value === undefined) return "webPage type needs value.";
     }
     if (action === "split" || action === "fullscreenChat") {
       if (typeof o.on !== "boolean") return `${action} needs on: true or false.`;

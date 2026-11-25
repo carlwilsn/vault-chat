@@ -22,8 +22,16 @@ export const webEmbedCalls: { cmd: string; args: Record<string, unknown> }[] = [
 const OPEN_MS = 250, CLOSE_MS = 40;
 const later = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** ?form=1: a sign-in form, a checkbox and a button, for driving the page (src/webDrive.ts): what was typed and clicked
+ *  shows on the page, a password never. */
+const FORM = `<form id="f" onsubmit="event.preventDefault();document.getElementById('out').textContent='Signed in as '+this.user.value+(this.keep.checked?' (kept)':'')"><p><label for="u">Email</label> <input id="u" name="user" placeholder="you@example.com"></p><p><label for="pw">Password</label> <input id="pw" name="pw" type="password"></p><p><label><input type="checkbox" name="keep"> Keep me signed in</label></p><p><button type="submit">Sign in</button> <button type="button" onclick="document.getElementById('out').textContent='Counted '+(++window.n||(window.n=1))">Count</button></p></form><p id="out">Not signed in</p>`;
+
 function pageFor(url: string): string {
   const u = new URL(url);
+  // "Next video": the page changes its address without loading (as YouTube's pushState does): __vcPushState is the
+  // stand-in's own history.pushState (the real view's Source follows; no load fires, only a title change).
+  const next = `${u.origin}${u.pathname}?form=1&v=${Number(u.searchParams.get("v") ?? "1") + 1}`;
+  if (u.searchParams.get("form")) return `<!doctype html><html><head><title>Sign in · ${u.host}</title><style>body{font:15px/1.6 system-ui,sans-serif;max-width:560px;margin:24px auto;padding:0 16px;color:#222;background:#fff}</style></head><body><h1>Sign in to ${u.host}</h1>${FORM}<p><button type="button" onclick="__vcPushState('${next}', 'Video ${Number(u.searchParams.get("v") ?? "1") + 1}')">Next video</button></p>${Array.from({ length: 30 }, (_, i) => `<p>Line ${i + 1} below the form.</p>`).join("")}</body></html>`;
   const n = Number(u.searchParams.get("p") ?? "1");
   const links = [1, 2, 3].filter((k) => k !== n).map((k) => `<p><a href="${u.origin}${u.pathname}?p=${k}">Read part ${k}</a></p>`).join("");
   const paras = Array.from({ length: 14 }, (_, i) => `<p>Paragraph ${i + 1} of part ${n}. A stand-in for ${u.host}: the real app shows the live site in a native browser view at these bounds.</p>`).join("");
@@ -36,6 +44,13 @@ function load(id: string, v: View, url: string, push: boolean) {
   v.frame.srcdoc = pageFor(url);
   v.frame.onload = () => {
     const doc = v.frame.contentDocument;
+    (v.frame.contentWindow as unknown as { __vcPushState: (to: string, title: string) => void }).__vcPushState = (to, title) => {
+      v.history = v.history.slice(0, v.at + 1);
+      v.history.push(to);
+      v.at = v.history.length - 1;
+      if (doc) doc.title = title;
+      emitFromBackend("web-embed", { id, kind: "title", title });
+    };
     emitFromBackend("web-embed", { id, kind: "load", url, loading: false });
     emitFromBackend("web-embed", { id, kind: "title", title: doc?.title ?? "" });
     // Links navigate inside the view, as a real browser view does.
@@ -90,6 +105,19 @@ export const webEmbedCommands: Record<string, (a: Record<string, any>) => unknow
     else if (action === "reload") load(id, v, v.history[v.at]!, false);
     else if (action === "load" && url) load(id, v, url, true);
     return null;
+  },
+  // The page script (src/webDrive.ts) runs in the stand-in page, as WebView2's ExecuteScript runs it in the real one, and
+  // its value comes back as JSON text the way WebView2 serializes it ("null" when it threw).
+  web_embed_eval: ({ id, js }) => {
+    webEmbedCalls.push({ cmd: "web_embed_eval", args: { id } });
+    const v = views.get(id);
+    if (!v) throw "no such inline page";
+    const win = v.frame.contentWindow as (Window & { eval(s: string): unknown }) | null;
+    try {
+      return JSON.stringify(win ? win.eval(String(js)) ?? null : null);
+    } catch {
+      return "null";
+    }
   },
   web_embed_url: ({ id }) => {
     const v = views.get(id);

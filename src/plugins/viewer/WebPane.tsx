@@ -15,14 +15,15 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ArrowLeft, ArrowRight, ExternalLink, Globe, RotateCw, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, ExternalLink, Globe, RotateCw, SquareMousePointer, X } from "lucide-react";
 import { useStore } from "../../store";
 import { openUrl } from "../../opener";
 import { followPlaceholder, inOrder, measure, native, nativeView, newId, useZoom } from "../../InlineWebPage";
 import { downloadNote } from "../../webProfile";
 import { displayHost, WEB_EMBED_EVENT, type ViewPlacer, type WebEmbedEvent } from "../../inlineWeb";
 import type { WebPageSeen } from "../../layoutTypes";
-import { boxDevUrl, embedKind, frameArrived, frameHistory, frameStep, openTyped, paneKey, registerWebPane, type WebPageDo } from "../../webPane";
+import { boxDevUrl, embedKind, frameArrived, frameHistory, frameStep, openTyped, paneKey, paneSideOf, registerWebPane, setPickingPane, webPageAct, type WebPageDo } from "../../webPane";
+import { answerOf, driveScript, pickOf, seenOf, type DriveOp } from "../../webDrive";
 
 const iconBtn = "inline-flex items-center gap-1 hover:text-foreground disabled:opacity-40";
 
@@ -54,7 +55,7 @@ function useSetAddress(paneId: string | undefined, viewUrl: { current: string })
 }
 
 /** The frame both kinds share: the pane, its title row, a note, and the body under them. */
-function PaneShell(p: { paneId?: string; url: string; failed: string | null; loading: boolean; note: { text: string; url?: string } | null; embedId?: string; act: (what: WebPageDo, other?: string) => Promise<void>; children: ReactNode }) {
+function PaneShell(p: { paneId?: string; url: string; failed: string | null; loading: boolean; note: { text: string; url?: string } | null; embedId?: string; act: (what: WebPageDo, other?: string) => Promise<void>; picking?: boolean; children: ReactNode }) {
   const { paneId, url, failed, loading, note, act } = p;
   const activePaneId = useStore((s) => s.activePaneId);
   const inSplit = useStore((s) => s.panes.length > 0);
@@ -85,6 +86,20 @@ function PaneShell(p: { paneId?: string; url: string; failed: string | null; loa
         <button data-offer="box:workspace.webPage" type="button" className={iconBtn} onClick={() => void act("forward")} title="Forward" data-el="web-pane-forward" disabled={!!failed}><ArrowRight className="h-3.5 w-3.5" /></button>
         <button data-offer="box:workspace.webPage" type="button" className={iconBtn} onClick={() => void act("reload")} title="Reload" data-el="web-pane-reload" disabled={!!failed}><RotateCw className={`h-3.5 w-3.5 ${loading && !failed ? "animate-spin" : ""}`} /></button>
         <AddressBar paneId={paneId} url={url} />
+        {p.picking !== undefined && !failed ? (
+          // Select: Carl clicks an element on the page and it goes to the composer as a chip (Esc stops).
+          <button
+            data-offer="box:workspace.webPage"
+            type="button"
+            className={`${iconBtn} ${p.picking ? "text-primary" : ""}`}
+            onClick={() => void (p.picking ? undefined : webPageAct("select", paneSideOf(paneId)))}
+            title={p.picking ? "Click an element on the page · Esc to stop" : "Select an element on the page for the chat"}
+            data-el="web-pane-select"
+            aria-pressed={p.picking}
+          >
+            <SquareMousePointer className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
         <span className="truncate flex-1 min-w-0" title={title ?? url} data-el="web-pane-title">
           {title ? <span className="text-foreground/90">{title}</span> : null}
         </span>
@@ -235,6 +250,84 @@ function NativeWebPane({ paneId, url }: { paneId?: string; url: string }) {
 
   const setAddress = useSetAddress(paneId, viewUrl);
 
+  const loadingRef = useRef(true);
+  // Where the page is now, from the view itself (WebView2's Source): a site that changes pages without loading one
+  // (history.pushState: YouTube's next video, any single-page app) fires no load, so the view is asked on every title
+  // change and once a second. The page gets no channel to the app for it.
+  // Not while a load runs, nor just after the pane sent the view somewhere (its Source is the old page until the new
+  // one commits: reading it then would send the pane back).
+  const sentAt = useRef(0);
+  const syncUrl = useCallback(async () => {
+    if (!view.current?.open || loadingRef.current || Date.now() - sentAt.current < 2500) return;
+    const now = await inOrder(id, () => invoke<string>("web_embed_url", { id })).catch(() => null);
+    if (typeof now === "string" && /^https?:\/\//i.test(now) && now !== viewUrl.current) setAddress(now);
+  }, [id, setAddress]);
+  useEffect(() => {
+    if (failed) return;
+    const t = setInterval(() => void syncUrl(), 1000);
+    return () => clearInterval(t);
+  }, [failed, syncUrl]);
+
+  // Driving the page (src/webDrive.ts): one step of the page script through the native view, its answer bounded.
+  const drive = useCallback(async (op: DriveOp) => {
+    if (!view.current?.open) throw new Error("the page's view is not open");
+    const raw = await inOrder(id, () => invoke<string>("web_embed_eval", { id, js: driveScript(op) }));
+    const a = answerOf(raw);
+    if (!a) throw new Error("the page did not answer (it may be between pages: read it again)");
+    return a;
+  }, [id]);
+  // What the page shows, into the store (the workspace noun's panes[].page). settled: after a step, once the page had
+  // a moment to answer it and any load it started has ended.
+  const read = useCallback(async (settled?: boolean) => {
+    if (settled) {
+      await new Promise((r) => setTimeout(r, 350));
+      for (let i = 0; i < 40 && loadingRef.current; i++) await new Promise((r) => setTimeout(r, 200));
+    }
+    const a = await drive({ op: "read" });
+    if (a.error) throw new Error(String(a.error));
+    const at = typeof a.url === "string" && /^https?:\/\//i.test(a.url) ? a.url : viewUrl.current;
+    if (at !== viewUrl.current) setAddress(at);
+    useStore.getState().setWebPage(at, seenOf(a));
+  }, [drive, setAddress]);
+  // Select: the page's picker on; Carl's click lands as a chip in the composer, Esc (in the page or the app) stops it.
+  const [picking, setPicking] = useState(false);
+  const pick = useCallback(async (on: boolean) => {
+    if (!on) {
+      setPicking(false);
+      await drive({ op: "pickStop" }).catch(() => undefined);
+      return;
+    }
+    const a = await drive({ op: "pickStart" });
+    if (a.error) throw new Error(String(a.error));
+    setPicking(true);
+    await inOrder(id, () => invoke("web_embed_go", { id, action: "focus" })).catch(() => undefined);
+  }, [drive, id]);
+  useEffect(() => {
+    setPickingPane(key, picking);
+    if (!picking) return;
+    let stopped = false;
+    const t = setInterval(() => {
+      void drive({ op: "pickPoll" }).then((a) => {
+        if (stopped) return;
+        if (a.picked) {
+          const p = pickOf(a.picked, viewUrl.current);
+          if (p) void import("../composer/draft").then((d) => d.addPick(p));
+          setPicking(false);
+        } else if (a.cancelled || a.picking === false) setPicking(false);
+      }, () => undefined);
+    }, 300);
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") void pick(false);
+    };
+    window.addEventListener("keydown", esc, true);
+    return () => {
+      stopped = true;
+      clearInterval(t);
+      window.removeEventListener("keydown", esc, true);
+      setPickingPane(key, false);
+    };
+  }, [picking, drive, pick, key]);
+
   // The page's own reports: where it went (that becomes the pane's address), its title, a refused link or download.
   useEffect(() => {
     if (failed) return;
@@ -245,9 +338,16 @@ function NativeWebPane({ paneId, url }: { paneId?: string; url: string }) {
       if (!p || p.id !== id) return;
       if (p.kind === "load") {
         setLoading(!!p.loading);
+        loadingRef.current = !!p.loading;
         if (p.loading) setNote(null);
         if (p.url && p.url !== "about:blank" && p.url !== viewUrl.current) setAddress(p.url);
-      } else if (p.kind === "title") useStore.getState().setWebTitle(viewUrl.current, p.title ?? null);
+        // Loaded: read what it shows (a script-heavy page may still be drawing; reading again is the agent's).
+        if (!p.loading) setTimeout(() => void read().catch(() => undefined), 400);
+      } else if (p.kind === "title") {
+        // The title of the page it is on now: a same-document change moves the address first (syncUrl).
+        const title = p.title ?? null;
+        void syncUrl().then(() => useStore.getState().setWebTitle(viewUrl.current, title));
+      }
       else if (p.kind === "blocked" && p.url) setNote({ text: "That link can't open here", url: p.url });
       else {
         // A download saved ("Saved <name>"), failed, or refused (no vault open): src/webProfile.ts.
@@ -256,7 +356,7 @@ function NativeWebPane({ paneId, url }: { paneId?: string; url: string }) {
       }
     }).then((u) => { if (gone) u(); else off = u; }).catch(() => undefined);
     return () => { gone = true; off?.(); };
-  }, [id, failed, setAddress]);
+  }, [id, failed, setAddress, read, syncUrl]);
 
   // Where the view goes: this pane's own body, measured when the call runs (never another pane's, never a layout
   // from before the split settled).
@@ -287,6 +387,7 @@ function NativeWebPane({ paneId, url }: { paneId?: string; url: string }) {
       v.reset();
       void inOrder(id, () => invoke("web_embed_close", { id })).catch(() => undefined).then(() => place());
     };
+    sentAt.current = Date.now();
     void inOrder(id, () => invoke("web_embed_go", { id, action: "load", url })).catch(reopen);
   }, [url, id, place]);
 
@@ -305,14 +406,15 @@ function NativeWebPane({ paneId, url }: { paneId?: string; url: string }) {
         return;
       }
       if (!view.current?.open) return;
+      sentAt.current = Date.now();
       await inOrder(id, () => invoke("web_embed_go", { id, action: what })).catch(() => undefined);
     },
     [id],
   );
-  useEffect(() => registerWebPane(key, { live: !failed, ...(failed ? { why: failed } : {}), act }), [key, failed, act]);
+  useEffect(() => registerWebPane(key, { live: !failed, ...(failed ? { why: failed } : {}), act, drive, read, pick }), [key, failed, act, drive, read, pick]);
 
   return (
-    <PaneShell paneId={paneId} url={url} failed={failed} loading={loading} note={note} act={act} embedId={failed ? undefined : id}>
+    <PaneShell paneId={paneId} url={url} failed={failed} loading={loading} note={note} act={act} picking={picking} embedId={failed ? undefined : id}>
       {/* The native view sits exactly over this element; what shows here is only seen while it loads, or as the link. */}
       <div ref={body} className="relative flex-1 min-h-0 bg-background" data-el="web-pane-body">
         {failed ? (

@@ -41,3 +41,26 @@ test("g. the editor's watch posts the new focus to the box's stream, with the op
   assert.equal(focus.at(-1)!.body.entry.path, "notes/measure-theory.md");
   assert.equal(focus.at(-1)!.body.entry.project, "analysis");
 });
+
+test("g2. a web page's own address changes (a single-page site's next video) reach the stream, with the page's title", async () => {
+  useStore.setState({ vaultPath: vault, currentFile: null, panes: [], webTitles: {} } as any);
+  const stop = activity.startActivityWatch();
+  posts.length = 0;
+  const v1 = "https://www.youtube.com/watch?v=one";
+  const v2 = "https://www.youtube.com/watch?v=two";
+  useStore.getState().setCurrentFile(v1, "");
+  useStore.getState().setWebTitle(v1, "First video - YouTube");
+  await wait(4500); // FOCUS_MIN_MS coalescing
+  // The page moved to the next video without a load (pushState): the pane's address follows (WebPane syncUrl), then its title.
+  useStore.getState().setCurrentFile(v2, "");
+  await wait(300);
+  useStore.getState().setWebTitle(v2, "Second video - YouTube");
+  await wait(4500);
+  await activity.flushActivity();
+  stop();
+  const pages = posts.filter((p) => p.url.includes("/api/v1/activity") && p.body?.entry?.kind === "focus").map((p) => [p.body.entry.path, p.body.entry.text]);
+  assert.deepEqual(pages, [
+    [v1, 'opened the page "First video - YouTube"'],
+    [v2, 'opened the page "Second video - YouTube"'],
+  ]);
+});

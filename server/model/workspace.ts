@@ -39,7 +39,7 @@ export function workspaceNoun(ctx: WorkspaceCtx): Noun {
     state: {
       layout: {
         description:
-          "Carl's laptop screen, read back from it: downloads (files the web pages saved this session, newest first: name, path under .vault-chat/downloads, size, at, ok); panes and their files or web pages (url and title; Carl's own navigation shows here; a dev server's page also its `page`: the visible text as Carl sees it, console errors and failed requests with status, as the page reported them) (split, side-by-side or stacked, the active pane), the left panel (file tree) open, the chat panel open / full screen / popped out, its sidebar, the open chat when known, window and column sizes; when the laptop is away, the last read-back and since when",
+          "Carl's laptop screen, read back from it: downloads (files the web pages saved this session, newest first: name, path under .vault-chat/downloads, size, at, ok); panes and their files or web pages (url and title; Carl's own navigation shows here; `page`: the visible text as Carl sees it, for a public page also its interactive elements with refs (one line each, like e12 button 'Sign in'; password fields only filled / empty) and scroll, for a dev server's page console errors and failed requests with status, as the page reported them; picking: its Select is on) (split, side-by-side or stacked, the active pane), the left panel (file tree) open, the chat panel open / full screen / popped out, its sidebar, the open chat when known, window and column sizes; when the laptop is away, the last read-back and since when",
         read: async () => {
           const k = keptLayout();
           const down = controlDown("laptop");
@@ -65,7 +65,11 @@ export function workspaceNoun(ctx: WorkspaceCtx): Noun {
         "openInPane",
         obj({ path: { type: "string", description: "vault-relative" }, url: { type: "string", description: "http(s)" }, pane: PANE }),
       ),
-      webPage: action("the web page in a pane (left out: the active one), as its title row's buttons: back, forward, reload, or browser (opens it, or url, in his browser)", "webPage", obj({ do: { type: "string", enum: ["back", "forward", "reload", "browser"] }, pane: PANE, url: { type: "string" } }, ["do"])),
+      webPage: action(
+        "the web page in a pane (left out: the active one): its title row's back, forward, reload, browser (opens it, or url, in his browser); and inside a public page: read (its text and elements again, into panes[].page), click (ref from page.elements, or text), type (value into ref / a field's text; enter: true presses Enter), scroll (by pixels, \"top\" / \"bottom\", or to ref), select (with ref: that element goes to his composer as a chip; without: Select, Carl clicks one). Answers with the page read back",
+        "webPage",
+        obj({ do: { type: "string", enum: ["back", "forward", "reload", "browser", "read", "click", "type", "scroll", "select"] }, pane: PANE, url: { type: "string" }, ref: { type: "string" }, text: { type: "string" }, value: { type: "string" }, enter: { type: "boolean" }, by: { description: "pixels (negative: up), \"top\" or \"bottom\"" } }, ["do"]),
+      ),
       split: action("turn the split on or off (off keeps the active pane)", "split", obj({ on: { type: "boolean" } }, ["on"])),
       focus: action("focus a pane or the chat", "focus", obj({ target: { type: "string", enum: ["left", "right", "chat"] } }, ["target"])),
       fullscreenChat: action("full-screen chat on or off", "fullscreenChat", obj({ on: { type: "boolean" } }, ["on"])),

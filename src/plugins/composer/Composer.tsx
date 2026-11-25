@@ -6,7 +6,7 @@
 //
 // Its own React root: a keystroke redraws the composer alone, never the chat pane around it.
 import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Plus, Square, ArrowUp, X, Mic, Paperclip, Scan, AtSign, AlertCircle, FileText } from "lucide-react";
+import { Plus, Square, ArrowUp, X, Mic, Paperclip, Scan, AtSign, AlertCircle, FileText, SquareMousePointer } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { attachBlob, sizeLabel } from "../../attachFiles";
 import { isExternalFileDrop } from "../../dnd";
@@ -33,6 +33,7 @@ import {
   addReference,
   attachImages,
   detachItem,
+  pickName,
   attachPaths,
   escapeRegExp,
   focusHandoff,
@@ -111,6 +112,7 @@ export function Composer() {
   const input = useDraft((d) => d.input);
   const pendingImages = useDraft((d) => d.images);
   const pendingFiles = useDraft((d) => d.files);
+  const picks = useDraft((d) => d.picks);
   const attachError = useDraft((d) => d.attachError);
   const mentions = useDraft((d) => d.mentions);
   // The tracked @-references drawn as chips over the text (./chips.ts): none, and the text box is exactly as before.
@@ -205,7 +207,7 @@ export function Composer() {
     void sendDraft();
   };
   const stop = stopAgent;
-  const hasDraft = !!input.trim() || pendingImages.length > 0 || pendingFiles.length > 0;
+  const hasDraft = !!input.trim() || pendingImages.length > 0 || pendingFiles.length > 0 || picks.length > 0;
 
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     // Snapshot items synchronously — clipboardData is invalidated as
@@ -540,6 +542,24 @@ export function Composer() {
                   <span className="text-[10.5px] text-muted-foreground">{sizeLabel(f.size)}</span>
                   <button data-offer="app/composer.detach"
                     onClick={() => detachItem("file", i)}
+                    className="absolute -top-1.5 -right-1.5 h-4 w-4 flex items-center justify-center rounded-full bg-card border border-border text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
+                    title="Remove"
+                  >
+                    <X className="h-2.5 w-2.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {picks.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 px-3 pt-2" data-el="web-picks">
+              {/* Elements selected on web pages (a pane's Select): their ref, text and html go with the message. */}
+              {picks.map((p, i) => (
+                <div key={`${p.url} ${p.ref}`} className="group relative flex items-center gap-1.5 rounded-md border border-border/70 bg-muted/40 pl-2 pr-2.5 py-1 text-[11.5px]" data-el="web-pick-chip" title={`${p.url}\n${p.ref} ${p.text}`}>
+                  <SquareMousePointer className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="max-w-[240px] truncate text-foreground/90">{pickName(p)}</span>
+                  <button data-offer="app/composer.detach"
+                    onClick={() => detachItem("selection", i)}
                     className="absolute -top-1.5 -right-1.5 h-4 w-4 flex items-center justify-center rounded-full bg-card border border-border text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
                     title="Remove"
                   >

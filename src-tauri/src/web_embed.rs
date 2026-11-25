@@ -551,6 +551,37 @@ pub async fn web_embed_url(app: AppHandle, id: String) -> Result<String, String>
     on_main(&app, move || with_embed(&id, |e| e.view.url().map_err(|e| e.to_string()))).await
 }
 
+/// Runs the app's own script `js` in the page `id` and hands back its value as the browser serializes it (JSON text;
+/// "null" when it threw): how the agent and Carl's Select read and drive a page (src/webDrive.ts: its text and elements,
+/// click, type, scroll, the element picker). The app reaches into the page; the page still has no way to call the app.
+#[tauri::command]
+pub async fn web_embed_eval(app: AppHandle, id: String, js: String) -> Result<String, String> {
+    check_id(&id)?;
+    if js.len() > 200_000 {
+        return Err("script too long".into());
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    // The browser calls back once, on the main thread; the sender is taken the first time.
+    let tx = std::sync::Arc::new(Mutex::new(Some(tx)));
+    on_main(&app, move || {
+        with_embed(&id, |e| {
+            e.view
+                .evaluate_script_with_callback(&js, move |out| {
+                    if let Some(t) = tx.lock().ok().and_then(|mut t| t.take()) {
+                        let _ = t.send(out);
+                    }
+                })
+                .map_err(|e| e.to_string())
+        })
+    })
+    .await?;
+    match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
+        Ok(Ok(out)) => Ok(out),
+        Ok(Err(_)) => Err("the page did not answer".into()),
+        Err(_) => Err("the page did not answer within 10 s".into()),
+    }
+}
+
 /// Closes one page (`id`), or with no id every page in the calling window (the chat starting over: a reload must
 /// never leave a native view stranded on screen).
 #[tauri::command]

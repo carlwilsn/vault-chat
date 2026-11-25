@@ -17,7 +17,7 @@ import { useStore } from "../../store";
 import { aiBlockedNow, chatGateOf } from "../../chatGate";
 import { EFFORTS, EFFORT_LABEL, chatModelsNow, isEffort, labelFor, setChatModel } from "../../chatModels";
 import { Composer } from "./Composer";
-import { attachPaths, clearDraft, detachItem, hasDraft, onDraftEvent, queuedMessages, sendDraft, sendQueuedNow, setInput, stopAgent, unqueue, useDraft } from "./draft";
+import { attachPaths, clearDraft, detachItem, hasDraft, onDraftEvent, pickName, queuedMessages, sendDraft, sendQueuedNow, setInput, stopAgent, unqueue, useDraft } from "./draft";
 import { onSettingsChanged } from "../../settings";
 import { loadUsage, setUsageOpen, useUsage, watchUsage } from "../../UsagePopover";
 
@@ -31,6 +31,7 @@ const draftState = () => {
     references: d.mentions.map((m) => ({ name: m.name, path: m.rel })),
     images: d.images.map((i) => ({ ...(i.sourcePath ? { name: i.sourcePath.split("/").pop(), source: i.sourcePath } : {}), ...(i.sourceAnchor ? { anchor: i.sourceAnchor } : {}), ...(i.capturedFilePath ? { saved: i.capturedFilePath } : {}) })),
     files: d.files.map((f) => ({ name: f.name, size: f.size })),
+    ...(d.picks.length ? { selections: d.picks.map((p) => ({ name: pickName(p), ...p })) } : {}),
     ...(d.attachError ? { attachError: d.attachError } : {}),
   };
 };
@@ -94,7 +95,7 @@ export function composerOffers() {
   return {
     state: {
       draft: {
-        description: "What is in the composer now: text, references (vault files @-mentioned: name, path), images (attached pictures: name?, source?, anchor?, saved?), files (uploads from outside the vault: name, size) and attachError when the last attach failed.",
+        description: "What is in the composer now: text, references (vault files @-mentioned: name, path), images (attached pictures: name?, source?, anchor?, saved?), files (uploads from outside the vault: name, size), selections (elements selected on web pages with Select: name, url, ref, tag, label, text, html; sent as context) and attachError when the last attach failed.",
         read: draftState,
       },
       model: {
@@ -151,7 +152,7 @@ export function composerOffers() {
         },
       },
       detach: {
-        description: "Take something off the draft by its name: an attached picture or file, or an @-reference (its @name leaves the text too).",
+        description: "Take something off the draft by its name: an attached picture or file, a selection, or an @-reference (its @name leaves the text too).",
         args: { type: "object", properties: { name: { type: "string" } }, required: ["name"], additionalProperties: false },
         run: (a: Record<string, unknown>) => {
           const name = String(a.name ?? "");
@@ -161,6 +162,8 @@ export function composerOffers() {
           if (img >= 0) return { detached: detachItem("image", img), kind: "image" };
           const file = d.files.findIndex((f) => f.name === name);
           if (file >= 0) return { detached: detachItem("file", file), kind: "file" };
+          const sel = d.picks.findIndex((p) => pickName(p) === name);
+          if (sel >= 0) return { detached: detachItem("selection", sel), kind: "selection" };
           const ref = d.mentions.findIndex((m) => m.name === name);
           if (ref >= 0) return { detached: detachItem("reference", ref), kind: "reference" };
           throw new Error(`nothing named "${name}" is attached`);
@@ -202,7 +205,7 @@ export function composerOffers() {
         },
       },
       clear: {
-        description: "Empty the composer: text, references, pictures, files.",
+        description: "Empty the composer: text, references, pictures, files, selections.",
         run: () => {
           clearDraft();
           return { draft: draftState() };

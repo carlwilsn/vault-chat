@@ -12,6 +12,7 @@
 import { useStore } from "./store";
 import { placeInPane, type PaneSide } from "./paneLayout";
 import { publicWebUrl } from "./inlineWeb";
+import { driveOpFor, pickOf, type DriveOp } from "./webDrive";
 
 /** A pane's content is a web page when its `file` is an http(s) address. */
 export const isWebAddress = (s: string | null | undefined): s is string => typeof s === "string" && /^https?:\/\//i.test(s.trim());
@@ -56,9 +57,30 @@ export function frameStep(h: FrameHistory, by: -1 | 1): { h: FrameHistory; url: 
 
 export type WebPageDo = "back" | "forward" | "reload" | "browser";
 export const WEB_PAGE_DO: readonly WebPageDo[] = ["back", "forward", "reload", "browser"];
+/** What the agent (and Select) do inside a public page (src/webDrive.ts). */
+export type WebDriveDo = "read" | "click" | "type" | "scroll" | "select";
+export const WEB_DRIVE_DO: readonly WebDriveDo[] = ["read", "click", "type", "scroll", "select"];
 
-/** A web pane on screen: its buttons, and whether a live view is behind them (false: the pane shows a link). */
-export type WebPaneHandle = { live: boolean; why?: string; act(what: WebPageDo, url?: string): Promise<void> };
+/** A web pane on screen: its buttons, and whether a live view is behind them (false: the pane shows a link). A public
+ *  page's pane can also be driven: drive runs one step of the page script, read reads the page into the store (the
+ *  workspace noun's panes[].page; settled: after the page had a moment, and its load, to answer a step), pick turns
+ *  Select on (Carl clicks an element) or off. */
+export type WebPaneHandle = {
+  live: boolean;
+  why?: string;
+  act(what: WebPageDo, url?: string): Promise<void>;
+  drive?: (op: DriveOp) => Promise<Record<string, unknown>>;
+  read?: (settled?: boolean) => Promise<void>;
+  pick?: (on: boolean) => Promise<void>;
+};
+
+/** Panes whose Select is on (waiting for Carl's click on the page), by pane key: the workspace noun reads it. */
+const picking = new Set<string>();
+export const isPicking = (key: string) => picking.has(key);
+export function setPickingPane(key: string, on: boolean): void {
+  if (on) picking.add(key);
+  else picking.delete(key);
+}
 const handles = new Map<string, WebPaneHandle>();
 /** A pane's key: its id in a split, "main" for the one viewer. */
 export const paneKey = (paneId: string | null | undefined) => paneId ?? "main";
@@ -78,6 +100,14 @@ export function paneAt(side?: PaneSide): { key: string; file: string | null; pan
     return p ? { key: paneKey(p.id), file: p.file, paneId: p.id } : { error: "no such pane" };
   }
   return { key: paneKey(null), file: s.currentFile, paneId: null };
+}
+
+/** The side a pane is on, for the agent's own actions (undefined: no split, the one viewer). */
+export function paneSideOf(paneId: string | null | undefined): PaneSide | undefined {
+  const s = useStore.getState();
+  if (!paneId || s.panes.length < 2) return undefined;
+  const i = s.panes.findIndex((p) => p.id === paneId);
+  return i === 0 ? "left" : i === 1 ? "right" : undefined;
 }
 
 /** Put a web page in the viewer: in the `pane` side (turning the split on when one other thing is open, as a file
@@ -100,8 +130,8 @@ export function openWebInPane(url: string, pane?: PaneSide): { landed: string } 
 
 /** Back / Forward / Reload / Open in browser on the page in a pane (the title row's buttons, the layout op webPage).
  *  `url` with browser: another address (a link the page could not open here) instead of the page's own. */
-export async function webPageAct(what: WebPageDo, side?: PaneSide, url?: string): Promise<{ ok: boolean; note?: string; error?: string }> {
-  if (!WEB_PAGE_DO.includes(what)) return { ok: false, error: `webPage do is ${WEB_PAGE_DO.join(", ")}, not "${String(what)}"` };
+export async function webPageAct(what: WebPageDo | WebDriveDo, side?: PaneSide, url?: string, args: DriveArgs = {}): Promise<{ ok: boolean; note?: string; error?: string }> {
+  if (!WEB_PAGE_DO.includes(what as WebPageDo) && !WEB_DRIVE_DO.includes(what as WebDriveDo)) return { ok: false, error: `webPage do is ${[...WEB_PAGE_DO, ...WEB_DRIVE_DO].join(", ")}, not "${String(what)}"` };
   const at = paneAt(side);
   if ("error" in at) return { ok: false, error: at.error };
   if (!isWebAddress(at.file)) return { ok: false, error: `${side ? `the ${side} pane` : "the viewer"} shows ${at.file ? "a file" : "nothing"}, not a web page` };
@@ -113,8 +143,44 @@ export async function webPageAct(what: WebPageDo, side?: PaneSide, url?: string)
     return { ok: true, note: `opened ${url ?? at.file} in the browser` };
   }
   if (!h || !h.live) return { ok: false, error: `the page in ${side ? `the ${side} pane` : "the viewer"} is a link here, not a live view${h?.why ? ` (${h.why})` : ""}` };
-  await h.act(what);
+  if (WEB_DRIVE_DO.includes(what as WebDriveDo)) return drivePage(h, what as WebDriveDo, args, at.file);
+  await h.act(what as WebPageDo);
   return { ok: true };
+}
+
+export type DriveArgs = { ref?: unknown; text?: unknown; value?: unknown; enter?: unknown; by?: unknown };
+
+/** One step inside a public page, then the page read again (the noun's panes[].page carries it back). */
+async function drivePage(h: WebPaneHandle, what: WebDriveDo, a: DriveArgs, pageUrl: string): Promise<{ ok: boolean; note?: string; error?: string }> {
+  if (!h.drive || !h.read || !h.pick) return { ok: false, error: "only a public page's view can be driven; a dev server's page is read from its own report (panes[].page)" };
+  try {
+    if (what === "read") {
+      await h.read();
+      return { ok: true };
+    }
+    if (what === "select") {
+      if (a.ref === undefined && a.text === undefined) {
+        await h.pick(true);
+        return { ok: true, note: "Select is on: Carl clicks an element on the page and it goes to the composer as a chip (Esc stops)" };
+      }
+      const op = driveOpFor("click", a);
+      if (typeof op === "string") return { ok: false, error: op.replace("click", "select") };
+      const ans = await h.drive({ ...op, op: "describe" } as DriveOp);
+      const p = pickOf(ans.picked, pageUrl);
+      if (!p) return { ok: false, error: String(ans.error ?? "the page did not describe it") };
+      // The composer's draft, loaded when used (a static import would cycle through the box chat).
+      (await import("./plugins/composer/draft")).addPick(p);
+      return { ok: true, note: `selected ${p.ref} <${p.tag}> "${p.label}": a chip in the composer` };
+    }
+    const op = driveOpFor(what, a);
+    if (typeof op === "string") return { ok: false, error: op };
+    const ans = await h.drive(op);
+    if (ans.error) return { ok: false, error: String(ans.error) };
+    await h.read(true);
+    return { ok: true, note: String(ans.did ?? what) };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /** What was typed in a pane's address bar, as the address to open: an http(s) address as it is; one word with a dot

@@ -250,6 +250,34 @@ export const visualScenarios: Scenario[] = [
     surfaces: ["desktop"],
   },
   {
+    id: "web-drive",
+    title: "Driving a web page — the agent reads, clicks and types in a public page; Select puts an element in the composer",
+    group: "Viewer",
+    notes:
+      "box:workspace webPage {do: read | click | type | scroll | select}: the page script (src/webDrive.ts) runs in the native view (web_embed_eval) and the pane's page state carries the text and elements with refs (a password only as filled / empty). The pane's Select button: click an element on the page and it lands as a chip in the composer (Esc stops). In the preview the native view is the dashed stand-in, a local sign-in form.",
+    build: (ctx: BuildCtx) => {
+      ctx.write("notes.md", "# Notes\n");
+      ctx.conversations([{
+        id: "c-web-drive", title: "Sign in", source: "manual", status: "idle", unread: false,
+        createdAt: ctx.now - 5 * MIN, lastActivityAt: ctx.now - MIN,
+        messages: [{ role: "user", content: "sign me in there" }, { role: "assistant", content: "Typed your email and pressed Sign in: the page says you're signed in." }],
+      }]);
+    },
+    activeConversation: "c-web-drive",
+    open: [
+      { chat: true },
+      { conversation: "c-web-drive" },
+      { run: async () => {
+        const { applyLayoutOps } = await import(/* @vite-ignore */ "/src/layoutOps.ts");
+        const io = { openInPane: async () => ({ ok: false, error: "files are not opened here" }) };
+        await applyLayoutOps([{ op: "openInPane", url: "https://example.com/signin?form=1" }], io);
+      } },
+      { wait: '[data-el="web-pane-select"]' },
+      { sleep: 1200 },
+    ],
+    surfaces: ["desktop"],
+  },
+  {
     id: "web-pane-link",
     title: "Web page in a viewer pane — an address no view may show (a LAN host): the pane says why and links to it",
     group: "Viewer",
