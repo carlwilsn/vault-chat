@@ -43,7 +43,9 @@ export function Frame() {
               </button>
             )}
           </div>
-          <div data-tauri-drag-region className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          {/* Centred on the bar, kept clear of the sidebar toggle and the window controls (3 × 44 px) so a narrow
+              window (snapped to half the screen) truncates the name instead of running under them. */}
+          <div data-tauri-drag-region className="absolute inset-0 px-[136px] min-w-0 flex items-center justify-center pointer-events-none">
             <ChatBarSlot />
           </div>
           <div data-tauri-drag-region className="flex-1 h-full" />
