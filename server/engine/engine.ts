@@ -674,6 +674,8 @@ export class Engine {
     // Main and every project's thread exist from the start (src/threads.ts): every surface opens one.
     void this.scoped(() => this.ensureThreads()).catch((e) => this.log(`threads: ${(e as Error).message}`));
     this.timers.push(setInterval(() => this.scoped(() => void this.tickWakes()), this.d.wakeTickMs ?? 2_000));
+    // Jobs that outlived a restart: their dev servers back on the tailnet now, not at the first tick.
+    this.scoped(() => this.devRestore());
     this.timers.push(setInterval(() => this.scoped(() => void this.tickJobs()), 15_000));
     // Notes Carl addresses to the agent (his phone, his Notes): each is a turn in Main.
     this.timers.push(setInterval(() => this.scoped(() => void this.notesToAgent()), 15_000));
@@ -2907,6 +2909,13 @@ export class Engine {
     }
     return devProxies([...own, Number(process.env.VC_VOICE_PIPELINE_PORT) || 8857]);
   }
+  /** Every port this vault's running jobs listen on, reachable on the tailnet: at start and each job tick. */
+  private devRestore(): void {
+    if (process.platform !== "linux") return;
+    const jobs = new Set(readJobs(this.d.jobEnv).filter((j) => j.state === "running").map((j) => j.id));
+    if (!jobs.size) return;
+    void this.devs().restore(jobs).catch((e) => this.log(`dev proxies: ${(e as Error).message}`));
+  }
   private devSweep(): void {
     try {
       this.devs().sweep();
@@ -3239,6 +3248,7 @@ export class Engine {
       this.log(`jobs: ${(e as Error).message}`);
     }
     if (ended.length) this.devSweep();
+    this.devRestore();
     this.jobActivity();
     this.closeDeadWorkerRows();
     for (const j of ended) {

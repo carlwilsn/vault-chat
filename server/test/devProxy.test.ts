@@ -305,6 +305,55 @@ describe("which ports", () => {
     }
   });
 
+  it("a server restart with a live job: its port is reachable through the proxy again without a new Show", async () => {
+    const { DevProxies } = await import("../devProxy");
+    const dev = fakeDev();
+    const devPort = await listen(dev.server);
+    const ports = () => new Map([[devPort, { job: "vite-live", host: "127.0.0.1" }], [8848, { job: "vite-live", host: "127.0.0.1" }]]);
+    // The tailnet side: port → the local proxy port tailscale serve forwards to.
+    const served = new Map<number, number>();
+    const exposer = { open: async (p: number, to: number) => (served.set(p, to), { origin: `https://box.example.ts.net:${p}` }), close: (p: number) => void served.delete(p) };
+    const before = new DevProxies({ ports, exposer, refuse: [8848], auth: () => true });
+    await before.url(devPort, new Set(["vite-live"]));
+    // The server goes away (an update): its proxies and serve entries with it.
+    before.closeAll();
+    expect(served.size).toBe(0);
+    // The new server starts; the job still runs. No Show: restore opens it again, and only the job's own port.
+    const after = new DevProxies({ ports, exposer, refuse: [8848], auth: () => true });
+    try {
+      expect(await after.restore(new Set())).toEqual([]);
+      expect(await after.restore(new Set(["vite-live"]))).toEqual([{ port: devPort, job: "vite-live", origin: `https://box.example.ts.net:${devPort}` }]);
+      expect([...served.keys()]).toEqual([devPort]);
+      const r = await get(served.get(devPort)!, "/after-restart", viaServe);
+      expect(r.status).toBe(200);
+      expect(JSON.parse(r.body)).toMatchObject({ url: "/after-restart", host: `localhost:${devPort}` });
+      // Asked again (the next job tick): nothing new is opened.
+      expect(await after.restore(new Set(["vite-live"]))).toEqual([]);
+      // Still behind the same login as every route.
+      const locked = new DevProxies({ ports, refuse: [8848], exposer: { open: async (p, to) => (served.set(p, to), { origin: `https://b:${p}` }), close: () => {} } });
+      await locked.restore(new Set(["vite-live"]));
+      expect((await get(served.get(devPort)!, "/", viaServe)).status).toBe(401);
+      locked.closeAll();
+    } finally {
+      after.closeAll();
+      dev.server.close();
+    }
+  });
+
+  it("a port that failed to open waits a minute before restore tries it again", async () => {
+    const { DevProxies } = await import("../devProxy");
+    let tries = 0;
+    const d = new DevProxies({
+      ports: () => new Map([[5175, { job: "j2", host: "127.0.0.1" }]]),
+      exposer: { open: async () => (tries++, { error: "port 5175 is already served" }), close: () => {} },
+      auth: () => true,
+    });
+    expect(await d.restore(new Set(["j2"]))).toMatchObject([{ port: 5175, error: expect.stringMatching(/already served/) }]);
+    expect(await d.restore(new Set(["j2"]))).toEqual([]);
+    expect(tries).toBe(1);
+    d.closeAll();
+  });
+
   it("closes a proxy once its job no longer listens", async () => {
     const { DevProxies } = await import("../devProxy");
     const closed: number[] = [];

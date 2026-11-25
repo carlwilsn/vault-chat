@@ -18,8 +18,9 @@
 //                X-Frame-Options and any frame-ancestors give way to `frame-ancestors 'self' <app origins>`), and into
 //                a page the app's frame asks for (Sec-Fetch-Dest: iframe) it puts FRAME_SCRIPT, which tells the app
 //                where the page is and its title (the pane's address and title row, for the workspace noun's watch).
-//   lifetime     the proxy and the serve entry go when the port stops being the job's (the job ended or was
-//                stopped), and with this process.
+//   lifetime     opened by Show, and by `restore` for every port a running job of the vault listens on (at server
+//                start, so a pane survives a box restart, and each job tick); the proxy and the serve entry go when
+//                the port stops being the job's (the job ended or was stopped), and with this process.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer, request as httpRequest, type IncomingMessage, type Server } from "node:http";
 import { connect, type AddressInfo } from "node:net";
@@ -468,6 +469,34 @@ export class DevProxies {
     if (!this.open.size) return;
     const now = this.ports();
     for (const o of [...this.open.values()]) if (now.get(o.port)?.job !== o.job) this.close(o.port);
+  }
+
+  /** Ports whose opening failed lately (port → {job, until}): not tried again by `restore` before then. */
+  private failed = new Map<number, { job: string; until: number }>();
+
+  /** Open the proxy for every port `jobs` (this vault's running StartJob jobs) listen on that has none: at server
+   *  start (a job that outlived a restart keeps its tailnet address, so a pane showing it still loads) and each job
+   *  tick (a job that started listening since). The same checks as `url`; a port that failed waits a minute. */
+  async restore(jobs: Set<string>): Promise<{ port: number; job: string; origin?: string; error?: string }[]> {
+    if (!jobs.size) return [];
+    const out: { port: number; job: string; origin?: string; error?: string }[] = [];
+    const now = Date.now();
+    for (const [port, owner] of this.ports()) {
+      if (!jobs.has(owner.job) || (this.d.refuse ?? []).includes(port)) continue;
+      if (this.open.get(port)?.job === owner.job || this.pending.has(port)) continue;
+      const f = this.failed.get(port);
+      if (f && f.job === owner.job && f.until > now) continue;
+      const r = await this.url(port, jobs);
+      if ("error" in r) {
+        this.failed.set(port, { job: owner.job, until: Date.now() + 60_000 });
+        console.log(`[dev] port ${port} (job ${owner.job}) not reopened: ${r.error}`);
+        out.push({ port, job: owner.job, error: r.error });
+      } else {
+        this.failed.delete(port);
+        out.push({ port, job: owner.job, origin: r.origin });
+      }
+    }
+    return out;
   }
 
   /** What is proxied now (tests, health). */
