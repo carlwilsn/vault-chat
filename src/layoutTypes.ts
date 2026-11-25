@@ -20,12 +20,17 @@ export type LayoutOp =
   | { op: "focus"; target: PaneSide | "chat" }
   | { op: "fullscreenChat"; on: boolean }
   | { op: "chatSidebar"; open: boolean }
-  | { op: "resize"; leftPanel?: number; chat?: number };
+  | { op: "resize"; leftPanel?: number; chat?: number }
+  /** The web pages' browser profile wiped (src/webProfile.ts): signed out of every site, cookies and storage gone. */
+  | { op: "signOutOfSites" };
 
 /** What a dev-server page in a pane shows, as the page itself reported it (server/devProxy.ts frameScript): its visible
  *  text (trimmed, at most 8000 characters; textLength is the whole), console and uncaught errors, and requests that
  *  failed (status 0: no answer), the last ones of each; `at` is when the page last reported. */
 export type WebPageSeen = { text: string; textLength: number; errors: string[]; failed: { status: number; url: string; how?: string }[]; at: string };
+
+/** A file a web page downloaded (src/webProfile.ts): saved under the vault's .vault-chat/downloads. */
+export type WebDownload = { name: string; /** vault-relative */ path: string; /** bytes; null when it failed */ size: number | null; at: string; ok: boolean; /** the source's host */ from?: string };
 
 export type HostLayout = {
   /** Two files side by side or stacked. */
@@ -50,6 +55,8 @@ export type HostLayout = {
   viewport: { width: number; height: number } | null;
   /** Pixel widths of the three columns, when the screen can say (null: not measurable here). */
   sizes: { leftPanel: number; viewer: number; chat: number } | null;
+  /** The web pages' downloads this session, newest first (at most 20): each saved to <vault>/.vault-chat/downloads. */
+  downloads?: WebDownload[];
 };
 
 export type LayoutOpResult = { op: string; ok: boolean; note?: string; error?: string };

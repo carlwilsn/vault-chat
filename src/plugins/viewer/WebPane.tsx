@@ -19,6 +19,7 @@ import { ArrowLeft, ArrowRight, ExternalLink, Globe, RotateCw, X } from "lucide-
 import { useStore } from "../../store";
 import { openUrl } from "../../opener";
 import { followPlaceholder, inOrder, measure, native, nativeView, newId, useZoom } from "../../InlineWebPage";
+import { downloadNote } from "../../webProfile";
 import { displayHost, WEB_EMBED_EVENT, type ViewPlacer, type WebEmbedEvent } from "../../inlineWeb";
 import type { WebPageSeen } from "../../layoutTypes";
 import { boxDevUrl, embedKind, frameArrived, frameHistory, frameStep, paneKey, registerWebPane, type WebPageDo } from "../../webPane";
@@ -53,7 +54,7 @@ function useSetAddress(paneId: string | undefined, viewUrl: { current: string })
 }
 
 /** The frame both kinds share: the pane, its title row, a note, and the body under them. */
-function PaneShell(p: { paneId?: string; url: string; failed: string | null; loading: boolean; note: { text: string; url: string } | null; embedId?: string; act: (what: WebPageDo, other?: string) => Promise<void>; children: ReactNode }) {
+function PaneShell(p: { paneId?: string; url: string; failed: string | null; loading: boolean; note: { text: string; url?: string } | null; embedId?: string; act: (what: WebPageDo, other?: string) => Promise<void>; children: ReactNode }) {
   const { paneId, url, failed, loading, note, act } = p;
   const activePaneId = useStore((s) => s.activePaneId);
   const inSplit = useStore((s) => s.panes.length > 0);
@@ -92,8 +93,8 @@ function PaneShell(p: { paneId?: string; url: string; failed: string | null; loa
       </div>
       {note && !failed && (
         <div className="flex items-center gap-2 px-4 py-0.5 border-b border-border/60 text-[11px] text-muted-foreground shrink-0" data-el="web-pane-note">
-          <span className="truncate flex-1">{note.text}: {note.url}</span>
-          <button data-offer="box:workspace.webPage" type="button" className={iconBtn} onClick={() => void act("browser", note.url)}>Open in browser</button>
+          <span className="truncate flex-1">{note.url ? `${note.text}: ${note.url}` : note.text}</span>
+          {note.url ? <button data-offer="box:workspace.webPage" type="button" className={iconBtn} onClick={() => void act("browser", note.url)}>Open in browser</button> : null}
         </div>
       )}
       {p.children}
@@ -221,7 +222,7 @@ function NativeWebPane({ paneId, url }: { paneId?: string; url: string }) {
   const [runErr, setRunErr] = useState<{ url: string; why: string } | null>(null);
   const failed = noViewWhy(url) ?? (runErr && runErr.url === url ? runErr.why : null);
   const [loading, setLoading] = useState(true);
-  const [note, setNote] = useState<{ text: string; url: string } | null>(null);
+  const [note, setNote] = useState<{ text: string; url?: string } | null>(null);
 
   const idRef = useRef<string>(newId());
   const id = idRef.current;
@@ -248,7 +249,11 @@ function NativeWebPane({ paneId, url }: { paneId?: string; url: string }) {
         if (p.url && p.url !== "about:blank" && p.url !== viewUrl.current) setAddress(p.url);
       } else if (p.kind === "title") useStore.getState().setWebTitle(viewUrl.current, p.title ?? null);
       else if (p.kind === "blocked" && p.url) setNote({ text: "That link can't open here", url: p.url });
-      else if (p.kind === "download" && p.url) setNote({ text: "Downloads open in the browser", url: p.url });
+      else {
+        // A download saved ("Saved <name>"), failed, or refused (no vault open): src/webProfile.ts.
+        const n = downloadNote(p);
+        if (n) setNote(n);
+      }
     }).then((u) => { if (gone) u(); else off = u; }).catch(() => undefined);
     return () => { gone = true; off?.(); };
   }, [id, failed, setAddress]);

@@ -9,9 +9,10 @@ import { useStore } from "./store";
 import { PANE_SIDES, relToVault, sideOf } from "./paneLayout";
 import type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult, PaneSide, WebPageSeen } from "./layoutTypes";
 import { isWebAddress, openWebInPane, webPageAct } from "./webPane";
+import { signOutOfSites } from "./webProfile";
 export type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult, WebPageSeen } from "./layoutTypes";
 
-export const LAYOUT_OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "fullscreenChat", "chatSidebar", "resize"] as const;
+export const LAYOUT_OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "fullscreenChat", "chatSidebar", "resize", "signOutOfSites"] as const;
 
 /** The outer split's own resize (Allotment's, registered by src/App.tsx): what dragging a sash does, in pixels per column. */
 let outerResize: ((sizes: number[]) => void) | null = null;
@@ -175,6 +176,7 @@ export function readLayout(measure: () => Pick<HostLayout, "viewport" | "sizes">
     chatPoppedOut: s.popoutOpen,
     chatSidebarOpen: s.chatSidebarOpen,
     ...measure(),
+    ...(s.webDownloads.length ? { downloads: s.webDownloads } : {}),
   };
 }
 
@@ -264,6 +266,10 @@ async function applyOne(op: LayoutOp, io: LayoutIO): Promise<{ ok: boolean; note
     case "resize": {
       const why = resizeColumns({ leftPanel: op.leftPanel, chat: op.chat }, io.measure);
       return why ? no(why) : done();
+    }
+    case "signOutOfSites": {
+      const r = await signOutOfSites();
+      return r.ok ? done(r.note) : no(r.error ?? "not signed out");
     }
     default:
       return no(`unknown layout op "${String((op as { op?: unknown }).op)}" (${LAYOUT_OPS.join(", ")})`);

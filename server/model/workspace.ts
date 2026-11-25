@@ -39,7 +39,7 @@ export function workspaceNoun(ctx: WorkspaceCtx): Noun {
     state: {
       layout: {
         description:
-          "Carl's laptop screen, read back from it: panes and their files or web pages (url and title; Carl's own navigation shows here; a dev server's page also its `page`: the visible text as Carl sees it, console errors and failed requests with status, as the page reported them) (split, side-by-side or stacked, the active pane), the left panel (file tree) open, the chat panel open / full screen / popped out, its sidebar, the open chat when known, window and column sizes; when the laptop is away, the last read-back and since when",
+          "Carl's laptop screen, read back from it: downloads (files the web pages saved this session, newest first: name, path under .vault-chat/downloads, size, at, ok); panes and their files or web pages (url and title; Carl's own navigation shows here; a dev server's page also its `page`: the visible text as Carl sees it, console errors and failed requests with status, as the page reported them) (split, side-by-side or stacked, the active pane), the left panel (file tree) open, the chat panel open / full screen / popped out, its sidebar, the open chat when known, window and column sizes; when the laptop is away, the last read-back and since when",
         read: async () => {
           const k = keptLayout();
           const down = controlDown("laptop");
@@ -71,6 +71,10 @@ export function workspaceNoun(ctx: WorkspaceCtx): Noun {
       fullscreenChat: action("full-screen chat on or off", "fullscreenChat", obj({ on: { type: "boolean" } }, ["on"])),
       chatSidebar: action("the chat list beside full-screen chat, open or closed", "chatSidebar", obj({ open: { type: "boolean" } }, ["open"])),
       resize: action("set the columns' widths as dragging the sashes does: leftPanel (the file tree) and/or chat, in pixels; the viewer takes the rest", "resize", obj({ leftPanel: { type: "number", minimum: 0 }, chat: { type: "number", minimum: 0 } })),
+      signOutOfSites: action(
+        "sign out of every site in the laptop's web pages (viewer panes and chat pages share one browser profile, kept across restarts): wipes its cookies, storage and cache and reloads the pages open, as Settings' Sign out of all sites. Only when Carl asks",
+        "signOutOfSites",
+      ),
       openChat: action('switch the chat pane to a chat (its id, "main", or "project-<slug>"), through the chat list\'s own open', "openChat", obj({ id: { type: "string" } }, ["id"])),
       arrange: action("several of these in order: ops [{action, ...its args}]", "arrange", obj({ ops: { type: "array", items: { type: "object" } } }, ["ops"])),
     },

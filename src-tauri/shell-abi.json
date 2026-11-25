@@ -391,6 +391,14 @@
   "sig": "web_embed_url(id:String)->Result<String,String>",
   "v": "1e0a7ab8"
  },
+ "web_profile_clear": {
+  "sig": "web_profile_clear()->Result<u32,String>",
+  "v": "54a6a498"
+ },
+ "web_profile_vault": {
+  "sig": "web_profile_vault(vault:Option<String>)->Result<(),String>",
+  "v": "7f852f98"
+ },
  "write_binary_file_unique": {
   "sig": "write_binary_file_unique(dir:String,name:String,bytes:Vec<u8>)->Result<String,String>",
   "v": "0306786c"

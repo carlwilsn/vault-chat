@@ -25,6 +25,7 @@ import { disconnectFromBox, syncBoxNow, syncWithBox } from "../../settingsBox";
 import { MasterSection } from "../../MasterSection";
 import { pressShowReady } from "../../coreReady";
 import { Picker, type PickOption } from "../../SearchPicker";
+import { signOutOfSites } from "../../webProfile";
 
 // The Claude sign-in on one line at the top, then the sections: Appearance, Keys, vault-chat folder, Box. No shortcut
 // sheet: Carl asks the agent (app/settings' state shortcuts). There is no voice section: the core voice is local (Kokoro, af_heart) with nothing to
@@ -54,6 +55,7 @@ export const SETTINGS_SECTIONS: readonly { id: string; title: string }[] = [
   { id: "account", title: "Claude sign-in" },
   { id: "appearance", title: "Appearance" },
   { id: "keys", title: "Keys" },
+  { id: "web", title: "Web pages" },
   { id: "master", title: "vault-chat folder" },
   { id: "box", title: "Box" },
 ];
@@ -77,6 +79,9 @@ export function Pane() {
         </div>
         <div data-settings="keys">
           <KeysSection />
+        </div>
+        <div data-settings="web">
+          <WebPagesSection />
         </div>
         <MasterSection />
         <BoxSection />
@@ -241,6 +246,35 @@ function AppearanceSection() {
         })}
       </div>
       {refused && <p className="text-[11px] text-destructive">{refused}</p>}
+    </section>
+  );
+}
+
+// ---- Web pages -----------------------------------------------------------------
+
+/** The web pages' sign-ins (src/webProfile.ts): kept across restarts; the button is box:workspace signOutOfSites. */
+function WebPagesSection() {
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState<{ ok: boolean; text: string } | null>(null);
+  const signOut = async () => {
+    setBusy(true);
+    setSaid(null);
+    try {
+      const r = await signOutOfSites();
+      setSaid(r.ok ? { ok: true, text: "Signed out of every site." } : { ok: false, text: r.error ?? "Not signed out." });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="space-y-2">
+      <SectionHead title="Web pages" hint="Sites you sign in to in the app's web pages stay signed in after a restart. Downloads are saved to .vault-chat/downloads in the vault." />
+      <div className="flex items-center gap-3">
+        <Button data-offer="box:workspace.signOutOfSites" data-el="web-sign-out" size="sm" variant="outline" onClick={() => void signOut()} disabled={busy}>
+          {busy ? "Signing out…" : "Sign out of all sites"}
+        </Button>
+        {said && <span className={`text-[11px] ${said.ok ? "text-muted-foreground" : "text-destructive"}`} data-el="web-sign-out-note">{said.text}</span>}
+      </div>
     </section>
   );
 }

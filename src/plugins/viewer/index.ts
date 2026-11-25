@@ -535,6 +535,7 @@ export function viewerOffers(): Offers {
       openedOutside: { description: "A file was opened outside the app (the default app, File Explorer, the system video player): path, how." },
       paneClosed: { description: "closePane closed a pane of the split: path, pane." },
       saved: { description: "Carl's typing in an open file reached the disk (its autosave): path. Wait for it before editing a file he is typing in." },
+      downloaded: { description: "A web page's download ended (saved under .vault-chat/downloads, or failed): name, path, size, ok. The list is box:workspace's layout downloads." },
       changed: { description: "The viewers changed (a plugin's registered or removed, one turned on or off or chosen, an option set): the active viewer of each type after it." },
     },
   };
@@ -602,6 +603,15 @@ export function mount(_el: HTMLElement, api: PluginApi): () => void {
     for (const t of timers.values()) clearTimeout(t);
     timers.clear();
   });
+
+  // Downloaded: a web page's download ended (src/webProfile.ts keeps the list newest first).
+  offs.push(
+    useStore.subscribe((s, prev) => {
+      if (s.webDownloads === prev.webDownloads) return;
+      const d = s.webDownloads[0];
+      if (d && d !== prev.webDownloads[0]) offers.emit("downloaded", { name: d.name, path: d.path, size: d.size, ok: d.ok });
+    }),
+  );
 
   offs.push(subscribeViewers(() => offers.emit("changed", Object.fromEntries(describeViewers().map((k) => [k.key, k.active])))));
   return () => {

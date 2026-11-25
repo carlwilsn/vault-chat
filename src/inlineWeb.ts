@@ -6,14 +6,16 @@
 // lays a native browser view (WebView2 / WKWebView, src-tauri/src/web_embed.rs) over a placeholder the chat draws, and
 // the chat keeps it on the placeholder as it scrolls: the part of the placeholder inside every clipping ancestor and
 // the window, hidden when something of the app's lies over it (a menu, a dialog). The view has none of the app's IPC
-// or protocols, its own InPrivate storage, and goes only to public http(s) hosts. Where that cannot happen (the phone,
+// or protocols, its own browser profile (kept, so sign-ins last: src/webProfile.ts), and goes only to public http(s) hosts. Where that cannot happen (the phone,
 // a browser, Linux, a refused address, a failure) the chat shows the label as a plain link.
 //
 // This file: the pure parts (which srcs are pages, which addresses may load, where the view goes).
 
 /** The desktop event the native views report on (src-tauri/src/web_embed.rs EVENT). */
 export const WEB_EMBED_EVENT = "web-embed";
-export type WebEmbedEvent = { id: string; kind: "load" | "title" | "blocked" | "download" | "gone"; url?: string; title?: string; loading?: boolean };
+/** download: one started (name + path: being saved to the vault; neither: refused, url opens it in the browser);
+ *  downloaded: it ended (ok, path, size). url on a saved download is only the source's host. */
+export type WebEmbedEvent = { id: string; kind: "load" | "title" | "blocked" | "download" | "downloaded" | "gone"; url?: string; title?: string; loading?: boolean; name?: string; path?: string; size?: number; ok?: boolean };
 
 /** File types that stay pictures / players / documents (ChatImage, video), not pages. */
 const MEDIA_EXT = /\.(?:png|jpe?g|gif|webp|svg|avif|bmp|ico|tiff?|heic|mp4|webm|m4v|mov|mkv|mp3|wav|ogg|oga|m4a|flac|pdf)$/i;

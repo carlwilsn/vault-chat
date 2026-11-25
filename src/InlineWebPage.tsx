@@ -11,6 +11,7 @@ import { listen } from "@tauri-apps/api/event";
 import { ArrowLeft, ArrowRight, ExternalLink, Maximize2, Minimize2, RotateCw, X } from "lucide-react";
 import { openUrl } from "./opener";
 import { defaultFrameHeight, parseFrameHint, frameHeight, HTML_MAX_H, HTML_MIN_FRAME_H } from "./inlineHtml";
+import { downloadNote, startWebProfile } from "./webProfile";
 import { displayHost, inOrder, nativeBounds, pickToRest, probePoints, publicWebUrl, viewPlacer, visibleBox, WEB_EMBED_EVENT, type Bounds, type Box, type ViewPlacer, type WebEmbedEvent } from "./inlineWeb";
 
 export { inOrder, type Bounds };
@@ -19,7 +20,11 @@ export { inOrder, type Bounds };
 let startOver: Promise<unknown> | null = null;
 export const native = () => { try { return isTauri(); } catch { return false; } };
 export function ready(): Promise<unknown> {
-  if (!startOver) startOver = native() ? invoke("web_embed_close", {}).catch(() => undefined) : Promise.resolve();
+  if (!startOver) {
+    startOver = native() ? invoke("web_embed_close", {}).catch(() => undefined) : Promise.resolve();
+    // The views' downloads go to the vault open (src/webProfile.ts).
+    startWebProfile();
+  }
   return startOver;
 }
 
@@ -138,7 +143,7 @@ function LiveWebPage({ src, label, sizeHint, onFail, onClose }: { src: string; l
   const [title, setTitle] = useState<string | null>(null);
   const [url, setUrl] = useState(src);
   const [loading, setLoading] = useState(true);
-  const [note, setNote] = useState<{ text: string; url: string } | null>(null);
+  const [note, setNote] = useState<{ text: string; url?: string } | null>(null);
   const [resting, setResting] = useState(false);
   const urlRef = useRef(src);
   urlRef.current = url;
@@ -155,7 +160,7 @@ function LiveWebPage({ src, label, sizeHint, onFail, onClose }: { src: string; l
       if (p.kind === "load") { if (p.url) setUrl(p.url); setLoading(!!p.loading); if (p.loading) setNote(null); }
       else if (p.kind === "title") setTitle(p.title?.trim() || null);
       else if (p.kind === "blocked" && p.url) setNote({ text: "That link can't open here", url: p.url });
-      else if (p.kind === "download" && p.url) setNote({ text: "Downloads open in the browser", url: p.url });
+      else { const n = downloadNote(p); if (n) setNote(n); }
     }).then((u) => { if (gone) u(); else off = u; }).catch(() => undefined);
     return () => { gone = true; off?.(); };
   }, [id]);
@@ -244,7 +249,7 @@ function LiveWebPage({ src, label, sizeHint, onFail, onClose }: { src: string; l
         kind: "web",
         state: () => {
           const l = liveRef.current;
-          return { url: l.url, title: l.title, loading: l.loading, fullWindow: l.big, resting: l.resting, height: l.h, ...(l.note ? { note: l.note.text, noteUrl: l.note.url } : {}) };
+          return { url: l.url, title: l.title, loading: l.loading, fullWindow: l.big, resting: l.resting, height: l.h, ...(l.note ? { note: l.note.text, ...(l.note.url ? { noteUrl: l.note.url } : {}) } : {}) };
         },
         act: {
           back: () => liveRef.current.go("back"),
@@ -279,8 +284,8 @@ function LiveWebPage({ src, label, sizeHint, onFail, onClose }: { src: string; l
       </span>
       {note && (
         <span className="flex items-center gap-2 px-2 py-0.5 border-b border-border/60 text-[11px] text-muted-foreground shrink-0" data-el="chat-web-note">
-          <span className="truncate flex-1">{note.text}: {note.url}</span>
-          <button data-offer="app/chat-rows.inline" type="button" className={iconBtn} onClick={() => void openUrl(note.url).catch(() => undefined)}>Open in browser</button>
+          <span className="truncate flex-1">{note.url ? `${note.text}: ${note.url}` : note.text}</span>
+          {note.url ? <button data-offer="app/chat-rows.inline" type="button" className={iconBtn} onClick={() => void openUrl(note.url!).catch(() => undefined)}>Open in browser</button> : null}
           <button data-offer="app/chat-rows.inline" type="button" className={iconBtn} onClick={() => setNote(null)} title="Dismiss"><X className="h-3 w-3" /></button>
         </span>
       )}

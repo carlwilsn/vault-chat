@@ -7,10 +7,13 @@
 //!
 //! Isolation, by construction: the view is made with wry directly, NOT through Tauri's webview manager, so it carries
 //! none of Tauri's IPC (no `__TAURI_INTERNALS__`, no invoke key, no `ipc://`), none of the app's custom protocols
-//! (`asset://`, `tauri://`), and no wry IPC handler: the page cannot call the app. It runs in its own WebView2 user data
-//! folder (`<app local data>/web-embed`) in InPrivate mode, so its cookies and storage are neither the app's nor kept.
+//! (`asset://`, `tauri://`), and no wry IPC handler: the page cannot call the app. Every view shares one browser
+//! profile of its own (WebView2 user data folder `<app local data>/web-embed`, never in a vault and never the app's own),
+//! kept across restarts so a site Carl signed in to stays signed in; `web_profile_clear` ("Sign out of all sites", the
+//! workspace noun's signOutOfSites) wipes its cookies and storage. Nothing of the profile (cookies, tokens) is reported.
 //! Top-level navigations go only to public http(s) hosts (never loopback, private/tailnet addresses, `*.ts.net`, or
-//! `*.localhost`); popups load in the same view; downloads are refused (the chat offers "open in browser").
+//! `*.localhost`); popups load in the same view. Downloads are saved to `<the vault open>/.vault-chat/downloads/<name>`
+//! (`name (1).ext` when taken; the vault is told by `web_profile_vault`), refused while no vault is open.
 //! One exception, asked for by name (`web_embed_open_dev`): a viewer pane showing the agent's dev server through the
 //! box's tailnet proxy (server/devProxy.ts, https on a `*.ts.net` host): that view may also go anywhere on that one
 //! origin, and nowhere else private.
@@ -21,11 +24,15 @@ use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, Url};
 use wry::dpi::{LogicalPosition, LogicalSize};
 use wry::{NewWindowResponse, PageLoadEvent, Rect, WebContext, WebView, WebViewBuilder};
 
-/// The app event the views report on: {id, kind: load|title|blocked|download|gone, url?, title?, loading?}.
+/// The app event the views report on: {id, kind: load|title|blocked|download|downloaded|gone, url?, title?, loading?,
+/// name?, path?, size?, ok?}. `download`: one started (name and path when it is being saved; neither when refused, and
+/// then url to open it in the browser); `downloaded`: it ended (ok, the file's path and size).
 pub const EVENT: &str = "web-embed";
 
 struct Embed {
@@ -50,10 +57,150 @@ struct EmbedEvent {
     title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     loading: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ok: Option<bool>,
 }
 
 fn emit(app: &AppHandle, id: &str, kind: &'static str, url: Option<String>, title: Option<String>, loading: Option<bool>) {
-    let _ = app.emit(EVENT, EmbedEvent { id: id.to_string(), kind, url, title, loading });
+    let _ = app.emit(EVENT, EmbedEvent { id: id.to_string(), kind, url, title, loading, name: None, path: None, size: None, ok: None });
+}
+
+/// The vault open on the laptop (`web_profile_vault`): downloads go to its `.vault-chat/downloads`.
+static VAULT: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// Downloads under way: their source url → the paths they were given (a name stays taken until its download ends).
+static DOWNLOADING: Mutex<Vec<(String, PathBuf)>> = Mutex::new(Vec::new());
+
+/// Where downloads are saved, under a vault.
+pub const DOWNLOADS_DIR: &str = ".vault-chat/downloads";
+
+/// A file name for a download: the name the browser suggests (the site's), else the url's last segment, made safe
+/// for every file system (no separators, reserved characters or names, trailing dots or spaces; at most 150 chars).
+pub fn download_name(suggested: &Path, url: &str) -> String {
+    let from_url = || {
+        Url::parse(url)
+            .ok()
+            .and_then(|u| u.path_segments().and_then(|mut s| s.next_back().map(|x| x.to_string())))
+            .map(|x| percent_decode(&x))
+            .unwrap_or_default()
+    };
+    let raw = suggested.file_name().map(|n| n.to_string_lossy().to_string()).filter(|n| !n.trim().is_empty()).unwrap_or_else(from_url);
+    let mut name: String = raw
+        .chars()
+        .map(|c| if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') { '_' } else { c })
+        .collect();
+    name = name.trim().trim_end_matches(['.', ' ']).trim_start_matches('.').to_string();
+    if name.chars().count() > 150 {
+        let ext = Path::new(&name).extension().map(|e| e.to_string_lossy().to_string()).filter(|e| e.len() <= 12);
+        let keep: String = name.chars().take(150 - ext.as_ref().map_or(0, |e| e.len() + 1)).collect();
+        name = match ext {
+            Some(e) => format!("{keep}.{e}"),
+            None => keep,
+        };
+    }
+    if name.is_empty() {
+        name = "download".into();
+    }
+    let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && stem.as_bytes()[3].is_ascii_digit());
+    if reserved {
+        name = format!("_{name}");
+    }
+    name
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            let hex = |c: u8| (c as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+/// `dir/name`, or `dir/stem (n).ext` with the first n that is free (`taken`: a file there, or a download under way).
+pub fn unique_path(dir: &Path, name: &str, taken: impl Fn(&Path) -> bool) -> PathBuf {
+    let first = dir.join(name);
+    if !taken(&first) {
+        return first;
+    }
+    let p = Path::new(name);
+    let (stem, ext) = match (p.file_stem(), p.extension()) {
+        (Some(s), Some(e)) if !s.is_empty() => (s.to_string_lossy().to_string(), format!(".{}", e.to_string_lossy())),
+        _ => (name.to_string(), String::new()),
+    };
+    for n in 1..10_000 {
+        let next = dir.join(format!("{stem} ({n}){ext}"));
+        if !taken(&next) {
+            return next;
+        }
+    }
+    dir.join(format!("{stem} ({}){ext}", std::process::id()))
+}
+
+/// Where the source (a url: only its host is said, never its query, which may carry a token).
+fn source_host(url: &str) -> Option<String> {
+    Url::parse(url).ok().and_then(|u| u.host_str().map(|h| h.to_string()))
+}
+
+/// A download starting in view `id`: the path it is saved to (true), or refused (false, no vault open).
+fn download_started(app: &AppHandle, id: &str, from: String, path: &mut PathBuf) -> bool {
+    let vault = VAULT.lock().ok().and_then(|v| v.clone());
+    let Some(vault) = vault else {
+        emit(app, id, "download", Some(from), None, None);
+        return false;
+    };
+    let dir = vault.join(DOWNLOADS_DIR);
+    if std::fs::create_dir_all(&dir).is_err() {
+        emit(app, id, "download", Some(from), None, None);
+        return false;
+    }
+    let name = download_name(path, &from);
+    let Ok(mut busy) = DOWNLOADING.lock() else { return false };
+    let to = unique_path(&dir, &name, |p| p.exists() || busy.iter().any(|(_, b)| b == p));
+    busy.push((from.clone(), to.clone()));
+    drop(busy);
+    *path = to.clone();
+    let saved = to.file_name().map(|n| n.to_string_lossy().to_string());
+    let _ = app.emit(EVENT, EmbedEvent { id: id.to_string(), kind: "download", url: source_host(&from), title: None, loading: None, name: saved, path: Some(to.to_string_lossy().to_string()), size: None, ok: None });
+    true
+}
+
+/// A download in view `id` ended: the file it left (its path and size), or that it failed.
+fn download_ended(app: &AppHandle, id: &str, from: String, done: Option<PathBuf>, ok: bool) {
+    let given = DOWNLOADING.lock().ok().and_then(|mut busy| busy.iter().position(|(u, _)| *u == from).map(|i| busy.remove(i).1));
+    let Some(path) = done.or(given) else { return };
+    let size = if ok { std::fs::metadata(&path).ok().map(|m| m.len()) } else { None };
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string());
+    let _ = app.emit(EVENT, EmbedEvent { id: id.to_string(), kind: "downloaded", url: source_host(&from), title: None, loading: None, name, path: Some(path.to_string_lossy().to_string()), size, ok: Some(ok) });
+}
+
+/// The vault open on the laptop (None: none): where the views' downloads are saved from now on.
+#[tauri::command]
+pub fn web_profile_vault(vault: Option<String>) -> Result<(), String> {
+    let next = match vault.map(PathBuf::from) {
+        Some(p) if p.is_absolute() && p.is_dir() => Some(p),
+        Some(_) => return Err("not a folder".into()),
+        None => None,
+    };
+    *VAULT.lock().map_err(|_| "busy".to_string())? = next;
+    Ok(())
 }
 
 fn check_id(id: &str) -> Result<(), String> {
@@ -218,8 +365,7 @@ async fn open_embed(
         // wry's child views need X11 on Linux (and would sit outside the GTK layout): the chat shows a link there.
         return Err("inline web pages need the Windows or macOS app".into());
     }
-    let data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("web-embed");
-    let _ = std::fs::create_dir_all(&data_dir);
+    let data_dir = profile_dir(&app)?;
     let app2 = app.clone();
     on_main(&app, move || {
         let label = window.label().to_string();
@@ -237,17 +383,17 @@ async fn open_embed(
             }
             None => {}
         }
-        let (a_nav, a_new, a_load, a_title, a_dl) = (app2.clone(), app2.clone(), app2.clone(), app2.clone(), app2.clone());
-        let (i_nav, i_new, i_load, i_title, i_dl) = (id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
+        let (a_nav, a_new, a_load, a_title, a_dl, a_done) = (app2.clone(), app2.clone(), app2.clone(), app2.clone(), app2.clone(), app2.clone());
+        let (i_nav, i_new, i_load, i_title, i_dl, i_done) = (id.clone(), id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
         let (o_nav, o_new) = (origin.clone(), origin.clone());
         let view = CONTEXT.with(|c| {
             let mut c = c.borrow_mut();
             let ctx = c.get_or_insert_with(|| WebContext::new(Some(data_dir)));
+            // Not incognito: the profile in `data_dir` is kept, so sign-ins survive a restart (web_profile_clear wipes it).
             WebViewBuilder::new_with_web_context(ctx)
                 .with_url(parsed.as_str())
                 .with_bounds(bounds(x, y, width, height))
                 .with_visible(visible)
-                .with_incognito(true)
                 .with_devtools(false)
                 .with_clipboard(true)
                 .with_focused(false)
@@ -277,10 +423,8 @@ async fn open_embed(
                 .with_document_title_changed_handler(move |title| {
                     emit(&a_title, &i_title, "title", None, Some(title), None);
                 })
-                .with_download_started_handler(move |from, _path| {
-                    emit(&a_dl, &i_dl, "download", Some(from), None, None);
-                    false
-                })
+                .with_download_started_handler(move |from, path| download_started(&a_dl, &i_dl, from, path))
+                .with_download_completed_handler(move |from, path, ok| download_ended(&a_done, &i_done, from, path, ok))
                 .build_as_child(&window)
                 .map_err(|e| e.to_string())
         })?;
@@ -288,6 +432,66 @@ async fn open_embed(
         Ok(())
     })
     .await
+}
+
+/// The views' one browser profile: `<app local data>/web-embed` (never in a vault, never the app's own).
+fn profile_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("web-embed");
+    let _ = std::fs::create_dir_all(&dir);
+    Ok(dir)
+}
+
+thread_local! {
+    /// A hidden view made only to reach the profile when no page is open (web_profile_clear), kept until it is done.
+    static CLEARER: RefCell<Option<WebView>> = const { RefCell::new(None) };
+}
+
+/// "Sign out of all sites": wipes the views' profile (cookies, storage, cache, history) and reloads the pages open.
+/// Returns how many pages were open. Nothing of what was there is read or reported.
+#[tauri::command]
+pub async fn web_profile_clear(app: AppHandle, window: tauri::WebviewWindow) -> Result<u32, String> {
+    if cfg!(not(any(target_os = "windows", target_os = "macos"))) {
+        return Err("web pages need the Windows or macOS app".into());
+    }
+    let data_dir = profile_dir(&app)?;
+    let open = on_main(&app, move || {
+        // Any open view reaches the whole profile; with none, a hidden blank one is made for it.
+        let cleared = EMBEDS.with(|m| m.borrow().values().next().map(|e| e.view.clear_all_browsing_data().map_err(|e| e.to_string())));
+        match cleared {
+            Some(r) => r?,
+            None => {
+                let view = CONTEXT.with(|c| {
+                    let mut c = c.borrow_mut();
+                    let ctx = c.get_or_insert_with(|| WebContext::new(Some(data_dir)));
+                    WebViewBuilder::new_with_web_context(ctx)
+                        .with_url("about:blank")
+                        .with_bounds(bounds(0.0, 0.0, 1.0, 1.0))
+                        .with_visible(false)
+                        .with_devtools(false)
+                        .with_focused(false)
+                        .build_as_child(&window)
+                        .map_err(|e| e.to_string())
+                })?;
+                view.clear_all_browsing_data().map_err(|e| e.to_string())?;
+                CLEARER.with(|c| *c.borrow_mut() = Some(view));
+            }
+        }
+        Ok(EMBEDS.with(|m| m.borrow().len() as u32))
+    })
+    .await?;
+    // The wipe finishes in the browser on its own: the hidden view stays a moment, then the pages show signed out.
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    on_main(&app, || {
+        CLEARER.with(|c| c.borrow_mut().take());
+        EMBEDS.with(|m| {
+            for e in m.borrow().values() {
+                let _ = e.view.reload();
+            }
+        });
+        Ok(())
+    })
+    .await?;
+    Ok(open)
 }
 
 /// Moves / resizes / shows / hides a page already open. Unknown ids are not an error (the chat may race a close).
@@ -428,6 +632,33 @@ mod tests {
         for bad in ["http://thinkbox.tail1234.ts.net:5173/", "https://ts.net/", "https://user:pw@thinkbox.tail1234.ts.net/", "https://example.com/"] {
             assert!(!box_dev_url(&Url::parse(bad).unwrap()), "{bad} is not a dev server through the box");
         }
+    }
+
+    #[test]
+    fn download_names() {
+        let none = Path::new("");
+        assert_eq!(download_name(Path::new("C:/Users/c/Downloads/Lecture 3.pdf"), "https://x.com/a?token=s"), "Lecture 3.pdf");
+        assert_eq!(download_name(none, "https://x.com/files/My%20Notes.pdf?sig=abc"), "My Notes.pdf");
+        assert_eq!(download_name(none, "https://x.com/"), "download");
+        assert_eq!(download_name(Path::new("a:b*c?.txt"), ""), "a_b_c_.txt");
+        assert_eq!(download_name(Path::new("..."), ""), "download");
+        assert_eq!(download_name(Path::new("con.txt"), ""), "_con.txt");
+        assert_eq!(download_name(Path::new(".hidden "), ""), "hidden");
+        let long = format!("{}.pdf", "a".repeat(300));
+        let n = download_name(Path::new(&long), "");
+        assert_eq!(n.chars().count(), 150);
+        assert!(n.ends_with(".pdf"));
+    }
+
+    #[test]
+    fn unique_names() {
+        let dir = Path::new("/v/.vault-chat/downloads");
+        let taken = [dir.join("a.pdf"), dir.join("a (1).pdf"), dir.join("README")];
+        let t = |p: &Path| taken.iter().any(|x| x == p);
+        assert_eq!(unique_path(dir, "b.pdf", t), dir.join("b.pdf"));
+        assert_eq!(unique_path(dir, "a.pdf", t), dir.join("a (2).pdf"));
+        assert_eq!(unique_path(dir, "README", t), dir.join("README (1)"));
+        assert_eq!(source_host("https://drive.google.com/x?token=abc").as_deref(), Some("drive.google.com"));
     }
 
     #[test]

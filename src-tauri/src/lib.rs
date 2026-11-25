@@ -5768,6 +5768,8 @@ pub fn run() {
             web_embed::web_embed_go,
             web_embed::web_embed_url,
             web_embed::web_embed_close,
+            web_embed::web_profile_vault,
+            web_embed::web_profile_clear,
             list_markdown_files,
             read_text_file,
             read_binary_file,

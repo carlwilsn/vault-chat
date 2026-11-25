@@ -11,7 +11,7 @@ import { waitAck, type Ack } from "./show";
 import { loopbackUrl } from "./devProxy";
 import { controlDown, laptopElsewhere, noteAnswer, unansweredNote, vaultName } from "./deviceLink";
 
-const OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "fullscreenChat", "chatSidebar", "resize", "openChat"] as const;
+const OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "fullscreenChat", "chatSidebar", "resize", "signOutOfSites", "openChat"] as const;
 type Op = Record<string, unknown> & { op: string };
 
 export type LayoutDeps = {

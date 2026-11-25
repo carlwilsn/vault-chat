@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { WebPageSeen } from "./layoutTypes";
+import type { WebDownload, WebPageSeen } from "./layoutTypes";
 import { firstPaintTheme, keepTheme, type Theme } from "./firstTheme";
 import { isPopout } from "./windowKind";
 import { invoke } from "@tauri-apps/api/core";
@@ -372,6 +372,8 @@ type State = {
   webTitles: Record<string, string>;
   /** What a dev-server page in a pane shows, by address, as its frame reported it (src/plugins/viewer/WebPane.tsx). */
   webPages: Record<string, WebPageSeen>;
+  /** The web pages' downloads this session, newest first (src/webProfile.ts). */
+  webDownloads: WebDownload[];
   messages: ChatMessage[];
   /** Every key, by name (src/keychain.ts): one mechanism for all of them. */
   keys: Keys;
@@ -554,6 +556,7 @@ type State = {
   setWebTitle: (url: string, title: string | null) => void;
   /** A dev page's report of what it shows (null: forget it). */
   setWebPage: (url: string, seen: WebPageSeen | null) => void;
+  setWebDownloads: (list: WebDownload[]) => void;
   closePane: (paneId: string) => void;
   setActivePane: (paneId: string) => void;
   updatePaneContent: (paneId: string, content: string) => void;
@@ -689,6 +692,7 @@ export const useStore = create<State>((set) => ({
   activePaneId: null,
   webTitles: {},
   webPages: {},
+  webDownloads: [],
   messages: [],
   keys: {}, // populated async via hydrateKeychain
   serviceKeys: {}, // populated async via hydrateKeychain
@@ -1014,6 +1018,7 @@ export const useStore = create<State>((set) => ({
       if (seen && shown.has(url)) next[url] = seen;
       return { webPages: next };
     }),
+  setWebDownloads: (list) => set({ webDownloads: list }),
   closePane: (paneId) =>
     set((s) => {
       const remaining = s.panes.filter((p) => p.id !== paneId);
