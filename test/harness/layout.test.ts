@@ -418,3 +418,34 @@ test("a plugin and the agent use the same ops: api.host.layout.apply / get throu
   const dead = createHostApi(appHostBackend, fx, () => false, (f) => f);
   assert.equal((await dead.layout.apply({ op: "openLeftPanel" })).ok, false);
 });
+
+test("three columns (Carl 11-25): the agent makes them with the drop's own op and reads them back; a column splits; halves are refused there", async () => {
+  const alive = () => true;
+  const fx = { add: (_n: string, f: () => void) => f } as any;
+  const api = createHostApi(appHostBackend, fx, alive, (f) => f);
+  await api.layout.apply([{ op: "openInPane", path: "a.md", pane: "left" }, { op: "openInPane", path: "b.md", pane: "right" }]);
+  const spots = (l: any) => (l.tiles as any[]).map((t) => `${t.spot}=${t.empty ? "-" : (t.file ?? t.chat).split("/").pop()}`).join(" ");
+  assert.equal(spots(api.layout.get()), "left=a.md right=b.md");
+  let r = await api.layout.apply({ op: "openInPane", path: "c.md", spot: "middle-third" });
+  assert.equal(r.ok, true);
+  assert.equal(spots(r.layout), "left-third=a.md middle-third=c.md right-third=b.md");
+  assert.deepEqual([r.layout.tileSplit!.t1, r.layout.tileSplit!.t2].map((v) => Math.round(v * 1000)), [333, 667]);
+  // A column's top half: the column there shrinks into the bottom half, the moved tile's column stays, empty.
+  const c = (r.layout.tiles as any[]).find((t) => t.file?.endsWith("c.md")).tile;
+  r = await api.layout.apply({ op: "moveTile", tile: c, spot: "top-right-third" });
+  assert.equal(r.ok, true);
+  assert.equal(spots(r.layout), "left-third=a.md middle-third=- top-right-third=c.md bottom-right-third=b.md");
+  // A half is no spot in three columns; a fifth spot neither.
+  r = await api.layout.apply({ op: "moveTile", tile: c, spot: "left" });
+  assert.equal(r.ok, false);
+  r = await api.layout.apply({ op: "openInPane", path: "a.md", spot: "top-left-third" });
+  assert.equal(r.ok, false);
+  // The lines: dragged as the dividers are.
+  r = await api.layout.apply({ op: "resize", tiles: { t1: 0.25, c2: 0.4 } });
+  assert.equal(r.layout.tileSplit!.t1, 0.25);
+  assert.equal(r.layout.tileSplit!.c2, 0.4);
+  // The empty middle closed: two columns are two halves again.
+  const mid = (r.layout.tiles as any[]).find((t) => t.empty).tile;
+  r = await api.layout.apply({ op: "closePane", tile: mid });
+  assert.equal(spots(r.layout), "left=a.md top-right=c.md bottom-right=b.md");
+});

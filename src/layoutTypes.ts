@@ -5,7 +5,9 @@
 export type PaneSide = "left" | "right";
 /** A Snap spot of the viewer: a half or a quarter; full: the whole viewer (every other tile closes, as a drop in its
  *  center box). */
-export type TileSpot = "full" | "left" | "right" | "top" | "bottom" | "top-left" | "top-right" | "bottom-left" | "bottom-right";
+export type TileSpot = "full" | "left" | "right" | "top" | "bottom" | "top-left" | "top-right" | "bottom-left" | "bottom-right"
+  /** three columns (from two halves side by side) and a column's top / bottom half */
+  | "left-third" | "middle-third" | "right-third" | "top-left-third" | "bottom-left-third" | "top-middle-third" | "bottom-middle-third" | "top-right-third" | "bottom-right-third";
 
 export type LayoutOp =
   | { op: "openLeftPanel" }
@@ -34,7 +36,7 @@ export type LayoutOp =
   | { op: "split"; on: boolean }
   | { op: "focus"; target: PaneSide | "chat" | string }
   | { op: "chatSidebar"; open: boolean }
-  | { op: "resize"; leftPanel?: number; chat?: number; tiles?: { x?: number; xb?: number; left?: number; right?: number } }
+  | { op: "resize"; leftPanel?: number; chat?: number; tiles?: { x?: number; xb?: number; left?: number; right?: number; t1?: number; t2?: number; c0?: number; c1?: number; c2?: number } }
   /** The web pages' browser profile wiped (src/webProfile.ts): signed out of every site, cookies and storage gone. */
   | { op: "signOutOfSites" }
   /** A second app window on this vault (the title bar's New window, src/newWindow.ts): its own tiles, Files and Chats
@@ -89,7 +91,7 @@ export type HostLayout = {
   tiles?: unknown;
   /** where the lines between spots are: x (left side's share of the width), left / right (each side's top
    *  spot's share of the height). */
-  tileSplit?: { x: number; xb: number; left: number; right: number };
+  tileSplit?: { x: number; xb: number; left: number; right: number; t1: number; t2: number; c0: number; c1: number; c2: number };
   viewport: { width: number; height: number } | null;
   /** Pixel widths of the three columns, when the screen can say (null: not measurable here). */
   sizes: { leftPanel: number; viewer: number; chat: number } | null;

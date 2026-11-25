@@ -18,9 +18,9 @@ import { treeDrag } from "./dnd";
 import { isUnreadableAsText } from "./fileKind";
 import { cn } from "./lib/utils";
 import { HEAD_CONTROLS } from "./TileTitle";
-import { pressToDrag, tileDrag } from "./tileDrag";
+import { pressToDrag, tileDrag, type TileDragWhat } from "./tileDrag";
 import { newChatIn } from "./chat-controller";
-import { SPOTS, acrossBoth, boxOf, collapseSpots, focusTile, moveTile, openAt, fillTile, newChatAt, openFilling, setSplit, spotName, tileTitle, useTiles, normSplit, type Rect, type Slot, type Split, type TileLeaf } from "./tiles";
+import { SPOTS, HALF_SPLIT, inThirds, onScreen, snapTo, twoHalves, acrossBoth, boxOf, collapseSpots, focusTile, moveTile, openAt, fillTile, newChatAt, openFilling, setSplit, spotName, tileTitle, useTiles, normSplit, type Rect, type Slot, type Split, type TileLeaf } from "./tiles";
 
 type Target = { spot: Rect; fill?: boolean; box: { left: number; top: number; width: number; height: number } } | null;
 
@@ -57,18 +57,46 @@ function zoneAt(a: DOMRect, x: number, y: number, prev: Zone | null): Zone | nul
 /** Where a drop at (x, y) would go (zoneAt's map): a corner or edge band, that quarter or half (Windows Snap); the
  *  center box, the whole viewer; elsewhere over a tile, that tile's spot (a swap); over an empty spot, that spot.
  *  Null: nowhere (or a move that can't be done). */
-function targetAt(area: HTMLElement, x: number, y: number, dragged: string | null, zone: Zone | null): Target {
+function targetAt(area: HTMLElement, x: number, y: number, dragged: string | null, zone: Zone | null, fresh: boolean): Target {
   const a = area.getBoundingClientRect();
   if (x < a.left || x > a.right || y < a.top || y > a.bottom) return null;
   const t = useTiles.getState();
+  const fx = (x - a.left) / a.width;
+  const fy = (y - a.top) / a.height;
+  const boxFor = (spot: Rect, split: Split) => {
+    const b = boxOf(spot, t.slots, split);
+    return { left: a.left + b.l * a.width, top: a.top + b.t * a.height, width: b.w * a.width, height: b.h * a.height };
+  };
+  // Three columns (Carl 11-25). From two halves side by side, something new (not a tile on screen): over the line
+  // between them, the middle column; at the left or right edge band, that outer column (equal thirds; the halves take
+  // the other two).
+  if (fresh && twoHalves(t.slots)) {
+    const line = normSplit(t.slots, t.split).x;
+    const third = zone === "left" || zone === "right" ? SPOTS[`${zone}-third`] : (zone === null || zone === "center") && Math.abs(fx - line) * a.width < Math.max(40, a.width * 0.06) ? SPOTS["middle-third"] : null;
+    if (third) return { spot: third, box: boxFor(third, { ...t.split, t1: HALF_SPLIT.t1, t2: HALF_SPLIT.t2 }) };
+  }
+  // In three columns, Snap scoped to the column under the pointer: its top or bottom part (a quarter of the height),
+  // that half of it (a split column: the half under the pointer); else the whole column. At most 4 spots: a split
+  // that would make a fifth is the whole column.
+  if (inThirds(t.slots)) {
+    const under = t.slots.find((s) => {
+      const b = boxOf(s.rect, t.slots, t.split);
+      return fx >= b.l && fx < b.l + b.w && fy >= b.t && fy < b.t + b.h;
+    });
+    if (!under) return null;
+    const col: Rect = { x: under.rect.x, y: 0, w: 1, h: 2, t: 3 };
+    const cb = boxOf(col, t.slots, t.split);
+    const part = (fy - cb.t) / cb.h;
+    let spot: Rect = under.rect.h === 1 ? under.rect : part < 0.25 ? { ...col, h: 1 } : part > 0.75 ? { ...col, y: 1, h: 1 } : col;
+    if (spot.h === 1 && under.rect.h === 2 && !snapTo(t.slots, dragged, spot, { type: "chat", chatId: "" })) spot = col;
+    return { spot, box: boxFor(spot, t.split) };
+  }
   if (zone === "center") {
     const box = { left: a.left, top: a.top, width: a.width, height: a.height };
     return { spot: { x: 0, y: 0, w: 2, h: 2 }, fill: true, box };
   }
   let spot: Rect | null = zone ? SPOTS[zone as keyof typeof SPOTS] : null;
   if (!spot) {
-    const fx = (x - a.left) / a.width;
-    const fy = (y - a.top) / a.height;
     const under = t.slots.find((s) => {
       const b = boxOf(s.rect, t.slots, t.split);
       return fx >= b.l && fx < b.l + b.w && fy >= b.t && fy < b.t + b.h;
@@ -81,6 +109,9 @@ function targetAt(area: HTMLElement, x: number, y: number, dragged: string | nul
   const b = boxOf(spot, t.slots, t.split);
   return { spot, box: { left: a.left + b.l * a.width, top: a.top + b.t * a.height, width: b.w * a.width, height: b.h * a.height } };
 }
+
+/** A drag of something not on screen yet: a chat with no tile, "+ New chat" or a project row (a tile: no). */
+const freshDrag = (w: TileDragWhat) => w.kind === "newChat" || (w.kind === "chat" && !onScreen({ chat: w.chatId }));
 
 /** Dev only: where a drop landed, for the preview's interaction recorder (preview/runtime/record.ts). */
 const devDrop = (detail: Record<string, unknown>) => {
@@ -101,7 +132,8 @@ export function TileArea() {
     // The zone of the last move (zoneAt keeps it within a few px, so the preview never flickers on a boundary).
     let zone: Zone | null = null;
     // `again` (a move): the zone is read here; without (the drop, after the drag ended), the last move's counts.
-    const at = (x: number, y: number, dragged: string | null, again?: boolean) => {
+    // fresh: what is dragged is not on screen yet (a third column can come in for it).
+    const at = (x: number, y: number, dragged: string | null, again?: boolean, fresh = false) => {
       const area = areaRef.current;
       if (!area) return null;
       if (again) {
@@ -109,11 +141,11 @@ export function TileArea() {
         const inside = x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
         zone = inside ? zoneAt(r, x, y, zone) : null;
       }
-      return targetAt(area, x, y, dragged, zone);
+      return targetAt(area, x, y, dragged, zone, fresh);
     };
     const treeMoved = () => {
       const d = treeDrag.current();
-      setTarget(d ? at(d.x, d.y, null, true) : null);
+      setTarget(d ? at(d.x, d.y, null, true, !onScreen({ file: d.path })) : null);
     };
     const offTreeMove = treeDrag.subscribe(treeMoved);
     let lifted: HTMLElement | null = null;
@@ -126,11 +158,11 @@ export function TileArea() {
         lifted = areaRef.current?.querySelector<HTMLElement>(`[data-tile="${id}"]`) ?? null;
         if (lifted) lifted.dataset.lifted = "1";
       }
-      setTarget(d ? at(d.x, d.y, id, true) : null);
+      setTarget(d ? at(d.x, d.y, id, true, freshDrag(d.what)) : null);
     };
     const offTileMove = tileDrag.subscribe(tileMoved);
     const offTreeDrop = treeDrag.onDrop((d) => {
-      const t = at(d.x, d.y, null);
+      const t = at(d.x, d.y, null, false, !onScreen({ file: d.path }));
       zone = null;
       setTarget(null);
       if (!t) return false;
@@ -149,7 +181,7 @@ export function TileArea() {
     });
     const offTileDrop = tileDrag.onDrop((d) => {
       const id = d.what.kind === "tile" ? d.what.tileId : null;
-      const t = at(d.x, d.y, id);
+      const t = at(d.x, d.y, id, false, freshDrag(d.what));
       zone = null;
       setTarget(null);
       if (!t) return false;
@@ -200,7 +232,7 @@ export function TileArea() {
               data-spot={spotName(s.rect)}
               // Each tile draws its own subtle 1px border on every edge inside the viewer (next to a tile or empty space),
               // the same wherever it sits; empty spots draw nothing, and the viewer's own edges have none.
-              className={cn("absolute overflow-hidden border-border/70", s.content && s.rect.x + s.rect.w < 2 && "border-r", s.content && s.rect.y + s.rect.h < 2 && "border-b", s.content && s.rect.x > 0 && "border-l", s.content && s.rect.y > 0 && "border-t")}
+              className={cn("absolute overflow-hidden border-border/70", s.content && s.rect.x + s.rect.w < (s.rect.t ?? 2) && "border-r", s.content && s.rect.y + s.rect.h < 2 && "border-b", s.content && s.rect.x > 0 && "border-l", s.content && s.rect.y > 0 && "border-t")}
               style={{ left: `${b.l * 100}%`, top: `${b.t * 100}%`, width: `${b.w * 100}%`, height: `${b.h * 100}%` }}
             >
               {s.content ? (
@@ -280,7 +312,7 @@ const COLLAPSE_PX = 16;
 const SNAP_PX = 6;
 
 /** line: the divider's name (data-line); lines: the Split values it moves. */
-type Divider = { axis: "x" | "y"; line: string; lines: (keyof Split)[]; at: number; from: number; to: number; a: Slot[]; b: Slot[] };
+type Divider = { axis: "x" | "y"; line: string; lines: (keyof Split)[]; at: number; from: number; to: number; a: Slot[]; b: Slot[]; /** where it can move between (three columns: the next lines) */ lo?: number; hi?: number };
 const four = (slots: Slot[]) => slots.length === 4 && slots.every((s) => s.rect.w === 1 && s.rect.h === 1);
 /** The dividers of the arrangement. Vertical: one full-height line where a spot spans both rows (or four quarters
  *  whose sides' lines are apart), else each row's own (x top, xb bottom: Carl 11-24 "the right wall moves solo").
@@ -289,6 +321,17 @@ const four = (slots: Slot[]) => slots.length === 4 && slots.every((s) => s.rect.
 function dividersOf(slots: Slot[], sp: Split): Divider[] {
   const split = normSplit(slots, sp);
   const out: Divider[] = [];
+  if (inThirds(slots)) {
+    // Three columns: the two lines between them, and a split column's own line between its halves.
+    const xs = [0, split.t1, split.t2, 1];
+    const col = (x: number) => slots.filter((s) => s.rect.x === x).sort((p, q) => p.rect.y - q.rect.y);
+    for (const i of [1, 2] as const) out.push({ axis: "x", line: `t${i}`, lines: [`t${i}`], at: xs[i]!, from: 0, to: 1, lo: xs[i - 1]!, hi: xs[i + 1]!, a: col(i - 1), b: col(i) });
+    for (const x of [0, 1, 2] as const) {
+      const c = col(x);
+      if (c.length === 2) out.push({ axis: "y", line: `c${x}`, lines: [`c${x}`], at: split[`c${x}`], from: xs[x]!, to: xs[x + 1]!, a: [c[0]!], b: [c[1]!] });
+    }
+    return out;
+  }
   const at = (cell: number) => slots.find((s) => s.rect.x <= cell % 2 && cell % 2 < s.rect.x + s.rect.w && s.rect.y <= (cell >> 1) && (cell >> 1) < s.rect.y + s.rect.h);
   const topSplit = at(0)?.rect.w === 1, bottomSplit = at(2)?.rect.w === 1;
   const fullH = slots.some((s) => s.rect.h === 2 && s.rect.w === 1);
@@ -348,7 +391,7 @@ function Dividers({ areaRef }: { areaRef: React.RefObject<HTMLDivElement | null>
     const r = area.getBoundingClientRect();
     const each = ds.map((d) => {
       const size = d.axis === "x" ? r.width : r.height;
-      return { d, size, min: (d.axis === "x" ? MIN_W : MIN_H) / size, aEmpty: d.a.every((s) => !s.content), bEmpty: d.b.every((s) => !s.content), f: d.at };
+      return { d, size, min: (d.axis === "x" ? MIN_W : MIN_H) / size, aEmpty: d.a.every((s) => !s.content), bEmpty: d.b.every((s) => !s.content), f: d.at, lo: d.lo ?? 0, hi: d.hi ?? 1 };
     });
     setDragging(ds.map((d) => d.line).join(","));
     document.body.style.cursor = ds.length > 1 ? "move" : ds[0]!.axis === "x" ? "col-resize" : "row-resize";
@@ -358,10 +401,11 @@ function Dividers({ areaRef }: { areaRef: React.RefObject<HTMLDivElement | null>
         const raw = o.d.axis === "x" ? (ev.clientX - r.left) / r.width : (ev.clientY - r.top) / r.height;
         // A spot with a tile stops at its minimum; an empty one shrinks freely to EMPTY_MIN px, and within COLLAPSE_PX
         // of the far edge it is gone (0 or 1: drawn collapsed now; dragged back, it comes back; let go, it goes).
-        const px = raw * o.size;
-        if (o.aEmpty && px < COLLAPSE_PX) o.f = 0;
-        else if (o.bEmpty && o.size - px < COLLAPSE_PX) o.f = 1;
-        else o.f = Math.min(o.bEmpty ? 1 - EMPTY_MIN / o.size : 1 - o.min, Math.max(o.aEmpty ? EMPTY_MIN / o.size : o.min, raw));
+        // (Three columns: between the next lines, lo and hi, not the area's edges.)
+        const px = (raw - o.lo) * o.size, room = (o.hi - o.lo) * o.size;
+        if (o.aEmpty && px < COLLAPSE_PX) o.f = o.lo;
+        else if (o.bEmpty && room - px < COLLAPSE_PX) o.f = o.hi;
+        else o.f = Math.min(o.hi - (o.bEmpty ? EMPTY_MIN / o.size : o.min), Math.max(o.lo + (o.aEmpty ? EMPTY_MIN / o.size : o.min), raw));
         for (const l of o.d.lines) next[l] = o.f;
       }
       useTiles.setState((t) => ({ split: normSplit(t.slots, { ...normSplit(t.slots, t.split), ...next }) }));
@@ -376,8 +420,8 @@ function Dividers({ areaRef }: { areaRef: React.RefObject<HTMLDivElement | null>
       const keep: Partial<Split> = {};
       let collapse: (() => void) | null = null;
       for (const o of each) {
-        if (!collapse && o.aEmpty && o.f === 0) collapse = () => collapseSpots(o.d.a.map((s) => s.id), o.d.b.map((s) => s.id), o.d.axis, o.d.lines);
-        else if (!collapse && o.bEmpty && o.f === 1) collapse = () => collapseSpots(o.d.b.map((s) => s.id), o.d.a.map((s) => s.id), o.d.axis, o.d.lines);
+        if (!collapse && o.aEmpty && o.f === o.lo) collapse = () => collapseSpots(o.d.a.map((s) => s.id), o.d.b.map((s) => s.id), o.d.axis, o.d.lines);
+        else if (!collapse && o.bEmpty && o.f === o.hi) collapse = () => collapseSpots(o.d.b.map((s) => s.id), o.d.a.map((s) => s.id), o.d.axis, o.d.lines);
         else for (const l of o.d.lines) keep[l] = o.f;
       }
       // Four quarters: a row's (or side's) line let go within SNAP_PX of the other's lines up with it (a perfect

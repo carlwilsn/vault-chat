@@ -19,8 +19,9 @@ import type { Draft } from "./plugins/composer/draft";
 /** What a tile shows. Settings and Notes are never tiles: they are modals over everything (src/TileArea.tsx). */
 export type TileContent = { type: "file"; paneId: string | null } | { type: "chat"; chatId: string };
 
-/** A rectangle of the 2x2 grid (x, y: 0 or 1; w, h: 1 or 2). */
-export type Rect = { x: number; y: number; w: number; h: number };
+/** A rectangle of the 2x2 grid (x, y: 0 or 1; w, h: 1 or 2), or (t: 3) of three columns (Carl 11-25): x 0..2, w 1; y, h
+ *  as the grid's rows (a whole column, or its top or bottom half). */
+export type Rect = { x: number; y: number; w: number; h: number; t?: 3 };
 /** The spots a drag snaps to, by name (the agent's `spot`). */
 export const SPOTS = {
   left: { x: 0, y: 0, w: 1, h: 2 },
@@ -31,10 +32,21 @@ export const SPOTS = {
   "top-right": { x: 1, y: 0, w: 1, h: 1 },
   "bottom-left": { x: 0, y: 1, w: 1, h: 1 },
   "bottom-right": { x: 1, y: 1, w: 1, h: 1 },
+  // Three columns (Carl 11-25): only from two halves side by side, something new over the line between them (the
+  // middle) or at the viewer's left or right edge (that outer column); a column splits into top and bottom halves.
+  "left-third": { x: 0, y: 0, w: 1, h: 2, t: 3 },
+  "middle-third": { x: 1, y: 0, w: 1, h: 2, t: 3 },
+  "right-third": { x: 2, y: 0, w: 1, h: 2, t: 3 },
+  "top-left-third": { x: 0, y: 0, w: 1, h: 1, t: 3 },
+  "bottom-left-third": { x: 0, y: 1, w: 1, h: 1, t: 3 },
+  "top-middle-third": { x: 1, y: 0, w: 1, h: 1, t: 3 },
+  "bottom-middle-third": { x: 1, y: 1, w: 1, h: 1, t: 3 },
+  "top-right-third": { x: 2, y: 0, w: 1, h: 1, t: 3 },
+  "bottom-right-third": { x: 2, y: 1, w: 1, h: 1, t: 3 },
 } as const satisfies Record<string, Rect>;
 export type SpotName = keyof typeof SPOTS | "full";
 const FULL: Rect = { x: 0, y: 0, w: 2, h: 2 };
-export const spotName = (r: Rect): SpotName => (r.w === 2 && r.h === 2 ? "full" : ((Object.keys(SPOTS) as (keyof typeof SPOTS)[]).find((k) => rectEq(SPOTS[k], r)) ?? "full"));
+export const spotName = (r: Rect): SpotName => (!r.t && r.w === 2 && r.h === 2 ? "full" : ((Object.keys(SPOTS) as (keyof typeof SPOTS)[]).find((k) => rectEq(SPOTS[k], r)) ?? "full"));
 
 /** A spot: where it is, and what it shows (null: empty). Its id is the tile's id (the agent's `tile`). Spots never
  *  overlap (no stacking): they cover the viewer exactly. */
@@ -48,17 +60,21 @@ export type TileLeaf = { kind: "leaf"; id: string; content: TileContent };
  *  one line across when a spot spans both sides, then right = left). Four quarters: the rows' lines move apart only
  *  while the sides' lines are one (and the other way round: never a pinwheel). They outlive opening and closing
  *  tiles; collapsing a spot puts its line back in the middle. */
-export type Split = { x: number; xb: number; left: number; right: number };
-export const HALF_SPLIT: Split = { x: 0.5, xb: 0.5, left: 0.5, right: 0.5 };
+export type Split = { x: number; xb: number; left: number; right: number; /** three columns: the two lines between them */ t1: number; t2: number; /** three columns: each column's line between its top and bottom halves */ c0: number; c1: number; c2: number };
+/** Three columns come in equal, each column's line in the middle. */
+const THIRDS: Pick<Split, "t1" | "t2" | "c0" | "c1" | "c2"> = { t1: 1 / 3, t2: 2 / 3, c0: 0.5, c1: 0.5, c2: 0.5 };
+export const HALF_SPLIT: Split = { x: 0.5, xb: 0.5, left: 0.5, right: 0.5, ...THIRDS };
 /** The split as the arrangement allows it (see Split): a full-height spot ties xb to x, a full-width one right to
  *  left; four quarters with both pairs apart keep the rows (right = left). */
 export function normSplit(slots: Slot[], sp: Split): Split {
+  // An older split (kept before three columns): their lines as they come in.
+  if ((Object.keys(THIRDS) as (keyof Split)[]).some((k) => typeof sp[k] !== "number")) sp = { ...HALF_SPLIT, ...Object.fromEntries(Object.entries(sp).filter(([, v]) => typeof v === "number")) };
   let { x, xb, left, right } = sp;
   if (xb === undefined) xb = x;
   if (slots.some((s) => s.rect.h === 2 && s.rect.w === 1)) xb = x;
   if (acrossBoth(slots)) right = left;
   if (x !== xb && left !== right) right = left;
-  return x === sp.x && xb === sp.xb && left === sp.left && right === sp.right ? sp : { x, xb, left, right };
+  return x === sp.x && xb === sp.xb && left === sp.left && right === sp.right ? sp : { ...sp, x, xb, left, right };
 }
 
 export type TilesState = { slots: Slot[]; focused: string | null; reveal: number; split: Split };
@@ -77,6 +93,11 @@ export const acrossBoth = (slots: Slot[]) => slots.some((s) => s.rect.w === 2 &&
 /** A spot's box as fractions of the area (left, top, width, height), with the lines where the split puts them. */
 export function boxOf(r: Rect, slots: Slot[], sp: Split): { l: number; t: number; w: number; h: number } {
   const split = normSplit(slots, sp);
+  if (r.t === 3) {
+    const xs = [0, split.t1, split.t2, 1];
+    const ys = [0, [split.c0, split.c1, split.c2][r.x]!, 1];
+    return { l: xs[r.x]!, t: ys[r.y]!, w: xs[r.x + r.w]! - xs[r.x]!, h: ys[r.y + r.h]! - ys[r.y]! };
+  }
   const xs = [0, r.h === 2 || r.y === 0 ? split.x : split.xb, 1];
   const across = acrossBoth(slots);
   const yLine = across || r.w === 2 || r.x === 0 ? split.left : split.right;
@@ -96,7 +117,10 @@ export function setSplit(next: Partial<Split>): void {
   const x = clamp(next.x, cur.x);
   // A full-height line: both rows' move.
   const xb = t.slots.some((s) => s.rect.h === 2 && s.rect.w === 1) ? x : clamp(next.xb, cur.xb);
-  useTiles.setState({ split: normSplit(t.slots, { x, xb, left, right }) });
+  // Three columns: the second line stays right of the first.
+  const t1 = clamp(next.t1, cur.t1);
+  const t2 = Math.max(Math.min(0.99, t1 + 0.01), clamp(next.t2, cur.t2));
+  useTiles.setState({ split: normSplit(t.slots, { x, xb, left, right, t1, t2, c0: clamp(next.c0, cur.c0), c1: clamp(next.c1, cur.c1), c2: clamp(next.c2, cur.c2) }) });
 }
 
 /** A divider dragged all the way over empty spots: they go, and the spots across the divider take their room (axis x:
@@ -104,6 +128,8 @@ export function setSplit(next: Partial<Split>): void {
 export function collapseSpots(gone: string[], grow: string[], axis: "x" | "y", lines: (keyof Split)[]): boolean {
   const cur = slots();
   if (!gone.length || gone.some((id) => findSlot(cur, id)?.content)) return false;
+  // Three columns: the empty spot goes as an empty spot closed does (its neighbour grows; two columns left are halves again).
+  if (inThirds(cur)) return setSlots(gone.reduce(removeSpot, cur)), true;
   const next = cur.filter((s) => !gone.includes(s.id)).map((s) => (grow.includes(s.id) ? { ...s, rect: axis === "x" ? { ...s.rect, x: 0, w: 2 } : { ...s.rect, y: 0, h: 2 } } : s));
   setSlots(next);
   useTiles.setState((t) => ({ split: normSplit(next, { ...t.split, ...Object.fromEntries(lines.map((l) => [l, 0.5])) }) }));
@@ -120,20 +146,44 @@ const newPaneId = () => (typeof crypto !== "undefined" && "randomUUID" in crypto
 
 // ------------------------------------------------------------------ pure spot ops
 
-export const rectEq = (a: Rect, b: Rect) => a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+export const rectEq = (a: Rect, b: Rect) => a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h && (a.t ?? 2) === (b.t ?? 2);
+/** The viewer as 6 x 2 cells (sixths of the width, the two rows): a grid column is 3 of them, a third column 2. */
 const cellsOf = (r: Rect): number[] => {
+  const u = r.t === 3 ? 2 : 3;
   const out: number[] = [];
-  for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) out.push(y * 2 + x);
+  for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x * u; x < (r.x + r.w) * u; x++) out.push(y * 6 + x);
   return out;
 };
+const ALL_CELLS = cellsOf({ x: 0, y: 0, w: 2, h: 2 });
+/** Three columns on screen. */
+export const inThirds = (slots: Slot[]) => slots.some((s) => s.rect.t === 3);
+/** Exactly two tiles side by side, the left half and the right half: a third column can come in. */
+export const twoHalves = (slots: Slot[]) => slots.length === 2 && slots.every((s) => s.content && s.rect.w === 1 && s.rect.h === 2 && !s.rect.t);
+/** Three columns that are three no more (one taken away: an empty one closed or collapsed): back to the grid, the
+ *  spots left of the one line left the left side, right of it the right side. */
+export function normThirds(slots: Slot[]): Slot[] {
+  if (!inThirds(slots)) return slots;
+  const lines = [...new Set(slots.flatMap((s) => [s.rect.x, s.rect.x + s.rect.w]).filter((v) => v > 0 && v < 3))];
+  if (lines.length >= 2) return slots;
+  const b = lines[0];
+  return slots.map((s) => {
+    const r = s.rect;
+    return { ...s, rect: b === undefined ? { x: 0, y: r.y, w: 2, h: r.h } : { x: r.x >= b ? 1 : 0, y: r.y, w: r.x < b && r.x + r.w > b ? 2 : 1, h: r.h } };
+  });
+}
 const overlaps = (a: Rect, b: Rect) => cellsOf(a).some((c) => cellsOf(b).includes(c));
 /** Reading order: top to bottom, left to right. */
 const byPlace = (a: Slot, b: Slot) => a.rect.y - b.rect.y || a.rect.x - b.rect.x;
-/** Cells as the fewest rectangles: a half where one fits (side by side first), quarters for the rest. */
-function rectsOf(cells: number[]): Rect[] {
+/** Cells as the fewest rectangles: a half where one fits (side by side first), quarters for the rest; three columns
+ *  (thirds): whole columns, then column halves. */
+function rectsOf(cells: number[], thirds = false): Rect[] {
   const left = new Set(cells);
   const out: Rect[] = [];
-  for (const r of [FULL, SPOTS.left, SPOTS.right, SPOTS.top, SPOTS.bottom, SPOTS["top-left"], SPOTS["top-right"], SPOTS["bottom-left"], SPOTS["bottom-right"]]) {
+  const S = SPOTS;
+  const order: Rect[] = thirds
+    ? [S["left-third"], S["middle-third"], S["right-third"], S["top-left-third"], S["bottom-left-third"], S["top-middle-third"], S["bottom-middle-third"], S["top-right-third"], S["bottom-right-third"]]
+    : [FULL, S.left, S.right, S.top, S.bottom, S["top-left"], S["top-right"], S["bottom-left"], S["bottom-right"]];
+  for (const r of order) {
     if (cellsOf(r).every((c) => left.has(c))) {
       out.push({ ...r });
       for (const c of cellsOf(r)) left.delete(c);
@@ -175,12 +225,23 @@ export function snapTo(slots: Slot[], from: string | null, to: Rect, content?: T
   const moving = src ? src.content : (content ?? null);
   if (!moving) return null;
   if (src && rectEq(src.rect, to)) return null;
+  // Three columns (Carl 11-25): from two halves, something new as a whole column; the halves take the other two, in
+  // their order. Once there, only columns and column halves (or the whole viewer); never past 4 spots.
+  const thirds = to.t === 3;
+  if (thirds && twoHalves(slots)) {
+    if (src || to.h !== 2) return null;
+    const [l, r] = [...slots].sort(byPlace) as [Slot, Slot];
+    const [a, b] = [0, 1, 2].filter((x) => x !== to.x) as [number, number];
+    const id = newId("t_");
+    return { slots: [{ ...l, rect: { x: a, y: 0, w: 1, h: 2, t: 3 } }, { ...r, rect: { x: b, y: 0, w: 1, h: 2, t: 3 } }, { id, rect: { ...to }, content: moving }], id, dropped: [] };
+  }
+  if (thirds !== inThirds(slots) && !rectEq(to, FULL)) return null;
   const toCells = cellsOf(to);
   const touched = slots.filter((s) => s !== src && overlaps(s.rect, to));
   // A swap (Carl 11-25): the moved tile lands exactly on one tile's spot, and that tile fits exactly into the spot it
   // just left (half and half, quarter and quarter): they trade places, nothing closes.
   const other = touched.length === 1 ? touched[0]! : null;
-  if (src && other?.content && rectEq(other.rect, to) && src.rect.w === to.w && src.rect.h === to.h)
+  if (src && other?.content && rectEq(other.rect, to) && src.rect.w === to.w && src.rect.h === to.h && src.rect.t === to.t)
     return { slots: slots.map((s) => (s === src ? { ...s, rect: { ...to } } : s === other ? { ...s, rect: { ...src.rect } } : s)), id: src.id, dropped: [] };
   const kept = slots.filter((s) => s !== src && !touched.includes(s));
   const dropped: TileContent[] = [];
@@ -189,13 +250,14 @@ export function snapTo(slots: Slot[], from: string | null, to: Rect, content?: T
     if (!s.content) continue;
     const rest = cellsOf(s.rect).filter((c) => !toCells.includes(c));
     if (!rest.length) dropped.push(s.content);
-    else shrunk.push({ ...s, rect: rectsOf(rest)[0]! });
+    else shrunk.push({ ...s, rect: rectsOf(rest, thirds)[0]! });
   }
   const id = src?.id ?? newId("t_");
   const placed = [...kept, ...shrunk, { id, rect: { ...to }, content: moving }];
   const taken = new Set(placed.flatMap((s) => cellsOf(s.rect)));
   // The room left (the old spot's, what `to` cut out of empty spots, a shrunk tile's leftover) as the fewest empty spots.
-  const pieces: Slot[] = rectsOf([0, 1, 2, 3].filter((c) => !taken.has(c))).map((rect) => ({ id: newId("t_"), rect, content: null }));
+  const pieces: Slot[] = rectsOf(ALL_CELLS.filter((c) => !taken.has(c)), thirds).map((rect) => ({ id: newId("t_"), rect, content: null }));
+  if (placed.length + pieces.length > 4) return null;
   return { slots: [...placed, ...pieces], id, dropped };
 }
 
@@ -235,12 +297,18 @@ function both(f: () => void): void {
     applying = was;
   }
 }
-const setSlots = (slots: Slot[]) => {
-  useTiles.setState((t) => ({
+const setSlots = (next: Slot[]) => {
+  const slots = normThirds(next);
+  useTiles.setState((t) => {
+    // Three columns come in equal; back to two halves, the line in the middle.
+    const was = inThirds(t.slots), now = inThirds(slots);
+    const sp = was === now ? t.split : now ? { ...t.split, ...THIRDS } : { ...t.split, x: 0.5, xb: 0.5 };
+    return {
     slots,
-    split: normSplit(slots, t.split),
+    split: normSplit(slots, sp),
     focused: findSlot(slots, t.focused) ? t.focused : ([...slots].sort(byPlace)[0]?.id ?? null),
-  }));
+    };
+  });
   // The store's panes in place order too (panes[0] is the first file tile, top row left to right), so every older name
   // for them ("left" = panes[0]) means what Carl sees.
   const st = useStore.getState();
@@ -360,6 +428,8 @@ function existingTile(what: TileWhat): TileLeaf | undefined {
     "chat" in what ? l.content.type === "chat" && l.content.chatId === what.chat
     : l.content.type === "file" && (l.content.paneId ? st.panes.find((p) => p.id === (l.content as { paneId: string }).paneId)?.file : st.currentFile) === what.file);
 }
+/** On screen already (a drag of it moves its tile: no third column from it). */
+export const onScreen = (what: { file: string } | { chat: string }) => !!existingTile("file" in what ? { ...what, text: "" } : what);
 function contentFor(what: TileWhat): TileContent {
   return "file" in what ? addFilePane(what.file, what.text) : { type: "chat", chatId: what.chat };
 }
@@ -408,6 +478,9 @@ export function openAt(what: TileWhat, to: Rect | string): string | null {
   if (!rect) return null;
   const have = existingTile(what);
   if (have) return rectEq(findSlot(slots(), have.id)!.rect, rect) ? (focusTile(have.id, true), have.id) : moveTile(have.id, rect);
+  // A spot it can't take (a half in three columns, a third column from anything but two halves, a fifth spot):
+  // nothing changes, and nothing is opened.
+  if (!snapTo(slots(), null, rect, { type: "chat", chatId: "" })) return null;
   let id = "";
   both(() => {
     const content = contentFor(what);
@@ -578,7 +651,7 @@ export async function restoreTiles(saved: SavedTiles, d: { vault: string; read: 
   const rects = rows.map((r) => (r.spot === "full" ? FULL : (SPOTS as Record<string, Rect>)[r.spot] ?? null));
   if (!rows.length || rects.some((r) => !r)) return false;
   const cells = rects.flatMap((r) => cellsOf(r!));
-  if (cells.length !== 4 || new Set(cells).size !== 4) return false;
+  if (cells.length !== 12 || new Set(cells).size !== 12) return false;
   const st0 = useStore.getState();
   const abs = (f: string) => (isUrl(f) || /^([a-zA-Z]:)?[\\/]/.test(f) ? f : `${d.vault.replace(/[\\/]+$/, "")}/${f}`);
   const chats = new Set(st0.conversations.map((c) => c.id));

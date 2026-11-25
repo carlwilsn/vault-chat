@@ -9,7 +9,7 @@ import { useStore } from "./store";
 import { PANE_SIDES, relToVault, sideOf } from "./paneLayout";
 import { invoke } from "@tauri-apps/api/core";
 import { isUnreadableAsText } from "./fileKind";
-import { SPOTS, closeTile, ensureChatTile, ensureTilesStarted, fileTilesInPlace, fillTile, findLeaf, findSlot, focusTile, moveTile, newChatAt, openAt, openFilling, placeTile, restoreTiles, restoredFrom, setSplit, takeMigration, tileAtSide, tilesFromLegacy, tileOfPane, tilesForLayout, useTiles, type SavedTiles, type TileWhat } from "./tiles";
+import { SPOTS, rectEq, closeTile, ensureChatTile, ensureTilesStarted, fileTilesInPlace, fillTile, findLeaf, findSlot, focusTile, moveTile, newChatAt, openAt, openFilling, placeTile, restoreTiles, restoredFrom, setSplit, takeMigration, tileAtSide, tilesFromLegacy, tileOfPane, tilesForLayout, useTiles, type SavedTiles, type TileWhat } from "./tiles";
 import type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult, PaneSide, WebPageSeen } from "./layoutTypes";
 import { isPicking, isWebAddress, navigateWebPane, openWebInPane, paneKey, webPageAct } from "./webPane";
 import { signOutOfSites } from "./webProfile";
@@ -358,7 +358,9 @@ async function applyOne(op: LayoutOp, io: LayoutIO): Promise<{ ok: boolean; note
       // tiles it covers close (no stacking), its old spot is left empty.
       if (!findLeaf(useTiles.getState().slots, op.tile)) return no(`no tile "${String(op.tile)}" (see the layout's tiles)`);
       if (op.spot !== "full" && !(op.spot in SPOTS)) return no(`spot is one of full, ${Object.keys(SPOTS).join(", ")}`);
-      return moveTile(op.tile, op.spot === "full" ? { x: 0, y: 0, w: 2, h: 2 } : SPOTS[op.spot]) ? done() : done(`it is in ${op.spot} already`);
+      const to = op.spot === "full" ? { x: 0, y: 0, w: 2, h: 2 } : SPOTS[op.spot];
+      if (moveTile(op.tile, to)) return done();
+      return rectEq(findSlot(useTiles.getState().slots, op.tile)!.rect, to) ? done(`it is in ${op.spot} already`) : no(`it can't go to ${op.spot} (three columns come only from two halves, for something new; in three columns, only columns, their halves or full; at most 4 spots)`);
     }
     case "newChat": {
       const cc = await import("./chat-controller");

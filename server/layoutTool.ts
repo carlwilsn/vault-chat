@@ -15,7 +15,7 @@ import { controlDown, laptopElsewhere, noteAnswer, unansweredNote, vaultName } f
 const OPS = ["openLeftPanel", "closeLeftPanel", "openRightPanel", "closeRightPanel", "closePane", "openInPane", "webPage", "split", "focus", "chatSidebar", "resize", "signOutOfSites", "openChat", "moveTile", "newChat", "autoHideTitleBar", "page", "newWindow", "closeWindow"] as const;
 // The viewer's Snap spots (src/tiles.ts SPOTS), and full: the whole viewer. No stacking: a tile covered by a move or
 // an open closes.
-const SPOTS = ["full", "left", "right", "top", "bottom", "top-left", "top-right", "bottom-left", "bottom-right"];
+const SPOTS = ["full", "left", "right", "top", "bottom", "top-left", "top-right", "bottom-left", "bottom-right", "left-third", "middle-third", "right-third", "top-left-third", "bottom-left-third", "top-middle-third", "bottom-middle-third", "top-right-third", "bottom-right-third"];
 type Op = Record<string, unknown> & { op: string };
 
 export type LayoutDeps = {
@@ -152,9 +152,9 @@ function parseOps(a: Record<string, unknown>): Op[] | string {
       }
       if (o.tiles !== undefined) {
         const t = o.tiles as Record<string, unknown> | null;
-        if (!t || typeof t !== "object") return "resize: tiles is { x?, xb?, left?, right? }, fractions between 0 and 1.";
-        const tiles: { x?: number; xb?: number; left?: number; right?: number } = {};
-        for (const k of ["x", "xb", "left", "right"] as const) if (t[k] !== undefined) {
+        if (!t || typeof t !== "object") return "resize: tiles is { x?, xb?, left?, right?, t1?, t2?, c0?, c1?, c2? }, fractions between 0 and 1.";
+        const tiles: { x?: number; xb?: number; left?: number; right?: number; t1?: number; t2?: number; c0?: number; c1?: number; c2?: number } = {};
+        for (const k of ["x", "xb", "left", "right", "t1", "t2", "c0", "c1", "c2"] as const) if (t[k] !== undefined) {
           const v = t[k]; if (typeof v !== "number" || !(v > 0 && v < 1)) return `resize: tiles.${k} is a fraction between 0 and 1.`;
           tiles[k] = v;
         }
