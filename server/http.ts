@@ -514,11 +514,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     if (await brainRoute(hooks.brain(scope), req, res, path, method, isDirectLoopback(req), () => jsonBody(req))) return;
   }
 
-  // Carl's Claude plan usage (the context ring's popover): the 5-hour window and the weekly limit.
+  // Carl's Claude plan usage (the context ring's popover): the 5-hour window, the weekly limit, per-model
+  // limits and extra usage. The box's kept figures at once; ?fresh=1 (the popover opening) reads them again when stale.
   if (path === "/api/v1/usage" && method === "GET") {
     const { planUsage } = await import("./planUsage");
     const { claudeCodeToken } = await import("./keys");
-    return json(res, 200, await planUsage(claudeCodeToken()));
+    return json(res, 200, await planUsage(claudeCodeToken(), fetch, { fresh: url.searchParams.get("fresh") === "1" }));
   }
   // What the composer's picker offers: the models a chat can run on, by name,
   // and the one a chat that has not chosen runs on (the box's last choice).

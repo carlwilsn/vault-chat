@@ -54,6 +54,7 @@ import { ruleOnToolUse, heldOnCall, CALL_WRITE_REASON, externalPath as rulePath 
 import { ClaudeSideRuns } from "./side";
 import { memoryUpdate, writeClaudeMd, type MemoryMark } from "./memory";
 import { ClaudeTranslator, type Emit } from "./translate";
+import { notePlanLimit, refreshPlanUsage } from "../../planUsage";
 import { sandboxedCli, type ClaudeInstall } from "./install";
 import type { ClaudePaths } from "./paths";
 
@@ -1166,6 +1167,8 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
         this.limit = { status: e.status, resetsAt: e.resetsAt, kindOfLimit: e.kindOfLimit };
         this.limitAt = Date.now();
         this.emit("rateLimit", this.limit);
+        // The plan usage the context ring shows, kept from every turn (no request).
+        notePlanLimit({ rateLimitType: e.kindOfLimit, utilization: e.utilization, resetsAt: e.resetsAt });
         return;
       case "done": {
         // Every turn is a check of the sign-in: one the API refused says so (the
@@ -1182,6 +1185,8 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
         live.turnId = null;
         // A /compact is a turn with no model message (no turn id): its end is compact()'s.
         if (!turnId) this.compactWaits.get(threadId)?.end();
+        // The plan usage, read again in the background when stale, so the context ring has it before it opens.
+        refreshPlanUsage();
         this.ev({ kind: "turnCompleted", threadId, turnId, status: e.status, error: e.error, ...(e.limited ? { limited: true } : {}), ...(e.transient ? { transient: true } : {}) });
         return;
       }

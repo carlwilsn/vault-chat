@@ -77,6 +77,10 @@ async function main(): Promise<void> {
   setLegacySource(legacySource);
   // Every vault's log takes its seqs from one clock: the clients read one feed over all of them (GlobalFeed).
   setSharedClock(join(cfg.stateDir, "convlog-clock"));
+  // Carl's plan usage (the context ring's popover): the last box's answer at once, then read again when stale.
+  const plan = await import("./planUsage");
+  plan.keepPlanUsageIn(join(cfg.stateDir, "plan-usage.json"));
+  setTimeout(() => plan.refreshPlanUsage(), 10_000).unref();
 
   // ---- the app, headless ----
   const store = await import("../src/store");

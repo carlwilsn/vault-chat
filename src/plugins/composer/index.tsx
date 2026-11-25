@@ -19,7 +19,7 @@ import { EFFORTS, EFFORT_LABEL, chatModelsNow, isEffort, labelFor, setChatModel 
 import { Composer } from "./Composer";
 import { attachPaths, clearDraft, detachItem, hasDraft, onDraftEvent, queuedMessages, sendDraft, sendQueuedNow, setInput, stopAgent, unqueue, useDraft } from "./draft";
 import { onSettingsChanged } from "../../settings";
-import { loadUsage, setUsageOpen, useUsage } from "../../UsagePopover";
+import { loadUsage, setUsageOpen, useUsage, watchUsage } from "../../UsagePopover";
 
 const S = () => useStore.getState();
 const D = () => useDraft.getState();
@@ -106,10 +106,10 @@ export function composerOffers() {
         read: sendState,
       },
       usage: {
-        description: "The context ring's popover: open; this chat's context (used and limit in tokens, known: the model said so, else an estimate); the Claude plan's 5-hour and weekly windows (percent used, resetsAt), read from the box when it opens (openUsage).",
+        description: "The context ring's popover: open; this chat's context (used and limit in tokens, known: the model said so, else an estimate); the Claude plan (plan: fiveHour and weekly windows: percent used, resetsAt; scoped: per-model weekly limits; extra: extra usage spent / monthly limit; at: when the box read them), kept by the box from every turn and read ahead, so it is here before the popover opens (openUsage reads it again).",
         read: () => {
           const u = useUsage.getState();
-          return { open: u.open, context: u.context, plan: u.usage, ...(u.usage ? {} : { note: "the plan's figures are read when the popover opens (openUsage)" }) };
+          return { open: u.open, context: u.context, plan: u.usage, ...(u.usage ? {} : { note: "not read from the box yet (openUsage reads it)" }) };
         },
       },
       skills: {
@@ -171,7 +171,7 @@ export function composerOffers() {
         args: { type: "object", properties: { open: { type: "boolean" } }, additionalProperties: false },
         run: async (a: Record<string, unknown>) => {
           setUsageOpen(a.open !== false);
-          return a.open !== false ? { open: true, plan: await loadUsage() } : { open: false };
+          return a.open !== false ? { open: true, plan: await loadUsage({ fresh: true }) } : { open: false };
         },
       },
       sendQueuedNow: {
@@ -273,6 +273,8 @@ export const offers = {
   mount: (_el: HTMLElement, api: PluginApi) => {
     const o = api.offer(composerOffers());
     api.effect(onDraftEvent({ sent: (s) => o.emit("sent", s), attached: (a) => o.emit("attached", a), detached: (a) => o.emit("detached", a) }));
+    // The plan usage, read ahead so the context ring's popover opens with it.
+    api.effect(watchUsage());
   },
 };
 

@@ -68,7 +68,7 @@ export type Emit =
    */
   | { kind: "done"; status: "completed" | "interrupted" | "failed"; error: string | null; refused?: boolean; limited?: boolean; transient?: boolean }
   /** Claude Code's own rate limit: the host backs wakes and schedules off until `resetsAt`. */
-  | { kind: "rateLimit"; status: string; resetsAt: number | null; kindOfLimit: string | null }
+  | { kind: "rateLimit"; status: string; resetsAt: number | null; kindOfLimit: string | null; utilization: number | null }
   /** The API refused the sign-in (claude/auth.ts). The host stops the turn: the
    *  runtime itself retries this, for ever, on a credential that cannot work. */
   | { kind: "authRefused"; error: string | null };
@@ -277,6 +277,8 @@ export class ClaudeTranslator {
           status: rejected ? "rejected" : info.status === "rejected" ? "allowed_warning" : String(info.status ?? "allowed"),
           resetsAt: at ? (at < 1e12 ? at * 1000 : at) : null,
           kindOfLimit: info.rateLimitType ?? null,
+          // 0-1 of that window used (the plan usage the context ring shows: server/planUsage.ts notePlanLimit).
+          utilization: Number.isFinite(Number(info.utilization)) && info.utilization != null ? Number(info.utilization) : null,
         }];
       }
       default:
