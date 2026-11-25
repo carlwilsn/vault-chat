@@ -62,7 +62,12 @@ export default defineConfig({
     // a timing race that also failed 3 times in ~440 earlier 3-worker runs), so, by the rule that the
     // count comes down when anything flakes, six. The earlier overload at 6 (gate run of main 7f2f775c:
     // load average 178, ~1,375 processes) did not recur in these runs.
-    maxWorkers: 6,
+    //
+    // Twelve again (2026-11-24, report 31): the steer/queue test now waits for the queued message's own words;
+    // measured in the ship's sandbox on main e7582c5d, 8 runs at 12 workers took 138-141 s (6 workers: 196 s), 1190
+    // tests each; 7 clean, 1 lost updateKeepsWork's hand-over stop (null for 143), a flake also seen at 6 workers
+    // and in 8 serial gate runs since 11-20. The server tests run alone in the gate (its phase 1).
+    maxWorkers: 12,
     projects: [
       { extends: true, test: { name: "parallel", include: ["server/test/**/*.test.ts"], exclude: [...SERIAL, "**/node_modules/**"], sequence: { groupOrder: 0 } } },
       { extends: true, test: { name: "serial", include: SERIAL, poolOptions: { forks: { singleFork: true } }, sequence: { groupOrder: 1 } } },
