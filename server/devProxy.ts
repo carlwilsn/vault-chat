@@ -28,6 +28,7 @@ import { readFileSync, readdirSync, readlinkSync, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { authorize, phoneToken } from "./auth";
 import { PAGE_SNAP_BRIDGE } from "../src/pageSnap";
+import { inputRecorderJs } from "../src/pageInput";
 
 // ---------------------------------------------------------------- which ports are the agent's
 
@@ -161,6 +162,8 @@ export const FRAME_MESSAGE = "at";
 /** Its second message, what the page shows (the workspace noun's read of a dev pane):
  *  {vcFrame: "page", url, title, text, errors, failed}. */
 export const FRAME_PAGE_MESSAGE = "page";
+/** Its third, what Carl did in the page (src/pageInput.ts): {vcFrame: "input", url, input: {fields, recent, at}}. */
+export const FRAME_INPUT_MESSAGE = "input";
 /** Bounds on that report: the visible text (characters), console errors and failed requests (the last ones kept). */
 export const FRAME_PAGE_LIMITS = { text: 8000, errors: 20, failed: 30 } as const;
 
@@ -168,7 +171,8 @@ export const FRAME_PAGE_LIMITS = { text: 8000, errors: 20, failed: 30 } as const
  *  the page's address and title to the app on load, title change and in-page navigation. It also reports what Carl
  *  sees in it, so the agent can read it (parity: a read, not a picture): its visible text (trimmed, bounded), console
  *  errors and uncaught errors, and requests that failed (status and address: fetch, XHR, and scripts / styles / images
- *  by the resource timing), at most every 2 s after the page changes. It listens to nothing; PAGE_SNAP_BRIDGE (put in
+ *  by the resource timing), at most every 2 s after the page changes, and what Carl does in it (his clicks, keys,
+ *  drags and typing, never a password: src/pageInput.ts), after each burst. It answers nothing; PAGE_SNAP_BRIDGE (put in
  *  beside it) answers the window drawing's request for a picture. The parent is an app origin (frame-ancestors says
  *  so); ancestorOrigins names which. */
 export function frameScript(origins: string[] = APP_ORIGINS): string {
@@ -181,7 +185,9 @@ export function frameScript(origins: string[] = APP_ORIGINS): string {
     `if(W.fetch){var of=W.fetch;W.fetch=function(i,q){var u=typeof i==="string"?i:i&&i.url||String(i),m=q&&q.method||i&&i.method||"GET";return of.apply(this,arguments).then(function(r){if(r&&!r.ok&&r.type!=="opaque")fail(r.status,r.url||u,m);return r},function(x){if(!(x&&x.name==="AbortError"))fail(0,u,m+": "+clip(str(x),120));throw x})}}` +
     `var X=W.XMLHttpRequest&&W.XMLHttpRequest.prototype;if(X){var xo=X.open,xs=X.send;X.open=function(m,u){this.__vc=[m,u];return xo.apply(this,arguments)};X.send=function(){var x=this;try{x.addEventListener("loadend",function(){if(x.status===0||x.status>=400)fail(x.status,x.responseURL||x.__vc&&x.__vc[1]||"",x.__vc&&x.__vc[0]||"GET")})}catch(e){}return xs.apply(this,arguments)}}` +
     `if(W.PerformanceObserver)try{new PerformanceObserver(function(l){l.getEntries().forEach(function(n){if(n.responseStatus>=400&&n.initiatorType!=="fetch"&&n.initiatorType!=="xmlhttprequest")fail(n.responseStatus,n.name,n.initiatorType)})}).observe({type:"resource",buffered:true})}catch(e){}` +
-    `["pushState","replaceState"].forEach(function(k){var f=history[k];history[k]=function(){var r=f.apply(this,arguments);setTimeout(say,0);return r}});addEventListener("popstate",say);addEventListener("hashchange",say);addEventListener("DOMContentLoaded",function(){say();page();var h=document.querySelector("head");if(h&&W.MutationObserver)new MutationObserver(say).observe(h,{subtree:true,childList:true,characterData:true});if(document.body&&W.MutationObserver)new MutationObserver(page).observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true})});addEventListener("load",function(){say();page()});say()}catch(e){}})();</script>${PAGE_SNAP_BRIDGE}`;
+    `["pushState","replaceState"].forEach(function(k){var f=history[k];history[k]=function(){var r=f.apply(this,arguments);setTimeout(say,0);return r}});addEventListener("popstate",say);addEventListener("hashchange",say);addEventListener("DOMContentLoaded",function(){say();page();var h=document.querySelector("head");if(h&&W.MutationObserver)new MutationObserver(say).observe(h,{subtree:true,childList:true,characterData:true});if(document.body&&W.MutationObserver)new MutationObserver(page).observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true})});addEventListener("load",function(){say();page()});` +
+    // What Carl does in it (src/pageInput.ts, the recorder vault pages have): his clicks, picks, typing, keys and drags.
+    `${inputRecorderJs(`function(rec){post({vcFrame:${JSON.stringify(FRAME_INPUT_MESSAGE)},url:location.href,input:rec})}`)};say()}catch(e){}})();</script>${PAGE_SNAP_BRIDGE}`;
 }
 
 /** A page's HTML with FRAME_SCRIPT in its head (after <head>, else after the doctype / <html>, else first). */

@@ -7,6 +7,7 @@
 // (Select). Its answers are the page's word, so they are bounded again here (driven()), and a password field's value is
 // never read: the script only says whether one is filled.
 import type { WebPageSeen } from "./layoutTypes";
+import { inputRecorderJs } from "./pageInput";
 
 /** What the pane's view can be asked: one step of the drive script. */
 export type DriveOp =
@@ -216,8 +217,8 @@ function pickPoll() { var p = st.pick; if (!p) return st.stop ? { picking: true 
 var o = __OP__, out;
 try {
   if (o.op === "read") out = read();
-  else if (o.op === "click") out = click(o);
-  else if (o.op === "type") out = type(o);
+  // The agent's own step: the input recorder (src/pageInput.ts) marks what it does by: "agent", not Carl's.
+  else if (o.op === "click" || o.op === "type") { w.__vcAgentStep = 1; try { out = o.op === "click" ? click(o) : type(o); } finally { w.__vcAgentStep = 0; } }
   else if (o.op === "scroll") out = scroll(o);
   else if (o.op === "describe") out = { picked: describe(find(o)) };
   else if (o.op === "point") out = point(o);
@@ -248,6 +249,18 @@ export function answerOf(raw: unknown): Record<string, unknown> | null {
     }
   }
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+}
+
+/** A script's text answer (inputPollScript's): WebView2 hands back its JSON, WKWebView the text itself. */
+export function answerText(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  if (!raw.startsWith('"')) return raw === "null" ? null : raw;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v === "string" ? v : null;
+  } catch {
+    return null;
+  }
 }
 
 const str = (x: unknown, n: number) => String(x ?? "").slice(0, n);
@@ -300,4 +313,18 @@ export function pickContext(picks: WebPick[]): string {
     "Carl selected these elements on web pages in his viewer (Select). The ref works with box:workspace webPage {do: click | type | scroll | select, ref} on that page while it stays loaded:",
     ...picks.map((p) => `- ${p.url} ${p.ref} <${p.tag}> "${p.label}"${p.text && p.text !== p.label ? `\n  text: ${p.text}` : ""}\n  html: ${p.html}`),
   ].join("\n");
+}
+
+// Carl's input in a public page (src/pageInput.ts, the recorder every page gets): the pane puts the recorder in once a
+// page has loaded, and collects its record about once a second (only when there is a new one): the native view gives
+// the page no channel to the app, so the app asks.
+
+/** Puts the recorder in the page (once per document): its records wait on window.__vcIn for inputPollScript. */
+export function inputInstallScript(): string {
+  return `(function(){if(window.__vcIn)return "ok";var s={seq:0,rec:null};window.__vcIn=s;s.r=${inputRecorderJs("function(rec){s.rec=rec;s.seq++;}")};return "ok"})()`;
+}
+
+/** The page's newest record when it is newer than `seq`: "same", "none" (no recorder: a new document), or its JSON. */
+export function inputPollScript(seq: number): string {
+  return `(function(){var s=window.__vcIn;if(!s)return "none";if(s.seq===${Math.trunc(seq) || 0})return "same";return JSON.stringify({seq:s.seq,rec:s.rec})})()`;
 }

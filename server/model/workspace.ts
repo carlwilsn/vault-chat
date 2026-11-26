@@ -19,6 +19,23 @@ const FRESH_MS = 2_000;
 /** The laptop's layout events (src/offerHistory.ts → offer.event records): a change Carl made by hand. */
 const LAYOUT_PARTS = new Set(["app/viewer", "app/chats", "app/titlebar", "app/chat"]);
 
+/** A layout without Carl's input in its web pages (panes[].page.input): that is the `input` state's, so a layout read
+ *  stays short and a watch on `input` wakes only when he acts. */
+export function layoutWithoutInput(layout: unknown): unknown {
+  const l = layout as { panes?: unknown } | null;
+  if (!l || typeof l !== "object" || !Array.isArray(l.panes)) return layout;
+  return { ...l, panes: l.panes.map((p) => (p && typeof p === "object" && (p as { page?: { input?: unknown } }).page?.input ? { ...p, page: (({ input: _i, ...rest }) => rest)((p as { page: { input?: unknown } }).page) } : p)) };
+}
+/** What Carl did in each web page in the viewer (a dev server's or a public page, src/pageInput.ts), per pane. */
+export function pageInputs(layout: unknown): Record<string, unknown>[] {
+  const panes = (layout as { panes?: unknown } | null)?.panes;
+  if (!Array.isArray(panes)) return [];
+  return panes.flatMap((p) => {
+    const x = p as { side?: unknown; url?: unknown; title?: unknown; page?: { input?: unknown } } | null;
+    return x && typeof x.url === "string" && x.page?.input ? [{ side: x.side, url: x.url, ...(x.title ? { title: x.title } : {}), ...(x.page.input as object) }] : [];
+  });
+}
+
 const when = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace("T", " ") + " UTC";
 const PANE = { type: "string", enum: ["left", "right"], description: "left or right (stacked: left is the top)" };
 const SPOT = { type: "string", enum: ["full", "left", "right", "top", "bottom", "top-left", "top-right", "bottom-left", "bottom-right", "left-third", "middle-third", "right-third", "top-left-third", "bottom-left-third", "top-middle-third", "bottom-middle-third", "top-right-third", "bottom-right-third"], description: "a half or a quarter of the viewer, or full: the whole viewer; *-third: three columns, which come only from two halves side by side (something new as left-third, middle-third or right-third: the halves take the other two columns), then a column or its top / bottom half (at most 4 spots)" };
@@ -44,18 +61,28 @@ export function workspaceNoun(ctx: WorkspaceCtx): Noun {
     state: {
       layout: {
         description:
-          "Carl's laptop screen, read back from it: downloads (files the web pages saved this session, newest first: name, path under .vault-chat/downloads, size, at, ok); panes and their files or web pages (url and title; Carl's own navigation shows here; `page`: the visible text as Carl sees it, for a public page also its interactive elements with refs (one line each, like e12 button 'Sign in'; password fields only filled / empty) and scroll, for a dev server's page console errors and failed requests with status, as the page reported them; picking: its Select is on) (split, side-by-side or stacked, the active pane), the left panel (file tree) open, the chat panel open / popped out, its sidebar, the open chat when known, window and column sizes; when the laptop is away, the last read-back and since when",
+          "Carl's laptop screen, read back from it: downloads (files the web pages saved this session, newest first: name, path under .vault-chat/downloads, size, at, ok); panes and their files or web pages (url and title; Carl's own navigation shows here; `page`: the visible text as Carl sees it, for a public page also its interactive elements with refs (one line each, like e12 button 'Sign in'; password fields only filled / empty) and scroll, for a dev server's page console errors and failed requests with status, as the page reported them; what Carl does in it: state input; picking: its Select is on) (split, side-by-side or stacked, the active pane), the left panel (file tree) open, the chat panel open / popped out, its sidebar, the open chat when known, window and column sizes; when the laptop is away, the last read-back and since when",
         read: async () => {
           const k = keptLayout();
           const down = controlDown("laptop");
-          if (k && Date.now() - k.at < FRESH_MS) return { ...(k.layout as object), ...(k.open !== undefined ? { openChat: k.open } : {}), readAt: when(k.at) };
+          if (k && Date.now() - k.at < FRESH_MS) return { ...(layoutWithoutInput(k.layout) as object), ...(k.open !== undefined ? { openChat: k.open } : {}), readAt: when(k.at) };
           if (!down && ctx.emit) {
             const r = await layoutTool({ vault: ctx.vault, emit: ctx.emit, ackMs: ctx.ackMs ?? 8_000, brief: true }, { action: "get" });
             const n = keptLayout();
-            if (r.ok && n) return { ...(n.layout as object), ...(n.open !== undefined ? { openChat: n.open } : {}), readAt: when(n.at) };
-            return { error: r.text, ...(n ? { last: n.layout, readAt: when(n.at) } : {}) };
+            if (r.ok && n) return { ...(layoutWithoutInput(n.layout) as object), ...(n.open !== undefined ? { openChat: n.open } : {}), readAt: when(n.at) };
+            return { error: r.text, ...(n ? { last: layoutWithoutInput(n.layout), readAt: when(n.at) } : {}) };
           }
-          return { laptop: down ?? "no link to the laptop here", ...(k ? { last: k.layout, readAt: when(k.at) } : { last: null }) };
+          return { laptop: down ?? "no link to the laptop here", ...(k ? { last: layoutWithoutInput(k.layout), readAt: when(k.at) } : { last: null }) };
+        },
+      },
+      input: {
+        description:
+          "what Carl does in the web pages in the viewer (a dev server's page, through the box, or a public page), as the page records it with no code of its own, the same record a vault page keeps as _input: per pane (side, url, title) its form fields now and his last actions, oldest first (at most 12): click, change, input (typing, one per field per burst), key (not typing, e.g. Enter, Escape, Control+Z; n: pressed again), drag (pointer down to up: from / to [x, y], ms, moves, onto), drop, submit, selectText; each names the element (el, id, name, class, text, label) and by: \"Carl\" (his real input) or \"agent\" (your webPage click / type). Never a password, card or secret field's value or keys. Watch it (PluginRead {plugin: \"box:workspace\", state: \"input\", wait: 25}) to follow what he does: it changes when he acts. As last read back from the laptop (every window's)",
+        read: async () => {
+          const ws = keptWindows();
+          const pages = ws.flatMap((w) => pageInputs(w.layout).map((p) => ({ ...(w.window > 1 ? { window: w.window } : {}), ...p })));
+          const down = controlDown("laptop");
+          return { ...(down ? { laptop: down } : {}), pages };
         },
       },
       windows: {
@@ -65,7 +92,7 @@ export function workspaceNoun(ctx: WorkspaceCtx): Noun {
           const down = controlDown("laptop");
           return {
             ...(down ? { laptop: down } : {}),
-            windows: keptWindows().map((w) => ({ window: w.window, ...(w.layout as object), ...(w.window === 1 && w.open !== undefined ? { openChat: w.open } : {}), readAt: when(w.at) })),
+            windows: keptWindows().map((w) => ({ window: w.window, ...(layoutWithoutInput(w.layout) as object), ...(w.window === 1 && w.open !== undefined ? { openChat: w.open } : {}), readAt: when(w.at) })),
           };
         },
       },

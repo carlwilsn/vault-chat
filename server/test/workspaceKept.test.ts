@@ -82,3 +82,34 @@ describe("the workspace's layout, kept on the box", () => {
     expect(storedLayout("school2")?.layout).toEqual(tiled);
   });
 });
+
+describe("what Carl does in a web page in the viewer (box:workspace state input)", () => {
+  it("is its own state: the layout read leaves it out, a watch on it wakes when he acts and not when the page's text changes", async () => {
+    const { workspaceNoun } = await import("../model/workspace");
+    const { watchBoxOffer } = await import("../boxOffers");
+    resetKeptLayout();
+    const click = { what: "click", el: "button", text: "Snap left", by: "Carl", at: "2026-11-26T10:00:00.000Z" };
+    const page = (text: string, recent: unknown[]) => ({
+      ...legacy,
+      panes: [{ side: "single", active: true, url: "https://box.ts.net:1560/before/", title: "Tiles", page: { text, textLength: text.length, at: "2026-11-26T10:00:00.000Z", ...(recent.length ? { input: { fields: {}, recent, at: "2026-11-26T10:00:01.000Z" } } : {}) } }],
+    });
+    keepLaptopLayout(page("one", [click]), "school2");
+    const n = workspaceNoun({ vault: "/nowhere" });
+    const input = (await n.state.input!.read()) as { pages: any[] };
+    expect(input.pages).toEqual([{ side: "single", url: "https://box.ts.net:1560/before/", title: "Tiles", fields: {}, recent: [click], at: "2026-11-26T10:00:01.000Z" }]);
+    const kept = keptLayout()!.layout as any;
+    const { layoutWithoutInput } = await import("../model/workspace");
+    expect((layoutWithoutInput(kept) as any).panes[0].page).toEqual({ text: "one", textLength: 3, at: "2026-11-26T10:00:00.000Z" });
+    // A watch on input: the page's text changing alone does not wake it; his next action does.
+    const deps = { vault: "/nowhere" } as any;
+    const w = watchBoxOffer(deps, "box:workspace", 3000, "input");
+    await new Promise((r) => setTimeout(r, 20));
+    keepLaptopLayout(page("two", [click]), "school2");
+    await new Promise((r) => setTimeout(r, 20));
+    const key = { what: "key", el: "body", key: "Escape", by: "Carl", at: "2026-11-26T10:00:02.000Z" };
+    keepLaptopLayout(page("two", [click, key]), "school2");
+    const r = await w;
+    expect(r.changed).toBe(true);
+    expect((r.state as any).input.pages[0].recent.at(-1)).toEqual(key);
+  });
+});

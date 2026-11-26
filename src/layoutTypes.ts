@@ -60,8 +60,16 @@ export type WebPageSeen = {
   elements?: string[];
   elementCount?: number;
   scroll?: { y: number; max: number };
+  /** What Carl did in it (src/pageInput.ts): the agent's box:workspace state `input`, not the layout's. */
+  input?: PageInput;
   at: string;
 };
+
+/** Carl's input in a page in a pane, recorded by the page's own script (src/pageInput.ts): its form fields now (never a
+ *  password, card or secret field) and his last actions, oldest first: click, change, input (typing, one per burst),
+ *  key (not typing; n: pressed again), drag (from / to [x, y], ms, moves, onto), drop, submit, selectText; each with
+ *  the element (el, id, name, class, text, label) and by: "Carl" (his real input) or "agent" (a box:workspace webPage step). */
+export type PageInput = { fields: Record<string, unknown>; recent: Record<string, unknown>[]; selection?: string; at: string };
 
 /** A file a web page downloaded (src/webProfile.ts): saved under the vault's .vault-chat/downloads. */
 export type WebDownload = { name: string; /** vault-relative */ path: string; /** bytes; null when it failed */ size: number | null; at: string; ok: boolean; /** the source's host */ from?: string };

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { WebDownload, WebPageSeen } from "./layoutTypes";
+import type { PageInput, WebDownload, WebPageSeen } from "./layoutTypes";
 import { firstPaintTheme, keepTheme, type Theme } from "./firstTheme";
 import { isPopout, isSecondWindow } from "./windowKind";
 import { invoke } from "@tauri-apps/api/core";
@@ -557,6 +557,8 @@ type State = {
   setWebTitle: (url: string, title: string | null) => void;
   /** A dev page's report of what it shows (null: forget it). */
   setWebPage: (url: string, seen: WebPageSeen | null) => void;
+  /** Carl's input in a web page on screen (src/pageInput.ts), kept beside what it shows: box:workspace state `input`. */
+  setWebInput: (url: string, input: PageInput) => void;
   setWebDownloads: (list: WebDownload[]) => void;
   closePane: (paneId: string) => void;
   setActivePane: (paneId: string) => void;
@@ -1017,8 +1019,17 @@ export const useStore = create<State>((set) => ({
       // Only the pages on screen keep what they showed.
       const shown = new Set([s.currentFile, ...s.panes.map((p) => p.file)]);
       const next = Object.fromEntries(Object.entries(s.webPages).filter(([u]) => shown.has(u) && u !== url));
-      if (seen && shown.has(url)) next[url] = seen;
+      // Carl's input there (setWebInput) stays across the page's next report of what it shows.
+      const input = s.webPages[url]?.input;
+      if (seen && shown.has(url)) next[url] = input && !seen.input ? { ...seen, input } : seen;
       return { webPages: next };
+    }),
+  setWebInput: (url, input) =>
+    set((s) => {
+      const shown = new Set([s.currentFile, ...s.panes.map((p) => p.file)]);
+      if (!shown.has(url)) return {};
+      const was = s.webPages[url];
+      return { webPages: { ...s.webPages, [url]: { ...(was ?? { text: "", textLength: 0, at: input.at }), input } } };
     }),
   setWebDownloads: (list) => set({ webDownloads: list }),
   closePane: (paneId) =>

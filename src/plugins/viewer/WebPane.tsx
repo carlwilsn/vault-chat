@@ -22,8 +22,9 @@ import { followPlaceholder, inOrder, measure, native, nativeView, newId, useZoom
 import { downloadNote } from "../../webProfile";
 import { displayHost, WEB_EMBED_EVENT, type ViewPlacer, type WebEmbedEvent } from "../../inlineWeb";
 import type { WebPageSeen } from "../../layoutTypes";
+import { pageInputOf } from "../../pageInput";
 import { boxDevUrl, embedKind, frameArrived, frameHistory, frameStep, openTyped, paneKey, paneSideOf, registerWebPane, setPickingPane, webPageAct, type WebPageDo } from "../../webPane";
-import { answerOf, driveScript, pickOf, seenOf, type DriveOp } from "../../webDrive";
+import { answerOf, answerText, driveScript, inputInstallScript, inputPollScript, pickOf, seenOf, type DriveOp } from "../../webDrive";
 import { TileHeadActions, useFileTile } from "../../TileTitle";
 import { useTiles } from "../../tiles";
 
@@ -142,7 +143,8 @@ function PaneShell(p: { paneId?: string; url: string; failed: string | null; loa
 /** What the box's proxy script posts from a framed dev page (server/devProxy.ts frameScript). */
 type FrameReport =
   | { vcFrame: "at"; url: string; title?: string }
-  | { vcFrame: "page"; url: string; title?: string; text?: unknown; textLength?: unknown; errors?: unknown; failed?: unknown };
+  | { vcFrame: "page"; url: string; title?: string; text?: unknown; textLength?: unknown; errors?: unknown; failed?: unknown }
+  | { vcFrame: "input"; url: string; input?: unknown };
 
 /** A page report as the workspace noun shows it, bounded again here (the page is not trusted to keep the limits). */
 function pageSeen(d: Extract<FrameReport, { vcFrame: "page" }>): WebPageSeen {
@@ -187,7 +189,7 @@ function FrameWebPane({ paneId, url }: { paneId?: string; url: string }) {
     const on = (e: MessageEvent) => {
       const f = frame.current;
       const d = e.data as FrameReport | null;
-      if (!f || e.source !== f.contentWindow || !d || (d.vcFrame !== "at" && d.vcFrame !== "page") || typeof d.url !== "string" || !boxDevUrl(d.url)) return;
+      if (!f || e.source !== f.contentWindow || !d || (d.vcFrame !== "at" && d.vcFrame !== "page" && d.vcFrame !== "input") || typeof d.url !== "string" || !boxDevUrl(d.url)) return;
       try {
         if (new URL(d.url).origin !== e.origin) return;
       } catch {
@@ -195,6 +197,12 @@ function FrameWebPane({ paneId, url }: { paneId?: string; url: string }) {
       }
       // What the page shows: kept by its address (the pane's), so the workspace noun's read carries it.
       if (d.vcFrame === "page") return void useStore.getState().setWebPage(d.url, pageSeen(d));
+      // What Carl did in it (src/pageInput.ts): box:workspace state `input`.
+      if (d.vcFrame === "input") {
+        const input = pageInputOf(d.input);
+        if (input) useStore.getState().setWebInput(d.url, input);
+        return;
+      }
       hist.current = frameArrived(hist.current, d.url, sent.current);
       sent.current = false;
       setAddress(d.url);
@@ -295,11 +303,33 @@ function NativeWebPane({ paneId, url }: { paneId?: string; url: string }) {
     const now = await inOrder(id, () => invoke<string>("web_embed_url", { id })).catch(() => null);
     if (typeof now === "string" && /^https?:\/\//i.test(now) && now !== viewUrl.current) setAddress(now);
   }, [id, setAddress]);
+  // What Carl does in the page (src/pageInput.ts): its recorder is put in after each load, and its newest record
+  // collected with the address, about once a second (a short script; the record only when it is new).
+  const inputSeq = useRef(0);
+  const pollInput = useCallback(async () => {
+    if (!view.current?.open || loadingRef.current) return;
+    const raw = await inOrder(id, () => invoke<string>("web_embed_eval", { id, js: inputPollScript(inputSeq.current) })).catch(() => null);
+    const a = typeof raw === "string" ? answerText(raw) : null;
+    if (a === "none") {
+      inputSeq.current = 0;
+      await inOrder(id, () => invoke<string>("web_embed_eval", { id, js: inputInstallScript() })).catch(() => undefined);
+      return;
+    }
+    if (!a || a === "same") return;
+    try {
+      const j = JSON.parse(a) as { seq?: unknown; rec?: unknown };
+      const input = pageInputOf(j.rec);
+      if (typeof j.seq === "number") inputSeq.current = j.seq;
+      if (input) useStore.getState().setWebInput(viewUrl.current, input);
+    } catch {
+      /* not the recorder's answer */
+    }
+  }, [id]);
   useEffect(() => {
     if (failed) return;
-    const t = setInterval(() => void syncUrl(), 1000);
+    const t = setInterval(() => void syncUrl().then(pollInput), 1000);
     return () => clearInterval(t);
-  }, [failed, syncUrl]);
+  }, [failed, syncUrl, pollInput]);
 
   // Driving the page (src/webDrive.ts): one step of the page script through the native view, its answer bounded.
   const drive = useCallback(async (op: DriveOp) => {
