@@ -14,8 +14,9 @@ const all = SHORTCUTS as readonly Shortcut[];
 // Not key bindings: clientEvents.ts names every keyboard event as a chord for
 // the activity log (it reacts to any key, binds none); driveSteps.ts synthesizes
 // key presses for the laptop driver (it sends keys, binds none); src/lib is
-// vendored UI; the registry itself.
-const NOT_HANDLERS = new Set(["src/clientEvents.ts", "src/driveSteps.ts", "src/shortcuts.ts"]);
+// vendored UI; the registry itself; pageInput.ts records the keys Carl presses inside a page (it binds none:
+// typing keys are told apart from the rest, for the record).
+const NOT_HANDLERS = new Set(["src/clientEvents.ts", "src/driveSteps.ts", "src/shortcuts.ts", "src/pageInput.ts"]);
 
 function sources(dir: string): string[] {
   const out: string[] = [];
