@@ -132,6 +132,7 @@ export default function App() {
     };
   }, [setFiles]);
   const leftCollapsed = useStore((s) => s.leftCollapsed);
+  const popoutOpen = useStore((s) => s.popoutOpen);
   const chatFullscreen = useStore((s) => s.chatFullscreen);
   // The docked chat panel (Ctrl+Shift+B); the chat list is the overlay at the right edge (Ctrl+Shift+C).
   const chatDocked = useStore((s) => !s.rightCollapsed && !s.popoutOpen);
