@@ -20,7 +20,7 @@ from pipecat.frames.frames import (  # noqa: E402
     VADUserStoppedSpeakingFrame,
 )
 
-from bot import CallStats, CueTrack, Gate, ResultFlow, SttWatch, clean_noise, spoken_words, turn_settled  # noqa: E402
+from bot import CallStats, CueTrack, FreshWordsStartStrategy, Gate, ResultFlow, SttWatch, clean_noise, spoken_words, turn_settled  # noqa: E402
 
 Q = Gate.QUIET_SECS
 
@@ -252,6 +252,17 @@ def test_an_interruption_drops_the_cues_not_reached_and_says_what_was_heard():
     assert t.cut() == {"words": 2, "pending": 1}
     assert t.pending == [] and t.words_out == 0
     assert spoken_words("x = 2 , so — yes") == ["x", "2", "so", "yes"]
+
+
+def test_a_backchannel_in_a_pause_inside_the_reply_is_still_listening():
+    import time as _t
+    s = FreshWordsStartStrategy(min_words=1, use_interim=True)
+    s._bot_speaking = False
+    assert not s.listening()
+    s._bot_quiet_at = _t.monotonic()  # the voice paused between two sentences just now
+    assert s.listening()
+    s._bot_quiet_at = _t.monotonic() - FreshWordsStartStrategy.REPLY_GAP_SECS - 0.1
+    assert not s.listening()
 
 
 if __name__ == "__main__":

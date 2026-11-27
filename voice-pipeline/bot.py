@@ -779,25 +779,36 @@ class FreshWordsStartStrategy(MinWordsUserTurnStartStrategy):
     stopped, a 7-word partial 2 ms later started a new turn and the request died after 39 ms). A partial whose words
     all belong to the last committed line, within ECHO_SECS of it, is not a new turn.
 
-    While the reply is playing, "mm-hmm", "yeah", "okay" alone are him listening, not taking the turn: they used to cut
+    While the reply is playing (or paused under REPLY_GAP_SECS), "mm-hmm", "yeah", "okay" alone are him listening, not taking the turn: they used to cut
     the reply and then, with nothing to answer, the turn ended empty and he heard nothing (the 30-minute session, twice:
     "And why does that matter for-" answered, then "Mm-hmm." stopped it). More words than that still interrupt.
     """
 
     ECHO_SECS = 1.5
+    # A pause inside a reply (between two sentences, a board block's place) is still the reply: a "mm-hmm" in it is him
+    # listening too (the simulated lecture, 2026-11-27: "Mm-hmm." 0.3 s into such a gap was taken as his turn and cut
+    # the lecture off at word 17 of 64).
+    REPLY_GAP_SECS = 1.0
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._last: set[str] = set()
         self._last_at = 0.0
+        self._bot_quiet_at = -1e9
+
+    def listening(self) -> bool:
+        """The reply is playing, or paused a moment ago."""
+        return self._bot_speaking or time.monotonic() - self._bot_quiet_at < self.REPLY_GAP_SECS
 
     async def process_frame(self, frame: Frame) -> ProcessFrameResult:
+        if isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_quiet_at = time.monotonic()
         if isinstance(frame, TranscriptionFrame):
             self._last = set(_words(frame.text))
             self._last_at = time.monotonic()
         if isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
             w = _words(frame.text)
-            if self._bot_speaking and w and set(w) <= BACKCHANNEL:
+            if self.listening() and w and set(w) <= BACKCHANNEL:
                 await self.trigger_reset_aggregation()
                 return ProcessFrameResult.CONTINUE
             if isinstance(frame, InterimTranscriptionFrame) and self._last and time.monotonic() - self._last_at < self.ECHO_SECS:
