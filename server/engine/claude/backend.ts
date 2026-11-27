@@ -596,16 +596,21 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     if (!t) throw new ThreadUnknownError(`no Claude Code thread ${threadId}`);
     const live = (await this.open(threadId))!;
     const you = await this.youLayer(threadId, t);
-    if (o.model && o.model !== t.model) {
+    const switched = !!o.model && o.model !== t.model;
+    if (switched) {
       t.model = o.model;
       this.save();
       await live.session.setModel(o.model);
     }
     // A call's turns ask for no thinking: a pause before the first word is a
-    // silence Carl hears. Only a change is sent.
-    if (o.thinking && o.thinking !== live.thinking) {
-      live.thinking = o.thinking;
-      await live.session.setThinking(o.thinking);
+    // silence Carl hears. A model switch puts Claude Code back on the model's
+    // own thinking (measured 2026-11-27: every voice turn after a /model haiku
+    // opened with a thinking block, ~1-5 s before the first word), so the level
+    // is sent again after one; a turn that asks for none gets the default back.
+    const thinking = o.thinking ?? "default";
+    if (switched || thinking !== (live.thinking ?? "default")) {
+      live.thinking = thinking;
+      await live.session.setThinking(thinking);
     }
     // Each turn starts on the tool catalog as it is now (a tool made between
     // messages, a catalog that changed): the session is told and has listed

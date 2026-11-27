@@ -314,9 +314,19 @@ export class ClaudeSession {
    * first is a silence Carl hears.
    */
   async setThinking(level: string): Promise<void> {
-    const q = this.q as unknown as { setMaxThinkingTokens?: (n: number | null) => Promise<void> } | null;
-    if (!q?.setMaxThinkingTokens) return;
-    await q.setMaxThinkingTokens(level === "off" ? 0 : null).catch(() => undefined);
+    const q = this.q as unknown as {
+      setMaxThinkingTokens?: (n: number | null) => Promise<void>;
+      applyFlagSettings?: (s: Record<string, unknown>) => Promise<void>;
+    } | null;
+    if (!q) return;
+    const off = level === "off";
+    // Haiku 5.5 refuses thinking switched off: Claude Code sends thinking {type: "adaptive"} on every request whatever
+    // the token limit or alwaysThinkingEnabled say (each api-request's params in the call's transcript, 2026-11-27: 35
+    // of 55 voice steps on the 11-26 call opened with a thinking block). Low effort is what makes it answer without
+    // one (0 of 20 steps thought, against 2-5 of 20 at medium). Both go in the flag tier for this session; back on, the
+    // session gets its own effort (null would be the model's default, not --effort) and thinking back. The token limit still turns thinking off on a model that allows it.
+    await q.applyFlagSettings?.({ alwaysThinkingEnabled: off ? false : null, effortLevel: off ? "low" : (this.o.effort ?? null) }).catch(() => undefined);
+    await q.setMaxThinkingTokens?.(off ? 0 : null).catch(() => undefined);
   }
 
   /** Replace the MCP servers this session can reach, without restarting it. */

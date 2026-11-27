@@ -52,7 +52,7 @@ afterAll(async () => {
 
 type Run = { session: ClaudeSession; messages: any[]; results: any[]; waitForResult: (n: number) => Promise<void>; waitForReply: (text: string) => Promise<void> };
 
-function open(o: { cwd: string; configDir: string; resume?: string; mcp?: boolean; onCompacted?: () => Promise<string>; onToolUse?: (tool: string, input: Record<string, unknown>) => Promise<string | null>; builtins?: string[] }): Run {
+function open(o: { cwd: string; configDir: string; effort?: "low" | "medium" | "high"; resume?: string; mcp?: boolean; onCompacted?: () => Promise<string>; onToolUse?: (tool: string, input: Record<string, unknown>) => Promise<string | null>; builtins?: string[] }): Run {
   const messages: any[] = [];
   const results: any[] = [];
   const session = new ClaudeSession({
@@ -60,6 +60,7 @@ function open(o: { cwd: string; configDir: string; resume?: string; mcp?: boolea
     cwd: o.cwd,
     model: "haiku",
     configDir: o.configDir,
+    ...(o.effort ? { effort: o.effort } : {}),
     ...(o.resume ? { resume: o.resume } : {}),
     ...(o.mcp ? { mcpServers: { vault_chat: blocker() }, allowedTools: ["mcp__vault_chat__block", "mcp__vault_chat__slow"] } : {}),
     ...(o.onCompacted ? { onCompacted: o.onCompacted } : {}),
@@ -134,6 +135,29 @@ describe("one warm Claude Code session per conversation", () => {
     await again.session.finished();
     // A warm turn is far cheaper than a cold start; it is never the slower path.
     expect(warmMs).toBeLessThan(90_000);
+  }, 180_000);
+
+  it("thinking off (a call's turns) goes out as low effort, and the session's own effort comes back after", async () => {
+    const cwd = join(root, "think");
+    const cfg = join(root, "think-cfg");
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(cfg, { recursive: true });
+    const run = open({ cwd, configDir: cfg, effort: "medium" });
+    const effortOf = () => api.requests[api.requests.length - 1]?.output_config?.effort ?? null;
+    run.session.send({ text: "before the call" });
+    await run.waitForResult(1);
+    const own = effortOf();
+    await run.session.setThinking("off");
+    run.session.send({ text: "on the call" });
+    await run.waitForResult(2);
+    // Haiku 5.5 refuses thinking disabled, so the request's effort is what keeps it from thinking first.
+    expect(effortOf()).toBe("low");
+    await run.session.setThinking("default");
+    run.session.send({ text: "after the call" });
+    await run.waitForResult(3);
+    expect(effortOf()).toBe(own);
+    run.session.close();
+    await run.session.finished();
   }, 180_000);
 
   it("steer folds into the running turn, queue runs as its own, take back withdraws it, stop ends it", async () => {

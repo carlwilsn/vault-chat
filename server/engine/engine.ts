@@ -2418,7 +2418,11 @@ export class Engine {
   }
 
   private async ensureThread(conv: EngineConv, current: string | null = null): Promise<{ threadId: string; fresh: boolean }> {
-    const { model, effort } = this.chatModel(conv);
+    const chosen = this.chatModel(conv);
+    const effort = chosen.effort;
+    // A live call's turns run on the talker: the thread is opened on it, not switched to the chat's model and back
+    // again for every spoken line (two model switches, ~90 ms, before each voice turn: the call's transcripts, 2026-11-27).
+    const model = this.talkers.get(conv.id)?.model ?? chosen.model;
     // Subagents only for models where they work (learned from use; see capabilities.ts).
     const subagents = capabilitiesOf(model).subagents;
     // A project's thread runs in its main folder (pi loads that folder's AGENTS.md itself); a change of folder restarts its pi.
