@@ -114,6 +114,10 @@ export function pushLayoutChanges(post: (layout: HostLayout, migratedFrom?: unkn
   };
 }
 
+/** The tile area narrower than this (dragging the docked chat's edge left, or resize {chat}) collapses to 0: the chat
+ *  takes the whole window (Carl 11-26); dragging the edge back out past it brings the tiles back. Half their minimum. */
+export const TILES_SNAP = 100;
+
 const sashFns = new Set<() => void>();
 /** As dragging the sashes: the file tree's and the chat's widths (a width left out stays), the viewer takes the rest.
  *  Returns why it can't, or null. */
@@ -123,7 +127,9 @@ export function resizeColumns(c: { leftPanel?: number; chat?: number }, measure:
   const left = typeof c.leftPanel === "number" ? Math.max(0, c.leftPanel) : m.sizes.leftPanel;
   const chat = typeof c.chat === "number" ? Math.max(0, c.chat) : m.sizes.chat;
   const total = m.sizes.leftPanel + m.sizes.viewer + m.sizes.chat;
-  outerResize([left, Math.max(340, total - left - chat), chat]);
+  // A chat wide enough to leave the tiles less than TILES_SNAP takes it all (the tiles collapse, as dragging past it).
+  const rest = total - left - chat;
+  outerResize(rest < TILES_SNAP ? [left, 0, total - left] : [left, Math.max(340, rest), chat]);
   return null;
 }
 

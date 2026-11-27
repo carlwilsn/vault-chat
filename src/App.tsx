@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { Allotment, LayoutPriority, type AllotmentHandle } from "allotment";
 import { invoke } from "@tauri-apps/api/core";
 import { openTerminal } from "./terminal";
@@ -11,7 +12,7 @@ import { AutoHideTitlebar } from "./AutoHideTitlebar";
 import { NotePopup } from "./NotePopup";
 import { VoiceSlot } from "./VoiceSlot";
 import { PlaceMount } from "./PluginMount";
-import { reapplyKeptColumns, registerOuterResize, sashMoved } from "./layoutOps";
+import { reapplyKeptColumns, registerOuterResize, sashMoved, TILES_SNAP } from "./layoutOps";
 import { placeModule } from "./places";
 import { ASK_PLUGIN, CHAT_PLUGIN, CHAT_ROWS_PLUGIN, CHATS_PLUGIN, COMPOSER_PLUGIN, CONTEXT_PLUGIN, ELEVENLABS_VOICE_PLUGIN, FILETREE_PLUGIN, NOTES_PLUGIN, SETTINGS_PLUGIN, TITLEBAR_PLUGIN, VAULTS_PLUGIN, VIEWER_PLUGIN } from "./appPlugins";
 import * as titlebarPlugin from "./plugins/titlebar";
@@ -142,6 +143,45 @@ export default function App() {
   // both side panels (Files, Chats) stop at one cap: about 480 px, or a third of a narrower window.
   const panelMax = usePanelMax();
   const leftMax = panelMax;
+  const layoutRef = useRef<AllotmentHandle>(null);
+  // The tile area collapsed to 0 (Carl 11-26: the docked chat dragged all the way left takes the whole window): its
+  // minimum drops to 0 and it is held at 0 (closing Files or a wider window does not bring a sliver back) except while
+  // its edge is being dragged ("loose": it can be dragged back out). One path for the drag and the
+  // agent's resize {chat} (src/layoutOps.ts resizeColumns): outer sizes with the tiles under TILES_SNAP collapse them.
+  const [tiles, setTilesState] = useState({ collapsed: false, loose: false });
+  const tilesRef = useRef(tiles);
+  const pendingSizes = useRef<number[] | null>(null);
+  const setTiles = (t: { collapsed: boolean; loose: boolean }, sizes: number[] | null = null) => {
+    const c = tilesRef.current;
+    if (c.collapsed === t.collapsed && c.loose === t.loose) {
+      if (sizes) layoutRef.current?.resize(sizes);
+      return;
+    }
+    tilesRef.current = t;
+    pendingSizes.current = sizes;
+    // Synchronously where it can (a pointer event: before Allotment's own handler reads the limits); the sizes go in
+    // once the pane has its new limits either way (the layout effect below).
+    try {
+      flushSync(() => setTilesState(t));
+    } catch {
+      setTilesState(t);
+    }
+  };
+  useLayoutEffect(() => {
+    const sizes = pendingSizes.current;
+    pendingSizes.current = null;
+    if (sizes) layoutRef.current?.resize(sizes);
+  }, [tiles]);
+  // Collapsed only beside the docked chat: closing it (Ctrl+Shift+B, popping it out) brings the tiles back.
+  const tilesGone = tiles.collapsed && chatDocked;
+  const chatDockedRef = useRef(chatDocked);
+  chatDockedRef.current = chatDocked;
+  useEffect(() => {
+    if (chatDocked || !tilesRef.current.collapsed) return;
+    tilesRef.current = { collapsed: false, loose: false };
+    setTilesState(tilesRef.current);
+  }, [chatDocked]);
+  const collapsedSizes = (s: number[]) => [s[0], 0, s.reduce((a, b) => a + b, 0) - s[0]];
   // a side panel's own edge dragged past half its minimum closes it (Files and Chats alike, mirrored), and
   // the store says so (Ctrl+B / Ctrl+Shift+B open it again). Not Allotment's snap: that also snapped the panel on the
   // far side when the near one hit its maximum (dragging Files' edge right closed Chats).
@@ -161,7 +201,28 @@ export default function App() {
       const panel = (isFiles ? views[0] : views[views.length - 1])?.getBoundingClientRect();
       if (!panel) return;
       const min = isFiles ? (window.innerWidth < 900 ? 120 : 160) : 300;
+      // Chats' edge is the tiles' right edge: dragged to under TILES_SNAP of them, they collapse to 0 and the chat takes
+      // the whole window; back out past it, they come back (Carl 11-26).
+      const tileBox = isChats ? views[1]?.getBoundingClientRect() : null;
+      const widths = () => [...views].map((v) => Math.round(v.getBoundingClientRect().width));
+      let snapped = tilesRef.current.collapsed;
+      if (tileBox && snapped) setTiles({ collapsed: true, loose: true });
       const move = (ev: PointerEvent) => {
+        if (tileBox) {
+          const tileW = ev.clientX - tileBox.left;
+          if (tileW < TILES_SNAP) {
+            ev.stopPropagation();
+            if (!snapped) {
+              snapped = true;
+              setTiles({ collapsed: true, loose: true }, collapsedSizes(widths()));
+            }
+            return;
+          }
+          if (snapped) {
+            snapped = false;
+            setTiles({ collapsed: false, loose: false });
+          }
+        }
         const width = isFiles ? ev.clientX - panel.left : panel.right - ev.clientX;
         if (width >= min / 2) return;
         stop();
@@ -169,7 +230,11 @@ export default function App() {
         if (isFiles && !st.leftCollapsed) st.toggleLeft();
         if (isChats && !st.rightCollapsed) st.toggleRight();
       };
-      const stop = () => (window.removeEventListener("pointermove", move, true), window.removeEventListener("pointerup", stop, true));
+      const stop = () => {
+        window.removeEventListener("pointermove", move, true);
+        window.removeEventListener("pointerup", stop, true);
+        if (tilesRef.current.loose) setTiles({ collapsed: true, loose: false });
+      };
       window.addEventListener("pointermove", move, true);
       window.addEventListener("pointerup", stop, true);
     };
@@ -179,9 +244,8 @@ export default function App() {
   // A narrow window (snapped to half the screen: 768 px at 125% on a 1920 screen) gets smaller column minimums, so
   // the three columns fit inside the window instead of running off its right edge (160+340+320 = 820 px did).
   const narrow = useNarrowWindow();
-  const layoutRef = useRef<AllotmentHandle>(null);
   // The sashes' own resize, for box:workspace's resize (src/layoutOps.ts): what dragging them does.
-  useEffect(() => registerOuterResize((sizes) => layoutRef.current?.resize(sizes)), []);
+  useEffect(() => registerOuterResize((sizes) => (sizes[1] < TILES_SNAP ? setTiles({ collapsed: true, loose: false }, collapsedSizes(sizes)) : setTiles({ collapsed: false, loose: false }, sizes))), []);
   useEffect(() => {
     // preferredSize updates the library's preference, not its current width.
     // Refit through its native API without replacing the conversation owner.
@@ -586,13 +650,18 @@ export default function App() {
         <Allotment
           ref={layoutRef}
           proportionalLayout={false}
-          onChange={sashMoved}
+          onChange={(sizes) => {
+            sashMoved();
+            // Collapsed tiles stay at 0 when space frees up (Files closed, a wider window), not only while dragged.
+            const t = tilesRef.current;
+            if (t.collapsed && !t.loose && chatDockedRef.current && sizes[1] > 0) queueMicrotask(() => layoutRef.current?.resize(collapsedSizes(sizes)));
+          }}
         >
           <Allotment.Pane preferredSize={Math.min(fitWidth, panelMax)} minSize={narrow ? 120 : 160} maxSize={leftMax} visible={!leftCollapsed}>
             <FileTree />
           </Allotment.Pane>
           {/* The tiles: low enough that Files + tiles + Chats fit a narrow window side by side (the strip scrolls). */}
-          <Allotment.Pane minSize={200} priority={LayoutPriority.High}>
+          <Allotment.Pane minSize={tilesGone ? 0 : 200} priority={LayoutPriority.High}>
             <MarkdownArea />
           </Allotment.Pane>
           {/* The docked chat panel (Ctrl+Shift+B), as before tiles: the active chat and its
