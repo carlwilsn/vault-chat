@@ -46,10 +46,10 @@ export type Shortcut = {
 export const SHORTCUTS = [
   // ---- Chat & composer
   { id: "chat.new", keys: ["Mod+T"], label: "Go to Main", group: "Chat & composer", where: "anywhere", files: ["src/App.tsx", "src/ChatWindow.tsx"] },
-  { id: "chat.send", keys: ["Enter"], label: "Send / steer", group: "Chat & composer", where: "the composer, Ctrl+K/L, a note, voice text", files: ["src/plugins/composer/Composer.tsx", "src/ComposerPanel.tsx", "src/plugins/ask/Prompt.tsx", "src/NotePopup.tsx", "src/plugins/voice/TextPanel.tsx", "src/TileComposer.tsx"] },
+  { id: "chat.send", keys: ["Enter"], label: "Send / steer", group: "Chat & composer", where: "the composer, Ctrl+K/L, a note, voice text", files: ["src/plugins/composer/Composer.tsx", "src/ComposerPanel.tsx", "src/plugins/ask/Prompt.tsx", "src/NotePopup.tsx", "src/plugins/voice/TextPanel.tsx"] },
   { id: "chat.newline", keys: ["Shift+Enter"], label: "New line", group: "Chat & composer", where: "the composer", files: ["src/plugins/composer/Composer.tsx"] },
   { id: "chat.queue", keys: ["Tab"], label: "Queue a follow-up", group: "Chat & composer", where: "the composer, while the agent works", files: ["src/plugins/composer/Composer.tsx"] },
-  { id: "chat.stop", keys: ["Esc"], label: "Stop the agent", group: "Chat & composer", where: "the composer, while the agent works", files: ["src/plugins/composer/Composer.tsx", "src/ComposerPanel.tsx", "src/plugins/ask/Prompt.tsx", "src/TileComposer.tsx"] },
+  { id: "chat.stop", keys: ["Esc"], label: "Stop the agent", group: "Chat & composer", where: "the composer, while the agent works", files: ["src/plugins/composer/Composer.tsx", "src/ComposerPanel.tsx", "src/plugins/ask/Prompt.tsx"] },
   { id: "chat.menuMove", keys: ["ArrowUp", "ArrowDown"], label: "Move in menus", group: "Chat & composer", where: "@file and /command menus", files: ["src/plugins/composer/Composer.tsx", "src/plugins/ask/Prompt.tsx", "src/NotePopup.tsx"] },
   { id: "chat.menuPick", keys: ["Tab", "Enter"], label: "Pick from menu", group: "Chat & composer", where: "@file and /command menus", files: ["src/plugins/composer/Composer.tsx", "src/plugins/ask/Prompt.tsx", "src/NotePopup.tsx"] },
   { id: "chat.chipDelete", keys: ["Backspace", "Delete"], label: "Delete file chip", group: "Chat & composer", where: "next to a file chip in the composer (it goes whole)", files: ["src/plugins/composer/chips.ts"] },

@@ -18,15 +18,15 @@ import { aiBlockedNow, chatGateOf } from "../../chatGate";
 import { EFFORTS, EFFORT_LABEL, chatModelsNow, isEffort, labelFor, setChatModel } from "../../chatModels";
 import { Composer } from "./Composer";
 import { stopChat } from "../../chat-controller";
-import { attachPaths, clearDraft, detachItem, hasDraft, onDraftEvent, pickName, queuedMessages, sendDraft, sendQueuedNow, setInput, stopAgent, unqueue, useDraft } from "./draft";
+import { activeDraft, attachPaths, clearDraft, detachItem, draftFor, hasDraft, onDraftEvent, pickName, queuedMessages, sendQueuedNow, stopAgent, tileDraftList, unqueue, useDraft, watchTileDrafts, type DraftApi } from "./draft";
 import { onSettingsChanged } from "../../settings";
 import { loadUsage, setUsageOpen, useUsage, watchUsage } from "../../UsagePopover";
 
 const S = () => useStore.getState();
 const D = () => useDraft.getState();
 
-const draftState = () => {
-  const d = D();
+const draftState = (api: DraftApi = activeDraft) => {
+  const d = api.useDraft.getState();
   return {
     text: d.input,
     references: d.mentions.map((m) => ({ name: m.name, path: m.rel })),
@@ -84,6 +84,13 @@ const sendState = () => {
   };
 };
 
+/** A chat tile's draft by its chat id (the `chat` arg); left out: the chat panel's. */
+const draftArg = (a: Record<string, unknown>): DraftApi => {
+  const id = typeof a.chat === "string" && a.chat ? a.chat : null;
+  if (id && !S().conversations.some((c) => c.id === id)) throw new Error(`no chat "${id}"`);
+  return draftFor(id);
+};
+
 const queuedId = (w: unknown) => {
   const id = String(w ?? "");
   const q = queuedMessages();
@@ -97,7 +104,11 @@ export function composerOffers() {
     state: {
       draft: {
         description: "What is in the composer now: text, references (vault files @-mentioned: name, path), images (attached pictures: name?, source?, anchor?, saved?), files (uploads from outside the vault: name, size), selections (elements selected on web pages with Select: name, url, ref, tag, label, text, html; sent as context) and attachError when the last attach failed.",
-        read: draftState,
+        read: () => draftState(),
+      },
+      tiles: {
+        description: "The chat tiles' composers (each tile has its own draft, the same composer as the panel's): by chat id, the draft (as draft) and sending. setDraft / send with chat: that id reach one.",
+        read: () => Object.fromEntries(tileDraftList().map(([id, api]) => [id, { ...draftState(api), sending: api.useDraft.getState().sending > 0 }])),
       },
       model: {
         description: "The model and effort every chat runs on (the labels under the composer): model id, name, effort (low | medium | high | max | null = the model decides), effortLabel, and models (the list: id, name, efforts).",
@@ -120,17 +131,18 @@ export function composerOffers() {
       },
     },
     watch: (fn: () => void) => {
-      const offs = [useDraft.subscribe(fn), useStore.subscribe(fn), onSettingsChanged(fn), useUsage.subscribe(fn)];
+      const offs = [useDraft.subscribe(fn), watchTileDrafts(fn), useStore.subscribe(fn), onSettingsChanged(fn), useUsage.subscribe(fn)];
       return () => offs.forEach((f) => f());
     },
     actions: {
       setDraft: {
-        description: "Put text in the composer (replaces the draft's text; append: true adds it after what is there). Nothing is sent.",
-        args: { type: "object", properties: { text: { type: "string" }, append: { type: "boolean" } }, required: ["text"], additionalProperties: false },
+        description: "Put text in the composer (replaces the draft's text; append: true adds it after what is there). Nothing is sent. chat: a chat tile's composer (that chat's id).",
+        args: { type: "object", properties: { text: { type: "string" }, append: { type: "boolean" }, chat: { type: "string" } }, required: ["text"], additionalProperties: false },
         run: (a: Record<string, unknown>) => {
           const t = String(a.text ?? "");
-          setInput((prev) => (a.append ? `${prev}${prev && !/\s$/.test(prev) && t ? " " : ""}${t}` : t));
-          return { text: D().input };
+          const api = draftArg(a);
+          api.setInput((prev) => (a.append ? `${prev}${prev && !/\s$/.test(prev) && t ? " " : ""}${t}` : t));
+          return { text: api.useDraft.getState().input };
         },
       },
       attach: {
@@ -237,14 +249,15 @@ export function composerOffers() {
         },
       },
       send: {
-        description: "Send the draft as Carl's Enter does (with text: that text replaces the draft's first). While the agent works it reads the message at its next step.",
-        args: { type: "object", properties: { text: { type: "string" } }, additionalProperties: false },
-        run: async (a: Record<string, unknown>) => {
-          if (typeof a.text === "string") setInput(a.text);
-          const text = D().input.trim();
-          const why = await sendDraft();
+        description: "Send the draft as Carl's Enter does (with text: that text replaces the draft's first). While the agent works it reads the message at its next step. chat: a chat tile's composer (that chat's id).",
+        args: { type: "object", properties: { text: { type: "string" }, chat: { type: "string" } }, additionalProperties: false },
+        run: async (a: Record<string, unknown> = {}) => {
+          const api = draftArg(a);
+          if (typeof a.text === "string") api.setInput(a.text);
+          const text = api.useDraft.getState().input.trim();
+          const why = await api.sendDraft();
           if (why) throw new Error(why);
-          return { sent: true, text, to: S().activeConversationId };
+          return { sent: true, text, to: typeof a.chat === "string" && a.chat ? a.chat : S().activeConversationId };
         },
       },
       stop: {

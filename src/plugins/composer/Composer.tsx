@@ -27,27 +27,8 @@ import { useChatGate } from "../../chatGate";
 import { ChatFooterTools } from "../../ChatFooter";
 import { startCapture } from "../../capture";
 import { shortcutHint } from "../../shortcuts";
-import {
-  addAttached,
-  addCapture,
-  addReference,
-  attachImages,
-  detachItem,
-  pickName,
-  attachPaths,
-  escapeRegExp,
-  focusHandoff,
-  noteRecentFile,
-  recentFiles,
-  scrollHold,
-  sendDraft,
-  setAttachError,
-  setInputOnly,
-  setMentions,
-  stopAgent,
-  useDraft,
-  type MentionHit,
-} from "./draft";
+import { draftFor, pickName, escapeRegExp, focusHandoff, noteRecentFile, recentFiles, scrollHold, type MentionHit } from "./draft";
+import { scopedState } from "../../chatScope";
 import { rankMentions, rankNames } from "./mentionMatch";
 import { ComposerMenu, Lit } from "./Menu";
 import { chipKey, chipRanges, snapCaret, type ChipRange } from "./chips";
@@ -87,12 +68,19 @@ const ChipBackdrop = forwardRef<HTMLDivElement, { text: string; chips: ChipRange
   );
 });
 
-export function Composer() {
+/** The one composer of every chat surface: the chat panel's (no `chatId`: the active chat and its draft, mounted by the
+ *  composer plugin) and each chat tile's (`chatId`: that chat, with the tile's own draft, src/plugins/composer/draft.ts
+ *  draftFor). The same box, menus, + menu, Send / Stop and footer either way; only the panel's takes the app-wide
+ *  events (a capture for the chat, a waiting message's Edit, focus the composer). */
+export function Composer({ chatId = null }: { chatId?: string | null } = {}) {
+  const {
+    addAttached, addCapture, addReference, attachImages, detachItem, attachPaths, sendDraft, setAttachError, setInputOnly, setMentions, stopAgent, useDraft,
+  } = draftFor(chatId);
   const vaultPath = useStore((s) => s.vaultPath);
   const skills = useStore((s) => s.skills);
-  const busy = useStore((s) => s.busy);
+  const busy = useStore((s) => scopedState(s, chatId).busy);
   const files = useStore((s) => s.files);
-  const activeConversationId = useStore((s) => s.activeConversationId);
+  const convId = useStore((s) => chatId ?? s.activeConversationId);
   const capturable = useStore((s) => {
     const paths: string[] = [];
     if (s.currentFile) paths.push(s.currentFile);
@@ -107,7 +95,7 @@ export function Composer() {
   const voiceMode = useStore((s) => s.voiceMode);
   const voiceError = useStore((s) => s.voiceError);
   const voiceNotice = useStore((s) => s.voiceNotice);
-  const { ready, aiBlocked, archived, older, connecting, boxDown, downWhy, held, reason } = useChatGate();
+  const { ready, aiBlocked, archived, older, connecting, boxDown, downWhy, held, reason } = useChatGate(chatId);
 
   const input = useDraft((d) => d.input);
   const pendingImages = useDraft((d) => d.images);
@@ -132,13 +120,14 @@ export function Composer() {
 
   // A capture taken for the chat (the marquee over the viewer): into the draft.
   useEffect(() => {
-    if (!chatPaneLastCapture) return;
+    if (!chatPaneLastCapture || chatId) return;
     useStore.getState().setChatPaneLastCapture(null);
     addCapture(chatPaneLastCapture);
-  }, [chatPaneLastCapture]);
+  }, [chatPaneLastCapture, chatId, addCapture]);
 
   // A waiting message's Edit: its text back into the composer, ahead of anything typed since.
   useEffect(() => {
+    if (chatId) return;
     const onInsert = (e: Event) => {
       const t = String((e as CustomEvent).detail ?? "");
       if (!t) return;
@@ -152,11 +141,12 @@ export function Composer() {
       window.removeEventListener("vc-composer-insert", onInsert);
       window.removeEventListener("vc-focus-composer", onFocus);
     };
-  }, []);
+  }, [chatId, useDraft]);
 
   // Focus across a swap: the old text box had it, so the new one takes it (caret at the end).
   useLayoutEffect(() => {
     const el = inputRef.current;
+    if (chatId) return;
     if (el && Date.now() - focusHandoff.at < HANDOFF_MS) {
       focusHandoff.at = 0;
       el.focus();
@@ -458,6 +448,7 @@ export function Composer() {
         <div
           className={cn("relative flex flex-col rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors", dropOver && "border-ring/60 ring-1 ring-ring/30")}
           data-el="composer"
+          data-composer-chat={chatId ?? undefined}
           ref={boxRef}
           // A file dropped from Explorer: attached (images as images; anything else uploaded with the message).
           onDragOver={(e) => {
@@ -707,7 +698,7 @@ export function Composer() {
       <div className="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
         <div className="flex items-center gap-3 min-w-0">
           {/* What this chat runs on, and how hard it thinks (src/chatModels.ts). */}
-          <ChatModelPicker convId={activeConversationId} />
+          <ChatModelPicker convId={convId} />
           {/* A failed attempt within the grace: calm, muted, the transport's words only in the tooltip. */}
           {connecting && reason && (
             <span className="truncate text-muted-foreground" data-el="box-connecting" title={reason}>

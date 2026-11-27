@@ -78,7 +78,6 @@ export const COVERAGE: Record<string, Coverage> = {
   "src/SettingsPane.tsx": { state: ["app/settings", "box:settings"] },
   "src/TexView.tsx": { state: ["app/viewer"] },
   "src/TileArea.tsx": { state: ["box:workspace"] },
-  "src/TileComposer.tsx": { state: ["box:chats"] },
   "src/TileTitle.tsx": { state: ["box:workspace"] },
   "src/Titlebar.tsx": { state: ["app/titlebar"] },
   "src/ui.tsx": { none: "UI primitives" },

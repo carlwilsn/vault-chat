@@ -32,7 +32,7 @@ import { DockHeader } from "./Header";
 import { isPopout } from "../../windowKind";
 import { emitChatEvent, paneScrolled, setPaneScroll } from "./model";
 import { scopedState, useChatScope, useScopedStore } from "../../chatScope";
-import { TileComposer } from "../../TileComposer";
+import { Composer } from "../composer/Composer";
 
 const NO_SUBAGENTS: SubagentRec[] = [];
 
@@ -408,7 +408,8 @@ export function Transcript() {
               verdict={uiChoice("verdict") === "ongoing"}
             />
           )}
-          {foreign && scope ? <TileComposer chatId={scope} /> : <ComposerSlot />}
+          {/* A chat tile: the same composer as the chat panel's, on that chat and its own draft (Carl 11-26). */}
+          {foreign && scope ? <Composer chatId={scope} /> : <ComposerSlot />}
         </div>
       </div>
     </div>

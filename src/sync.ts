@@ -1,7 +1,7 @@
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useStore, type ChatMessage, type FileEntry, type LiveTool, type Theme } from "./store";
-import { sendMessage, stopAgent, interruptAndSend, sendNow, takeBack } from "./chat-controller";
+import { sendMessage, stopAgent, stopChat, interruptAndSend, sendNow, takeBack } from "./chat-controller";
 import type { Conversation } from "./conversations";
 import { newConversationId } from "./conversations";
 import { listProjects, openProjectNotes, openThread, routeProjectChangesTo, routeProjectNotesTo, setConversationProject } from "./projects";
@@ -64,6 +64,8 @@ type StreamSnapshot = {
 export type ChatAction =
   | {
       kind: "send";
+      /** The chat it goes to (a chat tile's composer); left out: the active chat. */
+      convId?: string;
       text: string;
       contextPreamble?: string;
       attachments?: import("./store").ChatAttachment[];
@@ -83,7 +85,8 @@ export type ChatAction =
   // A message waiting for the agent's next step: delivered now (the step is cut), or taken back.
   | { kind: "sendNow"; convId: string; id: string }
   | { kind: "unqueue"; convId: string; id: string }
-  | { kind: "stop" }
+  /** `id`: that chat's run (a chat tile's composer); left out: the active chat's. */
+  | { kind: "stop"; id?: string }
   | { kind: "startCapture" }
   // The fullscreen chat's sidebar, mic and Ctrl+T, from the popout: main owns
   // the chats list (it runs the agent and writes the list to disk).
@@ -131,11 +134,11 @@ function takeStreamSnapshot(): StreamSnapshot {
 function applyActionLocal(a: ChatAction) {
   // One brain answers each turn: what Carl types goes to the conversation's agent even while voice is live on it
   // (voice hears it, and the agent's answer, as context it never answers aloud: server/voice.ts updates).
-  if (a.kind === "send") sendMessage(a.text, a.contextPreamble, a.attachments, undefined, a.uploads);
+  if (a.kind === "send") sendMessage(a.text, a.contextPreamble, a.attachments, a.convId, a.uploads);
   else if (a.kind === "interrupt") interruptAndSend(a.text, a.contextPreamble, a.attachments);
   else if (a.kind === "sendNow") void sendNow(a.convId, a.id);
   else if (a.kind === "unqueue") void takeBack(a.convId, a.id);
-  else if (a.kind === "stop") stopAgent();
+  else if (a.kind === "stop") (a.id ? stopChat(a.id) : stopAgent());
   // Clear: the open thread's view goes blank; the box saves what lasts and compacts (chat-controller.ts).
   else if (a.kind === "startCapture") {
     // Triggered by popout's Camera button. Main sets the pending

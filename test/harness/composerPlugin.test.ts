@@ -122,7 +122,7 @@ test("mounted through the host, it draws the composer at once and declares its o
   const d = listOffers().find((p) => p.id === "app/composer")!;
   assert.ok(d, "listed while it runs");
   assert.equal(d.name, "Composer");
-  assert.deepEqual(d.state.map((s) => s.name), ["draft", "model", "send", "usage", "skills"]);
+  assert.deepEqual(d.state.map((s) => s.name), ["draft", "tiles", "model", "send", "usage", "skills"]);
   assert.deepEqual(d.actions.map((a) => a.name), ["setDraft", "attach", "detach", "openUsage", "sendQueuedNow", "editQueued", "cancelQueued", "clear", "setModel", "setEffort", "send", "stop", "focus"]);
   assert.deepEqual(d.events.map((e) => e.name), ["sent", "attached", "detached", "stateChanged"]);
 });
@@ -213,6 +213,36 @@ test("send: the draft goes (a sent event), the composer empties; nothing to send
   assert.equal(((await readOffers("composer", "send")).state!.send as any).button, "stop");
   await waitFor("Stop on screen", () => /data-el="composer-stop"/.test(html(host)));
   useStore.setState({ busy: false } as any);
+});
+
+test("a chat tile mounts the same composer as the panel (no TileComposer), on its own chat's draft, reachable by chat id", async () => {
+  seed();
+  const now = Date.now();
+  useStore.setState({ conversations: [...S().conversations, { id: "c2", title: "Tile chat", messages: [], createdAt: now, lastActivityAt: now, status: "idle", source: "laptop", unread: false, kind: "separate" }] } as any);
+  assert.ok(!fs.existsSync("src/TileComposer.tsx"), "the old tile composer is gone");
+  const { draftFor } = await import("../../src/plugins/composer/draft.ts");
+  // The tile's draft is its own: the panel's is untouched.
+  _resetDraft();
+  let r = await actOffers("composer", "setDraft", { text: "for the tile", chat: "c2" });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(draftFor("c2").useDraft.getState().input, "for the tile");
+  assert.equal(useDraft.getState().input, "");
+  assert.equal(((await readOffers("composer", "tiles")).state!.tiles as any).c2.text, "for the tile");
+  assert.match((await actOffers("composer", "setDraft", { text: "x", chat: "nope" })).error!, /no chat "nope"/);
+  // The transcript in a tile (a foreign chat scope) draws the shared Composer for that chat.
+  Object.assign(draftFor("c2").useDraft.getInitialState(), { input: "for the tile" });
+  Object.assign(useStore.getInitialState(), { vaultPath: vault, boxChat: { on: true, reachable: true, reason: "" }, conversations: S().conversations, activeConversationId: "c1" });
+  const { ChatScope } = await import("../../src/chatScope.ts");
+  const { Transcript } = await import("../../src/plugins/chat/Transcript.tsx");
+  const tile = renderToStaticMarkup(createElement(ChatScope.Provider, { value: "c2" }, createElement(Transcript)));
+  assert.match(tile, /data-el="composer"[^>]*data-composer-chat="c2"|data-composer-chat="c2"[^>]*data-el="composer"/);
+  assert.match(tile, /composer-plus/, "the panel's + menu");
+  assert.match(tile, /for the tile/, "the tile's own draft");
+  // Its send goes to the tile's chat.
+  r = await actOffers("composer", "send", { chat: "c2" });
+  assert.equal(r.ok, true, r.error);
+  assert.deepEqual(r.result, { sent: true, text: "for the tile", to: "c2" });
+  assert.equal(draftFor("c2").useDraft.getState().input, "");
 });
 
 test("unmounted (the supervisor's stop), it offers nothing", async () => {

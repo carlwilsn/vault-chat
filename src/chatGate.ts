@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "./store";
+import { scopedState } from "./chatScope";
 import { unreachableWhy } from "./boxChat";
 import { tailscaleCheck, type TailscaleState } from "./vaultSync";
 import { isArchivedThread } from "./conversations";
@@ -64,9 +65,9 @@ function tailscaleFor(reason: string): Promise<TailscaleState | null> {
 
 export type ChatGate = ChatGateCore & { downWhy: string; aiBlocked: boolean };
 
-/** The gate, live. */
-export function useChatGate(): ChatGate {
-  const core = useStore(useShallow(chatGateOf));
+/** The gate, live: the active chat's, or (`chatId`, a chat tile's composer) that chat's. */
+export function useChatGate(chatId: string | null = null): ChatGate {
+  const core = useStore(useShallow((s) => chatGateOf(scopedState(s, chatId))));
   // Signed out of Claude: the composer is replaced by the sign-in prompt (the thread stays readable). False until the
   // answer is actually known, so a signed-in Carl never sees "sign in" flash (src/claudeAuthLive.ts).
   const aiBlocked = useAiBlocked();
