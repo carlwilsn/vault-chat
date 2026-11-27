@@ -884,6 +884,22 @@ describe("the board, in step with the voice", () => {
     await q;
   });
 
+  it("blocks of a reply that ended before the voice reached them were never drawn: his next line hears what the board shows", async () => {
+    const c = await boardCall();
+    const p = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "sketch y equals x squared" }] }) });
+    await until(() => eng.messages.length);
+    eng.emit(delta("```board\naxes -3 3 -1 9\nplot x^2\n```\nHere is the parabola, opening upward from the origin."));
+    eng.emit({ type: "message_end", message: { role: "assistant" } });
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    await p;
+    // He went on before the voice reached the block: it is never drawn.
+    const q = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "and its tangent at one" }] }) });
+    await until(() => eng.messages.length === 2);
+    expect(eng.messages[1].context).toContain("1 board block(s) you wrote were never drawn");
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    await q;
+  });
+
   it("his device's local barge-in holds the board: cues wait, and are drawn if the voice comes back", async () => {
     const c = await boardCall();
     const p = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "sketch x squared" }] }) });

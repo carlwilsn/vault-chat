@@ -117,7 +117,7 @@ export function voiceCallRules(device: Device): string {
   // One reply, written as always (markdown); the voice reads it aloud as written (server/speakable.ts). Only a light
   // nudge on length, and the one rule a live call needs: slow work goes to the Agent tool, so the voice never goes quiet.
   return `[A voice call is live on ${where}: your replies are shown as always and also read aloud as written. Keep them short: two or three spoken sentences answer what he asked (offer more, don't give it); when he is thinking aloud rather than asking, a line at most. A lookup in his notes is one Lookup {query} call (it finds and reads together); independent calls go at once, not one after another. Anything that takes more than a few seconds goes to the Agent tool in background mode (it notifies you when it completes or fails). A change to a file (making, editing or rebuilding one: a PDF, a sheet, a page) always does, at once: start an Agent in the background with his words and the file — don't read or edit it yourself first. Say in a line that you've sent it and carry on; when it reports back, tell him the result. Say something was done only when it was.
-The board: when he asks you to explain, derive, sketch or show something on the board, draw it yourself in the reply as you talk — never a tool, an Agent or a file for it (it opens on his screen by itself). Talk like at a whiteboard: a \`\`\`board block with the one or two lines you are about to talk about, then the sentence about them, then the next block, and so on — open with a block, so the board starts as you do. Each block is drawn the moment the sentence after it starts, and is never said. The fences go on lines of their own, for example:
+The board: when he asks you to explain, derive, sketch or show something on the board, draw it yourself in the reply as you talk — never a tool, an Agent or a file for it (it opens on his screen by itself). Talk like at a whiteboard: a \`\`\`board block with the one or two lines you are about to talk about, then the sentence about them, then the next block, and so on — open with a block, so the board starts as you do, and put the key formula or picture itself on the board, not only a clear. Each block is drawn the moment the sentence after it starts, and is never said. The fences go on lines of their own, for example:
 \`\`\`board
 eq #m m_t = \\beta_1 m_{t-1} + (1-\\beta_1) g_t
 \`\`\`
@@ -217,6 +217,8 @@ type Call = {
    *  (cues reached meanwhile wait in `heldCues`) until the device gives the sound back or the box takes the interruption. */
   ducked: number | null;
   heldCues: { n: number; at: number | null }[];
+  /** Board blocks dropped undrawn since his last line. */
+  undrawn: number;
 };
 
 /** The assistant message streaming now: its pieces not yet said; `live` once it is clearly a reply (it is said as it
@@ -328,6 +330,7 @@ export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: un
     cutNote: null,
     ducked: null,
     heldCues: [],
+    undrawn: 0,
   };
   engine.setTalker(convId, { model: call.model, rules: voiceCallRules(device), thinking });
   call.untap = engine.tap(convId, (ev) => onPi(d, call, ev));
@@ -427,6 +430,9 @@ function revokeSpeech(c: Call): void {
   c.utt++;
   c.speak.flush();
   c.msg = null;
+  // Board blocks of a reply that is over before the voice reached them were never drawn (a reply he talked over, the
+  // answer to half a line he then went on from): his next line says what the board really shows.
+  c.undrawn += c.cues.size;
   c.cues.clear();
   if (c.held) clearTimeout(c.held.timer);
   c.held = null;
@@ -798,7 +804,10 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
   if (c.cutNote) {
     notes.push(c.cutNote);
     c.cutNote = null;
+  } else if (c.undrawn > 0 && c.cueSeq > 0) {
+    notes.push(`[${c.undrawn} board block(s) you wrote were never drawn (that reply was cut short or superseded before the voice reached them). The board now: ${describeBoard(readScene(c.vault).items) || "empty"}.]`);
   }
+  c.undrawn = 0;
   if (STOP_RE.test(text) && c.engine.stopWork) {
     // What he just asked for: work started since his previous line (never older work he didn't mention).
     const stopped: string[] = [];
@@ -870,6 +879,7 @@ function boardCue(d: Pick<BrainDeps, "logDir" | "showBoard">, c: Call, b: any): 
     c.heldCues = [];
     c.ducked = null;
     c.spoken = "";
+    if (c.cutNote) c.undrawn = 0;
     log(d, { ev: "board.cut", call: c.id, heard, of: words.length, pending, at: b.cut.at ?? null });
     return { status: 200, body: { ok: true } };
   }
