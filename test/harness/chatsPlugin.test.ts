@@ -89,8 +89,8 @@ test("the chat list is a registered app plugin, named by 'chats' / 'chat list'",
   assert.match(shell, /<PlaceMount place="chats\.sidebar" fallback=/);
   assert.match(shell, /placeModule\(CHATS_PLUGIN, \(\) => chatsPlugin\.sidebar, "sidebar"\)/);
   assert.doesNotMatch(shell, /ThreadRow|ThreadsList|place-show-more|chat-menu/);
-  // Chats is the right side panel (Ctrl+Shift+B); every chat itself is a tile.
-  assert.match(fs.readFileSync("src/App.tsx", "utf8"), /<ChatsSidebar \/>/);
+  // The list is the overlay at the right edge (Ctrl+Shift+C, Carl 11-26); the docked chat panel is its own (Ctrl+Shift+B).
+  assert.match(fs.readFileSync("src/App.tsx", "utf8"), /<ChatsPanel \/>/);
 });
 
 let handle: ReturnType<typeof mountPlugin> | null = null;
@@ -133,8 +133,8 @@ test("read: the places as the screen has them; Main is expanded (Carl is in it),
   assert.equal(physics.expanded, false);
   assert.equal(physics.working, true);
   assert.deepEqual(r.state!.selected, { id: "m0", title: "Main chat 0", place: "main" });
-  // The list is Chats, the right side panel (every chat is a tile).
-  assert.deepEqual(r.state!.panel, { surface: "sidebar", open: S().chatSidebarOpen });
+  // The list is the overlay at the right edge (Ctrl+Shift+C).
+  assert.deepEqual(r.state!.panel, { surface: "overlay", open: S().showChatsPanel });
 });
 
 test("act round trip: expand a project, open its chat, show more on Main; the list on screen follows", async () => {
@@ -202,13 +202,15 @@ test("actions on the list: new chat in a place, renames and deletes are box:chat
   r = await actOffers("chats", "open", { id: "zzz" });
   assert.match(r.error!, /no chat with id "zzz"/);
   assert.equal(handle!.error, null, "a failing action leaves the plugin running");
-  // The panel (Chats, the right side panel): closed and opened in the app.
-  r = await actOffers("chats", "closePanel", {});
-  assert.equal(S().chatSidebarOpen, false);
-  assert.deepEqual(r.result, { surface: "sidebar", open: false });
+  // The panel (the overlay at the right edge, as Ctrl+Shift+C): opened and closed in the app; the dock stays as it is.
+  const dock = S().rightCollapsed;
   r = await actOffers("chats", "openPanel", {});
-  assert.equal(S().chatSidebarOpen, true);
-  assert.deepEqual(r.result, { surface: "sidebar", open: true });
+  assert.equal(S().showChatsPanel, true);
+  assert.deepEqual(r.result, { surface: "overlay", open: true });
+  r = await actOffers("chats", "closePanel", {});
+  assert.equal(S().showChatsPanel, false);
+  assert.deepEqual(r.result, { surface: "overlay", open: false });
+  assert.equal(S().rightCollapsed, dock, "the list alone: the docked chat panel as it was");
 });
 
 test("unmounted (the supervisor's stop), it offers nothing", async () => {

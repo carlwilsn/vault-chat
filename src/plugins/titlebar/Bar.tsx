@@ -4,6 +4,7 @@
 // src/WindowControls.tsx). Mounted through the plugin host by src/Titlebar.tsx; off or failing, a minimal built-in bar
 // stands in there. Ctrl+B / Ctrl+Shift+B are App.tsx's (they work with the bar off too).
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { toggleChatDock } from "../../chatDock";
 import { Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, RefreshCw, StickyNote, GitMerge, CloudOff, FileWarning, AlertTriangle, WifiOff } from "lucide-react";
 import { useStore } from "../../store";
 import { NOTES_PLUGIN_ID } from "../../appPlugins";
@@ -44,9 +45,7 @@ export function Bar() {
   const popoutOpen = useStore((s) => s.popoutOpen);
   const toggleLeft = useStore((s) => s.toggleLeft);
   const toggleRight = useStore((s) => s.toggleRight);
-  // The right button shows or hides the Chats side panel (Ctrl+Shift+B).
-  const chatsOpen = useStore((s) => s.chatSidebarOpen);
-  const toggleChats = useStore((s) => s.toggleChatSidebar);
+  // The right button shows or hides the docked chat panel (Ctrl+Shift+B), as before tiles.
   const setShowNotesPanel = useStore((s) => s.setShowNotesPanel);
   const showNotesPanel = useStore((s) => s.showNotesPanel);
   const openNotes = useStore((s) => s.notes.some((n) => n.status === "open"));
@@ -133,9 +132,9 @@ export function Bar() {
       <div className="flex items-center">
         <button data-offer="box:workspace.openRightPanel"
           data-el="titlebar-chats-toggle"
-          onClick={toggleChats}
-          className={`h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover mr-1 ${chatsOpen ? "text-titlebar-foreground" : "text-titlebar-muted"}`}
-          title={`${chatsOpen ? "Hide" : "Show"} Chats (${shortcutHint("view.chat")})`}
+          onClick={() => toggleChatDock()}
+          className={`h-7 w-7 flex items-center justify-center rounded hover:bg-titlebar-hover mr-1 ${!rightCollapsed ? "text-titlebar-foreground" : "text-titlebar-muted"}`}
+          title={`${rightCollapsed ? "Show" : "Hide"} chat panel (${shortcutHint("view.chat")})`}
         >
           <PanelRight className="h-3.5 w-3.5" />
         </button>

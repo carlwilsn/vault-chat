@@ -62,7 +62,8 @@ export const SHORTCUTS = [
 
   // ---- Views & windows
   { id: "view.files", keys: ["Mod+B"], label: "Files panel", group: "Views & windows", where: "anywhere", files: ["src/App.tsx", "src/ChatWindow.tsx"] },
-  { id: "view.chat", keys: ["Mod+Shift+B"], label: "Chats panel", group: "Views & windows", where: "the main window", files: ["src/App.tsx"] },
+  { id: "view.chat", keys: ["Mod+Shift+B"], label: "Chat panel", group: "Views & windows", where: "the main window (its chat dragged into a tile: a new chat in the same place)", files: ["src/App.tsx"] },
+  { id: "view.chats", keys: ["Mod+Shift+C"], label: "Chats list", group: "Views & windows", where: "the main window (the chat list's overlay at the right edge; the docked chat panel stays as it is)", files: ["src/App.tsx"] },
   { id: "view.zoomIn", keys: ["Mod+=", "Mod+Shift+="], label: "Zoom the tile in", group: "Views & windows", where: "the focused tile (its content, not the app)", files: ["src/App.tsx"] },
   { id: "view.zoomOut", keys: ["Mod+-"], label: "Zoom the tile out", group: "Views & windows", where: "the focused tile", files: ["src/App.tsx"] },
   { id: "view.zoomReset", keys: ["Mod+0"], label: "Reset tile zoom", group: "Views & windows", where: "the focused tile", files: ["src/App.tsx"] },

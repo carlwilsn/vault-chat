@@ -8,6 +8,7 @@ import { Plus, X as XIcon, Folder, FolderPlus, ChevronRight } from "lucide-react
 import { useStore } from "../../store";
 import { useProjects } from "../../ProjectChip";
 import { newChatIn } from "../../chat-controller";
+import { openChatDock } from "../../chatDock";
 import { createProjectThread, deleteProject, openThread, projectName, renameProject } from "../../projects";
 import { panelModel, visibleChats, nextChatLevel, type PanelChat, type PanelEntry } from "../../threads";
 import { canDeleteChat, deleteChats, renameChat } from "../../chatDelete";
@@ -21,7 +22,7 @@ import { chatLevels, useChatLevel } from "./view";
 /** Composer focus is owned by ChatPane (the event App.tsx and the popout send too). */
 export const focusComposer = () => window.dispatchEvent(new CustomEvent("vc-focus-composer"));
 
-/** The list as an overlay (the docked layout): a 380px slide-over on the right, while the chat pane's button has it open. */
+/** The list as an overlay (the docked layout): a 272px slide-over on the right (Carl 11-26: the old sidebar width), while the chat pane's button has it open. */
 export function ChatsOverlay() {
   // Fullscreen chat has its sidebar instead (the popout window keeps the docked layout here).
   const open = useStore((s) => s.showChatsPanel && !(s.chatFullscreen && !s.popoutOpen));
@@ -65,7 +66,7 @@ export function ChatsOverlay() {
     <div className="fixed inset-0 z-30 flex justify-end pointer-events-none">
       <div
         ref={panelRef}
-        className="h-full w-[380px] max-w-[92vw] bg-card border-l border-border shadow-xl flex flex-col pointer-events-auto"
+        className="h-full w-[272px] max-w-[92vw] bg-card border-l border-border shadow-xl flex flex-col pointer-events-auto"
       >
         <ThreadsList data-offer="app/chats.closePanel"
           onPicked={onClose}
@@ -133,12 +134,14 @@ export function ThreadsList({
   const deleteOne = (id: string) => deleteChats([id]);
   const focusChat = () => {
     onPicked?.();
-    const store = useStore.getState();
-    if (store.rightCollapsed) store.toggleRight();
+    // The new chat is the docked panel's (src/chatDock.ts): it opens.
+    openChatDock();
     setTimeout(() => onFocusComposer?.(), 0);
   };
   const open = (id: string, title?: string) => {
     openThread(id, title);
+    // The list shows without the docked chat panel (Ctrl+Shift+C); a chat picked then opens there.
+    openChatDock();
     onPicked?.();
   };
   const create = async (name: string) => {

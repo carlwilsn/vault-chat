@@ -14,6 +14,7 @@ import { SPOTS, rectEq, zoomTile, closeTile, ensureChatTile, ensureTilesStarted,
 import type { HostLayout, LayoutOp, LayoutOpResult, LayoutResult, PaneSide, WebPageSeen } from "./layoutTypes";
 import { isPicking, isWebAddress, navigateWebPane, openWebInPane, paneKey, webPageAct } from "./webPane";
 import { signOutOfSites } from "./webProfile";
+import { chatsListShown, openChatDock, restoreChatDock, toggleChatDock, toggleChatsList } from "./chatDock";
 import { onSettingsChanged, saveSetting, setting } from "./settings";
 import { closeWindow, openWindow } from "./newWindow";
 import { isSecondWindow, windowNo } from "./windowKind";
@@ -47,6 +48,8 @@ export async function restoreKeptTiles(get: () => Promise<{ layout?: unknown } |
     const read = async (abs: string) => (isUnreadableAsText(abs) ? "" : await invoke<string>("read_text_file", { path: abs }));
     if (Array.isArray(l.tiles)) {
       const ok = await restoreTiles({ tiles: l.tiles as SavedTiles["tiles"], tileSplit: l.tileSplit }, { vault, read, how: "box" });
+      // The docked chat panel as kept (a layout from before it: restoreChatDock decides).
+      restoreChatDock(typeof l.chatPanel?.open === "boolean" ? l.chatPanel.open : undefined);
       return ok ? "tiles put back" : "the kept tiles did not fit";
     }
     if (!Array.isArray(l.panes)) return "nothing kept";
@@ -56,6 +59,7 @@ export async function restoreKeptTiles(get: () => Promise<{ layout?: unknown } |
     const saved = tilesFromLegacy({ files, stacked: l.direction === "stacked", active, chat, chat_at: (l as { chatFullscreen?: boolean }).chatFullscreen ? "full" : l.rightPanelOpen ? "right" : null });
     if (!saved.tiles.length) return "nothing kept";
     const ok = await restoreTiles(saved, { vault, read, how: "legacy", from: { box: l } });
+    restoreChatDock(undefined);
     return ok ? "the older layout became tiles" : "the older layout did not fit";
   } catch (e) {
     return `not put back: ${(e as Error).message}`;
@@ -228,9 +232,11 @@ export function readLayout(measure: () => Pick<HostLayout, "viewport" | "sizes">
     ...(web ? { currentUrl: s.currentFile! } : {}),
     activePane,
     leftPanelOpen: !s.leftCollapsed,
-    rightPanelOpen: s.chatSidebarOpen,
+    rightPanelOpen: !s.rightCollapsed && !s.popoutOpen,
     chatPoppedOut: s.popoutOpen,
-    chatSidebarOpen: s.chatSidebarOpen,
+    chatSidebarOpen: chatsListShown(s),
+    // The docked chat panel (right of the tiles): open, the chat list's overlay shown, the chat it shows.
+    chatPanel: { open: !s.rightCollapsed && !s.popoutOpen, list: chatsListShown(s), chat: s.activeConversationId },
     titleBarAutoHide: setting("titleBarAutoHide") === true,
     tiles: tilesForLayout((p) => relToVault(vault, p)),
     tileSplit: { ...useTiles.getState().split },
@@ -255,10 +261,12 @@ async function applyOne(op: LayoutOp, io: LayoutIO): Promise<{ ok: boolean; note
     }
     case "openRightPanel":
     case "closeRightPanel": {
-      // The right panel is Chats (the chat list): every chat itself is a tile.
+      // The right panel is the docked chat panel (src/chatDock.ts); the chat list is chatSidebar.
       const open = op.op === "openRightPanel";
-      if (st().chatSidebarOpen === open) return done(`Chats was already ${open ? "open" : "closed"}`);
-      st().toggleChatSidebar();
+      if (st().popoutOpen) return no("the chat is popped out into its own window; it has no right panel");
+      if (st().rightCollapsed === !open) return done(`the chat panel was already ${open ? "open" : "closed"}`);
+      // Opened while its chat is in a tile: the tile stays, the dock opens on a new chat in that place (as Ctrl+Shift+B).
+      toggleChatDock(open);
       return done();
     }
     case "closePane": {
@@ -383,7 +391,11 @@ async function applyOne(op: LayoutOp, io: LayoutIO): Promise<{ ok: boolean; note
       const place = op.place ?? null;
       const at = op.spot === "full" ? { fill: true as const } : op.spot ? { rect: SPOTS[op.spot] } : null;
       if (at) newChatAt(() => cc.newChatIn(place), at);
-      else cc.newChatIn(place);
+      else {
+        // No spot: the new chat is the docked chat panel's (as the chat list's New chat), which opens.
+        cc.newChatIn(place);
+        openChatDock();
+      }
       return done();
     }
     case "autoHideTitleBar": {
@@ -393,8 +405,9 @@ async function applyOne(op: LayoutOp, io: LayoutIO): Promise<{ ok: boolean; note
       return why ? no(why) : done();
     }
     case "chatSidebar": {
-      if (st().chatSidebarOpen === !!op.open) return done(`the sidebar was already ${op.open ? "open" : "closed"}`);
-      st().toggleChatSidebar();
+      // The chat list's overlay over the docked chat panel, as Ctrl+Shift+C (only the overlay: the panel stays as it is).
+      if (chatsListShown() === !!op.open) return done(`the list was already ${op.open ? "open" : "closed"}`);
+      toggleChatsList(!!op.open);
       return done();
     }
     case "resize": {
@@ -446,7 +459,7 @@ export function layoutText(l: HostLayout): string {
   const what = (p: HostLayout["panes"][number]) => ("url" in p ? `page ${p.url}${p.title ? ` "${p.title}"` : ""}${seen(p)}` : p.file);
   const one = l.panes[0];
   const where = l.split ? `split ${l.direction}: ${l.panes.map((p) => `${p.side}=${what(p)}${p.active ? " (active)" : ""}`).join(", ")}` : one ? ("url" in one ? `one web ${what(one)}` : `one file: ${one.file}`) : "nothing open in the viewer";
-  const chat = l.chatPoppedOut ? "chat popped out" : `chat panel ${l.rightPanelOpen ? "open" : "closed"}`;
+  const chat = l.chatPoppedOut ? "chat popped out" : `chat panel ${l.rightPanelOpen ? `open${l.chatPanel?.chat ? ` (chat ${l.chatPanel.chat}${l.chatPanel.list ? ", list shown" : ""})` : ""}` : "closed"}`;
   const size = l.viewport ? `; window ${l.viewport.width}x${l.viewport.height}${l.sizes ? ` (left panel ${l.sizes.leftPanel}px, viewer ${l.sizes.viewer}px, chat ${l.sizes.chat}px)` : ""}` : "";
   return `${l.window ? `window ${l.window}: ` : ""}${where}; left panel ${l.leftPanelOpen ? "open" : "closed"}; ${chat}${size}`;
 }

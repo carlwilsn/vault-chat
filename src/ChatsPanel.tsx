@@ -41,7 +41,7 @@ function OverlayFallback({ info }: { info: PluginFallbackInfo }) {
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-30 flex justify-end pointer-events-none">
-      <div className="h-full w-[380px] max-w-[92vw] bg-card border-l border-border shadow-xl flex flex-col pointer-events-auto">
+      <div className="h-full w-[272px] max-w-[92vw] bg-card border-l border-border shadow-xl flex flex-col pointer-events-auto">
         <ChatsFallback info={info} onPicked={close} trailing={<XIcon className="h-3.5 w-3.5" />} onTrailing={close} />
       </div>
     </div>

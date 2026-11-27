@@ -122,20 +122,21 @@ test("focus, closePane and split off change the real store, and the read-back sa
 });
 
 test("panels and full-screen chat: several ops at once, each reported, the final layout is the screen's", async () => {
-  // The right panel is Chats (the chat list); every chat is a tile.
+  // The right panel is the docked chat panel (Carl 11-26); the chat list is its own overlay (chatSidebar).
   const r = await Layout({ ops: [{ action: "closeLeftPanel" }, { action: "closeRightPanel" }] });
   assert.equal(r.ok, true, r.text);
   let l = layoutOf(r.text);
   assert.equal(l.leftPanelOpen, false);
   assert.equal(l.rightPanelOpen, false);
+  assert.equal(l.chatPanel.open, false);
   assert.equal(S().leftCollapsed, true);
-  assert.equal(S().chatSidebarOpen, false);
+  assert.equal(S().rightCollapsed, true);
   const again = await Layout({ action: "closeLeftPanel" });
   assert.match(again.text, /already closed/);
   await Layout({ action: "openLeftPanel" });
   await Layout({ action: "openRightPanel" });
   assert.equal(S().leftCollapsed, false);
-  assert.equal(S().chatSidebarOpen, true);
+  assert.equal(S().rightCollapsed, false);
   // No zoom (Carl 11-25): full screen is one tile filling the viewer; the noun has no fullscreen / maximize action.
   for (const action of ["fullscreenChat", "maximize"]) assert.match((await Layout({ action, on: true })).text, /unknown|not an action|no action|isn't|is not/i, action);
   assert.equal("chatFullscreen" in l, false, "no full-screen state in the layout");
@@ -473,4 +474,57 @@ test("zoom (Carl 11-25): Ctrl+= / Ctrl+- / Ctrl+0 and the agent's zoom are one o
   assert.equal(tiles(r.layout).find((t) => t.tile === b).zoom, undefined);
   r = await api.layout.apply({ op: "zoom", tile: b, zoom: "big" as any });
   assert.equal(r.ok, false);
+});
+
+test("the docked chat panel (Carl 11-26): the list overlay alone, a closed tile's neighbours fill in, the dock's chat moves into a tile and Ctrl+Shift+B opens a new one", async () => {
+  const alive = () => true;
+  const fx = { add: (_n: string, f: () => void) => f } as any;
+  const api = createHostApi(appHostBackend, fx, alive, (f) => f);
+  const dock = await import("../../src/chatDock.ts");
+  const { useTiles } = await import("../../src/tiles.ts");
+  const off = dock.watchDockedChat();
+  try {
+    // The chat list (Ctrl+Shift+C, chatSidebar): only the overlay, the dock stays as it is.
+    let r = await api.layout.apply({ op: "closeRightPanel" });
+    r = await api.layout.apply({ op: "chatSidebar", open: true });
+    assert.equal(r.ok, true);
+    assert.deepEqual([r.layout.chatPanel!.open, r.layout.chatPanel!.list, S().showChatsPanel], [false, true, true]);
+    dock.toggleChatsList();
+    assert.equal(S().showChatsPanel, false);
+    assert.equal(S().rightCollapsed, true, "the list never opened the dock");
+    await api.layout.apply({ op: "openRightPanel" });
+    assert.equal(S().rightCollapsed, false);
+
+    // Closing a tile: the neighbour that covers its edge exactly grows into its room.
+    const { applyLayoutOps } = await import("../../src/layoutOps.ts");
+    for (const x of [...useTiles.getState().slots]) await applyLayoutOps([{ op: "closePane", tile: x.id }], { openInPane: async () => ({ ok: false }) } as never);
+    assert.equal(useTiles.getState().slots.length, 0, "the last tile closed: an empty viewer");
+    r = await api.layout.apply([{ op: "openInPane", path: "a.md", pane: "left" }, { op: "openInPane", path: "b.md", pane: "right" }]);
+    const spots = (l: any) => (l.tiles as any[]).map((t) => `${t.spot}=${t.empty ? "-" : (t.file ?? t.chat).split("/").pop()}`).join(" ");
+    assert.equal(spots(r.layout), "left=a.md right=b.md");
+    const b = (r.layout.tiles as any[]).find((t) => t.file?.endsWith("b.md")).tile;
+    r = await api.layout.apply({ op: "closePane", tile: b });
+    assert.equal(spots(r.layout), "full=a.md");
+
+    // The dock's chat put in a tile (the header drag's drop, the agent's openInPane): it moves, the dock closes.
+    const was = S().activeConversationId!;
+    assert.ok(was);
+    r = await api.layout.apply({ op: "openInPane", chat: was, spot: "right" });
+    assert.equal(r.ok, true);
+    assert.equal(spots(r.layout), `left=a.md right=${was}`);
+    assert.equal(S().rightCollapsed, true, "the dock closed: its chat moved");
+    // Ctrl+Shift+B (the title bar's button, openRightPanel): the tile stays, the dock opens on a new chat there.
+    r = await api.layout.apply({ op: "openRightPanel" });
+    assert.equal(r.ok, true);
+    assert.equal(S().rightCollapsed, false);
+    assert.notEqual(S().activeConversationId, was, "a new chat in the dock");
+    assert.equal(spots(r.layout), `left=a.md right=${was}`, "the tile keeps its chat");
+    // A chat tile focused does not take over the dock.
+    const t = (r.layout.tiles as any[]).find((x) => x.chat === was).tile;
+    const now = S().activeConversationId;
+    await api.layout.apply({ op: "focus", target: t });
+    assert.equal(S().activeConversationId, now);
+  } finally {
+    off();
+  }
 });

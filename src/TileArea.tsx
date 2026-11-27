@@ -29,13 +29,14 @@ type Zone = keyof typeof SPOTS | "center";
 const CORNERS: Zone[] = ["top-left", "top-right", "bottom-left", "bottom-right"];
 const EDGES: Zone[] = ["left", "right", "top", "bottom"];
 /** Is (x, y) in that snap zone of the area, grown by `pad` px (the hysteresis)? Forgiving and proportional (Carl 11-24:
- *  "the corners are too strict"): a corner is the outer 22% of the width by 22% of the height (at least 120 px each
- *  way); an edge the outer 12% of the width (left, right) or height (top, bottom), at least 60 px, between corners. */
+ *  "the corners are too strict"): a corner is the outer 30% of the width by 30% of the height (at least 160 px each
+ *  way); an edge the outer 20% of the width (left, right) or height (top, bottom), at least 100 px, between corners
+ *  (Carl 11-26: 22%/12% still too small). */
 function inZone(a: DOMRect, x: number, y: number, z: Zone, pad: number): boolean {
   // The center box: the middle half of the width by the middle half of the height.
   if (z === "center") return Math.abs(x - (a.left + a.width / 2)) < a.width / 4 + pad && Math.abs(y - (a.top + a.height / 2)) < a.height / 4 + pad;
-  const cw = Math.max(120, a.width * 0.22) + pad, ch = Math.max(120, a.height * 0.22) + pad;
-  const ex = Math.max(60, a.width * 0.12) + pad, ey = Math.max(60, a.height * 0.12) + pad;
+  const cw = Math.max(160, a.width * 0.3) + pad, ch = Math.max(160, a.height * 0.3) + pad;
+  const ex = Math.max(100, a.width * 0.2) + pad, ey = Math.max(100, a.height * 0.2) + pad;
   const dl = x - a.left, dr = a.right - x, dt = y - a.top, db = a.bottom - y;
   const H = (side: string) => (side === "left" ? dl : dr), V = (side: string) => (side === "top" ? dt : db);
   if (z.includes("-")) {

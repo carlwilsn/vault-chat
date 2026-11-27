@@ -28,7 +28,9 @@ import * as elevenLabsVoicePlugin from "./plugins/elevenlabs-voice";
 import * as contextPlugin from "./plugins/context";
 import * as askPlugin from "./plugins/ask";
 import { bindContextSource } from "./contextSource";
-import { ChatsSidebar } from "./ChatsPanel";
+import { ChatsPanel } from "./ChatsPanel";
+import { ChatPane, ChatPaneHost } from "./ChatPane";
+import { openChatDock, startChatDockDrag, toggleChatDock, toggleChatsList, watchDockedChat } from "./chatDock";
 import { Notices } from "./UpdateBanner";
 import { ChangeKeeper } from "./ChangeKeeper";
 import { hit, isMod } from "./shortcuts";
@@ -103,6 +105,9 @@ export default function App() {
   useEffect(() => startTiles(), []);
   useEffect(() => startChatRowDrag((id) => (id === MAIN_ID ? "Main" : useStore.getState().conversations.find((c) => c.id === id)?.title || "Chat")), []);
   useEffect(() => startDevDragHook(), []);
+  // The docked chat drags out into the tiles by its header, and moves there (src/chatDock.ts).
+  useEffect(() => startChatDockDrag(), []);
+  useEffect(() => watchDockedChat(), []);
 
   const setFiles = useStore((s) => s.setFiles);
   useEffect(() => {
@@ -129,7 +134,8 @@ export default function App() {
   const leftCollapsed = useStore((s) => s.leftCollapsed);
   const popoutOpen = useStore((s) => s.popoutOpen);
   const chatFullscreen = useStore((s) => s.chatFullscreen);
-  const chatsOpen = useStore((s) => s.chatSidebarOpen);
+  // The docked chat panel (Ctrl+Shift+B); the chat list is the overlay at the right edge (Ctrl+Shift+C).
+  const chatDocked = useStore((s) => !s.rightCollapsed && !s.popoutOpen);
   const files = useStore((s) => s.files);
   const vaultPath = useStore((s) => s.vaultPath);
   const fitWidth = useMemo(() => computeFitWidth(files), [files]);
@@ -149,19 +155,19 @@ export default function App() {
       // Which panel this edge is Files' or Chats' own: the leftmost visible edge with Files open, the rightmost with
       // Chats open.
       const isFiles = !s.leftCollapsed && all[0] === sash;
-      const isChats = s.chatSidebarOpen && all[all.length - 1] === sash && !(isFiles && all.length === 1);
+      const isChats = !s.rightCollapsed && !s.popoutOpen && all[all.length - 1] === sash && !(isFiles && all.length === 1);
       if (!isFiles && !isChats) return;
       const views = outer.querySelectorAll(":scope > .split-view-container > .split-view-view");
       const panel = (isFiles ? views[0] : views[views.length - 1])?.getBoundingClientRect();
       if (!panel) return;
-      const min = isFiles ? (window.innerWidth < 900 ? 120 : 160) : 220;
+      const min = isFiles ? (window.innerWidth < 900 ? 120 : 160) : 300;
       const move = (ev: PointerEvent) => {
         const width = isFiles ? ev.clientX - panel.left : panel.right - ev.clientX;
         if (width >= min / 2) return;
         stop();
         const st = useStore.getState();
         if (isFiles && !st.leftCollapsed) st.toggleLeft();
-        if (isChats && st.chatSidebarOpen) st.toggleChatSidebar();
+        if (isChats && !st.rightCollapsed) st.toggleRight();
       };
       const stop = () => (window.removeEventListener("pointermove", move, true), window.removeEventListener("pointerup", stop, true));
       window.addEventListener("pointermove", move, true);
@@ -319,9 +325,14 @@ export default function App() {
         e.preventDefault();
         toggleLeft();
       } else if (hit(e, "view.chat")) {
-        // Ctrl+Shift+B shows or hides the Chats panel (there is no chat panel: chats are tiles).
+        // Ctrl+Shift+B shows or hides the docked chat panel, as before tiles (its chat dragged into a tile: the dock
+        // opens on a new chat in the same place, src/chatDock.ts).
         e.preventDefault();
-        useStore.getState().toggleChatSidebar();
+        toggleChatDock();
+      } else if (hit(e, "view.chats")) {
+        // Ctrl+Shift+C: only the chat list overlay; the docked chat panel stays as it is.
+        e.preventDefault();
+        toggleChatsList();
       } else if (hit(e, "chat.new")) {
         // Ctrl+T — back to Main (one main conversation: there are no new chats to start). The
         // webview's native "new tab" is already swallowed by Tauri.
@@ -329,6 +340,7 @@ export default function App() {
         if (!s.vaultPath || !s.conversationsLoaded) return;
         e.preventDefault();
         void import("./projects").then((p) => p.openThread("main"));
+        openChatDock();
       } else if (hit(e, "view.terminal") || hit(e, "view.terminalOther")) {
         // Ctrl+J: the terminal where the chat runs (the box for a box vault); Shift: the other one.
         e.preventDefault();
@@ -538,6 +550,8 @@ export default function App() {
           (src/plugins/notes), the shared context (src/plugins/context: draws nothing) and the Ctrl+K / Ctrl+L box's
           offers (src/plugins/ask: draws nothing; each box is its `prompt` part, src/InlineEditPrompt.tsx). */}
       <PlaceMount place="overlay" />
+      {/* The chat list's overlay, as before tiles: a plugin (src/plugins/chats), with a built-in fallback (src/ChatsPanel.tsx). */}
+      <ChatsPanel />
       <PlaceMount place="offers" />
       {/* Voice: a plugin (src/plugins/voice): its text box here, its controls in the title bar and the composer. */}
       {/* Voice, the update notices and the change keeper are the main window's (one call, one card). */}
@@ -557,6 +571,7 @@ export default function App() {
   // viewer (Ctrl+B / Ctrl+Shift+B close the panels; the title bar can auto-hide). The side panels: Files (left), Chats (right), Notes (its own).
   void chatFullscreen;
   void captureOver;
+  const host = !popoutOpen && <ChatPaneHost />;
   return (
     <>
     <div className="relative h-full w-full bg-background flex flex-col">
@@ -579,13 +594,17 @@ export default function App() {
           <Allotment.Pane minSize={200} priority={LayoutPriority.High}>
             <MarkdownArea />
           </Allotment.Pane>
-          {/* Chats, the chat list, as the right side panel (Ctrl+Shift+B); every chat itself is a tile. */}
-          <Allotment.Pane preferredSize={272} minSize={220} maxSize={panelMax} visible={chatsOpen}>
-            <ChatsSidebar />
+          {/* The docked chat panel (Ctrl+Shift+B), as before tiles: the active chat and its
+              composer, outside the tiles; the chat list is the overlay over it (Ctrl+Shift+C, its footer's Chats). */}
+          <Allotment.Pane preferredSize={440} minSize={300} visible={chatDocked}>
+            <div data-el="chat-dock" className="h-full w-full">
+              <ChatPane />
+            </div>
           </Allotment.Pane>
         </Allotment>
       </div>
       {overlays}
+      {host}
     </div>
     </>
   );

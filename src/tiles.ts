@@ -262,11 +262,13 @@ export function snapTo(slots: Slot[], from: string | null, to: Rect, content?: T
   return { slots: [...placed, ...pieces], id, dropped };
 }
 
-/** An empty spot taken away: the spot(s) beside it grow into its room (right, left, below, above: the first side whose
- *  neighbours line up with it exactly). */
-export function removeSpot(slots: Slot[], id: string): Slot[] {
+/** A spot taken away (an empty one, or a tile closed: Carl 11-26 "auto-fill"): the spot(s) beside it grow into its
+ *  room, on the first side whose neighbours cover its edge exactly; one neighbour of exactly the same span first
+ *  (a quarter closed: the quarter beside it becomes the half; a half: the other half fills the viewer), then several
+ *  (a half closed next to two quarters: both stretch across). Null when no side fits. */
+export function growInto(slots: Slot[], id: string): Slot[] | null {
   const s = findSlot(slots, id);
-  if (!s) return slots;
+  if (!s) return null;
   const rest = slots.filter((x) => x.id !== id);
   const r = s.rect;
   const sides: { pick: (o: Rect) => boolean; grow: (o: Rect) => Rect; vertical: boolean }[] = [
@@ -275,15 +277,20 @@ export function removeSpot(slots: Slot[], id: string): Slot[] {
     { pick: (o) => o.y === r.y + r.h, grow: (o) => ({ ...o, y: r.y, h: o.h + r.h }), vertical: false },
     { pick: (o) => o.y + o.h === r.y, grow: (o) => ({ ...o, h: o.h + r.h }), vertical: false },
   ];
-  for (const side of sides) {
+  const fits = sides.flatMap((side) => {
     const within = (o: Rect) => (side.vertical ? o.y >= r.y && o.y + o.h <= r.y + r.h : o.x >= r.x && o.x + o.w <= r.x + r.w);
     const crosses = (o: Rect) => (side.vertical ? o.y < r.y + r.h && o.y + o.h > r.y : o.x < r.x + r.w && o.x + o.w > r.x);
     const near = rest.filter((o) => side.pick(o.rect) && crosses(o.rect));
     const span = near.reduce((n, o) => n + (side.vertical ? o.rect.h : o.rect.w), 0);
-    if (near.length && near.every((o) => within(o.rect)) && span === (side.vertical ? r.h : r.w))
-      return rest.map((o) => (near.includes(o) ? { ...o, rect: side.grow(o.rect) } : o));
-  }
-  return rest;
+    return near.length && near.every((o) => within(o.rect)) && span === (side.vertical ? r.h : r.w) ? [{ side, near }] : [];
+  });
+  const best = fits.find((f) => f.near.length === 1) ?? fits[0];
+  if (!best) return null;
+  return rest.map((o) => (best.near.includes(o) ? { ...o, rect: best.side.grow(o.rect) } : o));
+}
+/** An empty spot taken away: its neighbours grow into it (growInto), else it just goes. */
+export function removeSpot(slots: Slot[], id: string): Slot[] {
+  return growInto(slots, id) ?? slots.filter((x) => x.id !== id);
 }
 
 // ------------------------------------------------------------------ the store's file panes, kept in step
@@ -371,7 +378,7 @@ export function focusTile(id: string, reveal = false): void {
   const c = slot.content;
   const s = useStore.getState();
   if (c?.type === "file" && c.paneId && s.activePaneId !== c.paneId) s.setActivePane(c.paneId);
-  if (c?.type === "chat" && s.activeConversationId !== c.chatId) s.selectConversation(c.chatId);
+  // A chat tile is only focused: the docked chat panel (src/App.tsx) keeps the active chat (Carl 11-26).
 }
 
 /** Where a new chat goes: into a tile (replacing its chat: a chat tile's New chat), a spot, or the whole viewer
@@ -394,6 +401,8 @@ function placeChat(chatId: string, at: ChatPlacement): void {
  *  (reconcile → ensureChatTile) takes the placement; if it never comes, it is placed here. */
 export function newChatAt(start: () => string, at: ChatPlacement): string {
   pendingNew = at;
+  // The docked chat panel keeps showing the chat it had: the new one lives in its tile.
+  const was = useStore.getState().activeConversationId;
   let id = "";
   try {
     id = start();
@@ -401,6 +410,7 @@ export function newChatAt(start: () => string, at: ChatPlacement): string {
     const still = pendingNew;
     pendingNew = null;
     if (still && id) placeChat(id, still);
+    if (was && id && was !== id && useStore.getState().conversations.some((c) => c.id === was)) useStore.getState().selectConversation(was);
   }
   return id;
 }
@@ -498,6 +508,8 @@ export function openAt(what: TileWhat, to: Rect | string): string | null {
 /** A tile dragged to a spot (a half, a quarter, an empty spot, the whole viewer): it takes it; what it covers closes,
  *  its old spot is left empty. Null when nothing changes (snapTo). */
 export function moveTile(id: string, to: Rect): string | null {
+  // A deliberate drag lands exactly where its preview showed (Carl 11-26: "the autofill should not trump me"): no
+  // auto-fill here, only when a tile is closed (closeTile).
   const r = snapTo(slots(), id, to);
   if (!r) return null;
   both(() => {
@@ -505,7 +517,7 @@ export function moveTile(id: string, to: Rect): string | null {
     for (const c of r.dropped) dropContent(c);
   });
   // The whole viewer again: its lines back in the middle.
-  if (r.slots.length === 1) useTiles.setState({ split: { ...HALF_SPLIT } });
+  if (useTiles.getState().slots.length === 1) useTiles.setState({ split: { ...HALF_SPLIT } });
   focusTile(r.id, true);
   return r.id;
 }
@@ -568,21 +580,30 @@ export function placeAtSide(side: "left" | "right", what: { file: string; text: 
   return { opened: true };
 }
 
-/** Close a tile: its spot stays, empty (plain space); nothing moves. An empty spot: it is taken away and
- *  its neighbour grows into the room (removeSpot). */
+/** Close a tile (its close button, the agent's closePane: one path). Carl 11-26: its neighbours grow into its room
+ *  (growInto); only when none fits exactly is the spot left empty. The last tile closed: an empty viewer. An empty
+ *  spot: it is taken away the same way. */
 export function closeTile(id: string): boolean {
   const slot = findSlot(slots(), id);
   if (!slot) return false;
+  const cur = slots();
+  const grown = cur.length === 1 ? [] : growInto(cur, id);
   if (!slot.content) {
-    setSlots(removeSpot(slots(), id));
+    setSlots(grown ?? cur.filter((s) => s.id !== id));
     return true;
   }
   both(() => {
     // Its zoom goes with it.
-    setSlots(slots().map((s) => (s.id === id ? { id: s.id, rect: s.rect, content: null } : s)));
+    setSlots(grown ?? cur.map((s) => (s.id === id ? { id: s.id, rect: s.rect, content: null } : s)));
     dropContent(slot.content);
   });
-  useTiles.setState({ focused: id });
+  if (grown) {
+    // The focus goes to a tile that grew (or the first one left).
+    const next = grown.find((g) => !cur.some((c) => c.id === g.id && rectEq(c.rect, g.rect))) ?? grown[0];
+    if (next) focusTile(next.id);
+    // The whole viewer again: its lines back in the middle.
+    if (useTiles.getState().slots.length === 1) useTiles.setState({ split: { ...HALF_SPLIT } });
+  } else useTiles.setState({ focused: id });
   return true;
 }
 
@@ -695,13 +716,11 @@ export async function restoreTiles(saved: SavedTiles, d: { vault: string; read: 
       const one = files[0];
       useStore.setState({ panes: [], splitDirection: null, activePaneId: null, currentFile: one?.file ?? null, currentContent: one?.text ?? "" });
     }
-    const chat = fc?.type === "chat" ? fc.chatId : (next.find((n) => n.content?.type === "chat")?.content as { chatId: string } | undefined)?.chatId;
-    if (chat && useStore.getState().activeConversationId !== chat) useStore.getState().selectConversation(chat);
+    // A chat tile is its own view: the active chat (the docked panel's, src/chatDock.ts) stays as the app keeps it.
     useTiles.setState({ slots: next, focused, split: normSplit(next, { ...HALF_SPLIT, ...(saved.tileSplit ?? {}) }) });
   });
-  // The chats' first load, and the app settling on its saved chat, open no tile of their own over this.
+  // The chats' first load opens no tile of its own over this (the active chat is the docked panel's).
   firstLoad = true;
-  quietUntil = Date.now() + 8_000;
   restored = d.how;
   if (d.from !== undefined) migration = d.from;
   return true;
@@ -814,14 +833,11 @@ function reconcile(s: Snap, prev: Snap): void {
         useDraft.setState(drafts.get(to) ?? EMPTY_DRAFT);
       });
     }
-    // Just after the arrangement came back (restoreTiles), the app settling on its saved chat opens no tile over it
-    // (its tile, if it has one, is there already).
-    if (Date.now() < quietUntil && !leaves(slots()).some((l) => l.content.type === "chat" && l.content.chatId === s.active)) return;
-    ensureChatTile(s.active);
+    // The docked chat panel shows the active chat (Carl 11-26): no tile opens for it. Only a new chat started for a
+    // place in the viewer (newChatAt) goes there.
+    if (pendingNew) ensureChatTile(s.active);
   }
 }
-/** Until when the start's chat activation leaves a restored arrangement alone. */
-let quietUntil = 0;
 const drafts = new Map<string, Draft>();
 const EMPTY_DRAFT: Draft = { input: "", mentions: [], images: [], files: [], picks: [], attachError: null, sending: 0 };
 
@@ -857,13 +873,6 @@ export function startTiles(): () => void {
     },
   });
   reconcile(snap(useStore.getState()), { panes: [], currentFile: null, showSettings: false, showNotes: false, splitDirection: null, active: null, loaded: false });
-  // A chat row clicked again (it is already the active chat, but its tile was closed): its tile.
-  const onClick = (e: MouseEvent) => {
-    const row = (e.target as Element | null)?.closest?.('[data-el="place-chat"][data-chat]') as HTMLElement | null;
-    const id = row?.dataset.chat;
-    if (id) setTimeout(() => ensureChatTile(id), 0);
-  };
-  if (typeof document !== "undefined") document.addEventListener("click", onClick);
   const off = useStore.subscribe((s, p) => {
     if (s.panes === p.panes && s.currentFile === p.currentFile && s.activeConversationId === p.activeConversationId && s.conversationsLoaded === p.conversationsLoaded) return;
     reconcile(snap(s), snap(p));
@@ -872,7 +881,6 @@ export function startTiles(): () => void {
     started = false;
     useStore.setState({ setCurrentFile: orig });
     off();
-    if (typeof document !== "undefined") document.removeEventListener("click", onClick);
   };
 }
 

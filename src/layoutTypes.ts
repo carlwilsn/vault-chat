@@ -79,6 +79,10 @@ export type HostLayout = {
   window?: number;
   /** The title bar hides until the pointer rests at the top edge (its right-click menu's Auto-hide). */
   titleBarAutoHide?: boolean;
+  /** The docked chat panel right of the tiles (Ctrl+Shift+B): open, the chat list's overlay shown at the right edge
+   *  (Ctrl+Shift+C), and the chat it shows (the active chat; chat tiles are in `tiles`). Kept on the box: a start puts
+   *  `open` back (src/chatDock.ts restoreChatDock). */
+  chatPanel?: { open: boolean; list: boolean; chat: string | null };
   /** Two files side by side or stacked. */
   split: boolean;
   direction: "side-by-side" | "stacked" | null;
@@ -92,10 +96,10 @@ export type HostLayout = {
   activePane: PaneSide | "single" | null;
   /** The file tree. */
   leftPanelOpen: boolean;
-  /** Chats, the chat list at the right. */
+  /** The docked chat panel at the right (chatPanel.open). */
   rightPanelOpen: boolean;
   chatPoppedOut: boolean;
-  /** The conversations sidebar inside the full-screen chat. */
+  /** The chat list's overlay at the right edge (chatPanel.list). */
   chatSidebarOpen: boolean;
   /** the viewer's spots: [{ tile, spot: full|left|...|bottom-right, file|chat|page|empty, focused? }]. */
   tiles?: unknown;

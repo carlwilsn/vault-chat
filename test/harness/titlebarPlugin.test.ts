@@ -158,12 +158,19 @@ test("act: the panels are the layout's ops (box:workspace, one route), Settings,
   assert.deepEqual(winCalls(), ["toggle_maximize", "minimize"]);
   assert.equal(win.closed, 0);
   win.minimized = false;
-  // The right panel is Chats (the list), so the chat popped out doesn't take it away.
-  useStore.setState({ popoutOpen: true, chatSidebarOpen: false } as any);
+  // The right panel is the docked chat panel again (Carl 11-26): the bar's button and the agent's op, one route.
+  assert.equal((await applyLayoutOps([{ op: "closeRightPanel" }], io)).ok, true);
+  assert.equal(S().rightCollapsed, true);
+  await tick();
+  assert.match(html(host), /Show chat panel \(Ctrl\+Shift\+B\)/, "the bar's button follows");
+  await applyLayoutOps([{ op: "openRightPanel" }], io);
+  assert.equal(S().rightCollapsed, false);
+  // The chat popped out into its own window: there is no right panel to open, said so.
+  useStore.setState({ popoutOpen: true, rightCollapsed: true } as any);
   const pop = await applyLayoutOps([{ op: "openRightPanel" }], io);
-  assert.equal(pop.ok, true);
-  assert.equal(S().chatSidebarOpen, true);
-  useStore.setState({ popoutOpen: false } as any);
+  assert.equal(pop.ok, false);
+  assert.match(pop.results[0]!.error!, /popped out/);
+  useStore.setState({ popoutOpen: false, rightCollapsed: false } as any);
 });
 
 test("act: refresh re-lists the files; Hidden files opens on screen and unhide removes lines", async () => {

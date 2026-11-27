@@ -1,7 +1,7 @@
-// The composer of a chat tile that isn't the active chat. The full composer (src/plugins/composer) keeps one draft for
-// the one active chat (module state its agent offers share); a chat tile that isn't active gets this one: the same
-// box, text area and Send / Stop, sending to that chat (boxSend with its id). Clicking into its tile makes that chat
-// the active one, and the full composer (attachments, @ and / menus, +) takes its place with its own draft.
+// The composer of a chat tile. The full composer (src/plugins/composer) keeps one draft for the one active chat, the
+// docked chat panel's (module state its agent offers share); every chat tile gets this one (Carl 11-26: a tile is its
+// own view, even of the chat the dock shows): the same box, text area and Send / Stop, sending to that chat (boxSend
+// with its id). Focusing the tile leaves the active chat as it is.
 import { useRef, useState } from "react";
 import { ArrowUp, Square } from "lucide-react";
 import { useStore } from "./store";
@@ -44,8 +44,6 @@ export function TileComposer({ chatId }: { chatId: string }) {
             el.style.height = "auto";
             el.style.height = `${Math.min(200, el.scrollHeight)}px`;
           }}
-          // Typing here focuses the tile, which makes this the active chat: the full composer takes its place and the focus.
-          onFocus={() => setTimeout(() => window.dispatchEvent(new CustomEvent("vc-focus-composer")), 120)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();

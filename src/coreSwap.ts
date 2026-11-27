@@ -22,6 +22,7 @@ import { isTheme, type Theme } from "./firstTheme";
 import { holdForSwap, releaseSwapHold } from "./swapHold";
 import { isWebAddress } from "./webPane";
 import { domMeasure, keepColumns, resizeColumns } from "./layoutOps";
+import { restoreChatDock } from "./chatDock";
 import { restoreTiles, snapshotTiles, tilesFromLegacy, type SavedTiles } from "./tiles";
 
 /** index.html reads this key by name before any script loads: keep the two in step. */
@@ -59,6 +60,8 @@ export type SwapState = {
   paneSizes?: number[] | null;
   leftCollapsed: boolean;
   rightCollapsed: boolean;
+  /** The docked chat panel open (src/chatDock.ts); left out: an older core's record (restoreChatDock decides). */
+  chatDock?: boolean;
   chatFullscreen: boolean;
   /** The tiles (src/tiles.ts snapshotTiles, absolute paths). A record without them is an older core's: its split and
    *  chat column become tiles (tilesFromLegacy). */
@@ -96,6 +99,7 @@ export function swapStateNow(draft: SwapState["draft"], now = Date.now()): SwapS
     sizes: domMeasure().sizes,
     leftCollapsed: s.leftCollapsed,
     rightCollapsed: s.rightCollapsed,
+    chatDock: !s.rightCollapsed && !s.popoutOpen,
     chatFullscreen: s.chatFullscreen,
     tiles: snapshotTiles((p) => p),
   };
@@ -240,7 +244,9 @@ export async function restoreSwapState(st: SwapState, d: RestoreDeps): Promise<s
   }).catch(() => false);
   if (back) done.push(legacy ? "tiles (from the split)" : "tiles");
   if (back && st.mode && useStore.getState().panes.length === 0) useStore.getState().setMode(st.mode);
-  useStore.setState({ leftCollapsed: st.leftCollapsed, rightCollapsed: st.rightCollapsed, chatFullscreen: false });
+  useStore.setState({ leftCollapsed: st.leftCollapsed, chatFullscreen: false });
+  // The docked chat panel as it was (an older core's record: open unless a tile shows the chat already).
+  restoreChatDock(typeof st.chatDock === "boolean" ? st.chatDock : undefined);
   if (st.sizes) {
     // The panels open or shut and the file listing in (it refits the tree), then the widths as they were.
     await d.filesLoaded?.();

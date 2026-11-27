@@ -66,7 +66,8 @@ export function Transcript() {
   scopeRef.current = scope;
   // A tile of a chat that is not the active one (the focused chat tile is the active chat: it has the real composer
   // and the pane's offers).
-  const foreign = useStore((s) => !!scope && scope !== s.activeConversationId);
+  // A chat tile is always its own view (its own header and composer), even of the chat the docked panel shows.
+  const foreign = !!scope;
   const foreignRef = useRef(foreign);
   foreignRef.current = foreign;
   const convNow = () => scopedState(useStore.getState(), scopeRef.current).activeConversationId;

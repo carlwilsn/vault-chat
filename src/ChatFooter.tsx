@@ -6,6 +6,8 @@ import { MessageSquare, Plus } from "lucide-react";
 import { useStore } from "./store";
 import { useChatScope, useScopedStore } from "./chatScope";
 import { useTiles } from "./tiles";
+import { toggleChatsList } from "./chatDock";
+import { shortcutHint } from "./shortcuts";
 import { isPopout } from "./sync";
 import { newChatHere, newChatInTile } from "./chat-controller";
 import { UsagePopover } from "./UsagePopover";
@@ -20,8 +22,8 @@ export function ChatFooterTools({ ready, archived }: { ready: boolean; archived:
   // Fullscreen chat shows the chats as its left sidebar (FullscreenChat.tsx), so the button opens and closes that; the
   // docked layout keeps the overlay. The popout window is the fullscreen chat.
   const chatFullscreen = useStore((s) => isPopout || (s.chatFullscreen && !s.popoutOpen));
-  // the Chats list is a side panel now (chatSidebarOpen), in every layout.
-  const chatsShown = useStore((s) => s.chatSidebarOpen);
+  // The chat list is the overlay at the right edge again (showChatsPanel).
+  const chatsShown = useStore((s) => s.showChatsPanel);
   // For chats you can't see: "running" (something is still thinking) takes priority, else "unseen" (a background chat
   // finished and you haven't looked). Mirrors the per-row dot.
   const indicatorKind = useStore((s): "running" | "unseen" | null => {
@@ -35,10 +37,8 @@ export function ChatFooterTools({ ready, archived }: { ready: boolean; archived:
   useLayoutEffect(() => setDomScope(rootRef.current?.closest<HTMLElement>("[data-chat-tile]")?.dataset.chatTile ?? null), []);
   const scope = useChatScope() ?? domScope;
   const tileId = useTiles((t) => (scope ? (t.slots.find((s) => s.content?.type === "chat" && s.content.chatId === scope)?.id ?? null) : null));
-  const toggleChatsPanel = () => {
-    const s = useStore.getState();
-    s.toggleChatSidebar();
-  };
+  // The chat list overlay, as Ctrl+Shift+C (one path, src/chatDock.ts).
+  const toggleChatsPanel = () => toggleChatsList();
   return (
     <div ref={rootRef} className="flex items-center gap-2">
       {busy && <ElapsedTimer />}
@@ -77,7 +77,7 @@ export function ChatFooterTools({ ready, archived }: { ready: boolean; archived:
           onClick={toggleChatsPanel}
           className={`relative flex items-center gap-1 text-[11px] hover:text-foreground transition-colors ${chatsShown ? "text-foreground" : "text-muted-foreground"}`}
           data-el="chats-toggle"
-          title="Chats — your chats and projects, and what's running"
+          title={`Chats — your chats and projects, and what's running (${shortcutHint("view.chats")})`}
           aria-label="Chats"
         >
           <MessageSquare className="h-3 w-3" />
