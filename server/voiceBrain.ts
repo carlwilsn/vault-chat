@@ -922,17 +922,24 @@ function boardDuck(d: Pick<BrainDeps, "logDir" | "showBoard">, c: Call, on: bool
     log(d, { ev: "board.duck", call: c.id, on: true });
     return { status: 200, body: { ok: true } };
   }
-  c.ducked = null;
-  const held = c.heldCues;
-  c.heldCues = [];
-  // The voice goes on (a "yeah"): what waited is drawn now. The device gave the sound back because the reply went
-  // quiet: if that was the box taking the interruption, its cut comes within moments and drops them (boardCue's cut);
-  // if it was only a pause between sentences, they are drawn after DUCK_GRACE_MS.
-  const release = () => { for (const h of held) if (c.cues.has(h.n)) boardCue(d, c, { cue: h.n, at: h.at }); };
+  // The voice goes on (a "yeah"): the board goes on now, with what waited. The device gave the sound back because the
+  // reply went quiet: that is the box taking the interruption (its cut comes within moments and drops what waited) or
+  // only a pause between sentences while he still talks; either way the board keeps holding for DUCK_GRACE_MS, then
+  // goes on if no cut came (the simulated call: a cue drawn 70 ms after such an un-duck, 0.2 s before the cut).
+  const held = c.heldCues.length;
+  const release = () => {
+    const h = c.heldCues;
+    c.ducked = null;
+    c.heldCues = [];
+    for (const x of h) if (c.cues.has(x.n)) boardCue(d, c, { cue: x.n, at: x.at });
+  };
   if (resumed) release();
-  else if (held.length) setTimeout(release, DUCK_GRACE_MS).unref?.();
-  log(d, { ev: "board.duck", call: c.id, on: false, resumed, held: held.length });
-  return { status: 200, body: { ok: true, held: held.length } };
+  else {
+    const at = (c.ducked = Date.now());
+    setTimeout(() => { if (c.ducked === at) release(); }, DUCK_GRACE_MS).unref?.();
+  }
+  log(d, { ev: "board.duck", call: c.id, on: false, resumed, held });
+  return { status: 200, body: { ok: true, held } };
 }
 
 /** POST /api/v1/brain/offer: the device's WebRTC offer, handed to the pipeline with the call's secrets (loopback). */

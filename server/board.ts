@@ -20,7 +20,7 @@ import KATEX from "vc:katex-inline";
 
 export const BOARD_PAGE = ".vault-chat/local/pages/board.html";
 /** Bumped when the page changes: an older copy in a vault is replaced on the next draw. */
-export const BOARD_VERSION = "3";
+export const BOARD_VERSION = "4";
 
 export const COLORS = ["red", "blue", "green", "orange", "purple", "gray", "black"] as const;
 type Color = (typeof COLORS)[number];

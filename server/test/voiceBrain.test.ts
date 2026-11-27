@@ -916,6 +916,10 @@ describe("the board, in step with the voice", () => {
     // A "yeah": the device gives the sound back, and the board catches up.
     expect(await (await fetch(`${base}/api/v1/brain/call/${c.id}/duck`, { method: "POST", headers: { "x-device": "1" }, body: JSON.stringify({ on: false, resumed: true }) })).json()).toMatchObject({ held: 1 });
     expect(await scene()).toEqual(["axes", "plot"]);
+    // The sound came back because the reply went quiet (a pause, or the box stopping it): the board keeps holding.
+    eng.emit(delta("y"));
+    await fetch(`${base}/api/v1/brain/call/${c.id}/duck`, { method: "POST", headers: { "x-device": "1" }, body: JSON.stringify({ on: true }) });
+    await fetch(`${base}/api/v1/brain/call/${c.id}/duck`, { method: "POST", headers: { "x-device": "1" }, body: JSON.stringify({ on: false, resumed: false }) });
     // A real barge-in: the device gives the sound back because the reply stopped; what waited is never drawn.
     eng.emit(delta("x"));
     await fetch(`${base}/api/v1/brain/call/${c.id}/duck`, { method: "POST", headers: { "x-device": "1" }, body: JSON.stringify({ on: true }) });

@@ -51,7 +51,10 @@ function lineEl(it){
   if(it.kind==="eq"){try{katex.render((it.h>1?"\\displaystyle ":"")+it.tex,d,{throwOnError:false,displayMode:false});}catch(err){d.textContent=it.tex;}}
   else{var parts=String(it.text).split(/(\$[^$]+\$)/);parts.forEach(function(p){var s=document.createElement("span");
     if(/^\$[^$]+\$$/.test(p)){try{katex.render(p.slice(1,-1),s,{throwOnError:false});}catch(err){s.textContent=p;}}else s.textContent=p;d.appendChild(s);});}
-  lines.appendChild(d);return d;
+  lines.appendChild(d);
+  // A line wider than its column (a long sentence, a long formula) is written smaller, never off the board.
+  var room=(axes?GX0-40:W-40)-LEFT,wide=d.scrollWidth;if(wide>room){d.style.transformOrigin="0 50%";d.style.transform="scale("+(room/wide).toFixed(3)+")";}
+  return d;
 }
 function drawAxes(a,anim){
   if(axesEls)axesEls.forEach(function(e){e.remove();});axesEls=[];axes=a;var out=[];
