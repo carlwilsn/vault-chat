@@ -49,8 +49,11 @@ function lineEl(it){
   var d=document.createElement("div");d.className="it";d.style.top=(TOP+it.row*RH)+"px";d.style.height=(it.h*RH)+"px";
   d.style.color=col(it.color);
   if(it.kind==="eq"){try{katex.render((it.h>1?"\\displaystyle ":"")+it.tex,d,{throwOnError:false,displayMode:false});}catch(err){d.textContent=it.tex;}}
-  else{var parts=String(it.text).split(/(\$[^$]+\$)/);parts.forEach(function(p){var s=document.createElement("span");
-    if(/^\$[^$]+\$$/.test(p)){try{katex.render(p.slice(1,-1),s,{throwOnError:false});}catch(err){s.textContent=p;}}else s.textContent=p;d.appendChild(s);});}
+  else{
+    // Words with $math$ in them; a bare \command in the words (\epsilon, \Rightarrow) is math too.
+    var parts=String(it.text).split(/(\$[^$]+\$|\\[a-zA-Z]+(?:\{[^}]*\})?)/);parts.forEach(function(p){if(!p)return;var s=document.createElement("span");
+    var m=/^\$[^$]+\$$/.test(p)?p.slice(1,-1):/^\\[a-zA-Z]/.test(p)?p:null;
+    if(m!==null){try{katex.render(m,s,{throwOnError:false});}catch(err){s.textContent=p;}}else{s.textContent=p;s.style.whiteSpace="pre";}d.appendChild(s);});}
   lines.appendChild(d);
   // A line wider than its column (a long sentence, a long formula) is written smaller, never off the board.
   var room=(axes?GX0-40:W-40)-LEFT,wide=d.scrollWidth;if(wide>room){d.style.transformOrigin="0 50%";d.style.transform="scale("+(room/wide).toFixed(3)+")";}
