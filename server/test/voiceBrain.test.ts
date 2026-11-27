@@ -832,3 +832,77 @@ it("a voice line's own turn never sends the speak channel an interrupt (it cance
   expect(msgs().filter((m) => m.interrupt)).toHaveLength(1);
   expect(brainEvents().filter((e) => e.ev === "turn.cut" && e.call === c.id)).toEqual([]);
 });
+
+describe("the board, in step with the voice", () => {
+  const boardVault = mkdtempSync(join(tmpdir(), "vc-brain-board-"));
+  async function boardCall(device = "laptop"): Promise<{ id: string; token: string; shown: string[] }> {
+    const { startCall } = await import("../voiceBrain");
+    const shown: string[] = [];
+    const r = await startCall({ vault: boardVault, engine: async () => eng, elKey: () => "k", voiceId: () => "v", botUrl: "", selfUrl: "", logDir, showBoard: (p) => shown.push(p) }, { convId: "conv-board1", device });
+    return { id: String(r.body.callId), token: String(r.body.token), shown };
+  }
+  const post = (c: { id: string; token: string }, what: string, body: unknown) =>
+    fetch(`${base}/api/v1/brain/call/${c.id}/${what}`, { method: "POST", headers: { authorization: `Bearer ${c.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+  const scene = async () => {
+    const { readScene } = await import("../board");
+    return readScene(boardVault).items.map((i: any) => i.tex ?? i.text ?? i.kind);
+  };
+
+  it("a block in the reply becomes a cue in the speech; it is drawn when the pipeline reaches it; a cut drops the rest and his next line hears where", async () => {
+    const c = await boardCall();
+    expect(eng.talker.rules).toContain("```board");
+    const p = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "explain adam on the board" }] }) });
+    await until(() => eng.messages.length);
+    eng.emit({ type: "message_start", message: { role: "assistant" } });
+    eng.emit(delta("```board\neq #m m_t\n```\nAdam keeps a running average. "));
+    eng.emit(delta("```board\neq #v v_t\n```\nAnd one of its square, which is the part that scales each step."));
+    eng.emit({ type: "message_end", message: { role: "assistant" } });
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    const said = (await sse(await p)).filter((l) => l !== "[DONE]").map((l) => JSON.parse(l).choices[0].delta.content ?? "").join("");
+    // The blocks are cue marks in their places, never words: said live, in order.
+    expect(said).toMatch(/^\s*⟦c1⟧ Adam keeps a running average\. ⟦c2⟧ And one of its square/);
+    expect(said).not.toContain("m_t");
+    expect(await scene()).toEqual([]);
+    // The voice reached the first block: drawn now, and the board comes up on his laptop.
+    expect((await post(c, "cue", { cue: 1, at: Date.now() / 1000 })).status).toBe(200);
+    expect(await scene()).toEqual(["m_t"]);
+    expect(c.shown).toEqual([".vault-chat/local/pages/board.html"]);
+    // He cut in after six words: the second block is never drawn, a late cue for it is refused, the strokes finish.
+    expect((await post(c, "cut", {})).status).toBe(404);
+    expect((await post(c, "cue", { cut: { words: 6, pending: 1 } })).status).toBe(200);
+    expect((await post(c, "cue", { cue: 2 })).status).toBe(409);
+    expect(await scene()).toEqual(["m_t"]);
+    const { readPluginState } = await import("../pluginState");
+    expect(typeof (readPluginState(boardVault, ".vault-chat/local/pages/board.html").state as any).cut).toBe("number");
+    // His next line carries what he heard and what is on the board.
+    const q = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "wait, why squared?" }] }) });
+    await until(() => eng.messages.length === 2);
+    expect(eng.messages[1].context).toContain('He heard up to: "…Adam keeps a running average. And"');
+    expect(eng.messages[1].context).toContain("1 board block(s) after that point were not drawn");
+    expect(eng.messages[1].context).toContain("#m eq m_t");
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    await q;
+  });
+
+  it("his device's local barge-in holds the board: cues wait, and are drawn if the voice comes back", async () => {
+    const c = await boardCall();
+    const p = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "sketch x squared" }] }) });
+    await until(() => eng.messages.length);
+    eng.emit(delta("```board\nclear\naxes -2 2 0 4\n```\nHere is the parabola.\n```board\nplot x^2\n```\nIt opens upward, with its lowest point at the origin, and grows faster and faster."));
+    eng.emit({ type: "message_end", message: { role: "assistant" } });
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    await p;
+    await post(c, "cue", { cue: 1 });
+    expect(await scene()).toEqual(["axes"]);
+    expect((await fetch(`${base}/api/v1/brain/call/${c.id}/duck`, { method: "POST", headers: { "x-device": "1" }, body: JSON.stringify({ on: true }) })).status).toBe(200);
+    expect((await post(c, "cue", { cue: 2 })).status).toBe(202);
+    expect(await scene()).toEqual(["axes"]);
+    // A "yeah": the device gives the sound back, and the board catches up.
+    expect(await (await fetch(`${base}/api/v1/brain/call/${c.id}/duck`, { method: "POST", headers: { "x-device": "1" }, body: JSON.stringify({ on: false, resumed: true }) })).json()).toMatchObject({ released: 1 });
+    expect(await scene()).toEqual(["axes", "plot"]);
+    // A real barge-in: the device gives the sound back because the reply stopped; what waited is never drawn.
+    eng.emit(delta("x"));
+    await fetch(`${base}/api/v1/brain/call/${c.id}/duck`, { method: "POST", headers: { "x-device": "1" }, body: JSON.stringify({ on: true }) });
+    expect((await post(c, "cue", { cue: 3 })).status).toBe(409);
+  });
+});

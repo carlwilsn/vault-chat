@@ -30,7 +30,8 @@ import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync } fr
 import { join, resolve } from "node:path";
 import { voiceProvider } from "./voiceProvider";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { Speakable, toSpeech } from "./speakable";
+import { Speakable, boardSource, isBoardPiece, speechPieces, toSpeech } from "./speakable";
+import { BOARD_HELP, BOARD_PAGE, describeBoard, drawOnBoard, haltBoard, parseBoard, readScene } from "./board";
 import { isCommentary } from "../src/convlog/commentary";
 import { speechReady } from "./speakMath";
 
@@ -68,6 +69,8 @@ export type BrainDeps = {
   /** The box's state folder (legacy engine preferences are ignored: there is one voice). */
   stateDir?: string | null;
   pipelineReady?: () => Promise<boolean>;
+  /** Put the board page in front of him on the laptop (Show), the first time a call draws on it. */
+  showBoard?: (path: string) => void;
   pipelineState?: () => { wanted: boolean; running: boolean; settingUp: boolean; error: string | null; failure?: unknown };
 };
 
@@ -113,7 +116,17 @@ export function voiceCallRules(device: Device): string {
   const where = device === "phone" ? "his phone" : "his laptop";
   // One reply, written as always (markdown); the voice reads it aloud as written (server/speakable.ts). Only a light
   // nudge on length, and the one rule a live call needs: slow work goes to the Agent tool, so the voice never goes quiet.
-  return `[A voice call is live on ${where}: your replies are shown as always and also read aloud as written. Keep them short: two or three spoken sentences answer what he asked (offer more, don't give it); when he is thinking aloud rather than asking, a line at most. A lookup in his notes is one Lookup {query} call (it finds and reads together); independent calls go at once, not one after another. Anything that takes more than a few seconds goes to the Agent tool in background mode (it notifies you when it completes or fails). A change to a file (making, editing or rebuilding one: a PDF, a sheet, a page) always does, at once: start an Agent in the background with his words and the file — don't read or edit it yourself first. Say in a line that you've sent it and carry on; when it reports back, tell him the result. Say something was done only when it was.]`;
+  return `[A voice call is live on ${where}: your replies are shown as always and also read aloud as written. Keep them short: two or three spoken sentences answer what he asked (offer more, don't give it); when he is thinking aloud rather than asking, a line at most. A lookup in his notes is one Lookup {query} call (it finds and reads together); independent calls go at once, not one after another. Anything that takes more than a few seconds goes to the Agent tool in background mode (it notifies you when it completes or fails). A change to a file (making, editing or rebuilding one: a PDF, a sheet, a page) always does, at once: start an Agent in the background with his words and the file — don't read or edit it yourself first. Say in a line that you've sent it and carry on; when it reports back, tell him the result. Say something was done only when it was.
+The board: when he asks you to explain, derive, sketch or show something on the board, draw it yourself in the reply as you talk — never a tool, an Agent or a file for it (it opens on his screen by itself). Talk like at a whiteboard: a \`\`\`board block with the one or two lines you are about to talk about, then the sentence about them, then the next block, and so on — open with a block, so the board starts as you do. Each block is drawn the moment the sentence after it starts, and is never said. The fences go on lines of their own, for example:
+\`\`\`board
+eq #m m_t = \\beta_1 m_{t-1} + (1-\\beta_1) g_t
+\`\`\`
+Adam keeps a running average of the gradient, m, the momentum.
+\`\`\`board
+eq #v v_t = \\beta_2 v_{t-1} + (1-\\beta_2) g_t^2
+\`\`\`
+And one of its square, v: …
+One command per line: ${BOARD_HELP} Tag what you may point at later (eq #m …); clear when he asks to start over or for a new topic. When he cuts you off, what you had not said yet was not drawn either.]`;
 }
 
 // ---------------------------------------------------------------- calls
@@ -189,8 +202,26 @@ type Call = {
   steer: { clientId: string; text: string } | null;
   /** The assistant message streaming now: its sentences, said at its end unless it calls a tool (then it was
    *  progress commentary, never said). */
-  msg?: { pieces: string[]; commentary: boolean } | null;
+  msg?: Msg | null;
+  /** Board blocks waiting for the voice to reach them: cue id → the block and the utterance it belongs to. The pipeline
+   *  posts the cue when the first word after it starts playing (voice-pipeline/bot.py CueTrack); a barge-in drops them. */
+  cues: Map<number, { src: string; utt: number; at: number }>;
+  cueSeq: number;
+  /** The board was put in front of him in this call. */
+  boardShown: boolean;
+  /** What was spoken of the reply now playing (the pipeline's cut report says how many of its words he heard). */
+  spoken: string;
+  /** He cut the voice off: what he heard of that reply, for his next line's context. */
+  cutNote: string | null;
+  /** His device silenced the voice because he started talking over it (its local barge-in): the board holds still too
+   *  (cues reached meanwhile wait in `heldCues`) until the device gives the sound back or the box takes the interruption. */
+  ducked: number | null;
+  heldCues: { n: number; at: number | null }[];
 };
+
+/** The assistant message streaming now: its pieces not yet said; `live` once it is clearly a reply (it is said as it
+ *  streams from then on); `commentary` once it called a tool (never said). */
+type Msg = { pieces: string[]; commentary: boolean; live?: boolean; deltas?: number };
 
 /** A reply to words he went on from is held this long for his next words before it is said after all. */
 export const HOLD_MS = 2_500;
@@ -290,6 +321,13 @@ export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: un
     lastText: null,
     lastActive: Date.now(),
     stopping: null,
+    cues: new Map(),
+    cueSeq: 0,
+    boardShown: false,
+    spoken: "",
+    cutNote: null,
+    ducked: null,
+    heldCues: [],
   };
   engine.setTalker(convId, { model: call.model, rules: voiceCallRules(device), thinking });
   call.untap = engine.tap(convId, (ev) => onPi(d, call, ev));
@@ -389,6 +427,7 @@ function revokeSpeech(c: Call): void {
   c.utt++;
   c.speak.flush();
   c.msg = null;
+  c.cues.clear();
   if (c.held) clearTimeout(c.held.timer);
   c.held = null;
   if (!c.channelSaid || (c.sink && !c.sink.done)) return;
@@ -441,8 +480,20 @@ function onPi(d: BrainDeps, c: Call, ev: any): void {
       c.sink.deltas++;
     }
     const m = (c.msg ??= { pieces: [], commentary: false });
+    m.deltas = (m.deltas ?? 0) + 1;
     const pieces = c.speak.push(String(ev.assistantMessageEvent.delta ?? ""));
-    if (!m.commentary && c.armed) m.pieces.push(...pieces);
+    if (!m.commentary && c.armed) {
+      m.pieces.push(...pieces);
+      // Said as it streams once it is clearly the reply: a second sentence, or a board block (progress commentary
+      // before a tool call is one line: it still waits for the message's end, and is dropped if a tool call follows).
+      // Until then the first sentence waits (~0.2 s of the model's writing); the voice used to wait for the whole message.
+      if (!m.live && isReply(m.pieces)) m.live = true;
+      if (m.live && m.pieces.length) {
+        const now = m.pieces;
+        m.pieces = [];
+        say(c, now);
+      }
+    }
   } else if (ev?.type === "message_update" && ev.assistantMessageEvent?.type === "toolcall_start") {
     const m = (c.msg ??= { pieces: [], commentary: false });
     m.commentary = true;
@@ -459,7 +510,9 @@ function onPi(d: BrainDeps, c: Call, ev: any): void {
     if (m && !m.commentary && !isCommentary(ev.message)) {
       const content = ev.message.content;
       const text = Array.isArray(content) ? content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n") : content;
-      say(c, typeof text === "string" ? [toSpeech(text)] : [...m.pieces, ...rest]);
+      // Once it streamed live, the rest of it; otherwise the final text is the answer (it supersedes the deltas), said
+      // in one piece as before — split only where a board block falls.
+      say(c, m.live || typeof text !== "string" ? [...m.pieces, ...rest] : /```board/i.test(text) ? speechPieces(text) : [toSpeech(text)]);
     }
   } else if (ev?.type === "tool_execution_start") {
     // Whether the reply said anything before reaching for a tool (nothing is said for it; the waiting line covers the wait):
@@ -492,12 +545,31 @@ function onPi(d: BrainDeps, c: Call, ev: any): void {
   }
 }
 
-/** Sentences to the voice: the open response if there is one, else the speak channel. */
-function say(c: Call, pieces: string[]): void {
-  for (const p of pieces) {
+/** A message streaming is clearly the reply (said as it streams from then on), not progress commentary before a tool
+ *  call ("I need to check the file first. Then I'll summarize it."): a board block, or more than a line or two of
+ *  speech. Shorter, it waits for the message's end (~0.1-0.3 s of the model's writing at the speeds measured). */
+export const LIVE_CHARS = 140;
+export const isReply = (pieces: string[]): boolean =>
+  pieces.some(isBoardPiece) || pieces.reduce((n, p) => n + (isBoardPiece(p) ? 0 : p.length), 0) >= LIVE_CHARS;
+
+/** A board block's place in the speech, as the pipeline finds it (voice-pipeline/bot.py CueTrack strips it). */
+export const cueMark = (id: number): string => `\u27E6c${id}\u27E7`;
+
+/** Sentences to the voice: the open response if there is one, else the speak channel. A board block becomes a cue
+ *  mark in its place: drawn when the pipeline says the voice reached it (POST …/cue). */
+function say(c: Call, list: string[]): void {
+  for (const piece of list) {
+    let p = piece;
     if (!p) continue;
+    if (isBoardPiece(p)) {
+      if (!c.armed) continue;
+      const id = ++c.cueSeq;
+      c.cues.set(id, { src: boardSource(p), utt: c.utt, at: Date.now() });
+      p = cueMark(id);
+    }
     // The answer to the words he went on from: shown in the chat, never said (his newest words get the answer).
     if (!c.armed) continue;
+    if (!isBoardPiece(piece)) c.spoken += (c.spoken ? " " : "") + p;
     if (c.sink && !c.sink.done) {
       writeChunk(c.sink, p);
     } else if (!c.dropping && c.ownTurn) {
@@ -529,7 +601,8 @@ function writeChunk(s: Sink, text: string): void {
     s.flushT ??= setTimeout(() => flushQueued(s), Math.max(0, s.holdUntil - Date.now()));
     return;
   }
-  if (s.tFirst == null) s.tFirst = Date.now();
+  // The first SPOKEN words (a cue mark alone says nothing): brain.jsonl firstMs, what he waits for.
+  if (s.tFirst == null && !/^\s*(?:\u27E6c\d+\u27E7\s*)*$/.test(text)) s.tFirst = Date.now();
   const piece = (s.sent > 0 ? " " : "") + text;
   s.sent++;
   s.text += piece;
@@ -722,6 +795,10 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
   // "Stop" / "never mind": the running work stops first (in code, not left to the model), then the words go to pi
   // like any line, so the conversation records them and it can answer in a word.
   const notes: string[] = [];
+  if (c.cutNote) {
+    notes.push(c.cutNote);
+    c.cutNote = null;
+  }
   if (STOP_RE.test(text) && c.engine.stopWork) {
     // What he just asked for: work started since his previous line (never older work he didn't mention).
     const stopped: string[] = [];
@@ -764,6 +841,83 @@ function speakChannel(d: BrainDeps, req: IncomingMessage, res: ServerResponse, i
     c.lastActive = Date.now();
   });
   log(d, { ev: "speak.open", call: c.id });
+}
+
+/** Words as the pipeline counts them (voice-pipeline/bot.py spoken_words): what has a letter or a digit. */
+export const spokenWords = (t: string): string[] => t.split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w));
+
+/**
+ * POST /api/v1/brain/call/<id>/cue: the pipeline's word on the board. {cue}: the voice reached that board block (the
+ * first word after it started playing): it is drawn now. {cut: {words}}: the voice was interrupted after `words`
+ * words since its last interruption: blocks it had not reached are dropped, strokes on the page finish, and his next
+ * line carries what he heard.
+ */
+function boardCue(d: Pick<BrainDeps, "logDir" | "showBoard">, c: Call, b: any): { status: number; body: Record<string, unknown> } {
+  c.lastActive = Date.now();
+  if (b?.cut && typeof b.cut === "object") {
+    const words = spokenWords(c.spoken);
+    const heard = typeof b.cut.words === "number" && b.cut.words >= 0 ? Math.min(b.cut.words, words.length) : words.length;
+    const pending = c.cues.size;
+    const cut = heard < words.length || pending > 0;
+    if (cut && c.cueSeq > 0) {
+      haltBoard(c.vault);
+      const board = describeBoard(readScene(c.vault).items);
+      c.cutNote = `[He cut in while you were talking. He heard up to: "${heard ? "…" + words.slice(Math.max(0, heard - 16), heard).join(" ") : ""}"${heard < words.length ? `; the ${words.length - heard} words after that were not said` : ""}${pending ? `, and ${pending} board block(s) after that point were not drawn` : ""}. The board now: ${board || "empty"}.]`;
+    } else if (cut) {
+      c.cutNote = `[He cut in while you were talking. He heard up to: "${heard ? "…" + words.slice(Math.max(0, heard - 16), heard).join(" ") : ""}"; the ${words.length - heard} words after that were not said.]`;
+    }
+    c.cues.clear();
+    c.heldCues = [];
+    c.ducked = null;
+    c.spoken = "";
+    log(d, { ev: "board.cut", call: c.id, heard, of: words.length, pending, at: b.cut.at ?? null });
+    return { status: 200, body: { ok: true } };
+  }
+  const n = Number(b?.cue);
+  const cue = c.cues.get(n);
+  if (cue && cue.utt === c.utt && c.ducked !== null && Date.now() - c.ducked < DUCK_HOLD_MS) {
+    // He is talking over it on his device (silent there): drawn only if the voice comes back.
+    c.heldCues.push({ n, at: typeof b?.at === "number" ? b.at : null });
+    log(d, { ev: "board.held", call: c.id, cue: n });
+    return { status: 202, body: { held: true } };
+  }
+  if (!cue || cue.utt !== c.utt) {
+    log(d, { ev: "board.stale", call: c.id, cue: n });
+    return { status: 409, body: { error: "that board block is not current" } };
+  }
+  c.cues.delete(n);
+  const { cmds, bad } = parseBoard(cue.src);
+  const r = drawOnBoard(c.vault, cmds);
+  if (r.ok && !c.boardShown && c.device === "laptop") {
+    c.boardShown = true;
+    (c.deps.showBoard ?? d.showBoard)?.(BOARD_PAGE);
+  }
+  log(d, { ev: "board.cue", call: c.id, cue: n, cmds: cmds.length, bad: bad.length, waitedMs: Date.now() - cue.at, played: b?.at ?? null, ...(r.ok ? { seq: r.seq } : { error: r.error }) });
+  return { status: r.ok ? 200 : 400, body: r.ok ? { ok: true, seq: r.seq } : { error: r.error } };
+}
+
+/** A device's local barge-in holds the board at most this long (it gives the sound back within 2 s: DUCK_MAX_MS). */
+export const DUCK_HOLD_MS = 3_000;
+
+/** POST /api/v1/brain/call/<id>/duck {on, resumed}: his device silenced the voice (he talks over it) or gave it back.
+ *  On: the strokes on the page finish now and cues wait; off and resumed (a "yeah", the voice goes on): the held cues
+ *  are drawn; off because the reply stopped: they are dropped. */
+function boardDuck(d: Pick<BrainDeps, "logDir" | "showBoard">, c: Call, on: boolean, resumed: boolean): { status: number; body: Record<string, unknown> } {
+  c.lastActive = Date.now();
+  if (on) {
+    c.ducked = Date.now();
+    if (c.cueSeq > 0) haltBoard(c.vault);
+    log(d, { ev: "board.duck", call: c.id, on: true });
+    return { status: 200, body: { ok: true } };
+  }
+  c.ducked = null;
+  const held = c.heldCues;
+  c.heldCues = [];
+  // The device gave the sound back because the reply stopped (the box took the interruption): what waited never shows.
+  if (resumed) for (const h of held) boardCue(d, c, { cue: h.n, at: h.at });
+  else for (const h of held) c.cues.delete(h.n);
+  log(d, { ev: "board.duck", call: c.id, on: false, resumed, [resumed ? "released" : "dropped"]: held.length });
+  return { status: 200, body: { ok: true, [resumed ? "released" : "dropped"]: held.length } };
 }
 
 /** POST /api/v1/brain/offer: the device's WebRTC offer, handed to the pipeline with the call's secrets (loopback). */
@@ -836,6 +990,25 @@ export async function brainRoute(
     const c = callOf(req, decodeURIComponent(able[1]!));
     if (!c) return json(res, 401, { error: "unknown call" }), true;
     json(res, 200, { speak: Number(able[2]) === c.utt && c.armed && c.ownTurn && !c.dropping });
+    return true;
+  }
+  const cue = /^\/api\/v1\/brain\/call\/([^/]+)\/cue$/.exec(path);
+  if (cue && method === "POST") {
+    if (!loopback) return json(res, 403, { error: "loopback only" }), true;
+    const c = callOf(req, decodeURIComponent(cue[1]!));
+    if (!c) return json(res, 401, { error: "unknown call" }), true;
+    const r = boardCue(d, c, await readJson());
+    json(res, r.status, r.body);
+    return true;
+  }
+  // His device's local barge-in (src/voiceBrainClient.ts): any authorised client, like /end; the call is named by id.
+  const duck = /^\/api\/v1\/brain\/call\/([^/]+)\/duck$/.exec(path);
+  if (duck && method === "POST") {
+    const c = calls.get(decodeURIComponent(duck[1]!));
+    if (!c) return json(res, 404, { error: "no such call" }), true;
+    const b = await readJson();
+    const r = boardDuck(d, c, b?.on === true, b?.resumed === true);
+    json(res, r.status, r.body);
     return true;
   }
   const sp = /^\/api\/v1\/brain\/call\/([^/]+)\/speak$/.exec(path);

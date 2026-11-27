@@ -59,26 +59,29 @@ it("typed replies use their actual native answer once, independent of file viewe
     };
     let stream = await channel();
     const current = await send("ACTIVE");
-    await waitFor(() => stream.output.some(m => m.text), 5000, 10);
+    // A reply this long is said as it streams (server/voiceBrain.ts isReply): its pieces, in order, are the answer once.
+    await waitFor(() => stream.output.filter(m => m.text).map(m => m.text).join(" ").includes("not another answer"), 5000, 10);
     await speechReady();
-    expect(stream.output.filter(m => m.text).map(m => m.text)).toEqual([toSpeech(answer)]);
+    expect(stream.output.filter(m => m.text).map(m => m.text).join(" ")).toEqual(toSpeech(answer));
+    const said = stream.output.filter(m => m.text).length;
     expect(current.items.at(-1).text).toBe(answer);
     expect(current.meta.threadPath).toBe(off.meta.threadPath);
     // Unrelated threads and devices cannot borrow this conversation's live mouth.
     await send("OTHER-THREAD", "laptop", "sep-other-typed");
     await send("OTHER-DEVICE", "phone");
     await get("/poll?after=0&wait=0"); await checkpoint();
-    expect(stream.output.filter(m => m.text)).toHaveLength(1);
+    expect(stream.output.filter(m => m.text)).toHaveLength(said);
     stream.ac.abort(); await stream.reading;
     stream = await channel();
     const reconnected = await send("RECONNECTED");
-    await waitFor(() => stream.output.some(m => m.text), 5000, 10);
-    expect(stream.output.filter(m => m.text).map(m => m.text)).toEqual([toSpeech(reconnected.items.at(-1).text)]);
+    await waitFor(() => stream.output.filter(m => m.text).map(m => m.text).join(" ") === toSpeech(reconnected.items.at(-1).text), 5000, 10);
+    expect(stream.output.filter(m => m.text).map(m => m.text).join(" ")).toEqual(toSpeech(reconnected.items.at(-1).text));
+    const again = stream.output.filter(m => m.text).length;
     await post(`/api/v1/brain/call/${call.callId}/end`, {});
     await stream.reading;
     await send("AFTER-END");
     expect((await get("/api/v1/brain/calls")).calls).toEqual([]);
-    expect(stream.output.filter(m => m.text)).toHaveLength(1);
+    expect(stream.output.filter(m => m.text)).toHaveLength(again);
     expect(provider.calls).toHaveLength(sends); // never a second speech inference
     expect(readFileSync(join(owner, ".vault-chat/notes.jsonl")).equals(notes)).toBe(true);
     expect((await checkpoint()).meta.threadPath).toBe(off.meta.threadPath);

@@ -31,3 +31,9 @@ declare module "vc:page-link-host" {
   const js: string;
   export default js;
 }
+
+/** KaTeX's script and its CSS with the fonts inlined (server/katexInlineGen.mjs): the voice board page. */
+declare module "vc:katex-inline" {
+  const katex: { css: string; js: string };
+  export default katex;
+}

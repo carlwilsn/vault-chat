@@ -479,6 +479,10 @@ async function main(): Promise<void> {
       selfUrl: `http://127.0.0.1:${cfg.port}`,
       logDir: join(cfg.stateDir, "logs"),
       stateDir: cfg.stateDir,
+      // The board a call draws on, in front of him (as Show does it; nothing waits on the laptop's answer).
+      showBoard: (path) => {
+        void import("./show").then(({ show }) => show({ vault: v.path, device: "laptop", emit: (ev) => signal(v.path, ev) }, { path, where: "laptop" })).catch(() => undefined);
+      },
     }),
   });
   console.log(`[vault-chat-server] listening on http://${cfg.host}:${cfg.port}`);

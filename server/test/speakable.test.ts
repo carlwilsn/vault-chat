@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { CODE_LINE, Speakable, TABLE_LINE, toSpeech } from "../speakable";
+import { BOARD_MARK, CODE_LINE, Speakable, TABLE_LINE, boardSource, isBoardPiece, speechPieces, toSpeech } from "../speakable";
 import { speechReady } from "../speakMath";
 
 const REAL: string[] = JSON.parse(readFileSync(join(__dirname, "voiceReplies.json"), "utf8"));
@@ -100,3 +100,34 @@ describe("streaming says exactly the whole rendering", () => {
     expect(c.push("```\n")).toEqual([CODE_LINE]);
   });
 });
+
+describe("board blocks: drawn, never said", () => {
+  // A spoken lecture as Haiku writes it: blocks on their own lines, and blocks written into a line.
+  const lecture = [
+    "```board\neq #m m_t = \\beta_1 m_{t-1}\n```\nAdam keeps a running average of the gradient.",
+    "Then one of its square. ```board\neq #v v_t = g_t^2\n``` The second, v, averages squares.",
+  ].join("\n");
+  const shown = (ps: string[]) => ps.map((p) => (isBoardPiece(p) ? `[${boardSource(p)}]` : p));
+
+  it("each block is a piece of its own, in its place; the speech around it is read, the block never", () => {
+    const want = ["[eq #m m_t = \\beta_1 m_{t-1}]", "Adam keeps a running average of the gradient.", "Then one of its square.", "[eq #v v_t = g_t^2]", "The second, v, averages squares."];
+    expect(shown(speechPieces(lecture))).toEqual(want);
+    expect(toSpeech(lecture)).toBe("Adam keeps a running average of the gradient. Then one of its square. The second, v, averages squares.");
+    expect(toSpeech(lecture)).not.toContain(CODE_LINE.slice(0, 10));
+    for (const size of [1, 3, 7, 40]) {
+      const s = new Speakable();
+      const out: string[] = [];
+      for (let i = 0; i < lecture.length; i += size) out.push(...s.push(lecture.slice(i, i + size)));
+      out.push(...s.flush());
+      expect(shown(out).filter((p) => p.startsWith("["))).toEqual(want.filter((p) => p.startsWith("[")));
+      expect(out.filter((p) => !isBoardPiece(p)).join(" ")).toBe(toSpeech(lecture));
+    }
+  });
+
+  it("an empty block says and draws nothing; other fences are still a code block", () => {
+    expect(speechPieces("```board\n```\nHi.")).toEqual(["Hi."]);
+    expect(speechPieces("```python\nx=1\n```")).toEqual(["There's a python code block in the chat."]);
+    expect(BOARD_MARK.startsWith("\u0000")).toBe(true); // no text a model writes starts so
+  });
+});
+

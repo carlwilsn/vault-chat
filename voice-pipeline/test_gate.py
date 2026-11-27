@@ -20,7 +20,7 @@ from pipecat.frames.frames import (  # noqa: E402
     VADUserStoppedSpeakingFrame,
 )
 
-from bot import CallStats, Gate, ResultFlow, SttWatch, clean_noise, turn_settled  # noqa: E402
+from bot import CallStats, CueTrack, Gate, ResultFlow, SttWatch, clean_noise, spoken_words, turn_settled  # noqa: E402
 
 Q = Gate.QUIET_SECS
 
@@ -224,6 +224,34 @@ def test_a_providers_error_is_kept_without_the_calls_secrets():
     assert errors[0] == {"where": "ElevenLabsTTSService#0", "error": "1008 Invalid API key *** for ***"}
     assert len(errors) == CallStats.MAX_ERRORS
     assert "secret" not in repr(errors) and "Token" not in repr(errors)
+
+
+def test_a_board_cue_fires_as_the_first_word_after_it_starts_playing():
+    t = CueTrack()
+    # The box's pieces as the TTS gets them: a cue before the first sentence, one between, one at the end.
+    assert t.strip(" \u27E6c1\u27E7") == " "
+    assert t.strip(" Adam keeps two running averages.") == " Adam keeps two running averages."
+    assert t.strip(" \u27E6c2\u27E7 The first, m, is the momentum. \u27E6c3\u27E7") == "  The first, m, is the momentum. "
+    assert t.pending == [(0, 1), (5, 2), (11, 3)]
+    # Word frames come out of the transport as each word starts.
+    assert t.played("Adam") == [1]
+    assert [t.played(w) for w in ["keeps", "two", "running", "averages."]] == [[], [], [], []]
+    assert t.played("The") == [2]
+    assert t.played("—") == []  # no letter, no word (as the box counts)
+    for w in ["first,", "m,", "is", "the"]:
+        t.played(w)
+    assert t.played("momentum.") == []
+    assert t.finished() == [3]
+
+
+def test_an_interruption_drops_the_cues_not_reached_and_says_what_was_heard():
+    t = CueTrack()
+    t.strip("One two three \u27E6c7\u27E7 four five.")
+    for w in ["One", "two"]:
+        t.played(w)
+    assert t.cut() == {"words": 2, "pending": 1}
+    assert t.pending == [] and t.words_out == 0
+    assert spoken_words("x = 2 , so — yes") == ["x", "2", "so", "yes"]
 
 
 if __name__ == "__main__":

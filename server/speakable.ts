@@ -12,6 +12,8 @@
 //   ![alt](src)          "an image: <alt>" (no alt: nothing)
 //   math                 in words (server/speakMath.ts: Speech Rule Engine, ClearSpeak)
 //   ``` code ```         "There's a code block in the chat." ("a python code block" when it is labelled)
+//   ```board ```         nothing said: a piece of its own (BOARD_MARK + the block), in its place among the
+//                        sentences, which the voice draws on the board as the sentence after it starts (server/board.ts)
 //   | table |            "There's a table in the chat."
 //   ---, html tags, emoji  nothing
 //
@@ -21,6 +23,10 @@
 import { speakMath } from "./speakMath";
 
 export const CODE_LINE = "There's a code block in the chat.";
+/** A board block among the spoken pieces: this mark, then the block's lines (never said; server/voiceBrain.ts draws it). */
+export const BOARD_MARK = "\u0000board\u0000";
+export const isBoardPiece = (p: string): boolean => p.startsWith(BOARD_MARK);
+export const boardSource = (p: string): string => p.slice(BOARD_MARK.length);
 export const TABLE_LINE = "There's a table in the chat.";
 
 const EMOJI = /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}]/gu;
@@ -66,10 +72,26 @@ const isTableLine = (l: string): boolean => /^\s*\|/.test(l);
 const fenceOf = (l: string): RegExpExecArray | null => /^\s{0,3}(`{3,}|~{3,})\s*([\w+#.-]*)/.exec(l);
 const codeLine = (lang: string): string => (lang ? `There's a ${lang} code block in the chat.` : CODE_LINE);
 
-/** The whole reply, as spoken. */
-export function toSpeech(md: string): string {
-  return fold(blocks(md.replace(/\r\n?/g, "\n").split("\n"), true).out.join(" "));
+/** A board block written into a line ("… gradient. ```board" / "``` The first …") gets lines of its own: the model
+ *  does that in a spoken reply, and a fence is only a fence at a line's start. */
+export function ownLines(t: string): string {
+  return t
+    .replace(/([^\n])[ \t]*(```board\b)/gi, "$1\n$2")
+    .replace(/(^|\n)(```board\b[^\n]*\n(?:(?!```)[\s\S])*?)```[ \t]*(?=[^\s`])/gi, "$1$2```\n");
 }
+
+/** The whole reply, as spoken (a board block says nothing). */
+export function toSpeech(md: string): string {
+  return fold(blocks(ownLines(md.replace(/\r\n?/g, "\n")).split("\n"), true).out.filter((p) => !isBoardPiece(p)).join(" "));
+}
+
+/** The whole reply as the pieces Speakable streams: sentences and board blocks, in order. */
+export function speechPieces(md: string): string[] {
+  return blocks(ownLines(md.replace(/\r\n?/g, "\n")).split("\n"), true).out.map(foldPiece).filter(Boolean);
+}
+
+/** A spoken piece folded to one line; a board block keeps its lines. */
+const foldPiece = (p: string): string => (isBoardPiece(p) ? (boardSource(p).trim() ? p : "") : fold(p));
 
 /**
  * Lines → speech, block by block. `final`: the text is complete (an open code block or table ends here);
@@ -85,7 +107,7 @@ function blocks(lines: string[], final: boolean): { out: string[]; rest: number 
       let j = i + 1;
       while (j < lines.length && !new RegExp(`^\\s{0,3}${f[1]![0]}{${f[1]!.length},}\\s*$`).test(lines[j]!)) j++;
       if (j >= lines.length && !final) return { out, rest: i };
-      out.push(codeLine(f[2] ?? ""));
+      out.push(f[2]?.toLowerCase() === "board" ? BOARD_MARK + lines.slice(i + 1, j).join("\n") : codeLine(f[2] ?? ""));
       i = j + 1;
       continue;
     }
@@ -145,7 +167,7 @@ export class Speakable {
   private said = false;
 
   push(delta: string): string[] {
-    this.buf += delta.replace(/\r\n?/g, "\n");
+    this.buf = ownLines(this.buf + delta.replace(/\r\n?/g, "\n"));
     const out: string[] = [];
     const nl = this.buf.lastIndexOf("\n");
     if (nl >= 0) {
@@ -183,8 +205,8 @@ export class Speakable {
         this.spokenInLine = cut;
       }
     }
-    const said = out.map(fold).filter(Boolean);
-    if (said.length) this.said = true;
+    const said = out.map(foldPiece).filter(Boolean);
+    if (said.some((p) => !isBoardPiece(p))) this.said = true;
     return said;
   }
 
@@ -195,7 +217,7 @@ export class Speakable {
     this.spokenInLine = 0;
     if (!rest.trim()) return [];
     const lines = rest.split("\n");
-    if (skip && isProse(lines[0]!)) return [lineTail(lines[0]!, skip), ...blocks(lines.slice(1), true).out].map(fold).filter(Boolean);
-    return blocks(lines, true).out.map(fold).filter(Boolean);
+    if (skip && isProse(lines[0]!)) return [lineTail(lines[0]!, skip), ...blocks(lines.slice(1), true).out].map(foldPiece).filter(Boolean);
+    return blocks(lines, true).out.map(foldPiece).filter(Boolean);
   }
 }

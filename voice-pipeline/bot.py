@@ -64,6 +64,7 @@ from pipecat.frames.frames import (
     TranscriptionFrame,
     TTSAudioRawFrame,
     TTSSpeakFrame,
+    TTSTextFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
@@ -550,6 +551,140 @@ class SpeechCut(FrameProcessor):
         await self.push_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM)
 
 
+# A board block's place in the speech (server/voiceBrain.ts cueMark): never said, drawn as the voice reaches it.
+CUE_MARK = re.compile("\u27E6c(\\d+)\u27E7")
+
+
+def spoken_words(text: str) -> list[str]:
+    """Words as the box counts them (server/voiceBrain.ts spokenWords): what has a letter or a digit."""
+    return [w for w in text.split() if any(ch.isalnum() for ch in w)]
+
+
+class CueTrack:
+    """The board in step with the voice. `pre` (just before the TTS) takes each cue mark out of the text and notes
+    after how many words it falls; `post` (after the transport, where the TTS's word frames come out as each word starts
+    playing) counts the words played and tells the box a cue the moment its first word starts (POST .../cue {cue}). An
+    interruption drops the cues not reached and tells the box how many words were heard ({cut: {words}}); both counts
+    start again from there. Pure counting (tested in test_gate.py); `send` does the posting."""
+
+    def __init__(self, send=None):
+        self.send = send
+        self.words_in = 0
+        self.words_out = 0
+        self.pending: list[tuple[int, int]] = []  # (words before it, cue id)
+        self.pre = _CuePre(self)
+        self.post = _CuePost(self)
+
+    def strip(self, text: str) -> str:
+        """The text the TTS gets; its cues are noted at their word positions."""
+        out, at = [], 0
+        for m in CUE_MARK.finditer(text):
+            before = text[at:m.start()]
+            out.append(before)
+            self.words_in += len(spoken_words(before))
+            self.pending.append((self.words_in, int(m.group(1))))
+            at = m.end()
+        rest = text[at:]
+        self.words_in += len(spoken_words(rest))
+        out.append(rest)
+        return "".join(out)
+
+    def played(self, text: str) -> list[int]:
+        """Words now starting to play: the cues reached (in order)."""
+        n = len(spoken_words(text))
+        if not n:
+            return []
+        due = self._due(self.words_out)
+        self.words_out += n
+        return due
+
+    def finished(self) -> list[int]:
+        """The voice stopped: cues after its last word (a block at the reply's end) are reached too."""
+        return self._due(self.words_out)
+
+    def _due(self, upto: int) -> list[int]:
+        due = [c for w, c in self.pending if w <= upto]
+        self.pending = [(w, c) for w, c in self.pending if w > upto]
+        return due
+
+    def cut(self) -> dict:
+        """Interrupted: what was heard; the rest never plays."""
+        out = {"words": self.words_out, "pending": len(self.pending)}
+        self.pending = []
+        self.words_out = 0
+        return out
+
+    def _fire(self, body: dict) -> None:
+        if self.send:
+            asyncio.create_task(self.send(body))
+
+
+class _CuePre(FrameProcessor):
+    def __init__(self, track: CueTrack):
+        super().__init__()
+        self.track = track
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InterruptionFrame):
+            self.track.pending = []
+            self.track.words_in = 0
+        elif direction == FrameDirection.DOWNSTREAM and isinstance(frame, (LLMTextFrame, TTSSpeakFrame)):
+            text = self.track.strip(frame.text or "")
+            if text != frame.text:
+                if not text.strip():
+                    return  # only a cue: nothing to say
+                frame.text = text
+        await self.push_frame(frame, direction)
+
+
+class _CuePost(FrameProcessor):
+    def __init__(self, track: CueTrack):
+        super().__init__()
+        self.track = track
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if direction == FrameDirection.DOWNSTREAM:
+            if isinstance(frame, TTSTextFrame):
+                for c in self.track.played(frame.text or ""):
+                    jlog(ev="cue", cue=c)
+                    self.track._fire({"cue": c, "at": time.time()})
+            elif isinstance(frame, BotStoppedSpeakingFrame):
+                for c in self.track.finished():
+                    jlog(ev="cue", cue=c, end=True)
+                    self.track._fire({"cue": c, "at": time.time()})
+            elif isinstance(frame, InterruptionFrame):
+                cut = self.track.cut()
+                if cut["words"] or cut["pending"]:
+                    jlog(ev="cue.cut", **cut)
+                self.track._fire({"cut": {**cut, "at": time.time()}})
+        await self.push_frame(frame, direction)
+
+
+def cue_sender(call: dict):
+    """POSTs a cue or a cut to the box (loopback, the call's token); never holds up a frame."""
+    url = f"{call['base']}/api/v1/brain/call/{call['id']}/cue"
+    headers = {"Authorization": f"Bearer {call['token']}"}
+    state: dict = {}
+
+    async def send(body: dict) -> None:
+        try:
+            if state.get("s") is None or state["s"].closed:
+                state["s"] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5))
+            async with state["s"].post(url, json=body, headers=headers) as r:
+                await r.read()
+        except Exception as e:  # the box restarted: that stroke is lost, the call goes on
+            logger.warning(f"board cue: {e}")
+
+    async def close() -> None:
+        if state.get("s") is not None:
+            await state["s"].close()
+
+    send.close = close  # type: ignore[attr-defined]
+    return send
+
+
 async def speak_channel(call: dict, task: PipelineTask, quiet: Quiet, cut=None):
     """The conversation's speech outside a request (typed turns, results): said when both are quiet. `cut` stops what the
     voice is saying (SpeechCut.cut, below the brain); without one (tests), an interruption queued at the task."""
@@ -721,6 +856,8 @@ async def run_call(connection, call: dict):
     quiet = Quiet()
     speech_cut = SpeechCut()
     after_stt = AfterStt(quiet, stats, call["id"])
+    send_cue = cue_sender(call) if BRAIN == "pi" else None
+    cues = CueTrack(send_cue)
     pipeline = Pipeline(
         [
             transport.input(),
@@ -736,9 +873,11 @@ async def run_call(connection, call: dict):
             ReplyHold(quiet),
             StageCount(stats, {LLMFullResponseEndFrame: "replies", TTSSpeakFrame: "speak"}),
             speech_cut,
+            cues.pre,
             make_tts(call),
             StageCount(stats, {TTSAudioRawFrame: "tts_audio"}),
             transport.output(),
+            cues.post,
             StageCount(stats, {BotStartedSpeakingFrame: "bot_spoke"}),
             pair.assistant(),
         ]
@@ -786,6 +925,8 @@ async def run_call(connection, call: dict):
             side.cancel()
         if after_stt.loop:
             after_stt.loop.cancel()
+        if send_cue is not None:
+            await send_cue.close()
         replaced = RUNS.get(call["id"]) is not task
         if not replaced:
             RUNS.pop(call["id"], None)

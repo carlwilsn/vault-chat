@@ -1,0 +1,115 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="vc-board" content="__BOARD_VERSION__"><title>Board</title>
+<meta name="vc-frame" content="aspect=16/10">
+<!-- The voice call's board (server/board.ts writes it into the vault). Its state is the board: `scene` {next, items}
+     (what is on it, in drawing order) and `cut` (he talked over the voice: every stroke finishes at once). It draws
+     what is new, animated, and removes what is gone. Everything it needs is inline: pages load nothing. -->
+<style>/*__KATEX_CSS__*/
+html,body{margin:0;height:100%;background:#fbfaf6;overflow:hidden}
+#stage{position:absolute;left:0;top:0;width:1600px;height:1000px;transform-origin:0 0}
+.it{position:absolute;left:56px;display:flex;align-items:center;white-space:nowrap;color:#1d2433;font:36px/1.15 "Segoe Print","Bradley Hand","Comic Sans MS",cursive}
+.it .katex{font-size:1.12em}
+.gone{transition:opacity .18s;opacity:0}
+svg{position:absolute;left:0;top:0;width:1600px;height:1000px;overflow:visible;pointer-events:none}
+svg text{font:26px "Segoe Print","Comic Sans MS",cursive;fill:#1d2433}
+svg .tick{font:18px system-ui,sans-serif;fill:#6b7280}
+</style></head><body><div id="stage"><svg id="under"></svg><div id="lines"></div><svg id="g"></svg></div>
+<script>/*__KATEX_JS__*/</script>
+<script>
+(function(){
+var W=1600,H=1000,TOP=36,RH=84,LEFT=56;
+var GX0=860,GX1=1560,GY0=70,GY1=930;
+var COL={red:"#d0342c",blue:"#2463eb",green:"#15803d",orange:"#e8730c",purple:"#7c3aed",gray:"#6b7280",black:"#1d2433"};
+var stage=document.getElementById("stage"),lines=document.getElementById("lines"),g=document.getElementById("g"),under=document.getElementById("under");
+var NS="http://www.w3.org/2000/svg";
+var drawn=new Map(); // n -> {item, els:[...], anims:[...]}
+var queue=[],busy=false,axes=null,axesEls=null,lastCut=null,first=true,lastSeq=0;
+function fit(){var s=Math.min(innerWidth/W,innerHeight/H);stage.style.transform="translate("+((innerWidth-W*s)/2)+"px,"+((innerHeight-H*s)/2)+"px) scale("+s+")";}
+addEventListener("resize",fit);fit();
+function col(c){return COL[c]||COL.black;}
+function el(tag,attrs,parent){var e=document.createElementNS(NS,tag);for(var k in attrs)e.setAttribute(k,attrs[k]);(parent||g).appendChild(e);return e;}
+var DEF={x0:-3,x1:3,y0:-2,y1:9};
+function A(){return axes||DEF;}
+function X(x){var a=A();return GX0+(x-a.x0)/(a.x1-a.x0)*(GX1-GX0);}
+function Y(y){var a=A();return GY1-(y-a.y0)/(a.y1-a.y0)*(GY1-GY0);}
+var WORDS={x:1,sin:1,cos:1,tan:1,exp:1,log:1,ln:1,sqrt:1,abs:1,pi:1,e:1};
+function fn(expr){
+  if(!/^[0-9a-z.+\-*/^()\s,]+$/i.test(expr))return null;
+  var ws=expr.toLowerCase().match(/[a-z]+/g)||[];for(var i=0;i<ws.length;i++)if(!WORDS[ws[i]])return null;
+  var js=expr.toLowerCase().replace(/\^/g,"**").replace(/(\d)\s*(x|\()/g,"$1*$2").replace(/\)\s*(x|\(|\d)/g,")*$1")
+    .replace(/\bln\b/g,"Math.log").replace(/\blog\b/g,"Math.log10").replace(/\b(sin|cos|tan|exp|sqrt|abs)\b/g,"Math.$1")
+    .replace(/\bpi\b/g,"Math.PI").replace(/\be\b/g,"Math.E");
+  try{var f=new Function("x","return ("+js+");");f(1);return f;}catch(err){return null;}
+}
+// Drawing: each returns animations (Web Animations), so a cut can finish them.
+function reveal(e,ms){return [e.animate([{clipPath:"inset(-20% 100% -20% 0)"},{clipPath:"inset(-20% 0% -20% 0)"}],{duration:ms,easing:"linear",fill:"both"})];}
+function stroke(p,ms){var L=p.getTotalLength?p.getTotalLength():1000;p.style.strokeDasharray=L;p.style.strokeDashoffset=L;
+  return [p.animate([{strokeDashoffset:L},{strokeDashoffset:0}],{duration:ms,easing:"ease-out",fill:"both"})];}
+function fadeIn(e,ms){return [e.animate([{opacity:0},{opacity:1}],{duration:ms,fill:"both"})];}
+function lineEl(it){
+  var d=document.createElement("div");d.className="it";d.style.top=(TOP+it.row*RH)+"px";d.style.height=(it.h*RH)+"px";
+  d.style.color=col(it.color);
+  if(it.kind==="eq"){try{katex.render((it.h>1?"\\displaystyle ":"")+it.tex,d,{throwOnError:false,displayMode:false});}catch(err){d.textContent=it.tex;}}
+  else{var parts=String(it.text).split(/(\$[^$]+\$)/);parts.forEach(function(p){var s=document.createElement("span");
+    if(/^\$[^$]+\$$/.test(p)){try{katex.render(p.slice(1,-1),s,{throwOnError:false});}catch(err){s.textContent=p;}}else s.textContent=p;d.appendChild(s);});}
+  lines.appendChild(d);return d;
+}
+function drawAxes(a,anim){
+  if(axesEls)axesEls.forEach(function(e){e.remove();});axesEls=[];axes=a;var out=[];
+  var ax=Math.min(Math.max(0,a.x0),a.x1),ay=Math.min(Math.max(0,a.y0),a.y1);
+  var h=el("path",{d:"M"+GX0+" "+Y(ay)+" L"+GX1+" "+Y(ay),stroke:"#1d2433","stroke-width":3,fill:"none","stroke-linecap":"round"});
+  var v=el("path",{d:"M"+X(ax)+" "+GY1+" L"+X(ax)+" "+GY0,stroke:"#1d2433","stroke-width":3,fill:"none","stroke-linecap":"round"});
+  axesEls.push(h,v);if(anim){out=out.concat(stroke(h,450),stroke(v,450));}
+  function step(r){var s=r/8,m=Math.pow(10,Math.floor(Math.log10(s)));var c=[1,2,5,10].map(function(k){return k*m;}).find(function(k){return k>=s;});return c||m*10;}
+  var sx=step(a.x1-a.x0),sy=step(a.y1-a.y0);
+  for(var x=Math.ceil(a.x0/sx)*sx;x<=a.x1+1e-9;x+=sx){if(Math.abs(x)<1e-9)continue;var t=el("path",{d:"M"+X(x)+" "+(Y(ay)-7)+" L"+X(x)+" "+(Y(ay)+7),stroke:"#1d2433","stroke-width":2});var l=el("text",{x:X(x),y:Y(ay)+30,"text-anchor":"middle","class":"tick"});l.textContent=+x.toFixed(6);axesEls.push(t,l);if(anim)out=out.concat(fadeIn(t,500),fadeIn(l,500));}
+  for(var y=Math.ceil(a.y0/sy)*sy;y<=a.y1+1e-9;y+=sy){if(Math.abs(y)<1e-9)continue;var t2=el("path",{d:"M"+(X(ax)-7)+" "+Y(y)+" L"+(X(ax)+7)+" "+Y(y),stroke:"#1d2433","stroke-width":2});var l2=el("text",{x:X(ax)-14,y:Y(y)+6,"text-anchor":"end","class":"tick"});l2.textContent=+y.toFixed(6);axesEls.push(t2,l2);if(anim)out=out.concat(fadeIn(t2,500),fadeIn(l2,500));}
+  return out;
+}
+function arrowHead(x1,y1,x2,y2,c){var t=Math.atan2(y2-y1,x2-x1),L=18;return el("path",{d:"M"+(x2-L*Math.cos(t-0.45))+" "+(y2-L*Math.sin(t-0.45))+" L"+x2+" "+y2+" L"+(x2-L*Math.cos(t+0.45))+" "+(y2-L*Math.sin(t+0.45)),stroke:c,"stroke-width":4,fill:"none","stroke-linecap":"round","stroke-linejoin":"round"});}
+function bboxOf(n){var d=drawn.get(n);if(!d||!d.els.length)return null;var r=null;
+  d.els.forEach(function(e){var b;if(e.getBBox&&e.ownerSVGElement){b=e.getBBox();}else{b={x:e.offsetLeft,y:e.offsetTop,width:e.scrollWidth,height:e.offsetHeight};
+      var k=e.querySelector(".katex")||e;if(k!==e){b={x:e.offsetLeft+k.offsetLeft,y:e.offsetTop+(e.offsetHeight-k.offsetHeight)/2,width:k.offsetWidth,height:k.offsetHeight};}else{b.width=Array.prototype.reduce.call(e.children,function(w,c){return w+c.offsetWidth;},0)||e.scrollWidth;}}
+    r=r?{x:Math.min(r.x,b.x),y:Math.min(r.y,b.y),x2:Math.max(r.x2,b.x+b.width),y2:Math.max(r.y2,b.y+b.height)}:{x:b.x,y:b.y,x2:b.x+b.width,y2:b.y+b.height};});
+  return r;}
+function draw(it,anim){
+  var els=[],an=[],c=col(it.color),ms=function(x){return anim?x:0;};
+  if(it.kind==="eq"||it.kind==="text"){var d=lineEl(it);els.push(d);if(anim){var w=d.scrollWidth||400;an=reveal(d,Math.max(350,Math.min(1400,w*1.6)));}}
+  else if(it.kind==="axes"){an=drawAxes(it,anim);}
+  else if(it.kind==="plot"){var f=fn(it.expr);if(f){var a=A(),pts=[],seg="",pen=false;for(var i=0;i<=240;i++){var x=a.x0+(a.x1-a.x0)*i/240,y;try{y=f(x);}catch(err){y=NaN;}
+      var ok=isFinite(y)&&y>=a.y0-(a.y1-a.y0)*0.2&&y<=a.y1+(a.y1-a.y0)*0.2;if(ok){y=Math.max(a.y0-(a.y1-a.y0)*0.05,Math.min(a.y1+(a.y1-a.y0)*0.05,y));seg+=(pen?" L":" M")+X(x).toFixed(1)+" "+Y(y).toFixed(1);}pen=ok;}
+    var p=el("path",{d:seg||"M0 0",stroke:it.color?c:COL.blue,"stroke-width":4.5,fill:"none","stroke-linecap":"round","stroke-linejoin":"round"});els.push(p);if(anim)an=stroke(p,1100);}}
+  else if(it.kind==="point"){var ci=el("circle",{cx:X(it.x),cy:Y(it.y),r:8,fill:it.color?c:COL.red});els.push(ci);if(anim)an=fadeIn(ci,250);
+    if(it.label){var tl=el("text",{x:X(it.x)+14,y:Y(it.y)-14,fill:it.color?c:COL.red});tl.textContent=it.label;els.push(tl);if(anim)an=an.concat(fadeIn(tl,350));}}
+  else if(it.kind==="line"||it.kind==="arrow"){var lc=it.color?c:COL.orange;var pl=el("path",{d:"M"+X(it.x1)+" "+Y(it.y1)+" L"+X(it.x2)+" "+Y(it.y2),stroke:lc,"stroke-width":4,fill:"none","stroke-linecap":"round"});els.push(pl);if(anim)an=stroke(pl,600);
+    if(it.kind==="arrow"){var hd=arrowHead(X(it.x1),Y(it.y1),X(it.x2),Y(it.y2),lc);els.push(hd);if(anim)an=an.concat(fadeIn(hd,600));}}
+  else if(it.kind==="mark"){var b=bboxOf(it.target);if(b){if(it.style==="box"){var pad=10,mc=it.color?c:COL.red;var rr=el("rect",{x:b.x-pad,y:b.y-pad,width:b.x2-b.x+2*pad,height:b.y2-b.y+2*pad,rx:16,stroke:mc,"stroke-width":4,fill:"none"});els.push(rr);if(anim)an=stroke(rr,700);}
+      else{var hl=el("rect",{x:b.x-6,y:b.y2-14,width:b.x2-b.x+12,height:16,rx:6,fill:it.color?c:"#facc15",opacity:0.55},under);els.push(hl);if(anim)an=reveal(hl,500);}}}
+  drawn.set(it.n,{item:it,els:els,anims:an});
+  return an;
+}
+function remove(n){var d=drawn.get(n);if(!d)return;drawn.delete(n);d.anims.forEach(function(a){try{a.finish();}catch(err){}});
+  if(d.item.kind==="axes"&&axesEls){axesEls.forEach(function(e){e.remove();});axesEls=null;axes=null;}
+  d.els.forEach(function(e){e.classList.add("gone");setTimeout(function(){e.remove();},200);});}
+function pump(){if(busy)return;busy=true;(function next(){var it=queue.shift();if(!it){busy=false;return;}
+  var an=draw(it,true);if(!an.length){next();return;}
+  // Behind the voice (several waiting): each goes faster, so the board catches up instead of lagging.
+  if(queue.length)an.forEach(function(a){a.playbackRate=Math.min(4,1+queue.length);});
+  Promise.all(an.map(function(a){return a.finished.catch(function(){});})).then(next);})();}
+function finishAll(){var q=queue;queue=[];q.forEach(function(it){draw(it,false);});drawn.forEach(function(d){d.anims.forEach(function(a){try{a.finish();}catch(err){}});});}
+function take(st,seq){
+  st=st||{};var sc=st.scene&&typeof st.scene==="object"?st.scene:{items:[]};var items=Array.isArray(sc.items)?sc.items:[];
+  var want=new Set(items.map(function(i){return i.n;}));
+  queue=queue.filter(function(it){return want.has(it.n);});
+  Array.from(drawn.keys()).forEach(function(n){if(!want.has(n))remove(n);});
+  var fresh=items.filter(function(i){return !drawn.has(i.n)&&!queue.some(function(q){return q.n===i.n;});});
+  // An axes item first: what is drawn on it is placed by it.
+  fresh.forEach(function(i){if(first)draw(i,false);else queue.push(i);});
+  if(!first)pump();
+  if(st.cut!==undefined&&st.cut!==lastCut){if(!first)finishAll();lastCut=st.cut;}
+  if(fresh.length&&!first&&window.vc&&typeof vc.log==="function"&&seq&&seq!==lastSeq){lastSeq=seq;try{vc.log({painted:seq,items:fresh.length,at:Date.now()});}catch(err){}}
+  first=false;
+}
+window.__board={take:take,drawn:drawn};
+if(window.vc&&vc.state&&vc.state.subscribe)vc.state.subscribe(take);else take({},0);
+})();
+</script></body></html>
