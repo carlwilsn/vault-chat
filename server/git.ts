@@ -251,7 +251,33 @@ export async function ensureLfsFilter(repo: string): Promise<void> {
     const r = await runGit(repo, ["config", "--local", "--get", k]);
     if (r.stdout.replace(/\r?\n$/, "") !== v) await git(repo, ["config", "--local", k, v]);
   }
+  removeGitLfsHooks(gitDir);
   lfsConfigured.set(lockKey(repo), key);
+}
+
+/** The hooks git-lfs writes into a repo it runs in (a global `git lfs install` let it run on the box before the box's
+ * own `filter.lfs.process`): they call git-lfs, which has no place on the box (its pre-push fails every push to the
+ * hub). Removed only when the hook is git-lfs's alone. */
+const GIT_LFS_HOOKS = ["pre-push", "post-checkout", "post-commit", "post-merge"];
+export function isGitLfsOnlyHook(body: string): boolean {
+  const ls = body
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l !== "" && !l.startsWith("#"));
+  return ls.length > 0 && ls.some((l) => /^git[ -]lfs /.test(l)) && ls.every((l) => /^(command -v git-lfs|git lfs |git-lfs )/.test(l));
+}
+function removeGitLfsHooks(gitDir: string): void {
+  for (const h of GIT_LFS_HOOKS) {
+    const p = join(gitDir, "hooks", h);
+    try {
+      if (isGitLfsOnlyHook(readFileSync(p, "utf8"))) {
+        rmSync(p, { force: true });
+        console.warn(`[sync] removed git-lfs's ${h} hook from ${gitDir} (the box runs its own LFS filter)`);
+      }
+    } catch {
+      /* no hook */
+    }
+  }
 }
 
 /** The conversation event log (server/convlog). */

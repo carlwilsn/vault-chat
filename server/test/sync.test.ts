@@ -1,7 +1,7 @@
 // The box sync loop against two local repos: the bare hub and the box's
 // working copy, plus a "laptop" clone playing the other side.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { writeFileSync, readFileSync, existsSync, mkdirSync, openSync, closeSync, ftruncateSync, utimesSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, openSync, closeSync, ftruncateSync, utimesSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { BoxSync } from "../sync";
 import { tmp, cleanup, makeVault, git, sh, waitFor } from "./helpers";
@@ -131,6 +131,40 @@ describe("box sync loop", () => {
     expect(alerts).toEqual([]);
     await sync.runOnce();
     expect(git(box, "status", "--porcelain").trim()).toBe("");
+  });
+
+  it("a machine-wide `git lfs install` neither replaces the box's LFS filter nor blocks the push (git-lfs's hooks go)", async () => {
+    // git prefers any filter.lfs.process over clean/smudge: a global git-lfs one used to run instead of the box's
+    // filter, install git-lfs's hooks, and its pre-push failed every push to the hub ("missing protocol").
+    const globalCfg = join(root, "global.gitconfig");
+    writeFileSync(globalCfg, `[filter "lfs"]\n\tprocess = false\n\tclean = false\n\tsmudge = false\n\trequired = true\n`);
+    const hook = join(box, ".git", "hooks", "pre-push");
+    mkdirSync(join(box, ".git", "hooks"), { recursive: true });
+    writeFileSync(hook, `#!/bin/sh\ncommand -v git-lfs >/dev/null 2>&1 || { echo >&2 "no git-lfs"; exit 2; }\ngit lfs pre-push "$@"\n`, { mode: 0o755 });
+    const before = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = globalCfg;
+    try {
+      const fresh = new BoxSync(box, bare, 60_000, async () => {}, 0);
+      await fresh.ensure(false);
+      const big = join(box, "data", "huge.bin");
+      mkdirSync(join(box, "data"), { recursive: true });
+      const fd = openSync(big, "w");
+      ftruncateSync(fd, 50 * 1024 * 1024 + 3);
+      closeSync(fd);
+      await fresh.runOnce();
+      fresh.stop();
+      expect(fresh.status.ok, JSON.stringify(fresh.status.steps)).toBe(true);
+      expect(existsSync(hook)).toBe(false);
+      expect(sh(bare, "git", ["show", "box:data/huge.bin"])).toMatch(/^version https:\/\/git-lfs\.github\.com\/spec\/v1\noid sha256:[0-9a-f]{64}\nsize 52428803\n$/);
+      // The bytes come back on checkout through the same filter (smudge over the process protocol).
+      rmSync(big);
+      git(box, "checkout", "--", "data/huge.bin");
+      expect(statSync(big).size).toBe(50 * 1024 * 1024 + 3);
+      expect(git(box, "status", "--porcelain").trim()).toBe("");
+    } finally {
+      if (before === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+      else process.env.GIT_CONFIG_GLOBAL = before;
+    }
   });
 
   it("never commits a new archive: excluded for good, reported, one alert naming the work area", async () => {
