@@ -898,10 +898,12 @@ function boardCue(d: Pick<BrainDeps, "logDir" | "showBoard">, c: Call, b: any): 
 
 /** A device's local barge-in holds the board at most this long (it gives the sound back within 2 s: DUCK_MAX_MS). */
 export const DUCK_HOLD_MS = 3_000;
+/** The sound came back because the reply went quiet: the box's cut, if there is one, arrives well within this. */
+export const DUCK_GRACE_MS = 1_200;
 
 /** POST /api/v1/brain/call/<id>/duck {on, resumed}: his device silenced the voice (he talks over it) or gave it back.
  *  On: the strokes on the page finish now and cues wait; off and resumed (a "yeah", the voice goes on): the held cues
- *  are drawn; off because the reply stopped: they are dropped. */
+ *  are drawn; off because the reply went quiet: drawn after a grace, unless the box's cut drops them first. */
 function boardDuck(d: Pick<BrainDeps, "logDir" | "showBoard">, c: Call, on: boolean, resumed: boolean): { status: number; body: Record<string, unknown> } {
   c.lastActive = Date.now();
   if (on) {
@@ -913,11 +915,14 @@ function boardDuck(d: Pick<BrainDeps, "logDir" | "showBoard">, c: Call, on: bool
   c.ducked = null;
   const held = c.heldCues;
   c.heldCues = [];
-  // The device gave the sound back because the reply stopped (the box took the interruption): what waited never shows.
-  if (resumed) for (const h of held) boardCue(d, c, { cue: h.n, at: h.at });
-  else for (const h of held) c.cues.delete(h.n);
-  log(d, { ev: "board.duck", call: c.id, on: false, resumed, [resumed ? "released" : "dropped"]: held.length });
-  return { status: 200, body: { ok: true, [resumed ? "released" : "dropped"]: held.length } };
+  // The voice goes on (a "yeah"): what waited is drawn now. The device gave the sound back because the reply went
+  // quiet: if that was the box taking the interruption, its cut comes within moments and drops them (boardCue's cut);
+  // if it was only a pause between sentences, they are drawn after DUCK_GRACE_MS.
+  const release = () => { for (const h of held) if (c.cues.has(h.n)) boardCue(d, c, { cue: h.n, at: h.at }); };
+  if (resumed) release();
+  else if (held.length) setTimeout(release, DUCK_GRACE_MS).unref?.();
+  log(d, { ev: "board.duck", call: c.id, on: false, resumed, held: held.length });
+  return { status: 200, body: { ok: true, held: held.length } };
 }
 
 /** POST /api/v1/brain/offer: the device's WebRTC offer, handed to the pipeline with the call's secrets (loopback). */

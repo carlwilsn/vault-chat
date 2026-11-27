@@ -898,7 +898,7 @@ describe("the board, in step with the voice", () => {
     expect((await post(c, "cue", { cue: 2 })).status).toBe(202);
     expect(await scene()).toEqual(["axes"]);
     // A "yeah": the device gives the sound back, and the board catches up.
-    expect(await (await fetch(`${base}/api/v1/brain/call/${c.id}/duck`, { method: "POST", headers: { "x-device": "1" }, body: JSON.stringify({ on: false, resumed: true }) })).json()).toMatchObject({ released: 1 });
+    expect(await (await fetch(`${base}/api/v1/brain/call/${c.id}/duck`, { method: "POST", headers: { "x-device": "1" }, body: JSON.stringify({ on: false, resumed: true }) })).json()).toMatchObject({ held: 1 });
     expect(await scene()).toEqual(["axes", "plot"]);
     // A real barge-in: the device gives the sound back because the reply stopped; what waited is never drawn.
     eng.emit(delta("x"));

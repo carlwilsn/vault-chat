@@ -307,6 +307,13 @@ export class BrainConversation {
     });
   }
 
+  /** The box hears of a local barge-in at once, so the board holds still with the voice (server/voiceBrain.ts duck):
+   *  on, its strokes finish and what the voice reaches meanwhile waits; off, the board goes on with the voice (at once
+   *  when the reply is still playing; after a moment when it went quiet, unless the box cut it). */
+  private duck(on: boolean, resumed = false): void {
+    void this.o.post(`/api/v1/brain/call/${encodeURIComponent(this.callId)}/duck`, { on, resumed }).catch(() => {});
+  }
+
   private tick(buf: Float32Array, lbuf: Float32Array): void {
     if (this.ended) return;
     const now = this.d.now();
@@ -343,6 +350,7 @@ export class BrainConversation {
           this.el.volume = 0;
           if (this.stretch) this.stretch.ducks++;
           this.o.log?.("voice brain barge-in", { level: Math.round(level * 1000) / 1000 });
+          this.duck(true);
         }
       } else if (level <= BARGE_RMS) this.bargeSince = null;
       if (this.ducked) {
@@ -353,6 +361,8 @@ export class BrainConversation {
         if (!playing || now - this.lastSpeech >= RESUME_MS || capped) {
           this.ducked = false;
           this.el.volume = this.volume;
+          // Still playing: the box didn't take it (a "yeah"), the voice goes on. Quiet: maybe the box cut the reply.
+          this.duck(false, playing);
           if (this.stretch) {
             this.stretch.duckedMs += now - this.duckedAt;
             if (capped) this.stretch.capped++;
