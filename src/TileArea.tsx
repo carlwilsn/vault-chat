@@ -120,8 +120,12 @@ const devDrop = (detail: Record<string, unknown>) => {
   if (import.meta.env.DEV) window.dispatchEvent(new CustomEvent("vc-tile-drop", { detail }));
 };
 
-/** A spot's content key: what it shows (so a tile moved to another spot keeps its view, nothing reloads). */
-const keyOf = (s: Slot) => (!s.content ? `empty:${s.id}` : s.content.type === "file" ? `file:${s.content.paneId ?? "single"}` : `chat:${s.content.chatId}`);
+/** A tile's element key: the tile's own id (a spot's id stays with its tile through every move, swap, divider drag,
+ *  split and unsplit: src/tiles.ts snapTo), so a layout change never remounts what a tile shows and a web page in it
+ *  never reloads (Carl 11-26: a video restarted when he split the screen). Not the store pane's id: the one viewer has
+ *  none (null) and gets one when a second file comes in, and loses it again when that one goes. A chat tile given
+ *  another chat is drawn again for it; a file tile given another file or page keeps its pane (it follows the address). */
+const keyOf = (s: Slot) => `${s.id}:${!s.content ? "empty" : s.content.type === "file" ? "file" : `chat:${s.content.chatId}`}`;
 
 export function TileArea() {
   const slots = useTiles((t) => t.slots);
@@ -225,7 +229,7 @@ export function TileArea() {
         <MarkdownView />
       ) : (
         <div data-el="tile-grid" className="absolute inset-0 overflow-hidden">
-          {/* Sorted by what they show, not where: a tile moved to another spot stays the same element. */}
+          {/* Sorted by the tile, not where it is: a tile moved to another spot stays the same element, in the same place among its siblings (an iframe moved in the DOM reloads). */}
           {[...slots].sort((a, b) => (keyOf(a) < keyOf(b) ? -1 : 1)).map((s) => {
             const b = boxOf(s.rect, slots, split);
             return (

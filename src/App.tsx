@@ -132,7 +132,6 @@ export default function App() {
     };
   }, [setFiles]);
   const leftCollapsed = useStore((s) => s.leftCollapsed);
-  const popoutOpen = useStore((s) => s.popoutOpen);
   const chatFullscreen = useStore((s) => s.chatFullscreen);
   // The docked chat panel (Ctrl+Shift+B); the chat list is the overlay at the right edge (Ctrl+Shift+C).
   const chatDocked = useStore((s) => !s.rightCollapsed && !s.popoutOpen);
@@ -581,9 +580,10 @@ export default function App() {
             Refit file-tree widths through Allotment, not a React remount. A vault
             key here remounted ChatPane, discarded its draft and reader scroll,
             and rebuilt the entire historical transcript for a file operation. */}
+        {/* No key: popping a chat out (or back) is a layout change, and a remount here would make every tile's
+            web page load again (Carl 11-26). The panes are the same either way. */}
         <Allotment
           ref={layoutRef}
-          key={popoutOpen ? "pop" : "dock"}
           proportionalLayout={false}
           onChange={sashMoved}
         >
