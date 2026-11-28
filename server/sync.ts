@@ -358,7 +358,9 @@ exit 0
   private async pushBox(): Promise<void> {
     const s = this.status;
     try {
-      const r = await runGit(this.vault, ["push", "-q", this.bare, `refs/heads/${this.BRANCH}:refs/heads/${BOX_BRANCH}`], {
+      // --no-verify: a pre-push hook in the working copy (git-lfs installs one the first time its filter runs) is
+      // never the box's — the box serves LFS itself (server/lfs.ts), and git-lfs's hook refuses a local bare repo.
+      const r = await runGit(this.vault, ["push", "-q", "--no-verify", this.bare, `refs/heads/${this.BRANCH}:refs/heads/${BOX_BRANCH}`], {
         env: { VC_PUSHER: "box" },
       });
       if (r.code !== 0) throw new Error(`git push ${this.BRANCH === BOX_BRANCH ? BOX_BRANCH : `${this.BRANCH} → ${BOX_BRANCH}`} (exit ${r.code}): ${r.stderr.trim()}`);

@@ -1,7 +1,7 @@
 // The box sync loop against two local repos: the bare hub and the box's
 // working copy, plus a "laptop" clone playing the other side.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { writeFileSync, readFileSync, existsSync, mkdirSync, openSync, closeSync, ftruncateSync, utimesSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, openSync, closeSync, ftruncateSync, utimesSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { BoxSync } from "../sync";
 import { tmp, cleanup, makeVault, git, sh, waitFor } from "./helpers";
@@ -110,6 +110,37 @@ describe("box sync loop", () => {
     expect(head(box)).toBe(bareRef("refs/heads/master"));
     expect(existsSync(join(box, "laptop2.md"))).toBe(true);
     expect(git(box, "log", "--merges", "--format=%an", "HEAD").trim().split("\n").filter(Boolean)).not.toContain("vault-chat-agent");
+  });
+
+  it("a git-lfs filter.lfs.process from the user's or system config never takes the box's filter over; a stray pre-push hook never blocks the push", async () => {
+    // Ubuntu's git-lfs package sets filter.lfs.process in /etc/gitconfig: process wins over clean/smudge, so the box
+    // sets its own. Here the outside one always fails, so any use of it fails the commit.
+    const globalCfg = join(root, "global.gitconfig");
+    writeFileSync(globalCfg, '[filter "lfs"]\n\tprocess = false\n\trequired = true\n');
+    // git-lfs installs this the first time its filter runs; against a local bare repo it refuses every push.
+    mkdirSync(join(box, ".git", "hooks"), { recursive: true });
+    writeFileSync(join(box, ".git", "hooks", "pre-push"), "#!/bin/sh\necho 'refused by a stray hook' >&2\nexit 1\n", { mode: 0o755 });
+    const prev = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = globalCfg;
+    try {
+      const big = join(box, "data", "huge.bin");
+      mkdirSync(join(box, "data"), { recursive: true });
+      const fd = openSync(big, "w");
+      ftruncateSync(fd, 50 * 1024 * 1024 + 1);
+      closeSync(fd);
+      await sync.runOnce();
+      expect(sync.status.lastError).toBeNull();
+      expect(sync.status.ok).toBe(true);
+      expect(sh(bare, "git", ["show", "box:data/huge.bin"])).toMatch(/^version https:\/\/git-lfs\.github\.com\/spec\/v1\noid sha256:[0-9a-f]{64}\nsize 52428801\n$/);
+      // The process filter's smudge gives the bytes back on checkout.
+      rmSync(big);
+      git(box, "checkout", "--", "data/huge.bin");
+      expect(statSync(big).size).toBe(50 * 1024 * 1024 + 1);
+      expect(git(box, "status", "--porcelain").trim()).toBe("");
+    } finally {
+      if (prev === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+      else process.env.GIT_CONFIG_GLOBAL = prev;
+    }
   });
 
   it("commits a file over 50 MB as a Git LFS pointer: the bytes stay in the working copy and the LFS store, no alert", async () => {
