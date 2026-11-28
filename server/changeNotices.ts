@@ -122,6 +122,9 @@ export type UndoDeps = {
   now?: () => number;
 };
 
+/** A change the native Undo switched back: `to` is the version in effect after it (null: unknown). */
+export type Undone = { plugin: string; version: string; to: string | null; what: string; conv: string | null };
+
 /** How long after it applied a change can still be undone by the native Undo. */
 export const UNDO_WINDOW_MS = 24 * 3600_000;
 
@@ -129,8 +132,8 @@ export const UNDO_WINDOW_MS = 24 * 3600_000;
  * The native shell's Undo: the newest applied change (a keep within UNDO_WINDOW_MS that is still in effect) switches
  * back. `by`: "carl" (the shortcut, the tray) or "auto" (the dead-man's switch). Returns what happened, in Carl's words.
  */
-export function undoLast(d: UndoDeps, o: { by: "carl" | "auto"; reason: string }): { ok: boolean; text: string; undone: { plugin: string; version: string; what: string; conv: string | null }[] } {
-  const undone: { plugin: string; version: string; what: string; conv: string | null }[] = [];
+export function undoLast(d: UndoDeps, o: { by: "carl" | "auto"; reason: string }): { ok: boolean; text: string; undone: Undone[] } {
+  const undone: Undone[] = [];
   const now = (d.now ?? Date.now)();
   let best: ChangeRecord | null = null;
   for (const plugin of d.plugins()) {
@@ -140,7 +143,8 @@ export function undoLast(d: UndoDeps, o: { by: "carl" | "auto"; reason: string }
   }
   if (best) {
     const w = d.write({ plugin: best.plugin, change: "switch", reason: o.reason }, o.by);
-    if (w.ok) undone.push({ plugin: best.plugin, version: best.version, what: whatOf(d.changes(best.plugin), best.version, best.plugin), conv: best.conv ?? null });
+    // `to`: what is in effect now, as the records say (the laptop's loader runs that core, src-tauri/src/safety.rs).
+    if (w.ok) undone.push({ plugin: best.plugin, version: best.version, to: landing(d.changes(best.plugin))?.version ?? null, what: whatOf(d.changes(best.plugin), best.version, best.plugin), conv: best.conv ?? null });
     else return { ok: false, text: `Couldn't undo ${whatOf(d.changes(best.plugin), best.version, best.plugin)}: ${w.text}`, undone };
   }
   if (!undone.length) return { ok: true, text: "Nothing to undo: no change applied in the last day.", undone };
@@ -148,7 +152,7 @@ export function undoLast(d: UndoDeps, o: { by: "carl" | "auto"; reason: string }
 }
 
 /** The chat line for a native Undo Carl pressed (the dead-man's switch's lines come from autoUndone). */
-export async function sayUndone(vault: string, u: { plugin: string; version: string; what: string; conv: string | null }): Promise<void> {
+export async function sayUndone(vault: string, u: Undone): Promise<void> {
   await sayChange(vault, u.conv, { kind: "auto", plugin: u.plugin, version: u.version, text: `Undid ${u.what} (${UNDO_CHORD}).` });
 }
 
@@ -173,5 +177,7 @@ export async function undoLastRoute(vault: string, body: Record<string, unknown>
     { by, reason },
   );
   if (by === "carl") for (const u of r.undone) await sayUndone(vault, u);
-  return { status: r.ok ? 200 : 409, body: { ok: r.ok, text: r.text, core: r.undone.some((u) => u.plugin === CORE_PART), undone: r.undone.map((u) => ({ plugin: u.plugin, what: u.what })) } };
+  const core = r.undone.find((u) => u.plugin === CORE_PART);
+  // coreVersion: the core the box chose (the switch's target); the shell runs it, not its own previous one.
+  return { status: r.ok ? 200 : 409, body: { ok: r.ok, text: r.text, core: !!core, coreVersion: core?.to ?? null, undone: r.undone.map((u) => ({ plugin: u.plugin, what: u.what })) } };
 }

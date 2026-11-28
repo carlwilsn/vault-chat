@@ -311,6 +311,25 @@ impl CoreLoader {
         Ok(())
     }
 
+    /// The Undo's choice of core: the box's (`chosen`: a version, or "built-in") when it is installed and runnable here,
+    /// else this laptop's previous one, else the baked one. The box's choice first: the laptop's own previous core can be
+    /// days older than the core the box switched back to (2026-11-28: an Undo ran 6816d9d7, then the follow had to
+    /// reload again into the box's 4c1862ce). What it runs now (None: the baked bundle).
+    pub fn revert(&self, chosen: Option<String>) -> Option<String> {
+        let tried = match chosen.as_deref() {
+            Some(BUILT_IN) => self.use_version(None).is_ok(),
+            Some(v) => self.use_version(Some(v.to_string())).is_ok(),
+            None => false,
+        };
+        if !tried {
+            let prev = self.inner.lock().unwrap().state.previous.clone();
+            if self.use_version(prev).is_err() {
+                let _ = self.use_version(None);
+            }
+        }
+        self.inner.lock().unwrap().active.clone()
+    }
+
     pub fn status(&self) -> serde_json::Value {
         let g = self.inner.lock().unwrap();
         let commit = g.active.as_ref().and_then(|v| self.manifest(v).ok()).map(|m| m.commit);
@@ -571,14 +590,11 @@ pub fn core_use(app: AppHandle, version: Option<String>) -> Result<(), String> {
     Ok(())
 }
 
-/// The native Undo (src-tauri/src/safety.rs): run the core the last switch replaced (else the installer's own) and
-/// reload every window. False when there is no loader.
-pub fn revert_core(app: &AppHandle) -> bool {
+/// The native Undo (src-tauri/src/safety.rs): run the core the box chose (`chosen`, the switch's target), else the
+/// core the last switch here replaced, else the installer's own; then reload every window. False when there is no loader.
+pub fn revert_core(app: &AppHandle, chosen: Option<String>) -> bool {
     let Ok(l) = loader() else { return false };
-    let prev = l.inner.lock().unwrap().state.previous.clone();
-    if l.use_version(prev).is_err() {
-        let _ = l.use_version(None);
-    }
+    l.revert(chosen);
     reload_all(app);
     true
 }
@@ -710,6 +726,34 @@ mod tests {
         assert_eq!(l.status()["events"][1]["to"], BUILT_IN);
         // The baked bundle has nothing to fall back to and is never watched.
         assert_eq!(l.page_started(), None);
+    }
+
+    #[test]
+    fn undo_runs_the_core_the_box_chose_before_the_laptops_own_previous_one() {
+        let root = tmp("revert");
+        let mut srv = HashMap::new();
+        let (old, osha) = bundle(&mut srv, &[("index.html", "old")], &["app_ready"]);
+        let (boxs, bsha) = bundle(&mut srv, &[("index.html", "box")], &["app_ready"]);
+        let (new, nsha) = bundle(&mut srv, &[("index.html", "new")], &["app_ready"]);
+        let l = CoreLoader::open(root.clone(), "1.0.0", CMDS.to_vec());
+        // The laptop went old -> new (it skipped the box's middle core): its own previous is the old one. The box's
+        // middle core is installed after (an install keeps only the current, previous and just-installed bundles).
+        l.install(&old, &osha, &fetcher(&srv)).unwrap();
+        l.use_version(Some(old.clone())).unwrap();
+        l.install(&new, &nsha, &fetcher(&srv)).unwrap();
+        l.use_version(Some(new.clone())).unwrap();
+        l.install(&boxs, &bsha, &fetcher(&srv)).unwrap();
+        assert_eq!(l.status()["previous"], old);
+        // The box switched back to its middle core: that runs, not the laptop's previous.
+        assert_eq!(l.revert(Some(boxs.clone())), Some(boxs.clone()));
+        assert_eq!(l.active_dir(), Some(root.join(&boxs).join("files")));
+        // The box's choice is not installed here: the laptop's previous one (the core it just left).
+        assert_eq!(l.revert(Some("deadbeef".into())), Some(new.clone()));
+        // No choice told (an older box): the previous one, as before.
+        assert_eq!(l.revert(None), Some(boxs.clone()));
+        // The box chose the installer's own.
+        assert_eq!(l.revert(Some(BUILT_IN.into())), None);
+        assert_eq!(l.status()["active"], BUILT_IN);
     }
 
     #[test]

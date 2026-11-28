@@ -94,6 +94,8 @@ pub fn undo(app: &AppHandle, by: &'static str, reason: &'static str) {
     let app = app.clone();
     std::thread::spawn(move || {
         let mut core = tried.iter().any(|t| t.plugin == "app/core");
+        // The core the box switched back to (server/changeNotices.ts undoLastRoute): the loader runs that one.
+        let mut chosen: Option<String> = None;
         match url {
             Some(url) => {
                 let q = vault.map(|v| format!("?vault={}", enc(&v))).unwrap_or_default();
@@ -103,6 +105,7 @@ pub fn undo(app: &AppHandle, by: &'static str, reason: &'static str) {
                         eprintln!("[safety] undo ({by}): {status} {}", text.chars().take(300).collect::<String>());
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
                             core = core || v.get("core").and_then(|c| c.as_bool()).unwrap_or(false);
+                            chosen = v.get("coreVersion").and_then(|c| c.as_str()).map(str::to_string);
                         }
                     }
                     Err(e) => eprintln!("[safety] undo ({by}): the box did not answer: {e}"),
@@ -111,7 +114,7 @@ pub fn undo(app: &AppHandle, by: &'static str, reason: &'static str) {
             None => eprintln!("[safety] undo ({by}): no box known yet"),
         }
         if core {
-            crate::core_loader::revert_core(&app);
+            crate::core_loader::revert_core(&app, chosen);
         } else {
             for w in app.webview_windows().values() {
                 let _ = w.reload();
