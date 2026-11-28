@@ -90,6 +90,46 @@ export async function learnCoreHere(since = Date.now()): Promise<void> {
   const s = await (await import("./coreFollow")).coreStatus().catch(() => null);
   if (s?.active) coreHere = { version: s.active, since };
 }
+/** The cores that came through a whole dead-man's watch on this laptop (src/changeSafety.ts appliedUnderWatch), kept
+ *  across reloads and launches. A reload of a proven core is not a new change: watching it again for ten minutes undid,
+ *  on 2026-11-28, a core that had run for five hours, because an unrelated page froze after a reload. The loader's
+ *  own "proven" (it said ready once) is not enough: a core can say ready and still hang a minute later. */
+const PROVEN_KEY = "vc.coreProvenHere";
+const PROVEN_MAX = 20;
+let provenHere: string[] | null = null;
+function provenList(): string[] {
+  if (provenHere) return provenHere;
+  try {
+    const v = JSON.parse(globalThis.localStorage?.getItem(PROVEN_KEY) ?? "[]");
+    provenHere = Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    provenHere = [];
+  }
+  return provenHere;
+}
+export function coreProvenHere(version: string): boolean {
+  return provenList().includes(version);
+}
+export function markCoreProvenHere(version: string): void {
+  const l = provenList();
+  if (l.includes(version)) return;
+  l.push(version);
+  if (l.length > PROVEN_MAX) l.splice(0, l.length - PROVEN_MAX);
+  try {
+    globalThis.localStorage?.setItem(PROVEN_KEY, JSON.stringify(l));
+  } catch {
+    /* no storage: proven for this window only */
+  }
+}
+/** Tests: forget the proven cores (memory and storage). */
+export function _resetCoreProven(): void {
+  provenHere = null;
+  try {
+    globalThis.localStorage?.removeItem(PROVEN_KEY);
+  } catch {
+    /* none */
+  }
+}
 /** When this window began running `version` of `plugin`, kept at `at`: a part other than the core runs from the record at
  *  once (the keep), the core from the later of the keep and this window's start, and a core this window does not run never (null). */
 export function runsSince(plugin: string, version: string, at: number): number | null {

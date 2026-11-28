@@ -156,6 +156,16 @@ test("a core the gate kept is watched only in a window that runs it, from when i
   CR.setCoreHere({ version: "c0ffee01", since: okAt });
   assert.deepEqual(S.appliedUnderWatch(okAt + 1000, core()).map((a) => [a.version, a.until]), [["c0ffee01", okAt + DEADMAN_MS]]);
   assert.deepEqual(S.appliedUnderWatch(okAt + DEADMAN_MS + 1, core()), [], "ten minutes after it began here: left alone");
+  // It came through the whole watch, so it is proven on this laptop: a plain reload hours later (a new window start)
+  // is not watched again (2026-11-28: an unrelated freeze 8 minutes after a reload undid a core that ran for 5 hours).
+  assert.ok(CR.coreProvenHere("c0ffee01"), "a whole watch passed: proven here");
+  const reloadAt = okAt + 5 * 3_600_000;
+  CR.setCoreHere({ version: "c0ffee01", since: reloadAt });
+  assert.deepEqual(S.appliedUnderWatch(reloadAt + 60_000, core()), [], "a reload of a proven core: not watched");
+  // A core not yet proven here is still watched after a reload, from the new window's start.
+  CR._resetCoreProven();
+  assert.deepEqual(S.appliedUnderWatch(reloadAt + 60_000, core()).map((a) => [a.version, a.until]), [["c0ffee01", reloadAt + DEADMAN_MS]], "not yet proven: watched");
+  CR._resetCoreProven();
   // The shell is told a lease: a beat 40 s before (a sleep of the machine) has run out; a dead page's last one has not.
   const until = S.nativeWatchUntil([{ until: okAt + DEADMAN_MS }], okAt);
   assert.equal(until, okAt + S.LEASE_MS);

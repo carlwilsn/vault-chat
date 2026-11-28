@@ -10,7 +10,8 @@
 //   it works whatever a change did to the page; here the same keys are a fallback where there is no shell (a browser).
 import { useStore } from "./store";
 import { DEADMAN_MS, HEALTH_EVERY_MS, HEALTH_MISSES, NATIVE_SILENCE_MS } from "./changeFlow";
-import { autoRevert, changeablePlugins, changesOf, learnCoreHere, runsSince, watchTyping } from "./changeReady";
+import { autoRevert, changeablePlugins, changesOf, coreProvenHere, learnCoreHere, markCoreProvenHere, runsSince, watchTyping } from "./changeReady";
+import { CORE_PART } from "./coreBundle";
 import { KEEP_WATCH_MS } from "./pluginDrafts";
 import { landing } from "./pluginDrafts";
 import { boxLinkFor, boxPost } from "./boxChat";
@@ -28,8 +29,13 @@ export function appliedUnderWatch(now = Date.now(), plugins = watchedPlugins()):
   for (const plugin of new Set(plugins)) {
     const l = landing(changesOf(plugin));
     if (!l || l.change !== "keep" || (l.from ?? "built-in") === l.version || now - l.at > KEEP_WATCH_MS) continue;
+    // A core that already came through a whole watch on this laptop: a reload or a relaunch is not a new change.
+    const core = plugin === CORE_PART;
+    if (core && coreProvenHere(l.version)) continue;
     const from = runsSince(plugin, l.version, l.at);
-    if (from !== null && now - from <= DEADMAN_MS && now >= from - 60_000) out.push({ plugin, version: l.version, until: from + DEADMAN_MS });
+    if (from === null) continue;
+    if (now - from <= DEADMAN_MS && now >= from - 60_000) out.push({ plugin, version: l.version, until: from + DEADMAN_MS });
+    else if (core && now - from > DEADMAN_MS) markCoreProvenHere(l.version);
   }
   return out;
 }
